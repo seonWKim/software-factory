@@ -11,3 +11,4 @@ export type * from "./capability-search.js";
 export type * from "./shared-storage.js";
 export type * from "./clock.js";
 export type * from "./updater.js";
+export type * from "./keep-awake.js";

@@ -1,3 +1,4 @@
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { describe, expect, it, vi } from "vitest";
 import { Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
@@ -27,7 +28,7 @@ async function setup() {
   const completeRun = vi.spyOn(store, "completeRun");
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
-    clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {},
+    clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(),
   });
   return { store, worker, release, started: () => started, claimRun, completeRun };
 }

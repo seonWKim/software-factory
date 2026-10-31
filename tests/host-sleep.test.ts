@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import { Worker } from "../src/core/worker.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
@@ -35,7 +36,7 @@ describe("host sleep: worker", () => {
     });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
-      clock, config, prompts, log, scanner: new PatternEgressScanner(async () => []), toolEnv: {},
+      clock, config, prompts, log, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(),
     });
 
     expect(await worker.tick()).toBe(true);

@@ -15,6 +15,7 @@ import type { Capability, CapabilitySearch } from "./interfaces/capability-searc
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
@@ -22,12 +23,15 @@ import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
+import { CaffeinateKeepAwake, requireExecutable, spawnLauncher } from "./impl/awake/caffeinate-keep-awake.js";
+import { NoKeepAwake } from "./impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
 import { ListAllCapabilitySearch } from "./impl/capability/list-all-capability-search.js";
 import { SystemClock } from "./impl/clock/system-clock.js";
 import { PatternEgressScanner } from "./impl/egress/pattern-egress-scanner.js";
 import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
+import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { ClaudeCliLLMProvider } from "./impl/llm/claude-cli-llm-provider.js";
 import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
@@ -56,6 +60,7 @@ export interface Instances {
   capability: CapabilitySearch;
   clock: Clock;
   updater: Updater;
+  awake: KeepAwake;
 }
 
 export type PluginKind = keyof Instances;
@@ -84,6 +89,7 @@ export interface Contexts {
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
+  awake: BaseContext & { clock: Clock };
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
@@ -238,6 +244,25 @@ export const REGISTRY: Registry = {
         }),
     },
   },
+  awake: {
+    interface: "KeepAwake",
+    configKey: "plugins.awake",
+    guard: false,
+    plugins: {
+      caffeinate: (c) => {
+        try {
+          requireExecutable("caffeinate", process.env.PATH);
+        } catch {
+          throw new Error(
+            'plugins.awake selects "caffeinate", but there is no caffeinate executable on PATH (it ships with macOS). ' +
+              'On this machine set "plugins": { "awake": "none" } (docs/plugins.md, KeepAwake)',
+          );
+        }
+        return new CaffeinateKeepAwake({ launch: spawnLauncher, log: new ConsoleLogger(c.clock, "keep-awake"), pid: process.pid });
+      },
+      none: () => new NoKeepAwake(),
+    },
+  },
 };
 
 export const PLUGIN_KINDS = Object.keys(REGISTRY) as PluginKind[];
@@ -245,8 +270,15 @@ export const PLUGIN_KINDS = Object.keys(REGISTRY) as PluginKind[];
 /** The interfaces selected under the `plugins` config object. Store and auth keep their own keys. */
 export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => k !== "store" && k !== "auth");
 
-/** Today's behaviour, used when factory.config.json has no `plugins` object. */
-export const DEFAULT_PLUGINS: Readonly<Record<(typeof PLUGINS_KEYS)[number], string>> = {
+/**
+ * Today's behaviour, used for every `plugins` key that config leaves out (or all of them when there is no
+ * `plugins` object). Only `awake` depends on the host: `caffeinate` on macOS, `none` everywhere else.
+ */
+export function defaultPlugins(platform: string = process.platform): Readonly<Record<(typeof PLUGINS_KEYS)[number], string>> {
+  return { ...FIXED_DEFAULTS, awake: platform === "darwin" ? "caffeinate" : "none" };
+}
+
+const FIXED_DEFAULTS = {
   sandbox: "noop",
   runner: "claude-code",
   llm: "claude-cli",
@@ -258,7 +290,7 @@ export const DEFAULT_PLUGINS: Readonly<Record<(typeof PLUGINS_KEYS)[number], str
   capability: "list-all",
   clock: "system",
   updater: "git-worktree",
-};
+} as const;
 
 /** Values that mean "turn this off". Never accepted for a guard. */
 const DISABLING = new Set<unknown>([undefined, null, false, "", "none"]);
@@ -289,9 +321,11 @@ export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown
 export function selectPlugins(
   registry: Registry,
   raw: { store: { type: unknown }; auth: unknown; plugins?: unknown },
+  opts: { platform?: string | undefined } = {},
 ): Selection {
+  const defaults = defaultPlugins(opts.platform);
   let chosen: Record<string, unknown>;
-  if (raw.plugins === undefined) chosen = { ...DEFAULT_PLUGINS };
+  if (raw.plugins === undefined) chosen = { ...defaults };
   else {
     if (raw.plugins === null || typeof raw.plugins !== "object" || Array.isArray(raw.plugins)) {
       throw new Error("plugins must be an object mapping interface to plugin name (see docs/plugins.md)");
@@ -305,7 +339,7 @@ export function selectPlugins(
     }
     chosen = {};
     for (const key of PLUGINS_KEYS) {
-      chosen[key] = Object.hasOwn(given, key) ? given[key] : registry[key].guard ? undefined : DEFAULT_PLUGINS[key];
+      chosen[key] = Object.hasOwn(given, key) ? given[key] : registry[key].guard ? undefined : defaults[key];
     }
   }
   chosen.store = raw.store.type;

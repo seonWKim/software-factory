@@ -14,6 +14,7 @@ import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/ag
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
@@ -32,6 +33,8 @@ export interface WorkerDeps {
   log: Logger;
   /** Non-secret env for the worker's own git commands inside the sandbox (PATH etc.). */
   toolEnv: Readonly<Record<string, string>>;
+  /** Held while a claimed run executes, released after; never held while idle. */
+  awake: KeepAwake;
 }
 
 const KINDS: readonly RunKind[] = ["triage", "implement", "review"];
@@ -69,8 +72,18 @@ export class Worker {
   async tick(): Promise<boolean> {
     const run = await this.d.store.claimRun({ worker_id: this.d.id, kinds: KINDS, lease_ms: this.d.config.lease_ms });
     if (!run?.lease) return false;
-    await this.execute(run, run.lease.token);
+    await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
+    try {
+      await this.execute(run, run.lease.token);
+    } finally {
+      await this.d.awake.release().catch((err: unknown) => this.awakeFailed("release", err));
+    }
     return true;
+  }
+
+  /** KeepAwake must not throw, but if one does, the run goes on: staying awake is best effort. */
+  private awakeFailed(op: string, err: unknown): void {
+    this.d.log.warn(`keep-awake ${op} failed`, { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
   }
 
   private async execute(run: Run, token: number): Promise<void> {

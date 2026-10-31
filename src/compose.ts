@@ -68,9 +68,13 @@ export interface Loaded {
   registry: Registry;
 }
 
+/**
+ * `codeRoot` is where config and prompts are read (the updater's runtime copy); `root` is where state lives.
+ * `platform` picks the platform-dependent plugin defaults (docs/plugins.md); the host's unless a test passes one.
+ */
 export async function loadConfig(
   root = process.cwd(),
-  opts: { registry?: Registry; codeRoot?: string | undefined } = {},
+  opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
   const file = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8")) as FileConfig;
@@ -84,7 +88,7 @@ export async function loadConfig(
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
-  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins });
+  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
@@ -211,6 +215,7 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    awake: await createPlugin(registry, "awake", sel.awake, { ...base, clock }),
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
