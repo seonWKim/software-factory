@@ -1,5 +1,5 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
-import type { Logger } from "../../src/core/log.js";
+import type { LogFields, Logger } from "../../src/core/log.js";
 import type { SourceRef, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
@@ -89,7 +89,10 @@ export class FakeSandbox implements Sandbox {
   }
 }
 
-type Script = Partial<Record<AgentRunSpec["role"], (spec: AgentRunSpec) => Partial<AgentRunResult>>>;
+/** A script may be async, e.g. to move a FakeClock mid-run and wait for the worker to react. */
+type Script = Partial<
+  Record<AgentRunSpec["role"], (spec: AgentRunSpec) => Partial<AgentRunResult> | Promise<Partial<AgentRunResult>>>
+>;
 
 export class FakeRunner implements AgentRunner {
   specs: AgentRunSpec[] = [];
@@ -104,9 +107,25 @@ export class FakeRunner implements AgentRunner {
       output: null,
       transcript: "{}",
       usage: { input_tokens: 10, output_tokens: 5, cost_usd: null },
-      ...fn(spec),
+      ...(await fn(spec)),
     };
   }
+}
+
+/** Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). */
+export async function waitFor(cond: () => boolean | Promise<boolean>, what = "condition", tries = 200): Promise<void> {
+  for (let i = 0; i < tries; i++) {
+    if (await cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+/** A Logger that keeps every line, for asserting on warnings. */
+export function recordingLog(): Logger & { lines: { level: string; msg: string; fields?: LogFields | undefined }[] } {
+  const lines: { level: string; msg: string; fields?: LogFields | undefined }[] = [];
+  const at = (level: string) => (msg: string, fields?: LogFields) => void lines.push({ level, msg, fields });
+  return { lines, info: at("info"), warn: at("warn"), error: at("error") };
 }
 
 export class FakeBroker implements ToolBroker {

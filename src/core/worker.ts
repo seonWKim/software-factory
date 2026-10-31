@@ -107,14 +107,23 @@ export class Worker {
     else this.d.log.info("run done", { ...log, status: outcome.status });
   }
 
+  /**
+   * Sleep, then renew. After a host sleep the timer fires late and the renewal goes out at once, with no
+   * extra heartbeat_ms wait. The store renews an expired lease as long as the run is still `running` with our
+   * token (nobody reaped or reclaimed it), so a late wake keeps the run instead of counting a new attempt.
+   */
   private async heartbeat(run: Run, token: number, lease: AbortController, stop: AbortSignal): Promise<void> {
+    const { heartbeat_ms, lease_ms } = this.d.config;
     while (!stop.aborted) {
+      const slept = this.d.clock.now().getTime();
       try {
-        await this.d.clock.sleep(this.d.config.heartbeat_ms, stop);
+        await this.d.clock.sleep(heartbeat_ms, stop);
       } catch {
         return;
       }
-      const r = await this.d.store.heartbeat(run.id, token, this.d.config.lease_ms);
+      const gap = this.d.clock.now().getTime() - slept;
+      if (gap > heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
+      const r = await this.d.store.heartbeat(run.id, token, lease_ms);
       if (!r.ok) {
         this.d.log.warn("lease lost; aborting run", { run_id: run.id });
         lease.abort(new Error("lease_lost"));
