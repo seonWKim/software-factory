@@ -36,6 +36,10 @@ interface GhPullFull extends GhPull {
   mergeable: boolean | null;
   merged_by: GhUser | null;
 }
+interface GhCommit {
+  sha: string;
+  commit: { message: string; committer: { date: string } | null };
+}
 
 interface Cursor {
   issues: string | null;
@@ -47,7 +51,17 @@ interface Cursor {
    * was already delivered. Absent in cursors written before it existed.
    */
   last_comment_id?: number | null;
+  /**
+   * Newest base-branch commit date already read, and the shas read at exactly that date. `since` is
+   * inclusive, so those come back on the next poll and are skipped. Absent in cursors written before
+   * commits were polled: that poll reads the newest 500 commits.
+   */
+  commits?: string | null;
+  commit_shas?: string[];
 }
+
+/** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
+const COMMIT_PAGES = 5;
 
 export class GitHubIssueSource implements SourceAdapter {
   readonly type = "github_issue" as const;
@@ -57,6 +71,7 @@ export class GitHubIssueSource implements SourceAdapter {
     private readonly repo: RepoRef,
     private readonly label: string,
     private readonly branchPrefix: string,
+    private readonly baseBranch: string,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {
@@ -140,6 +155,28 @@ export class GitHubIssueSource implements SourceAdapter {
         head_sha: full.head.sha,
         base_sha: full.base.sha,
       });
+    }
+
+    // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
+    const commits = await this.client.list<GhCommit>(
+      `${base}/commits?sha=${encodeURIComponent(this.baseBranch)}` + (c.commits ? `&since=${c.commits}` : ""),
+      COMMIT_PAGES,
+    );
+    const already = new Set(c.commits ? (c.commit_shas ?? []) : []);
+    next.commits = c.commits ?? null;
+    next.commit_shas = [...already];
+    for (const cm of [...commits].reverse()) {
+      const date = cm.commit.committer?.date;
+      if (already.has(cm.sha)) continue;
+      already.add(cm.sha);
+      events.push({ kind: "base_commit", sha: cm.sha, message: cm.commit.message });
+      if (!date) continue;
+      if (next.commits === null || date > next.commits) {
+        next.commits = date;
+        next.commit_shas = [cm.sha];
+      } else if (date === next.commits) {
+        next.commit_shas.push(cm.sha);
+      }
     }
 
     return { events, next_cursor: JSON.stringify(next) };
