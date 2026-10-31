@@ -54,8 +54,9 @@ describe("one issue to one merged PR", () => {
     expect(item).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 });
     expect(f.source.comments[0]!.body).toContain("Reply `/approve`");
     expect(f.source.comments[0]!.body).toContain(
-      "**Allowed paths**: `.github/workflows/`\n**Files to change**: `.github/workflows/scope.yml`",
+      "### Files\nAllowed to change:\n- `.github/workflows/`\n\nExpected to change:\n- `.github/workflows/scope.yml`",
     );
+    expect(f.source.comments[0]!.body).not.toContain("Please check");
 
     // An unauthorized approval is ignored.
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "101", approver: mallory });
@@ -115,6 +116,9 @@ describe("one issue to one merged PR", () => {
     const f = await factory(runner);
     f.source.queue.push({ kind: "item_requested", source: issueRef(2), requester: alice, title: "t", body: "b" });
     await f.step();
+    expect(f.source.comments[0]!.body).toContain(
+      "### Please check\n- Tier raised from 1 to 4 because a path is under a floor.",
+    );
     f.source.queue.push({ kind: "spec_approved", source: issueRef(2), comment_id: "103", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#2"))!;

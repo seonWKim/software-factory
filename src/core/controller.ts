@@ -1,7 +1,8 @@
 import type { FactoryConfig } from "./config.js";
 import type { Logger } from "./log.js";
-import { type TriageOutput, parseReview, parseTriage } from "./outputs.js";
+import { parseReview, parseTriage } from "./outputs.js";
 import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBranch } from "./policy.js";
+import { renderSpec } from "./spec-comment.js";
 import type { Actor, Run, RunKind, SourceRef, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -198,7 +199,8 @@ export class Controller {
             };
           }
           const spec = parsed.value;
-          const tier = effectiveTier(spec.tier, floorTier(spec.allowed_paths, this.d.config.floors), it.tier);
+          const floor = floorTier(spec.allowed_paths, this.d.config.floors);
+          const tier = effectiveTier(spec.tier, floor, it.tier);
           const fields = {
             problem: spec.problem,
             done_criteria: spec.done_criteria,
@@ -218,7 +220,7 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          await this.comment(it, `spec:${run.id}`, renderSpec(spec, tier));
+          await this.comment(it, `spec:${run.id}`, renderSpec(spec, tier, { floor, previous: it.tier }));
           return {
             patch: { ...fields, stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" },
             actor: SYSTEM,
@@ -386,23 +388,4 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusa
     reason: "spec_approved",
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
-}
-
-function renderSpec(spec: TriageOutput, tier: number): string {
-  return [
-    "## Factory spec",
-    "",
-    `**Problem**\n${spec.problem}`,
-    "",
-    "**Done when**",
-    ...spec.done_criteria.map((c) => `- ${c}`),
-    "",
-    `**Desired output**: ${spec.desired_output}`,
-    `**Scope**: ${spec.scope}`,
-    `**Allowed paths**: ${spec.allowed_paths.map((p) => `\`${p}\``).join(", ")}`,
-    `**Files to change**: ${spec.files_to_change.map((p) => `\`${p}\``).join(", ")}`,
-    `**Tier**: ${tier} (${spec.tier_reason})`,
-    "",
-    "Reply `/approve` to start implementation, or `/reject <reason>` to close.",
-  ].join("\n");
 }
