@@ -2,7 +2,7 @@
 
 How to give the factory its credentials without letting any agent read them.
 
-> Status: the factory is in Phase 1 (being built). The secret location and the rules below are fixed; the `factory` commands mentioned at the end arrive with Phase 1.
+> Status: Phase 1. The secret location and the rules below are fixed. The quick path is [`SET_UP.md`](../SET_UP.md) (`npm run setup`); this page explains what it does and why.
 
 ## Where secrets live
 
@@ -79,6 +79,10 @@ GITHUB_TOKEN=<token>
 ls -l ~/.config/software-factory/.env       # -rw------- , owned by you
 git -C <repo> status --ignored | grep .env  # nothing: no secret file in the repo
 ```
+
+## 6. Automated
+
+`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
 
 ## Why agents can't read it
 

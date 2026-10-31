@@ -1,0 +1,30 @@
+{
+  "env": "local",
+  "repo": { "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main" },
+  "intake_label": "factory",
+  "branch_prefix": "factory/",
+  "dials": { "spec_gate_min_tier": 1, "auto_merge_max_tier": 0 },
+  "floors": [
+    { "prefix": "prompts/", "tier": 3 },
+    { "prefix": "factory.config.json", "tier": 3 },
+    { "prefix": "src/core/", "tier": 3 },
+    { "prefix": "src/impl/runner/", "tier": 4 },
+    { "prefix": "src/impl/broker/", "tier": 4 },
+    { "prefix": "src/impl/egress/", "tier": 4 },
+    { "prefix": "src/impl/secrets/", "tier": 4 },
+    { "prefix": "src/impl/auth/", "tier": 4 },
+    { "prefix": ".claude/", "tier": 4 }
+  ],
+  "auth": "github",
+  "models": { "cheap": "haiku", "strong": "opus" },
+  "max_loops": 3,
+  "max_attempts": 3,
+  "lease_ms": 300000,
+  "heartbeat_ms": 60000,
+  "tick_ms": 2000,
+  "poll_interval_ms": 30000,
+  "run_timeout_ms": 2700000,
+  "state_dir": ".factory",
+  "worktrees_dir": ".worktrees",
+  "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" }
+}

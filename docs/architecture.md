@@ -44,6 +44,7 @@ graph TB
     direction LR
     I1["FactoryStore"] --- I2["Sandbox"] --- I3["AgentRunner"] --- I4["LLMProvider"] --- I5["AuthProvider"]
     I6["SecretStore"] --- I7["SourceAdapter"] --- I8["CapabilitySearch"] --- I9["SharedStorage"]
+    I10["ToolBroker"] --- I11["EgressScanner"] --- I12["Clock"]
   end
 
   subgraph IMPL["Implementations: chosen by config"]
@@ -66,6 +67,11 @@ graph TB
 | `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
 | `CapabilitySearch` | List everything | BM25, vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
+| `ToolBroker` (G2) | GitHub REST + `git push` in the worker process | same, per tool |
+| `EgressScanner` (G5) | Known secret values + patterns | + a managed secret scanner |
+| `Clock` | `SystemClock` (tests: `FakeClock`) | `SystemClock` |
+
+Code layout: interfaces in `src/interfaces/`, control and agent-plane logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
 
 ## 2. Control plane vs agent plane
 
@@ -184,6 +190,7 @@ Scale workers for throughput. Scale controllers for availability.
 |---|---|
 | Controllers and workers are stateless. All state is in `FactoryStore` (plus commits on GitHub) | Any replica can die or be added at any time |
 | Every state transition is a conditional update: `UPDATE ... WHERE id = ? AND version = ?` | Two replicas acting on the same item: one wins, the other gets 0 rows and moves on |
+| Leases carry a fencing token that increases on every claim; every write by a worker checks it | A worker that paused past its lease (GC, laptop sleep) can't overwrite the run's new owner |
 | Work is pulled, not pushed: workers claim runs with `SELECT ... FOR UPDATE SKIP LOCKED` + a lease | Adding a worker adds capacity with no coordinator; a dead worker's lease expires and the run is reclaimed |
 | Intake is idempotent: unique key on `(source_type, source_id)` | Several controllers polling, or a webhook delivered twice, create one work item |
 | Periodic loops (reaper, post-merge, dial) are idempotent or take a short leader lease in the store | Running them on N replicas does no harm |
