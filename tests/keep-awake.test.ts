@@ -13,13 +13,15 @@ import { recordingLog } from "./helpers/fakes.js";
 
 class FakeChild implements AwakeChild {
   killed = 0;
-  private readonly handlers: Record<string, ((arg?: unknown) => void)[]> = {};
-  on(event: "error" | "exit", fn: (arg?: unknown) => void): this {
+  private readonly handlers: Record<string, ((err: Error) => void)[]> = {};
+  on(event: "error", fn: (err: Error) => void): this;
+  on(event: "exit", fn: () => void): this;
+  on(event: string, fn: (err: Error) => void): this {
     (this.handlers[event] ??= []).push(fn);
     return this;
   }
-  emit(event: "error" | "exit", arg?: unknown): void {
-    for (const fn of this.handlers[event] ?? []) fn(arg);
+  emit(event: "error" | "exit", err: Error = new Error(event)): void {
+    for (const fn of this.handlers[event] ?? []) fn(err);
   }
   kill(): boolean {
     this.killed++;
@@ -95,7 +97,7 @@ describe("CaffeinateKeepAwake", () => {
     const l = fakeLauncher();
     const awake = new CaffeinateKeepAwake({ launch: l.launch, log: recordingLog(), pid: 1 });
     await awake.hold();
-    l.spawned[0]!.child.emit("exit", 1);
+    l.spawned[0]!.child.emit("exit");
     await awake.hold();
     expect(l.spawned).toHaveLength(2);
   });
