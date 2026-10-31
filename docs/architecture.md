@@ -193,3 +193,37 @@ Scale workers for throughput. Scale controllers for availability.
 | SQLite is local-only. More than one node requires the Postgres `FactoryStore` | SQLite has one writer on one machine; the interface makes the swap a config change |
 
 **Scaling knobs:** workers per node (`max_concurrent_runs`), number of worker nodes, warm sandbox pool size, controller replicas, LLM concurrency cap.
+
+## 5. Secret isolation
+
+**Rule:** agents never read secrets. Only tools do. An agent sees a tool's *result*, never the credential the tool used.
+
+```mermaid
+graph LR
+  subgraph HOST["Worker process (trusted)"]
+    SS["SecretStore (.env now, vault later)"]
+    TB["Tool broker: credentialed tools (GitHub, Slack, DB)"]
+    SS --> TB
+  end
+  subgraph SBX["Sandbox (untrusted): agent run"]
+    AG["Agent: model + Bash/file tools"]
+  end
+  AG -->|"tool call: name + args"| TB
+  TB -->|"result only"| AG
+  TB -->|"credential attached here"| EXT["GitHub / Slack / DB"]
+```
+
+**Guards (each one hard, layered so one failure isn't a leak):**
+
+| # | Guard | Stops |
+|---|---|---|
+| G1 | Secrets are loaded only by the worker process via `SecretStore`. The agent process gets an **allowlisted** environment (no secrets), never the worker's env | `env`, `printenv`, `process.env` inside the agent |
+| G2 | Credentialed actions (push, PR, comment, DB query) are tools served by a broker **outside** the sandbox, which attaches credentials | The agent needing a token at all |
+| G3 | The sandbox's filesystem view excludes secret files: worktrees never contain `.env` (gitignored), and the secret file lives outside any path the sandbox mounts | `cat ~/…/.env`, path guessing |
+| G4 | Harness-level deny rules on secret paths for the agent's file and shell tools | Defense in depth while G3 is weak (`NoOpSandbox`) |
+| G5 | Egress scan: every agent output (commits, PR text, comments, handoff rows, logs) is checked for known secret values and secret patterns before it leaves; a hit fails the run | A leak that got past G1–G4 reaching GitHub or the store |
+| G6 | Tests: a canary secret is planted; a test agent is told to find and print it; the run must fail to find it, or be stopped by G5 | Regressions in G1–G5 |
+
+**With `NoOpSandbox` (Phase 1), G3 is weak:** the agent runs as the host user, so a secret file anywhere on the host is reachable by absolute path. Until a real sandbox exists, keep the secret file outside the project and home-relative guessable paths, and rely on G1, G2, G4, G5, G6. Moving to a container sandbox makes G3 hard.
+
+**The agent harness's own credential** (the token `claude -p` needs to call the model) is the one secret the agent process must hold. It is passed to the harness only, scrubbed from the environment of the harness's tool subprocesses, and covered by G5.

@@ -15,7 +15,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 ## Rules for working here
 
 - Every infra dependency goes behind an interface with a local implementation first (store, sandbox, secrets, shared storage, search, auth, model, agent runner). No vendor SDK call outside its implementation.
-- Credentials live only inside tool implementations. Never in prompts, logs, or the store.
+- Agents never read secrets; only tools do (`docs/architecture.md` §5, guards G1–G6). Credentials live only inside tool implementations. Never in prompts, agent environments, logs, or the store.
 - Store user and agent IDs, never display names.
 - No in-process state that another replica would need. Every state transition is a conditional update in the store; every handler must be safe to run twice.
 - New states go into `blocked_on` / `blocked_reason` / `close_reason` before anyone adds a new `stage`.

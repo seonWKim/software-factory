@@ -34,6 +34,8 @@ The smallest loop that can take one GitHub issue to one reviewed PR. Everything 
 
 Interfaces stubbed with a single local impl: `FactoryStore`, `Sandbox` (`NoOpSandbox`), `AgentRunner`, `LLMProvider` (Anthropic), `AuthProvider` (no-auth), `SecretStore`, `CapabilitySearch` (list everything).
 
+**Secret guards before the first agent run:** G1 (allowlisted agent env), G2 (credentialed tools via a broker outside the sandbox), G4 (harness deny rules), G5 (egress scan), G6 (canary test). G3 becomes hard with the container sandbox.
+
 **Exit criterion:** the factory takes a real issue from this repo's backlog to a PR that a human merges, with the full trail in `state_changes`.
 
 ## Phase 2 — The factory builds itself (dogfooding)

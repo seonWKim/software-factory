@@ -41,7 +41,7 @@ graph LR
 | Implementer | work item + pointers + previous mistakes | code on its branch, TDD tests, handoff row per commit | — |
 | Reviewer | pass 1: work item + diff + `worked_on` (no transcript); pass 2: intent, how_to_test | acceptance tests (blind, hidden from implementer), verdict, cumulative mistakes, tier recheck | strong, different if measured to help |
 
-Instructions are soft; tools and permissions are hard. Credentials live only inside tool wrappers.
+Instructions are soft; tools and permissions are hard. Credentials live only inside tool wrappers: agents never read secrets, only tools do, enforced by guards G1–G6 (architecture §5).
 
 ## 5. Coordination
 
