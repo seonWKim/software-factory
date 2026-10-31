@@ -73,6 +73,16 @@ Create a **fine-grained personal access token** (GitHub → Settings → Develop
 GITHUB_TOKEN=<token>
 ```
 
+## 4b. MySQL password (only with `"store": { "type": "mysql" }`)
+
+The factory's own MySQL user, not your admin login. `npm run setup` creates the database and the user with a generated password and writes it here; you never see it. Rotate with `npm run setup -- --rotate-mysql`.
+
+The user is `'factory'@'localhost'`. Workers on other machines will need an account for their hosts and TLS; that comes with the multi-machine step.
+
+```
+MYSQL_PASSWORD=<generated>
+```
+
 ## 5. Check
 
 ```bash
@@ -82,7 +92,7 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 
 ## 6. Automated
 
-`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
+`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, MySQL database and user, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
 
 ## Why agents can't read it
 
@@ -92,7 +102,7 @@ The factory follows one rule: **agents never read secrets; only tools do.** The 
 |---|---|
 | G1 | Only the worker process loads the secret file. Agent runs get an allowlisted environment, and Claude Code's subprocess scrub strips credentials from anything the agent runs |
 | G2 | Actions that need a credential (push, PR, comment) are tools run outside the agent's sandbox; the agent only sees results |
-| G3 | The secret directory is denied at the OS level (`sandbox.filesystem.denyRead`) for everything the agent runs |
+| G3 | The secret directory, the store's files, and admin credential files (`~/.my.cnf`, `~/.ssh`, `~/.config/gh`, …) are denied at the OS level (`sandbox.filesystem.denyRead`) for everything the agent runs |
 | G4 | File-tool deny rules on the secret paths |
 | G5 | Every agent output is scanned for secret values before it reaches GitHub or the store; a hit fails the run |
 | G6 | A canary test plants a fake secret and checks that an agent told to find it cannot |

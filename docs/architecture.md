@@ -58,7 +58,7 @@ graph TB
 
 | Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
 |---|---|---|
-| `FactoryStore` | SQLite (single node only) | Postgres (required for more than one node) |
+| `FactoryStore` | MySQL (default, any number of nodes); SQLite (one machine, tests) | Managed MySQL (RDS / Cloud SQL) |
 | `Sandbox` | `NoOpSandbox`: git worktree on the host | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
@@ -173,7 +173,7 @@ graph TB
     W3["worker node M"]
   end
 
-  ST[("FactoryStore: Postgres")]
+  ST[("FactoryStore: MySQL")]
 
   GH --> LB --> CTRL
   CTRL <--> ST
@@ -197,7 +197,7 @@ Scale workers for throughput. Scale controllers for availability.
 | A worker's worktree is disposable. The branch on GitHub plus handoff rows are the truth | A run resumes on any node, not only the one that started it |
 | Shared limits live in the store: LLM concurrency, token budgets, per-repo run caps | N workers can't overrun a provider rate limit or a budget, because they count against the same rows |
 | Webhooks are verified, acknowledged fast, and written to the store before any work | Retries from GitHub are safe; slow processing never times out a webhook |
-| SQLite is local-only. More than one node requires the Postgres `FactoryStore` | SQLite has one writer on one machine; the interface makes the swap a config change |
+| SQLite is local-only. More than one node requires the MySQL `FactoryStore` | SQLite has one writer on one machine; `store` in `factory.config.json` makes the swap a config change |
 
 **Scaling knobs:** workers per node (`max_concurrent_runs`), number of worker nodes, warm sandbox pool size, controller replicas, LLM concurrency cap.
 

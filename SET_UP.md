@@ -13,6 +13,7 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 - Node.js 22.13 or newer, and git
 - Claude Code installed (`claude --version`)
 - A Claude Pro / Max / Team / Enterprise plan
+- MySQL 8+ running locally, and an admin login that the `mysql` client can use (`~/.my.cnf`, or it asks for the root password). For SQLite only, set `"store": { "type": "sqlite" }` in `factory.config.json` and skip this
 - Write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
 - `ANTHROPIC_API_KEY` **not** set in your shell. If it is, it overrides the subscription token: `unset ANTHROPIC_API_KEY`
 
@@ -23,9 +24,10 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 | 1. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository | — |
 | 2. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
 | 3. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
-| 4. Label | Creates the `factory` label on the repository | — |
-| 5. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, push access, label; warns on a token that never expires | Fix any `FAIL` line and rerun |
-| 6. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
+| 4. Database | Creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks |
+| 5. Label | Creates the `factory` label on the repository | — |
+| 6. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, label; warns on a token that never expires | Fix any `FAIL` line and rerun |
+| 7. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
@@ -65,6 +67,7 @@ Only users with write permission on the repository can approve or retry.
 | Check that everything still works | `npm run factory -- doctor` |
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
+| New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Suspect a leak | Revoke the token on GitHub first, then rotate |
 
