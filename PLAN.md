@@ -13,11 +13,11 @@ Goal: build a minimal factory by hand, then let the factory build the rest of it
 
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
-| D1 | Language / stack | TypeScript (Node). The Claude Agent SDK and MCP SDK are first-class there; Python is the close alternative | open |
-| D2 | Agent harness | `AgentRunner` interface; first impl = Claude Code headless (`claude -p`) running inside the sandbox's worktree | open |
-| D3 | Store | `FactoryStore` interface; first impl = SQLite file | open |
-| D4 | First intake source | GitHub issues on this repo (the factory's own backlog). Slack later | open |
-| D5 | Human gate surface | GitHub PR review + issue comments first; the form UI later | open |
+| D1 | Language / stack | **TypeScript (Node)** | decided |
+| D2 | Agent harness | `AgentRunner` interface. Local impl = `claude -p` on the subscription login (no API key; unset `ANTHROPIC_API_KEY`, don't use `--bare`; `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN` for unattended runs). Company/cloud impl = API key or gateway (Bedrock / Vertex / ML gateway): Anthropic doesn't allow claude.ai login in products offered to others | open |
+| D3 | Store | `FactoryStore` interface; first impl = SQLite file | decided |
+| D4 | First intake source | GitHub issues on this repo (the factory's own backlog). Slack later | decided |
+| D5 | Human gate surface | GitHub PR review + issue comments first; the form UI later | decided |
 
 ## Phase 1 — Minimal viable factory (built by hand)
 
