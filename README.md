@@ -8,3 +8,7 @@ A local-first software factory: agents take a work item from intake to a reviewe
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
 
 Status: Phase 1 (minimal factory, built by hand). Set up: [`SET_UP.md`](SET_UP.md) (`npm run setup`).
+
+## Commands
+
+Run `make help` (or just `make`) to list the commands. Each target wraps `npm run factory -- <cmd>` (setup wraps `npm run setup`), for example `make dev`, `make status ID=<work item id>`, `make setup ARGS=--rotate-github`. `make` is optional; the npm commands work without it.
