@@ -17,6 +17,18 @@
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
+  "plugins": {
+    "secrets": "env-file",
+    "egress": "pattern",
+    "broker": "github",
+    "sandbox": "noop",
+    "runner": "claude-code",
+    "llm": "claude-cli",
+    "source": "github-issues",
+    "storage": "fs",
+    "capability": "list-all",
+    "clock": "system"
+  },
   "models": { "cheap": "haiku", "strong": "opus" },
   "max_loops": 3,
   "max_attempts": 3,

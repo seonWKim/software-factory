@@ -6,12 +6,10 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { type Loaded, openStore } from "./compose.js";
+import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
-import { SystemClock } from "./impl/clock/system-clock.js";
 import { GitHubClient, GitHubError } from "./impl/github/github-client.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
-import { EnvFileSecretStore } from "./impl/secrets/env-file-secret-store.js";
 import type { SecretName } from "./interfaces/secret-store.js";
 
 const MAX_TOKEN_DAYS = 30;
@@ -35,7 +33,8 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   add(!loaded.secretsFile.startsWith(loaded.root), "secret file is outside the repository");
 
-  const secrets = new EnvFileSecretStore(loaded.secretsFile);
+  const plugins = new Plugins(loaded);
+  const secrets = await plugins.secrets();
   const model = (await secrets.get("CLAUDE_CODE_OAUTH_TOKEN")) ?? (await secrets.get("ANTHROPIC_API_KEY"));
   add(model !== null, `model credential present (${model?.name ?? "none"})`);
   add(!process.env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY is not set in this shell");
@@ -49,7 +48,7 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     if (!(await secrets.get("MYSQL_PASSWORD"))) add(false, "MYSQL_PASSWORD present (run: npm run setup)");
     else {
       try {
-        const store = await openStore(loaded, secrets, new SystemClock());
+        const store = await plugins.store(secrets, await plugins.clock());
         try {
           await store.migrate();
         } finally {
@@ -116,7 +115,9 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   if (process.env.ANTHROPIC_API_KEY) {
     console.log("   ! ANTHROPIC_API_KEY is set in this shell. It overrides the subscription token: unset it.");
   }
-  let secrets = new EnvFileSecretStore(file);
+  // A fresh SecretStore after each write, so it sees the values just saved.
+  const plugins = new Plugins(loaded);
+  let secrets = await plugins.secrets();
   const hasModel = (await secrets.get("CLAUDE_CODE_OAUTH_TOKEN")) ?? (await secrets.get("ANTHROPIC_API_KEY"));
   if (hasModel && !opts.rotate.includes("CLAUDE_CODE_OAUTH_TOKEN")) {
     console.log(`   already set (${hasModel.name})`);
@@ -131,7 +132,7 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   }
 
   step(3, "GitHub token");
-  secrets = new EnvFileSecretStore(file);
+  secrets = await plugins.secrets();
   if ((await secrets.get("GITHUB_TOKEN")) && !opts.rotate.includes("GITHUB_TOKEN")) {
     console.log("   already set");
   } else {
@@ -157,7 +158,7 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   if (!(await provisionDatabase(loaded, opts.rotate.includes("MYSQL_PASSWORD")))) return 1;
 
   step(5, `Label "${loaded.config.intake_label}" on ${repo.owner}/${repo.name}`);
-  secrets = new EnvFileSecretStore(file);
+  secrets = await plugins.secrets();
   const client = new GitHubClient(secrets);
   try {
     await client.request("POST", `/repos/${repo.owner}/${repo.name}/labels`, { name: loaded.config.intake_label, ...LABEL });
@@ -200,7 +201,7 @@ async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boole
     console.log("   SQLite: nothing to do");
     return true;
   }
-  if ((await new EnvFileSecretStore(loaded.secretsFile).get("MYSQL_PASSWORD")) && !rotate) {
+  if ((await (await new Plugins(loaded).secrets()).get("MYSQL_PASSWORD")) && !rotate) {
     console.log("   already set");
     return true;
   }

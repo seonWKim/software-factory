@@ -9,23 +9,15 @@ import type { Tier, WorkerId } from "./core/types.js";
 import { Controller } from "./core/controller.js";
 import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
+import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
-import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
-import { SystemClock } from "./impl/clock/system-clock.js";
-import { PatternEgressScanner } from "./impl/egress/pattern-egress-scanner.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
-import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
-import { EnvFileSecretStore, defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
-import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
-import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
-import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
-import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
-import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
+import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
+import { type BaseContext, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -40,7 +32,10 @@ export interface FileConfig {
   branch_prefix: string;
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
   floors: { prefix: string; tier: number }[];
-  auth: "github" | "none";
+  /** AuthProvider plugin name (docs/plugins.md). */
+  auth: string;
+  /** Plugin name per interface (docs/plugins.md). Absent: today's defaults. Guards can never be disabled. */
+  plugins?: Record<string, unknown>;
   models: { cheap: string; strong: string };
   max_loops: number;
   max_attempts: number;
@@ -62,9 +57,13 @@ export interface Loaded {
   secretsFile: string;
   stateDir: string;
   store: StoreConfig;
+  /** Checked plugin name per interface. */
+  plugins: Selection;
+  /** Where plugin names resolve. The built-in REGISTRY unless a test passes another. */
+  registry: Registry;
 }
 
-export async function loadConfig(root = process.cwd()): Promise<Loaded> {
+export async function loadConfig(root = process.cwd(), opts: { registry?: Registry } = {}): Promise<Loaded> {
   const file = JSON.parse(await readFile(join(root, "factory.config.json"), "utf8")) as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
@@ -74,8 +73,11 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
+  const registry = opts.registry ?? REGISTRY;
+  const baseStore = file.store ?? { type: "sqlite" };
+  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins });
   const secretsFile = defaultSecretsFile();
-  const store = await storeConfig(file.store ?? { type: "sqlite" }, secretsFile);
+  const store = await storeConfig(baseStore, secretsFile);
 
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
@@ -113,7 +115,7 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     implement: await readFile(join(root, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(root, "prompts", "review.md"), "utf8"),
   };
-  return { root, file, config, prompts, secretsFile, stateDir, store };
+  return { root, file, config, prompts, secretsFile, stateDir, store, plugins, registry };
 }
 
 export interface Built {
@@ -126,26 +128,62 @@ export interface Built {
   close(): Promise<void>;
 }
 
+/**
+ * Resolves the configured plugins one at a time, through the same registry as build(). For code that needs
+ * only some of them: setup, doctor and the G6 canary, so they exercise the configured guards.
+ */
+export class Plugins {
+  readonly base: BaseContext;
+
+  constructor(
+    readonly loaded: Loaded,
+    opts: { extraScanValues?: readonly string[] } = {},
+  ) {
+    const { owner, name } = loaded.config.repo;
+    this.base = { loaded, repo: { owner, name }, extraScanValues: opts.extraScanValues ?? [] };
+  }
+
+  clock(): Promise<Clock> {
+    return createPlugin(this.loaded.registry, "clock", this.loaded.plugins.clock, this.base);
+  }
+  secrets(): Promise<SecretStore> {
+    return createPlugin(this.loaded.registry, "secrets", this.loaded.plugins.secrets, this.base);
+  }
+  scanner(secrets: SecretStore): Promise<EgressScanner> {
+    return createPlugin(this.loaded.registry, "egress", this.loaded.plugins.egress, { ...this.base, secrets });
+  }
+  store(secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
+    return createPlugin(this.loaded.registry, "store", this.loaded.plugins.store, { ...this.base, secrets, clock });
+  }
+  sandbox(): Promise<Sandbox> {
+    return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
+  }
+  runner(sandbox: Sandbox, secrets: SecretStore) {
+    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
+  }
+}
+
 export async function build(
   loaded: Loaded,
   opts: { clock?: Clock; extraScanValues?: string[] } = {},
 ): Promise<Built> {
-  const { config, file, stateDir } = loaded;
+  const { config, stateDir, registry, plugins: sel } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
-  const clock = opts.clock ?? new SystemClock();
-  const secrets = new EnvFileSecretStore(loaded.secretsFile, opts.extraScanValues ?? []);
-  const store = await openStore(loaded, secrets, clock);
+  const p = new Plugins(loaded, opts);
+  const base = p.base;
+  const clock = opts.clock ?? (await p.clock());
+  const secrets = await p.secrets();
+  const store = await p.store(secrets, clock);
   await store.migrate();
 
-  const scanner = new PatternEgressScanner(() => secrets.valuesForScan());
+  const scanner = await p.scanner(secrets);
   const github = new GitHubClient(secrets);
-  const repo = { owner: config.repo.owner, name: config.repo.name };
-  const sandbox = new NoOpSandbox(resolve(loaded.root, file.worktrees_dir));
+  const sandbox = await p.sandbox();
 
   const controller = new Controller({
     store,
-    source: new GitHubIssueSource(github, repo, config.intake_label, config.branch_prefix),
-    auth: file.auth === "github" ? new GitHubAuthProvider(github, repo) : new NoAuthProvider(),
+    source: await createPlugin(registry, "source", sel.source, { ...base, github }),
+    auth: await createPlugin(registry, "auth", sel.auth, { ...base, github }),
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),
@@ -155,16 +193,10 @@ export async function build(
     id: `${hostname()}:${process.pid}` as WorkerId,
     store,
     sandbox,
-    runner: new ClaudeCodeRunner({
-      sandbox,
-      secrets,
-      claudeConfigDir: join(stateDir, "agents", "claude-config"),
-      homesDir: join(stateDir, "agents", "homes"),
-      models: file.models,
-    }),
-    broker: new GitHubToolBroker({ client: github, secrets, store, scanner, clock, repo, branchPrefix: config.branch_prefix }),
+    runner: await p.runner(sandbox, secrets),
+    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, secrets, store, scanner, clock }),
     scanner,
-    storage: new FsSharedStorage(join(stateDir, "storage")),
+    storage: await createPlugin(registry, "storage", sel.storage, base),
     clock,
     config,
     prompts: loaded.prompts,
@@ -189,15 +221,6 @@ async function storeConfig(base: StoreConfig, secretsFile: string): Promise<Stor
   if (!Number.isInteger(s.port)) throw new Error("MYSQL_PORT must be a number");
   if (!(isSqlName(s.database) && isSqlName(s.user))) throw new Error("MySQL database and user must match [A-Za-z0-9_]+");
   return s;
-}
-
-export async function openStore(loaded: Loaded, secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
-  const s = loaded.store;
-  if (s.type === "sqlite") return new SqlFactoryStore(new SqliteDriver(join(loaded.stateDir, "db", "factory.db")), clock);
-  const password = await secrets.get("MYSQL_PASSWORD");
-  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
-  const driver = new MysqlDriver({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() });
-  return new SqlFactoryStore(driver, clock);
 }
 
 export function isSqlName(s: string): boolean {
