@@ -27,7 +27,8 @@ export type StoreConfig =
 export interface FileConfig {
   env: "local" | "cloud";
   store?: StoreConfig;
-  repo: { owner: string; name: string; path: string; base_branch: string };
+  /** test_command: argv, default ["npm", "test"]. */
+  repo: { owner: string; name: string; path: string; base_branch: string; test_command?: unknown };
   intake_label: string;
   branch_prefix: string;
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
@@ -95,7 +96,7 @@ export async function loadConfig(
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
   const config: FactoryConfig = {
-    repo: { ...file.repo, path: resolve(root, file.repo.path) },
+    repo: { ...file.repo, path: resolve(root, file.repo.path), test_command: testCommand(file.repo.test_command) },
     intake_label: file.intake_label,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
@@ -239,6 +240,15 @@ async function storeConfig(base: StoreConfig, secretsFile: string): Promise<Stor
 
 export function isSqlName(s: string): boolean {
   return /^[A-Za-z0-9_]+$/.test(s);
+}
+
+/** Absent: ["npm", "test"]. Otherwise a non-empty argv of non-empty strings, or startup fails. */
+export function testCommand(value: unknown): string[] {
+  if (value === undefined) return ["npm", "test"];
+  if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v !== "")) {
+    throw new Error("repo.test_command must be a non-empty array of non-empty strings (argv), e.g. [\"npm\", \"test\"]");
+  }
+  return [...(value as string[])];
 }
 
 function isTier(n: number): n is Tier {

@@ -2,7 +2,8 @@ import type { Tier } from "./types.js";
 
 /** Runtime config for core code. Built by the composition root; core never reads env or files itself. */
 export interface FactoryConfig {
-  repo: { owner: string; name: string; path: string; base_branch: string };
+  /** `test_command`: argv the update run uses to check a merged branch (no shell), e.g. ["npm", "test"]. */
+  repo: { owner: string; name: string; path: string; base_branch: string; test_command: string[] };
   intake_label: string;
   /** Factory PR branches are `${branch_prefix}${work_item_id}`. The broker pushes nowhere else. */
   branch_prefix: string;
