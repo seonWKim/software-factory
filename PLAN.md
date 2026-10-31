@@ -6,7 +6,7 @@ Goal: build a minimal factory by hand, then let the factory build the rest of it
 
 - Every infra layer is an interface with local and cloud implementations. Local first.
 - Day one is fully gated: `spec_gate_min_tier = 1`, `auto_merge_max_tier = 0`. Humans decide; decisions are recorded with reasons.
-- Dials loosen only with Step 5 evidence and a human decision. Tightening is automatic.
+- Dials loosen only with measurement evidence (design §6) and a human decision. Tightening is automatic.
 - The factory never merges its own changes to its own gates, prompts, permissions, or tools without a human.
 
 ## Phase 0 — Decisions before code

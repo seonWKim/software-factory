@@ -10,7 +10,6 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 |---|---|
 | `PLAN.md` | Phases (0 decisions, 1 MVP by hand, 2 self-build, 3 autonomy) and open decisions |
 | `docs/design.md` | The living design. Change it when a decision changes |
-| `docs/learning/` | The 2026-10-31 learning session that produced the design (log + exercises 01–08). Snapshot; don't edit |
 
 ## Rules for working here
 

@@ -1,6 +1,6 @@
 # Company software factory — one-page design
 
-Assembled from your answers in Exercises 1–7 (2026-10-31). *Italic* = Claude's additions you accepted or haven't rejected.
+The design of the factory. Living document: change it when a decision changes.
 
 ## 1. Shape
 
@@ -74,9 +74,9 @@ Instructions are soft; tools and permissions are hard. Credentials live only ins
 - Tools/MCP: users can add them; automated credential-leak check + human approval; rules scoped to the tool.
 - AuthN/Z behind an `AuthProvider` interface (`resolve`, `authorize`; impls: no-auth, SSO/OIDC, GitHub permissions, policy engine), called by intake, tool wrappers and the human gate. Factory acts on behalf of `requester_id`; effective permission = requester ∩ agent. Classes: local dev (no-auth), internal low risk, team-owned, restricted data, critical (two-person rule).
 - Audit: IDs for requester, agent role, approver on every record.
-- GitHub identity: one bot identity per agent role (triage / implementer / reviewer); requester ID in the PR; approver from the PR review. *(confirmed)*
+- GitHub identity: one bot identity per agent role (triage / implementer / reviewer); requester ID in the PR; approver from the PR review.
 - User attributes: `user_id : key : value` (e.g. `u_123 : role : payments`). Domain-class policies require attributes; `AuthProvider.authorize` checks them.
-- Auth best practices applied: deny by default; least privilege; attributes come from the identity provider (agents can't edit them); delegated tokens short-lived and scoped; periodic access review; a logged break-glass path for incidents. Resource classes follow the common public / internal / confidential / restricted scale, mapped onto the five classes in Exercise 7.
+- Auth best practices applied: deny by default; least privilege; attributes come from the identity provider (agents can't edit them); delegated tokens short-lived and scoped; periodic access review; a logged break-glass path for incidents. Resource classes follow the common public / internal / confidential / restricted scale, mapped onto the five classes above.
 
 ## First build (local)
 

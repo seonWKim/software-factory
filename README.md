@@ -4,6 +4,5 @@ A local-first software factory: agents take a work item from intake to a reviewe
 
 - Plan: [`PLAN.md`](PLAN.md)
 - Design: [`docs/design.md`](docs/design.md)
-- How the design was derived: [`docs/learning/`](docs/learning/)
 
 Status: Phase 0 (decisions before code).
