@@ -181,6 +181,7 @@ export function rowToStateChange(r: Row): StateChange {
     actor: parseJson(r.actor),
     reason: r.reason as string,
     changes: parseJson(r.changes),
+    detail: parseJson(r.detail),
   };
 }
 

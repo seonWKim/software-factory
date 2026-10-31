@@ -8,6 +8,7 @@ import type {
   SourceRef,
   SourceType,
   StateChange,
+  StateChangeDetail,
   UserId,
   WorkItem,
   WorkItemId,
@@ -42,6 +43,8 @@ export interface TransitionInput {
   patch: WorkItemPatch;
   actor: Actor;
   reason: string;
+  /** Stored on the state_changes row as `detail`. */
+  detail?: StateChangeDetail;
   /** Mark this finished run as acknowledged in the same transaction (controller consuming an outcome). */
   ack_run?: RunId;
   /** Enqueue a run in the same transaction. No-op if its idempotency_key already exists. */
@@ -80,6 +83,10 @@ export interface FactoryStore {
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
+  /** The item whose factory PR in `project` has this number (oldest if several). */
+  getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
+  /** The item in `project` whose PR merged as this commit (oldest if several). */
+  getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
   /** Newest first. */
   listWorkItems(limit: number): Promise<WorkItem[]>;
   /** The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue). */

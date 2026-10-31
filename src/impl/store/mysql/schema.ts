@@ -85,4 +85,10 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       value  MEDIUMTEXT NOT NULL
     ) ${TABLE}`,
   ],
+  // 2: revert and fix-forward tracking (design §6). Old rows keep detail NULL.
+  [
+    "ALTER TABLE state_changes ADD COLUMN detail MEDIUMTEXT NULL",
+    "CREATE INDEX work_items_pr ON work_items (project, pr_number)",
+    "CREATE INDEX work_items_merge_sha ON work_items (merge_sha)",
+  ],
 ];

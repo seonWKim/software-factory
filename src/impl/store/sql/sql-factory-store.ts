@@ -6,6 +6,7 @@ import type {
   RunOutcome,
   SourceType,
   StateChange,
+  StateChangeDetail,
   StateChangeId,
   Timestamp,
   WorkItem,
@@ -88,6 +89,22 @@ export class SqlFactoryStore implements FactoryStore {
     return this.selectItemBySource(this.db, type, sourceId);
   }
 
+  async getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null> {
+    const [row] = await this.db.all(
+      `SELECT * FROM work_items WHERE project = ? AND pr_number = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
+      [project, pr_number],
+    );
+    return row ? rowToWorkItem(row) : null;
+  }
+
+  async getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null> {
+    const [row] = await this.db.all(
+      `SELECT * FROM work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
+      [sha, project],
+    );
+    return row ? rowToWorkItem(row) : null;
+  }
+
   async listWorkItems(limit: number): Promise<WorkItem[]> {
     const rows = await this.db.all(`SELECT * FROM work_items ORDER BY created_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [
       limit,
@@ -119,7 +136,9 @@ export class SqlFactoryStore implements FactoryStore {
       );
       if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-      const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes);
+      const state_change = await this.insertStateChange(
+        tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
+      );
       if (input.ack_run !== undefined) {
         await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
       }
@@ -338,6 +357,7 @@ export class SqlFactoryStore implements FactoryStore {
     actor: Actor,
     reason: string,
     changes: StateChange["changes"],
+    detail: StateChangeDetail | null = null,
   ): Promise<StateChange> {
     const change: StateChange = {
       id: newId("sc") as StateChangeId,
@@ -347,10 +367,14 @@ export class SqlFactoryStore implements FactoryStore {
       actor,
       reason,
       changes,
+      detail,
     };
     await tx.run(
-      "INSERT INTO state_changes (id, work_item_id, version, at, actor, reason, changes) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [change.id, workItemId, version, change.at, JSON.stringify(actor), reason, JSON.stringify(changes)],
+      "INSERT INTO state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        change.id, workItemId, version, change.at, JSON.stringify(actor), reason, JSON.stringify(changes),
+        detail === null ? null : JSON.stringify(detail),
+      ],
     );
     return change;
   }
