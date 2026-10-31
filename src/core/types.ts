@@ -1,0 +1,124 @@
+// Domain types shared by every layer. No vendor types here.
+// Field names follow docs/design.md §2. IDs only, never display names.
+
+type Brand<T, B extends string> = T & { readonly __brand: B };
+
+export type WorkItemId = Brand<string, "WorkItemId">;
+export type RunId = Brand<string, "RunId">;
+export type StateChangeId = Brand<string, "StateChangeId">;
+export type HandoffId = Brand<string, "HandoffId">;
+export type UserId = Brand<string, "UserId">;
+export type AgentId = Brand<string, "AgentId">; // one per role identity, e.g. "agent:triage"
+export type WorkerId = Brand<string, "WorkerId">;
+
+/** ISO-8601 UTC timestamp. */
+export type Timestamp = Brand<string, "Timestamp">;
+
+export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
+export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget";
+export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
+export type Tier = 1 | 2 | 3 | 4 | 5;
+
+export type SourceType = "github_issue" | "slack_thread";
+
+export interface SourceRef {
+  type: SourceType;
+  /** Stable id within the source, e.g. "owner/repo#12". Unique with `type` (idempotent intake). */
+  id: string;
+  link: string;
+}
+
+export interface WorkItem {
+  id: WorkItemId;
+  /** Optimistic-concurrency version. Every successful transition increments it by 1. */
+  version: number;
+  source: SourceRef;
+  requester_id: UserId;
+  project: string;
+  problem: string;
+  resources: string[];
+  done_criteria: string[] | null; // frozen after the human confirms the spec
+  desired_output: string | null;
+  scope: string | null;
+  allowed_paths: string[];
+  tier: Tier | null;
+  stage: Stage;
+  blocked_on: BlockedOn;
+  blocked_reason: string | null;
+  close_reason: CloseReason | null;
+  loop_count: number;
+  restart_count: number;
+  token_cost: number;
+  pr_number: number | null;
+  merge_sha: string | null;
+  fixes_pr: number | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+/** Fields a transition may change. id, source, requester, version and timestamps are store-owned. */
+export type WorkItemPatch = Partial<
+  Omit<WorkItem, "id" | "version" | "source" | "requester_id" | "created_at" | "updated_at">
+>;
+
+export type Actor =
+  | { kind: "user"; id: UserId }
+  | { kind: "agent"; id: AgentId; run_id: RunId }
+  | { kind: "system"; id: string }; // control-plane loop, e.g. "system:reaper"
+
+/** One row per work-item change. IDs and field values only. */
+export interface StateChange {
+  id: StateChangeId;
+  work_item_id: WorkItemId;
+  /** Version the item had after this change. (work_item_id, version) is unique. */
+  version: number;
+  at: Timestamp;
+  actor: Actor;
+  /** Short machine-readable code, e.g. "intake", "spec_approved", "lease_expired". */
+  reason: string;
+  /** Only the fields that changed, with old and new values. */
+  changes: { [K in keyof WorkItemPatch]?: { from: WorkItem[K]; to: WorkItem[K] } };
+}
+
+export type RunKind = "triage" | "implement" | "review";
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+export interface Lease {
+  owner: WorkerId;
+  /** Fencing token. Strictly increases on every claim of the same run; stale holders are rejected by it. */
+  token: number;
+  expires_at: Timestamp;
+}
+
+/** A unit of agent work. The controller enqueues runs, workers claim them. */
+export interface Run {
+  id: RunId;
+  work_item_id: WorkItemId;
+  kind: RunKind;
+  /** Unique. E.g. `${work_item_id}:implement:${loop_count}`, so a re-enqueue is a no-op. */
+  idempotency_key: string;
+  status: RunStatus;
+  attempt: number;
+  lease: Lease | null;
+  /** Set when the worker finishes. Structured, already egress-scanned (G5). */
+  outcome: RunOutcome | null;
+  /** Set when the controller has applied the outcome to the work item. */
+  acknowledged_at: Timestamp | null;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export type RunOutcome =
+  | { status: "succeeded"; summary: string; data: Record<string, unknown> }
+  | { status: "failed"; error_code: string; detail: string; infra: boolean };
+
+/** One row per implementer commit (design §4). Truth for resuming on any node. */
+export interface Handoff {
+  id: HandoffId;
+  run_id: RunId;
+  work_item_id: WorkItemId;
+  commit_sha: string;
+  worked_on: string;
+  next_steps: string;
+  at: Timestamp;
+}
