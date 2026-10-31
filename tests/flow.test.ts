@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import { Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { newStore } from "./helpers/store.js";
@@ -21,7 +22,7 @@ async function factory(runner: FakeRunner, knownSecrets: string[] = []) {
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config, prompts, log: silent,
     scanner: new PatternEgressScanner(async () => knownSecrets),
-    toolEnv: { PATH: "/usr/bin" },
+    toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
   });
   const step = async () => {
     await controller.tickIntake();
