@@ -91,7 +91,15 @@ export class GitHubIssueSource implements SourceAdapter {
       next.pulls = max(next.pulls, p.updated_at);
       if (!p.head.ref.startsWith(this.branchPrefix)) continue;
       if (p.merged_at && p.merge_commit_sha) {
-        events.push({ kind: "pr_merged", pr_number: p.number, head_branch: p.head.ref, merge_sha: p.merge_commit_sha });
+        // The list endpoint omits merged_by; the single-PR endpoint has it.
+        const full = await this.client.request<{ merged_by: GhUser | null }>("GET", `${base}/pulls/${p.number}`);
+        events.push({
+          kind: "pr_merged",
+          pr_number: p.number,
+          head_branch: p.head.ref,
+          merge_sha: p.merge_commit_sha,
+          merger: full.merged_by ? identity(full.merged_by) : null,
+        });
       } else {
         events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref });
       }

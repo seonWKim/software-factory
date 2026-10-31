@@ -9,7 +9,7 @@ export type SourceEvent =
   | { kind: "spec_rejected"; source: SourceRef; approver: ExternalIdentity; reason: string }
   | { kind: "retry_requested"; source: SourceRef; requester: ExternalIdentity }
   /** PR events name the head branch; the controller maps it back to a work item. Reverts: Phase 2. */
-  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string }
+  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null }
   | { kind: "pr_closed"; pr_number: number; head_branch: string };
 
 export interface PollResult {

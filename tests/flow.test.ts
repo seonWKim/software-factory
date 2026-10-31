@@ -70,7 +70,7 @@ describe("one issue to one merged PR", () => {
     expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
-    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1" });
+    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
@@ -81,6 +81,8 @@ describe("one issue to one merged PR", () => {
     ]);
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
+    const merge = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "pr_merged")!;
+    expect(merge.actor).toEqual({ kind: "user", id: "github:1" });
     expect(item.token_cost).toBe(15 * 5);
     expect(await f.store.listHandoffs(item.id)).toHaveLength(2);
     expect(f.sandbox.destroyed).toBe(f.sandbox.created.length);

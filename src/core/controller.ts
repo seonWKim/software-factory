@@ -128,12 +128,15 @@ export class Controller {
       case "pr_closed": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
         if (!id) return;
+        // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
+        const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
+        const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
         return this.decide(id as WorkItemId, (it) => {
           if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
           return e.kind === "pr_merged"
             ? {
                 patch: { stage: "CLOSED", close_reason: "completed", merge_sha: e.merge_sha, blocked_on: "none", blocked_reason: null },
-                actor: { kind: "system", id: "system:post-merge" },
+                actor,
                 reason: "pr_merged",
               }
             : {
