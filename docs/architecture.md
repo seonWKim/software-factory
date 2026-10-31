@@ -62,7 +62,7 @@ graph TB
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
 | `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
-| `SecretStore` | `.env` | Vault / cloud secret manager |
+| `SecretStore` | `~/.config/software-factory/.env` (outside the repo) | Vault / cloud secret manager |
 | `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
 | `CapabilitySearch` | List everything | BM25, vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
@@ -201,7 +201,7 @@ Scale workers for throughput. Scale controllers for availability.
 ```mermaid
 graph LR
   subgraph HOST["Worker process (trusted)"]
-    SS["SecretStore (.env now, vault later)"]
+    SS["SecretStore (~/.config file now, vault later)"]
     TB["Tool broker: credentialed tools (GitHub, Slack, DB)"]
     SS --> TB
   end
@@ -224,7 +224,7 @@ graph LR
 | G5 | Egress scan: every agent output (commits, PR text, comments, handoff rows, logs) is checked for known secret values and secret patterns before it leaves; a hit fails the run | A leak that got past G1–G4 reaching GitHub or the store |
 | G6 | Tests: a canary secret is planted; a test agent is told to find and print it; the run must fail to find it, or be stopped by G5 | Regressions in G1–G5 |
 
-**With `NoOpSandbox` (Phase 1), G3 is weak:** the agent runs as the host user, so a secret file anywhere on the host is reachable by absolute path. Until a real sandbox exists, keep the secret file outside the project and home-relative guessable paths, and rely on G1, G2, G4, G5, G6. Moving to a container sandbox makes G3 hard.
+**Secret file location:** `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env`, never inside the repository (setup: `docs/setup.md`). With `NoOpSandbox` the agent runs as the host user, so G3 relies on Claude Code's OS-level sandbox denying that directory (below). A container sandbox later makes G3 hard independently of the harness.
 
 **The agent harness's own credential** (the token `claude -p` needs to call the model) is the one secret the agent process must hold. It is passed to the harness only, scrubbed from the environment of the harness's tool subprocesses, and covered by G5.
 
@@ -236,7 +236,7 @@ The runner writes a per-run Claude Code settings file into the agent's run direc
 {
   "env": { "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1" },          // G1: strip credentials from Bash, hooks, stdio MCP children
   "permissions": {
-    "deny": ["Read(**/.env)", "Read(**/.env.*)", "Read(~/.config/software-factory/**)"],   // G4: file tools + recognized Bash file commands
+    "deny": ["Read(~/.config/software-factory/**)", "Read(**/.env)", "Read(**/.env.*)"],   // G4: file tools + recognized Bash file commands
     "blockReadsOutsideWorkingDirectories": true
   },
   "sandbox": {                                                   // G3 at OS level, even under NoOpSandbox
