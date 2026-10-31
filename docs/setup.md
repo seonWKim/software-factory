@@ -73,15 +73,22 @@ Create a **fine-grained personal access token** (GitHub → Settings → Develop
 GITHUB_TOKEN=<token>
 ```
 
-## 4b. MySQL password (only with `"store": { "type": "mysql" }`)
+## 4b. MySQL (only with `"store": { "type": "mysql" }`)
 
-The factory's own MySQL user, not your admin login. `npm run setup` creates the database and the user with a generated password and writes it here; you never see it. Rotate with `npm run setup -- --rotate-mysql`.
-
-The user is `'factory'@'localhost'`. Workers on other machines will need an account for their hosts and TLS; that comes with the multi-machine step.
+Connection settings and the password live together in the secret file. Empty settings fall back to `store` in `factory.config.json`. Only `MYSQL_PASSWORD` is treated as a secret (scanned by G5); the others are plain settings.
 
 ```
-MYSQL_PASSWORD=<generated>
+MYSQL_HOST=        # default localhost
+MYSQL_PORT=        # default 3306
+MYSQL_DATABASE=    # default software_factory
+MYSQL_USER=        # default factory
+MYSQL_PASSWORD=
 ```
+
+- **Your own MySQL user:** fill in all five. Setup won't create anything.
+- **Let setup create one:** leave `MYSQL_PASSWORD` empty. `npm run setup` creates the database and `'factory'@'localhost'` with a generated password and writes it here; you never see it. Rotate with `npm run setup -- --rotate-mysql`.
+
+Workers on other machines will need an account for their hosts and TLS; that comes with the multi-machine step.
 
 ## 5. Check
 
