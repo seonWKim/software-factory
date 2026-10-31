@@ -8,6 +8,7 @@
 
 import { join, resolve } from "node:path";
 import type { Loaded } from "./compose.js";
+import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
@@ -21,6 +22,7 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
+import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
 import { CaffeinateKeepAwake, requireExecutable, spawnLauncher } from "./impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "./impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
@@ -39,6 +41,9 @@ import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
+import { baseEnv } from "./impl/process/run-process.js";
+import { GitWorktreeUpdater } from "./impl/updater/git-worktree.js";
+import { NoneUpdater } from "./impl/updater/none.js";
 
 /** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
 export interface Instances {
@@ -54,6 +59,7 @@ export interface Instances {
   source: SourceAdapter;
   capability: CapabilitySearch;
   clock: Clock;
+  updater: Updater;
   awake: KeepAwake;
 }
 
@@ -81,6 +87,8 @@ export interface Contexts {
   source: BaseContext & { github: GitHubClient };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
+  /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
+  updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
 }
 
@@ -215,6 +223,27 @@ export const REGISTRY: Registry = {
     guard: false,
     plugins: { system: () => new SystemClock() },
   },
+  updater: {
+    interface: "Updater",
+    configKey: "plugins.updater",
+    guard: false,
+    plugins: {
+      none: () => new NoneUpdater(),
+      "git-worktree": (c) =>
+        new GitWorktreeUpdater({
+          repoPath: c.loaded.root,
+          runtimeDir: join(c.loaded.stateDir, "runtime"),
+          stagingDir: join(c.loaded.stateDir, "runtime-next"),
+          baseBranch: c.loaded.config.repo.base_branch,
+          run: c.run,
+          launcher: c.launcher,
+          clock: c.clock,
+          log: c.log,
+          env: baseEnv(),
+          runTimeoutMs: c.loaded.config.run_timeout_ms,
+        }),
+    },
+  },
   awake: {
     interface: "KeepAwake",
     configKey: "plugins.awake",
@@ -260,6 +289,7 @@ const FIXED_DEFAULTS = {
   source: "github-issues",
   capability: "list-all",
   clock: "system",
+  updater: "git-worktree",
 } as const;
 
 /** Values that mean "turn this off". Never accepted for a guard. */

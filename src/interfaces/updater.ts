@@ -1,0 +1,67 @@
+// Keeps the running factory on the latest base-branch commit (design: "Self-update"). The supervisor of
+// `dev` drives it; `none` runs in place, `git-worktree` runs a built runtime copy of origin/<base_branch>.
+
+import type { ExecResult } from "./sandbox.js";
+
+/**
+ * Set by the supervisor for its child: the runtime copy that holds the code, factory.config.json and
+ * prompts/. Explicit, never inferred. Unset: code and state share one root (today's behaviour).
+ */
+export const CODE_ROOT_ENV = "SOFTWARE_FACTORY_CODE_ROOT";
+/** Set to "1" by the supervisor for its child, so `dev` runs controller + worker instead of supervising. */
+export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
+/** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
+export const DRAIN_MESSAGE = "factory:drain";
+export const DRAINED_MESSAGE = "factory:drained";
+
+/** Runs one host command. Same shape as `runProcess`, so tests can pass a fake. */
+export type CommandRunner = (
+  cmd: readonly string[],
+  opts: { cwd: string; env: Readonly<Record<string, string>>; timeout_ms?: number; signal?: AbortSignal },
+) => Promise<ExecResult>;
+
+/** The `dev` child the supervisor starts: controller + worker from a code root. */
+export interface ChildSpec {
+  /** Script to run, e.g. `<runtime>/dist/main.js`. */
+  entry: string;
+  args: readonly string[];
+  /** Working directory: the main checkout (the state root). */
+  cwd: string;
+  /** Added to the supervisor's environment for the child. */
+  env: Readonly<Record<string, string>>;
+}
+
+export interface ChildHandle {
+  readonly pid: number;
+  /** Asks the child to stop claiming runs and exit once its in-flight run is done. Not a signal. */
+  requestDrain(): void;
+  /** True once the child said it drained (after its worker finished the in-flight run). */
+  readonly drainAcknowledged: boolean;
+  /** Resolves with the exit code (null if killed by a signal) when the child exits. */
+  readonly exited: Promise<number | null>;
+  /** SIGTERM: today's hard stop. SIGKILL: when it did not exit in time. */
+  kill(signal: "SIGTERM" | "SIGKILL"): void;
+}
+
+export interface ChildLauncher {
+  launch(spec: ChildSpec): ChildHandle;
+}
+
+export interface Updater {
+  /** `in-place`: the supervisor runs controller + worker itself, as before. `supervised`: it runs a child. */
+  readonly mode: "in-place" | "supervised";
+  /** Prepares the code root (first start: create, install, build) and starts the child. */
+  start(): Promise<void>;
+  /** Fetches the base branch. Returns the new commit to move to, or null if there is nothing to do. */
+  check(): Promise<string | null>;
+  /**
+   * One supervision step: check for a new base commit, build it beside the running child, and only if the
+   * build succeeded drain the child, move the runtime copy forward and restart. Restarts a crashed child
+   * from the last tree that built.
+   */
+  poll(): Promise<void>;
+  /** PID of the running child, or null. */
+  childPid(): number | null;
+  /** Stops the child (SIGTERM, then SIGKILL after the drain timeout) and stops supervising. */
+  shutdown(): Promise<void>;
+}

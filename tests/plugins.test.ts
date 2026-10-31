@@ -22,6 +22,8 @@ import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
+import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -55,6 +57,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   source: { "github-issues": GitHubIssueSource },
   capability: { "list-all": ListAllCapabilitySearch },
   clock: { system: SystemClock },
+  updater: { none: NoneUpdater, "git-worktree": GitWorktreeUpdater },
   awake: { caffeinate: CaffeinateKeepAwake, none: NoKeepAwake },
 };
 const STORE_DRIVER: Record<string, Ctor> = { sqlite: SqliteDriver, mysql: MysqlDriver };
@@ -110,7 +113,17 @@ async function context(loaded: Loaded): Promise<Contexts[PluginKind] & Record<st
   const store = (await createPlugin(loaded.registry, "store", "sqlite", { ...base, secrets, clock })) as FactoryStore;
   const scanner = new PatternEgressScanner(async () => []);
   const sandbox = new NoOpSandbox(join(loaded.root, "wt"));
-  return { ...base, secrets, clock, github, store, scanner, sandbox, capabilities: [] } as never;
+  // Updater: a runner and launcher that fail if used; constructing a plugin must not run anything.
+  const run = async () => {
+    throw new Error("the updater ran a command at construction");
+  };
+  const launcher = {
+    launch() {
+      throw new Error("the updater launched a child at construction");
+    },
+  };
+  const log = { info() {}, warn() {}, error() {} };
+  return { ...base, secrets, clock, github, store, scanner, sandbox, capabilities: [], run, launcher, log } as never;
 }
 
 async function closeIfStore(kind: PluginKind, x: unknown): Promise<void> {
@@ -134,6 +147,7 @@ describe("plugin registry: defaults", () => {
       source: "github-issues",
       capability: "list-all",
       clock: "system",
+      updater: "git-worktree",
       awake: "caffeinate",
     });
     const ctx = await context(loaded);
@@ -188,7 +202,7 @@ describe("plugin registry: every registered name", () => {
         count++;
       }
     }
-    expect(count).toBe(16); // 17 classes in the issue list: SqliteDriver and MysqlDriver sit under the two store plugins
+    expect(count).toBe(18); // SqliteDriver and MysqlDriver sit under the two store plugins; updater and awake add two each
     await (ctx.store as FactoryStore).close();
   });
 });
@@ -445,7 +459,7 @@ describe("docs/plugins.md", () => {
     expect(s).toMatch(/lid/);
   });
 
-  it("covers 13 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(13);
+  it("covers 14 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(14);
   });
 });

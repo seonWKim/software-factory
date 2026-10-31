@@ -22,6 +22,7 @@ the canary tests.
 | SharedStorage | `plugins.storage` | `fs` | no |
 | CapabilitySearch | `plugins.capability` | `list-all` | no |
 | Clock | `plugins.clock` | `system` | no |
+| Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
 
 ```jsonc
@@ -31,14 +32,15 @@ the canary tests.
 "plugins": {
   "secrets": "env-file", "egress": "pattern", "broker": "github",
   "sandbox": "noop", "runner": "claude-code", "llm": "claude-cli",
-  "source": "github-issues", "storage": "fs", "capability": "list-all", "clock": "system"
+  "source": "github-issues", "storage": "fs", "capability": "list-all", "clock": "system",
+  "updater": "git-worktree"
   // "awake" is left out on purpose: it defaults per platform (see KeepAwake below)
 }
 ```
 
 Rules, checked by `loadConfig` at startup (and again by `build()`):
 
-- **No `plugins` object** means today's defaults for all eleven interfaces in it (`awake`'s default depends on the platform). Store and auth keep their own keys.
+- **No `plugins` object** means today's defaults for all twelve interfaces in it (`awake`'s default depends on the platform). Store and auth keep their own keys.
 - **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
 - **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `auth` under `plugins` are rejected with a pointer to their own keys.
@@ -199,6 +201,25 @@ Plugins:
   - Enable: `"plugins": { "clock": "system", ... }`. Secrets: none.
 
 `FakeClock` is test-only and not registered; tests pass it to `build()` directly. Switch back / disable: `"clock": "system"`.
+
+## Updater
+
+What it does: keeps `npm run factory -- dev` on the latest commit of `origin/<base_branch>`. `dev` starts a supervisor; the updater decides where controller + worker run from and when they restart. `controller`, `worker` and the other commands never use it.
+
+Plugins:
+
+- `git-worktree`: `GitWorktreeUpdater`. The default.
+  - First start: creates `<state_dir>/runtime` (`.factory/runtime`), a detached git worktree at `origin/<base_branch>`, runs `npm ci` and `npm run build` there, and forks the child from `.factory/runtime/dist/main.js`. The child reads `factory.config.json` and `prompts/` from the runtime copy (`SOFTWARE_FACTORY_CODE_ROOT`, set by the supervisor); its state stays in the main checkout: `state_dir`, `worktrees_dir`, `repo.path`, the database, `.factory/storage` and the secret file.
+  - Every `poll_interval_ms`: `git fetch origin <base_branch>`. A change to `src/`, `prompts/`, `package.json`, `package-lock.json`, `tsconfig*.json` or `factory.config.json` is built first in `.factory/runtime-next` while the old child keeps running (`npm ci` only when `package-lock.json` changed). Only if that build succeeds: the child is asked to drain (an IPC message, no new signal), it stops claiming, lets its in-flight run finish, acknowledges and exits; then `.factory/runtime` is fast-forwarded, the built output is swapped in and the child restarts. A child that has not exited after `run_timeout_ms` plus 60 s is hard-stopped (SIGKILL) and the log says so.
+  - Any other change (docs) only fast-forwards `.factory/runtime`; the child keeps running.
+  - A failed build leaves the running child untouched, logs the failing step and the tail of its output, and is retried on the next new commit. A crashed child is restarted on the next poll, only from a tree that built.
+  - Your checkout is fast-forwarded (`git merge --ff-only origin/<base_branch>`, i.e. `git pull --ff-only` after the fetch) only when it is on the base branch and `git status --porcelain` is empty; otherwise the log says why it was skipped (not on base, dirty, or ff failed). The updater never checks out, stashes, resets or switches branches in it.
+  - Enable: `"plugins": { "updater": "git-worktree", ... }`, or no `plugins` object. Secrets: none (git uses your usual credentials for `fetch`). Settings: `repo.base_branch`, `state_dir`, `poll_interval_ms`, `run_timeout_ms`; `git` and `npm` on `PATH`.
+  - Behaviour change: `dev` runs `origin/<base_branch>`, not your working tree. Uncommitted edits, local branches and commits merged locally but not pushed never run under `dev` until they are pushed and merged.
+- `none`: `NoneUpdater`. `dev` runs controller + worker in place, from the checkout it was started in, exactly as before the updater existed. No git or process calls.
+  - Enable: `"plugins": { "updater": "none", ... }`. Secrets: none.
+
+Switch back / turn it off: `"plugins": { "updater": "none" }` (add the guards too if you write a `plugins` object, see above). The supervisor itself reads `plugins.updater`, `repo.base_branch`, `poll_interval_ms` and `run_timeout_ms` from the checkout it was started in; restart `dev` after changing them.
 
 ## KeepAwake
 

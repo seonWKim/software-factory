@@ -27,7 +27,8 @@
     "source": "github-issues",
     "storage": "fs",
     "capability": "list-all",
-    "clock": "system"
+    "clock": "system",
+    "updater": "git-worktree"
   },
   "models": { "cheap": "haiku", "strong": "opus" },
   "max_loops": 3,
