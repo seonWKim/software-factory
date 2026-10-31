@@ -9,6 +9,7 @@ import type { Tier, WorkerId } from "./core/types.js";
 import { Controller } from "./core/controller.js";
 import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
+import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
@@ -19,13 +20,21 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
-import { EnvFileSecretStore, defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
+import { EnvFileSecretStore, defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
 import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
-import { SqliteFactoryStore } from "./impl/store/sqlite/sqlite-store.js";
+import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
+import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
+import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
+
+/** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
+export type StoreConfig =
+  | { type: "sqlite" }
+  | { type: "mysql"; host: string; port: number; database: string; user: string };
 
 export interface FileConfig {
   env: "local" | "cloud";
+  store?: StoreConfig;
   repo: { owner: string; name: string; path: string; base_branch: string };
   intake_label: string;
   branch_prefix: string;
@@ -52,6 +61,7 @@ export interface Loaded {
   prompts: Prompts;
   secretsFile: string;
   stateDir: string;
+  store: StoreConfig;
 }
 
 export async function loadConfig(root = process.cwd()): Promise<Loaded> {
@@ -64,8 +74,9 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
-
   const secretsFile = defaultSecretsFile();
+  const store = await storeConfig(file.store ?? { type: "sqlite" }, secretsFile);
+
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
   const config: FactoryConfig = {
@@ -92,6 +103,8 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
       join(home, ".gitconfig"),
       join(home, ".git-credentials"),
       join(home, ".netrc"),
+      join(home, ".my.cnf"),
+      join(home, ".mylogin.cnf"),
     ],
     agent_git_identity: file.agent_git_identity,
   };
@@ -100,13 +113,13 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     implement: await readFile(join(root, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(root, "prompts", "review.md"), "utf8"),
   };
-  return { root, file, config, prompts, secretsFile, stateDir };
+  return { root, file, config, prompts, secretsFile, stateDir, store };
 }
 
 export interface Built {
   loaded: Loaded;
   clock: Clock;
-  store: SqliteFactoryStore;
+  store: FactoryStore;
   secrets: SecretStore;
   controller: Controller;
   worker: Worker;
@@ -120,10 +133,10 @@ export async function build(
   const { config, file, stateDir } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
   const clock = opts.clock ?? new SystemClock();
-  const store = new SqliteFactoryStore(join(stateDir, "db", "factory.db"), clock);
+  const secrets = new EnvFileSecretStore(loaded.secretsFile, opts.extraScanValues ?? []);
+  const store = await openStore(loaded, secrets, clock);
   await store.migrate();
 
-  const secrets = new EnvFileSecretStore(loaded.secretsFile, opts.extraScanValues ?? []);
   const scanner = new PatternEgressScanner(() => secrets.valuesForScan());
   const github = new GitHubClient(secrets);
   const repo = { owner: config.repo.owner, name: config.repo.name };
@@ -160,6 +173,35 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+/** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */
+async function storeConfig(base: StoreConfig, secretsFile: string): Promise<StoreConfig> {
+  if (base.type !== "mysql") return base;
+  const env = await readEnvSettings(secretsFile, ["MYSQL_HOST", "MYSQL_PORT", "MYSQL_DATABASE", "MYSQL_USER"]);
+  const s = {
+    ...base,
+    host: env.get("MYSQL_HOST") ?? base.host,
+    port: Number(env.get("MYSQL_PORT") ?? base.port),
+    database: env.get("MYSQL_DATABASE") ?? base.database,
+    user: env.get("MYSQL_USER") ?? base.user,
+  };
+  if (!Number.isInteger(s.port)) throw new Error("MYSQL_PORT must be a number");
+  if (!(isSqlName(s.database) && isSqlName(s.user))) throw new Error("MySQL database and user must match [A-Za-z0-9_]+");
+  return s;
+}
+
+export async function openStore(loaded: Loaded, secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
+  const s = loaded.store;
+  if (s.type === "sqlite") return new SqlFactoryStore(new SqliteDriver(join(loaded.stateDir, "db", "factory.db")), clock);
+  const password = await secrets.get("MYSQL_PASSWORD");
+  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+  const driver = new MysqlDriver({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() });
+  return new SqlFactoryStore(driver, clock);
+}
+
+export function isSqlName(s: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(s);
 }
 
 function isTier(n: number): n is Tier {

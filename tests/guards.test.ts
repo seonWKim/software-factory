@@ -53,7 +53,7 @@ describe("G3/G4: harness settings deny secret paths", () => {
   });
 
   it("blocks credentialed shell paths around the broker (G2)", () => {
-    for (const rule of ["Bash(gh:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(security:*)"]) {
+    for (const rule of ["Bash(gh:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(security:*)", "Bash(mysql:*)"]) {
       expect(settings.permissions.deny).toContain(rule);
     }
   });
@@ -72,6 +72,11 @@ describe("Secret store", () => {
   it("parses only known names and keeps values opaque", async () => {
     const m = parseEnvFile("# c\nGITHUB_TOKEN=ghp_x\nexport CLAUDE_CODE_OAUTH_TOKEN='tok'\nOTHER=1\n");
     expect([...m.keys()].sort()).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"]);
+  });
+
+  it("scans the MySQL password but not connection settings like the host (they would block normal output)", () => {
+    const m = parseEnvFile("MYSQL_HOST=localhost\nMYSQL_USER=factory\nMYSQL_PASSWORD=pw-value\n");
+    expect([...m.keys()]).toEqual(["MYSQL_PASSWORD"]);
   });
 
   it("a Secret never stringifies to its value", async () => {
@@ -174,5 +179,16 @@ describe("Tool broker", () => {
     const r = await broker.call(ctx, "github.comment", { number: 1, body: "leaky-secret-value", marker: "m" });
     expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
     expect(posted).toHaveLength(0);
+  });
+});
+
+describe("G3/G4: deny paths from the real config", () => {
+  it("cover the secret dir, the store, and admin credential files", async () => {
+    const { loadConfig } = await import("../src/compose.js");
+    const loaded = await loadConfig(new URL("..", import.meta.url).pathname);
+    const home = process.env.HOME ?? "";
+    for (const p of [loaded.secretsFile.replace(/\/[^/]+$/, ""), `${loaded.stateDir}/db`, `${home}/.my.cnf`, `${home}/.mylogin.cnf`]) {
+      expect(loaded.config.deny_paths).toContain(p);
+    }
   });
 });

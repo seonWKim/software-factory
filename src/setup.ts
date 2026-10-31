@@ -1,11 +1,14 @@
 // `factory setup` and `factory doctor`. Operator-side commands: they run in the operator's process and are
 // the only code that writes the secret file. No secret value is ever printed or passed as an argument.
 
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
-import type { Loaded } from "./compose.js";
+import { type Loaded, openStore } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { SystemClock } from "./impl/clock/system-clock.js";
 import { GitHubClient, GitHubError } from "./impl/github/github-client.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import { EnvFileSecretStore } from "./impl/secrets/env-file-secret-store.js";
@@ -39,6 +42,25 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
   add(claude?.exit_code === 0, `claude CLI: ${claude?.stdout.trim() || "not found"}`);
+
+  const db = loaded.store;
+  if (db.type === "mysql") {
+    const where = `MySQL ${db.user}@${db.host}:${db.port}/${db.database}`;
+    if (!(await secrets.get("MYSQL_PASSWORD"))) add(false, "MYSQL_PASSWORD present (run: npm run setup)");
+    else {
+      try {
+        const store = await openStore(loaded, secrets, new SystemClock());
+        try {
+          await store.migrate();
+        } finally {
+          await store.close();
+        }
+        add(true, `${where} reachable, schema up to date`);
+      } catch (err) {
+        add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+      }
+    }
+  }
 
   const gh = await secrets.get("GITHUB_TOKEN");
   add(gh !== null, "GITHUB_TOKEN present");
@@ -131,7 +153,10 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     await setSecret(file, "GITHUB_TOKEN", await askSecret("   Paste the token (hidden): "));
   }
 
-  step(4, `Label "${loaded.config.intake_label}" on ${repo.owner}/${repo.name}`);
+  step(4, "Database");
+  if (!(await provisionDatabase(loaded, opts.rotate.includes("MYSQL_PASSWORD")))) return 1;
+
+  step(5, `Label "${loaded.config.intake_label}" on ${repo.owner}/${repo.name}`);
   secrets = new EnvFileSecretStore(file);
   const client = new GitHubClient(secrets);
   try {
@@ -142,14 +167,14 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     else console.log(`   could not create it: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
   }
 
-  step(5, "Checks");
+  step(6, "Checks");
   const code = await doctor(loaded);
   if (code !== 0) {
     console.log("\nFix the FAIL lines, then run `npm run setup` again (it skips what is already done).");
     return code;
   }
 
-  step(6, "Canary (G6)");
+  step(7, "Canary (G6)");
   console.log("   A real agent tries to find a planted fake secret. It must fail. Takes a few minutes, uses your plan.");
   if (await confirm("   Run it now? [Y/n] ")) {
     const report = await runCanary(loaded);
@@ -164,19 +189,87 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   return 0;
 }
 
+/**
+ * MySQL only: creates the database and the factory's own user with a generated password, which goes
+ * straight to the secret file. The admin login is the mysql client's (~/.my.cnf, else it asks for the
+ * root password itself), so the factory never sees an admin credential. SQL goes over stdin, never argv.
+ */
+async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boolean> {
+  const db = loaded.store;
+  if (db.type !== "mysql") {
+    console.log("   SQLite: nothing to do");
+    return true;
+  }
+  if ((await new EnvFileSecretStore(loaded.secretsFile).get("MYSQL_PASSWORD")) && !rotate) {
+    console.log("   already set");
+    return true;
+  }
+  // Upper, lower, digit and symbol: passes MySQL's validate_password MEDIUM policy.
+  const password = `Sf-${randomBytes(18).toString("hex")}-Q7`;
+  const account = `'${db.user}'@'localhost'`;
+  const sql = [
+    `CREATE DATABASE IF NOT EXISTS \`${db.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;`,
+    `CREATE USER IF NOT EXISTS ${account} IDENTIFIED BY '${password}';`,
+    `ALTER USER ${account} IDENTIFIED BY '${password}';`,
+    `GRANT ALL PRIVILEGES ON \`${db.database}\`.* TO ${account};`,
+  ].join("\n");
+  console.log(`   Creating database ${db.database} and user ${db.user}@localhost (generated password, never shown).`);
+  const server = ["--host", db.host, "--port", String(db.port)];
+  if (!(await mysqlClient(server, sql, true))) {
+    console.log("   ~/.my.cnf did not log in as an admin. The mysql client asks for the MySQL root password:");
+    if (!(await mysqlClient(["-u", "root", "-p", ...server], sql, false))) {
+      console.log("   could not create it. Fix the MySQL login, then run `npm run setup` again.");
+      return false;
+    }
+  }
+  await setSecret(loaded.secretsFile, "MYSQL_PASSWORD", password);
+  return true;
+}
+
+/** Runs the mysql client with `sql` on stdin. A password prompt (-p) reads the terminal, not stdin. */
+function mysqlClient(args: string[], sql: string, quiet: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    const p = spawn("mysql", args, { stdio: ["pipe", "ignore", quiet ? "ignore" : "inherit"] });
+    p.on("error", () => resolve(false));
+    p.on("close", (code) => resolve(code === 0));
+    p.stdin.end(sql);
+  });
+}
+
 function step(n: number, title: string): void {
   console.log(`\n${n}. ${title}`);
 }
 
+/** Creates the secret file from the template, then appends any template key the file lacks, empty. */
 export async function ensureSecretFile(file: string, template: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await chmod(dirname(file), 0o700);
+  const text = await readFile(template, "utf8");
   try {
     await stat(file);
   } catch {
-    await writeFile(file, await readFile(template, "utf8"), { mode: 0o600 });
+    await writeFile(file, text, { mode: 0o600 });
   }
   await chmod(file, 0o600);
+  const added = await addMissingKeys(file, keysOf(text));
+  if (added.length > 0) console.log(`   added empty ${added.join(", ")} (fill in as needed)`);
+}
+
+function keysOf(text: string): string[] {
+  return [...text.matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map((m) => m[1]!);
+}
+
+/** Appends `KEY=` for each key the file lacks. Existing lines and values are untouched; nothing is printed. */
+export async function addMissingKeys(file: string, keys: readonly string[]): Promise<string[]> {
+  const current = await readFile(file, "utf8");
+  const have = new Set(keysOf(current));
+  const missing = keys.filter((k) => !have.has(k));
+  if (missing.length === 0) return [];
+  const tmp = `${file}.tmp-${process.pid}`;
+  const sep = current.endsWith("\n") || current === "" ? "" : "\n";
+  await writeFile(tmp, `${current}${sep}${missing.map((k) => `${k}=`).join("\n")}\n`, { mode: 0o600 });
+  await rename(tmp, file);
+  return missing;
 }
 
 /** Replaces or appends `name=value`, keeping every other line. Atomic rename, mode 600. */

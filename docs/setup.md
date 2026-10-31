@@ -73,6 +73,23 @@ Create a **fine-grained personal access token** (GitHub → Settings → Develop
 GITHUB_TOKEN=<token>
 ```
 
+## 4b. MySQL (only with `"store": { "type": "mysql" }`)
+
+Connection settings and the password live together in the secret file. Empty settings fall back to `store` in `factory.config.json`. Only `MYSQL_PASSWORD` is treated as a secret (scanned by G5); the others are plain settings.
+
+```
+MYSQL_HOST=        # default localhost
+MYSQL_PORT=        # default 3306
+MYSQL_DATABASE=    # default software_factory
+MYSQL_USER=        # default factory
+MYSQL_PASSWORD=
+```
+
+- **Your own MySQL user:** fill in all five. Setup won't create anything.
+- **Let setup create one:** leave `MYSQL_PASSWORD` empty. `npm run setup` creates the database and `'factory'@'localhost'` with a generated password and writes it here; you never see it. Rotate with `npm run setup -- --rotate-mysql`.
+
+Workers on other machines will need an account for their hosts and TLS; that comes with the multi-machine step.
+
 ## 5. Check
 
 ```bash
@@ -82,7 +99,7 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 
 ## 6. Automated
 
-`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
+`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, MySQL database and user, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
 
 ## Why agents can't read it
 
@@ -92,7 +109,7 @@ The factory follows one rule: **agents never read secrets; only tools do.** The 
 |---|---|
 | G1 | Only the worker process loads the secret file. Agent runs get an allowlisted environment, and Claude Code's subprocess scrub strips credentials from anything the agent runs |
 | G2 | Actions that need a credential (push, PR, comment) are tools run outside the agent's sandbox; the agent only sees results |
-| G3 | The secret directory is denied at the OS level (`sandbox.filesystem.denyRead`) for everything the agent runs |
+| G3 | The secret directory, the store's files, and admin credential files (`~/.my.cnf`, `~/.ssh`, `~/.config/gh`, …) are denied at the OS level (`sandbox.filesystem.denyRead`) for everything the agent runs |
 | G4 | File-tool deny rules on the secret paths |
 | G5 | Every agent output is scanned for secret values before it reaches GitHub or the store; a hit fails the run |
 | G6 | A canary test plants a fake secret and checks that an agent told to find it cannot |

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Secret, SecretName, SecretStore } from "../../interfaces/secret-store.js";
 
-const NAMES: readonly SecretName[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"];
+const NAMES: readonly SecretName[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MYSQL_PASSWORD"];
 
 /** `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env`, or SOFTWARE_FACTORY_SECRETS_FILE. */
 export function defaultSecretsFile(env: NodeJS.ProcessEnv = process.env): string {
@@ -65,6 +65,27 @@ export class EnvFileSecretStore implements SecretStore {
 
 export function parseEnvFile(text: string): Map<SecretName, string> {
   const out = new Map<SecretName, string>();
+  for (const [key, value] of parseEnvLines(text)) {
+    if ((NAMES as readonly string[]).includes(key)) out.set(key as SecretName, value);
+  }
+  return out;
+}
+
+/**
+ * Non-secret settings kept in the same file (e.g. MYSQL_HOST). Not SecretNames, so the EgressScanner
+ * never treats them as secret values. Missing file: no settings.
+ */
+export async function readEnvSettings(path: string, names: readonly string[]): Promise<Map<string, string>> {
+  const text = await readFile(path, "utf8").catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return "";
+    throw new Error(`cannot read secret file at ${path}: ${err.code ?? "unknown error"}`);
+  });
+  return new Map([...parseEnvLines(text)].filter(([key]) => names.includes(key)));
+}
+
+/** Every non-empty `KEY=value` line, comments and blanks skipped, surrounding quotes removed. */
+export function parseEnvLines(text: string): Map<string, string> {
+  const out = new Map<string, string>();
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
@@ -75,7 +96,7 @@ export function parseEnvFile(text: string): Map<SecretName, string> {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    if (value && (NAMES as readonly string[]).includes(key)) out.set(key as SecretName, value);
+    if (value) out.set(key, value);
   }
   return out;
 }

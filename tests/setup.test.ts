@@ -24,6 +24,14 @@ describe("setup: secret file writes", () => {
 
     await ensureSecretFile(file, template); // existing file is kept
     expect(readFileSync(file, "utf8")).toContain("github_pat_def");
+
+    // A key added to the template later is appended empty; existing values stay.
+    writeFileSync(template, "CLAUDE_CODE_OAUTH_TOKEN=\nGITHUB_TOKEN=\nMYSQL_HOST=\nMYSQL_PASSWORD=\n");
+    await ensureSecretFile(file, template);
+    expect(readFileSync(file, "utf8")).toBe(
+      "# comment\nCLAUDE_CODE_OAUTH_TOKEN=\nGITHUB_TOKEN=github_pat_def\nMYSQL_HOST=\nMYSQL_PASSWORD=\n",
+    );
+    expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
   it("refuses empty or whitespace values", async () => {
