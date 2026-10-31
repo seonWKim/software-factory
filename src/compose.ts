@@ -9,6 +9,7 @@ import type { Tier, WorkerId } from "./core/types.js";
 import { Controller } from "./core/controller.js";
 import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
+import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
@@ -22,10 +23,17 @@ import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
 import { EnvFileSecretStore, defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
 import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
+import { MysqlFactoryStore } from "./impl/store/mysql/mysql-store.js";
 import { SqliteFactoryStore } from "./impl/store/sqlite/sqlite-store.js";
+
+/** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
+export type StoreConfig =
+  | { type: "sqlite" }
+  | { type: "mysql"; host: string; port: number; database: string; user: string };
 
 export interface FileConfig {
   env: "local" | "cloud";
+  store?: StoreConfig;
   repo: { owner: string; name: string; path: string; base_branch: string };
   intake_label: string;
   branch_prefix: string;
@@ -52,6 +60,7 @@ export interface Loaded {
   prompts: Prompts;
   secretsFile: string;
   stateDir: string;
+  store: StoreConfig;
 }
 
 export async function loadConfig(root = process.cwd()): Promise<Loaded> {
@@ -64,6 +73,10 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
+  const store = file.store ?? { type: "sqlite" };
+  if (store.type === "mysql" && !(isSqlName(store.database) && isSqlName(store.user))) {
+    throw new Error("store.database and store.user must match [A-Za-z0-9_]+");
+  }
 
   const secretsFile = defaultSecretsFile();
   const stateDir = resolve(root, file.state_dir);
@@ -92,6 +105,8 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
       join(home, ".gitconfig"),
       join(home, ".git-credentials"),
       join(home, ".netrc"),
+      join(home, ".my.cnf"),
+      join(home, ".mylogin.cnf"),
     ],
     agent_git_identity: file.agent_git_identity,
   };
@@ -100,13 +115,13 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     implement: await readFile(join(root, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(root, "prompts", "review.md"), "utf8"),
   };
-  return { root, file, config, prompts, secretsFile, stateDir };
+  return { root, file, config, prompts, secretsFile, stateDir, store };
 }
 
 export interface Built {
   loaded: Loaded;
   clock: Clock;
-  store: SqliteFactoryStore;
+  store: FactoryStore;
   secrets: SecretStore;
   controller: Controller;
   worker: Worker;
@@ -120,10 +135,10 @@ export async function build(
   const { config, file, stateDir } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
   const clock = opts.clock ?? new SystemClock();
-  const store = new SqliteFactoryStore(join(stateDir, "db", "factory.db"), clock);
+  const secrets = new EnvFileSecretStore(loaded.secretsFile, opts.extraScanValues ?? []);
+  const store = await openStore(loaded, secrets, clock);
   await store.migrate();
 
-  const secrets = new EnvFileSecretStore(loaded.secretsFile, opts.extraScanValues ?? []);
   const scanner = new PatternEgressScanner(() => secrets.valuesForScan());
   const github = new GitHubClient(secrets);
   const repo = { owner: config.repo.owner, name: config.repo.name };
@@ -160,6 +175,18 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+export async function openStore(loaded: Loaded, secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
+  const s = loaded.store;
+  if (s.type === "sqlite") return new SqliteFactoryStore(join(loaded.stateDir, "db", "factory.db"), clock);
+  const password = await secrets.get("MYSQL_PASSWORD");
+  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+  return new MysqlFactoryStore({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() }, clock);
+}
+
+export function isSqlName(s: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(s);
 }
 
 function isTier(n: number): n is Tier {

@@ -53,7 +53,7 @@ describe("G3/G4: harness settings deny secret paths", () => {
   });
 
   it("blocks credentialed shell paths around the broker (G2)", () => {
-    for (const rule of ["Bash(gh:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(security:*)"]) {
+    for (const rule of ["Bash(gh:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(security:*)", "Bash(mysql:*)"]) {
       expect(settings.permissions.deny).toContain(rule);
     }
   });
@@ -174,5 +174,16 @@ describe("Tool broker", () => {
     const r = await broker.call(ctx, "github.comment", { number: 1, body: "leaky-secret-value", marker: "m" });
     expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
     expect(posted).toHaveLength(0);
+  });
+});
+
+describe("G3/G4: deny paths from the real config", () => {
+  it("cover the secret dir, the store, and admin credential files", async () => {
+    const { loadConfig } = await import("../src/compose.js");
+    const loaded = await loadConfig(new URL("..", import.meta.url).pathname);
+    const home = process.env.HOME ?? "";
+    for (const p of [loaded.secretsFile.replace(/\/[^/]+$/, ""), `${loaded.stateDir}/db`, `${home}/.my.cnf`, `${home}/.mylogin.cnf`]) {
+      expect(loaded.config.deny_paths).toContain(p);
+    }
   });
 });

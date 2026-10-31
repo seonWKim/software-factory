@@ -1,7 +1,7 @@
 // G1: only the worker/controller process uses this; agent processes never get a SecretStore.
 // First impl: ${XDG_CONFIG_HOME:-~/.config}/software-factory/.env (or SOFTWARE_FACTORY_SECRETS_FILE).
 
-export type SecretName = "CLAUDE_CODE_OAUTH_TOKEN" | "ANTHROPIC_API_KEY" | "GITHUB_TOKEN";
+export type SecretName = "CLAUDE_CODE_OAUTH_TOKEN" | "ANTHROPIC_API_KEY" | "GITHUB_TOKEN" | "MYSQL_PASSWORD";
 
 /** Opaque wrapper so a secret can't be logged or stringified by accident. */
 export interface Secret {

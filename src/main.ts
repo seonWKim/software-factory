@@ -8,7 +8,7 @@ import { doctor, setup } from "./setup.js";
 const USAGE = `factory <command>
 
   setup        one-time setup: secret file, tokens (hidden prompt), label, checks, canary
-               --rotate-github / --rotate-claude to replace a stored token
+               --rotate-github / --rotate-claude / --rotate-mysql to replace a stored credential
   dev          controller + worker in one process (Phase 1 default)
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
@@ -49,6 +49,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       const rotate: SecretName[] = [];
       if (args.includes("--rotate-github")) rotate.push("GITHUB_TOKEN");
       if (args.includes("--rotate-claude")) rotate.push("CLAUDE_CODE_OAUTH_TOKEN");
+      if (args.includes("--rotate-mysql")) rotate.push("MYSQL_PASSWORD");
       return setup(loaded, { rotate });
     }
     case "doctor":

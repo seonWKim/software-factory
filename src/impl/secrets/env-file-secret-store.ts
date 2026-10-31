@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Secret, SecretName, SecretStore } from "../../interfaces/secret-store.js";
 
-const NAMES: readonly SecretName[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"];
+const NAMES: readonly SecretName[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MYSQL_PASSWORD"];
 
 /** `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env`, or SOFTWARE_FACTORY_SECRETS_FILE. */
 export function defaultSecretsFile(env: NodeJS.ProcessEnv = process.env): string {
