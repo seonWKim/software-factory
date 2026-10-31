@@ -5,7 +5,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SystemClock } from "../src/impl/clock/system-clock.js";
-import { SqliteFactoryStore } from "../src/impl/store/sqlite/sqlite-store.js";
+import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { issue, system } from "./helpers/store.js";
 
 // Several OS processes on one SQLite file: the single-node shape of "N workers, pull-based claims".
@@ -16,9 +17,10 @@ const PROCESSES = 4;
 const RUNS = 40;
 
 const child = (dist: string, db: string) => `
-  const { SqliteFactoryStore } = await import(${JSON.stringify(pathToFileURL(join(dist, "impl/store/sqlite/sqlite-store.js")).href)});
+  const { SqlFactoryStore } = await import(${JSON.stringify(pathToFileURL(join(dist, "impl/store/sql/sql-factory-store.js")).href)});
+  const { SqliteDriver } = await import(${JSON.stringify(pathToFileURL(join(dist, "impl/store/sqlite/sqlite-driver.js")).href)});
   const { SystemClock } = await import(${JSON.stringify(pathToFileURL(join(dist, "impl/clock/system-clock.js")).href)});
-  const store = new SqliteFactoryStore(${JSON.stringify(db)}, new SystemClock());
+  const store = new SqlFactoryStore(new SqliteDriver(${JSON.stringify(db)}), new SystemClock());
   const claimed = [];
   for (;;) {
     const run = await store.claimRun({ worker_id: "p" + process.pid, kinds: ["triage"], lease_ms: 60000 });
@@ -40,7 +42,7 @@ function runChild(code: string): Promise<string[]> {
   });
 }
 
-describe("SqliteFactoryStore across processes", () => {
+describe("SqlFactoryStore on SQLite across processes", () => {
   let dist: string;
   beforeAll(() => {
     dist = mkdtempSync(join(tmpdir(), "sf-dist-"));
@@ -49,7 +51,7 @@ describe("SqliteFactoryStore across processes", () => {
 
   it("every run is claimed exactly once", async () => {
     const db = join(mkdtempSync(join(tmpdir(), "sf-mp-")), "factory.db");
-    const store = new SqliteFactoryStore(db, new SystemClock());
+    const store = new SqlFactoryStore(new SqliteDriver(db), new SystemClock());
     await store.migrate();
     for (let i = 0; i < RUNS; i++) {
       await store.createWorkItem(issue(i), system, { enqueue: { kind: "triage", idempotency_key: `k${i}` } });

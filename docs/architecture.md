@@ -58,7 +58,7 @@ graph TB
 
 | Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
 |---|---|---|
-| `FactoryStore` | MySQL (default, any number of nodes); SQLite (one machine, tests) | Managed MySQL (RDS / Cloud SQL) |
+| `FactoryStore` | `SqlFactoryStore` (all store logic, once) over a `SqlDriver`: `MysqlDriver` (default, any number of nodes), `SqliteDriver` (one machine, tests) | `MysqlDriver` on managed MySQL (RDS / Cloud SQL) |
 | `Sandbox` | `NoOpSandbox`: git worktree on the host | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |

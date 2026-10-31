@@ -1,4 +1,4 @@
-// Row mapping and patch diffing shared by the SQL FactoryStore implementations.
+// Row mapping and patch diffing for SqlFactoryStore.
 // Columns are identical across backends: JSON as text, timestamps as ISO-8601 strings.
 
 import { randomUUID } from "node:crypto";
@@ -15,10 +15,9 @@ import type {
   WorkItemId,
   WorkItemPatch,
   WorkerId,
-} from "../../core/types.js";
-import type { NewWorkItem } from "../../interfaces/factory-store.js";
-
-export type Row = Record<string, unknown>;
+} from "../../../core/types.js";
+import type { NewWorkItem } from "../../../interfaces/factory-store.js";
+import type { Row, SqlValue } from "./driver.js";
 
 const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths"]);
 const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
@@ -81,7 +80,7 @@ export const WORK_ITEM_COLUMNS =
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
   "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at";
 
-export function workItemValues(i: WorkItem): (string | number | null)[] {
+export function workItemValues(i: WorkItem): SqlValue[] {
   return [
     i.id, i.version, i.source.type, i.source.id, i.source.link, i.requester_id, i.project, i.problem,
     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
@@ -94,10 +93,10 @@ export function workItemValues(i: WorkItem): (string | number | null)[] {
 export function diffPatch(
   current: WorkItem,
   patch: WorkItemPatch,
-): { changes: StateChange["changes"]; sets: string[]; values: (string | number | null)[] } {
+): { changes: StateChange["changes"]; sets: string[]; values: SqlValue[] } {
   const changes: StateChange["changes"] = {};
   const sets: string[] = [];
-  const values: (string | number | null)[] = [];
+  const values: SqlValue[] = [];
   for (const key of PATCHABLE) {
     if (!(key in patch)) continue;
     const to = patch[key];
@@ -111,7 +110,7 @@ export function diffPatch(
   return { changes, sets, values };
 }
 
-function toColumn(key: string, value: unknown): string | number | null {
+function toColumn(key: string, value: unknown): SqlValue {
   if (value === null) return null;
   if (JSON_COLUMNS.has(key)) return JSON.stringify(value);
   return value as string | number;

@@ -5,11 +5,12 @@ import type { Actor, UserId, WorkerId } from "../../src/core/types.js";
 import type { Clock } from "../../src/interfaces/clock.js";
 import type { FactoryStore, NewWorkItem } from "../../src/interfaces/factory-store.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
-import { MysqlFactoryStore, type MysqlOptions } from "../../src/impl/store/mysql/mysql-store.js";
-import { SqliteFactoryStore } from "../../src/impl/store/sqlite/sqlite-store.js";
+import { MysqlDriver, type MysqlOptions } from "../../src/impl/store/mysql/mysql-driver.js";
+import { SqlFactoryStore } from "../../src/impl/store/sql/sql-factory-store.js";
+import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
 
 export async function newStore(clock = new FakeClock()) {
-  const store = new SqliteFactoryStore(":memory:", clock);
+  const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
   await store.migrate();
   return { store, clock };
 }
@@ -37,9 +38,9 @@ export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
   const { database: _, ...server } = mysqlOptions(MYSQL_URL!, "");
   const admin = await mysql.createConnection(server);
   await admin.query(`CREATE DATABASE ${database}`);
-  const stores: MysqlFactoryStore[] = [];
+  const stores: SqlFactoryStore[] = [];
   const open = () => {
-    const s = new MysqlFactoryStore(mysqlOptions(MYSQL_URL!, database), clock);
+    const s = new SqlFactoryStore(new MysqlDriver(mysqlOptions(MYSQL_URL!, database)), clock);
     stores.push(s);
     return s;
   };

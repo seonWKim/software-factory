@@ -8,7 +8,7 @@ import { MYSQL_URL, issue, newMysqlDatabase, system } from "./helpers/store.js";
 const WORKERS = 4;
 const RUNS = 40;
 
-describe.skipIf(!MYSQL_URL)("MysqlFactoryStore across workers", () => {
+describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
   it("every run is claimed exactly once", async () => {
     const { store, open } = await newMysqlDatabase(new SystemClock());
     for (let i = 0; i < RUNS; i++) {

@@ -23,8 +23,9 @@ import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
 import { EnvFileSecretStore, defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
 import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
-import { MysqlFactoryStore } from "./impl/store/mysql/mysql-store.js";
-import { SqliteFactoryStore } from "./impl/store/sqlite/sqlite-store.js";
+import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
+import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
+import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -179,10 +180,11 @@ export async function build(
 
 export async function openStore(loaded: Loaded, secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
   const s = loaded.store;
-  if (s.type === "sqlite") return new SqliteFactoryStore(join(loaded.stateDir, "db", "factory.db"), clock);
+  if (s.type === "sqlite") return new SqlFactoryStore(new SqliteDriver(join(loaded.stateDir, "db", "factory.db")), clock);
   const password = await secrets.get("MYSQL_PASSWORD");
   if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
-  return new MysqlFactoryStore({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() }, clock);
+  const driver = new MysqlDriver({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() });
+  return new SqlFactoryStore(driver, clock);
 }
 
 export function isSqlName(s: string): boolean {
