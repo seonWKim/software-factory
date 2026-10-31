@@ -6,6 +6,7 @@ A local-first software factory: agents take a work item from intake to a reviewe
 - Design: [`docs/design.md`](docs/design.md)
 - Setup and secrets: [`docs/setup.md`](docs/setup.md)
 - Architecture: [`docs/architecture.md`](docs/architecture.md)
+- Plugins (which implementations exist, how to enable, switch or disable them): [`docs/plugins.md`](docs/plugins.md)
 
 Status: Phase 1 (minimal factory, built by hand). Set up: [`SET_UP.md`](SET_UP.md) (`npm run setup`).
 

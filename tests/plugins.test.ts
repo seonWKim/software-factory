@@ -82,7 +82,7 @@ function root(config: Record<string, unknown>, secrets = "MYSQL_PASSWORD=pw\nGIT
 
 class MapSecrets implements SecretStore {
   async get(name: SecretName): Promise<Secret | null> {
-    return { name, reveal: () => "pw" };
+    return { name, reveal: () => "pw", toJSON: () => `[secret ${name}]` };
   }
   async valuesForScan(): Promise<readonly string[]> {
     return [];

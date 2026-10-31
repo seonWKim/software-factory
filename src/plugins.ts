@@ -1,4 +1,4 @@
-// Plugin registry (design D11): every implementation of an infra interface is a named plugin, chosen by
+// Plugin registry (design D6): every implementation of an infra interface is a named plugin, chosen by
 // name in factory.config.json. This file is the only non-test code that constructs those implementations;
 // src/compose.ts, src/canary.ts and src/setup.ts resolve them through it. docs/plugins.md describes each
 // one and `tests/plugins.test.ts` keeps the two in step.
