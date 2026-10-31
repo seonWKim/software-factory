@@ -51,6 +51,9 @@ describe("one issue to one merged PR", () => {
     let item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     expect(item).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 });
     expect(f.source.comments[0]!.body).toContain("Reply `/approve`");
+    expect(f.source.comments[0]!.body).toContain(
+      "**Allowed paths**: `.github/workflows/`\n**Files to change**: `.github/workflows/scope.yml`",
+    );
 
     // An unauthorized approval is ignored.
     f.source.queue.push({ kind: "spec_approved", source: src, approver: mallory });
@@ -101,7 +104,9 @@ describe("one issue to one merged PR", () => {
 
   it("raises the tier to the floor and never lowers it at review", async () => {
     const runner = new FakeRunner({
-      triage: () => ({ output: { ...triageSpec, allowed_paths: ["src/impl/broker/"], tier: 1 } }),
+      triage: () => ({
+        output: { ...triageSpec, allowed_paths: ["src/impl/broker/"], files_to_change: ["src/impl/broker/"], tier: 1 },
+      }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
       review: review("pass", 1),
     });
@@ -146,6 +151,20 @@ describe("one issue to one merged PR", () => {
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "READY", restart_count: 1, blocked_reason: "spec_pending" });
+  });
+
+  it("a triage output that lists a file outside allowed_paths fails the run and posts no spec", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, files_to_change: [".github/workflows/scope.yml", "src/core/gate.ts"] } }),
+    });
+    const f = await factory(runner);
+    f.source.queue.push({ kind: "item_requested", source: issueRef(9), requester: alice, title: "t", body: "b" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#9"))!;
+    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "run_failed:triage:invalid_output" });
+    const runs = await f.store.listRuns(item.id);
+    expect(runs.map((r) => [r.kind, r.status])).toEqual([["triage", "failed"]]);
+    expect(f.source.comments.some((c) => c.body.includes("## Factory spec"))).toBe(false);
   });
 
   it("an implementer that makes no commits fails the run", async () => {

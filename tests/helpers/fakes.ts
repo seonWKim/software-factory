@@ -162,6 +162,7 @@ export const triageSpec = {
   desired_output: "workflow + test",
   scope: "CI only",
   allowed_paths: [".github/workflows/"],
+  files_to_change: [".github/workflows/scope.yml"],
   tier: 2,
   tier_reason: "CI config",
 };

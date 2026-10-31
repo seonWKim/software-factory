@@ -351,6 +351,7 @@ function renderSpec(spec: TriageOutput, tier: number): string {
     `**Desired output**: ${spec.desired_output}`,
     `**Scope**: ${spec.scope}`,
     `**Allowed paths**: ${spec.allowed_paths.map((p) => `\`${p}\``).join(", ")}`,
+    `**Files to change**: ${spec.files_to_change.map((p) => `\`${p}\``).join(", ")}`,
     `**Tier**: ${tier} (${spec.tier_reason})`,
     "",
     "Reply `/approve` to start implementation, or `/reject <reason>` to close.",

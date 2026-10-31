@@ -34,4 +34,44 @@ describe("policy", () => {
     expect(parseTriage({ ...triageSpec, allowed_paths: ["/abs"] }).ok).toBe(false);
     expect(parseTriage(triageSpec).ok).toBe(true);
   });
+
+  it("accepts files_to_change that allowed_paths covers exactly or by a directory prefix", () => {
+    const spec = { ...triageSpec, allowed_paths: ["src/core/outputs.ts", "tests/"] };
+    expect(parseTriage({ ...spec, files_to_change: ["src/core/outputs.ts", "tests/"] }).ok).toBe(true);
+    expect(parseTriage({ ...spec, files_to_change: ["tests/policy.test.ts"] }).ok).toBe(true);
+  });
+
+  it("rejects files_to_change that allowed_paths does not cover, naming each path", () => {
+    const spec = { ...triageSpec, allowed_paths: ["src/core/outputs.ts", "tests/"] };
+    const r = parseTriage({ ...spec, files_to_change: ["src/core/outputs.ts", "docs/design.md", "src/core/controller.ts"] });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("docs/design.md");
+    expect(r.error).toContain("src/core/controller.ts");
+    expect(r.error).not.toContain("src/core/outputs.ts");
+    // A prefix without a trailing slash covers only itself.
+    const noSlash = parseTriage({ ...triageSpec, allowed_paths: ["src/core"], files_to_change: ["src/core/outputs.ts"] });
+    expect(noSlash.ok).toBe(false);
+    // Plain string prefix of a sibling directory does not count.
+    const sibling = parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: ["tests2/x.ts"] });
+    expect(sibling.ok).toBe(false);
+  });
+
+  it("rejects missing or non-array files_to_change", () => {
+    const { files_to_change: _omit, ...without } = triageSpec;
+    expect(parseTriage(without).ok).toBe(false);
+    expect(parseTriage({ ...triageSpec, files_to_change: "tests/" }).ok).toBe(false);
+  });
+
+  it("rejects an empty files_to_change entry", () => {
+    expect(parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: [""] }).ok).toBe(false);
+  });
+
+  it("rejects an absolute files_to_change entry", () => {
+    expect(parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: ["/tests/a.ts"] }).ok).toBe(false);
+  });
+
+  it("rejects a files_to_change entry with a .. segment", () => {
+    expect(parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: ["tests/../src/x.ts"] }).ok).toBe(false);
+  });
 });
