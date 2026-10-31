@@ -140,6 +140,20 @@ export class Controller {
         });
         return;
       }
+      case "pr_unmergeable": {
+        const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+        if (!id) return;
+        const key = `${id}:update:${e.pr_number}:${e.head_sha}:${e.base_sha}`;
+        await this.decide(id as WorkItemId, async (it) => {
+          if (!awaitingMerge(it) || it.pr_number !== e.pr_number) return null;
+          // One update per (head, base), and none while another update of this item is still in flight.
+          // The event repeats on every poll, so a skipped one comes back.
+          const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
+          if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
+          return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
+        });
+        return;
+      }
     }
   }
 
@@ -277,6 +291,30 @@ export class Controller {
             ack_run: run.id,
           };
         }
+        case "update": {
+          // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
+          switch (data.result) {
+            case "pushed":
+              return { patch: {}, actor: SYSTEM, reason: "update_pushed", ack_run: run.id };
+            case "up_to_date":
+              return ack("update_up_to_date");
+            case "conflict":
+            case "tests_failed":
+              return {
+                patch: { blocked_reason: "merge_conflict_pending" },
+                actor: SYSTEM,
+                reason: data.result === "conflict" ? "update_conflict" : "update_tests_failed",
+                ack_run: run.id,
+              };
+            default:
+              return {
+                patch: { blocked_reason: "run_failed:update:invalid_output" },
+                actor: SYSTEM,
+                reason: "run_failed",
+                ack_run: run.id,
+              };
+          }
+        }
       }
     });
   }
@@ -285,6 +323,8 @@ export class Controller {
 
   /** Whether the item is in the state a finished run of this kind should advance. */
   private expects(it: WorkItem, kind: RunKind): boolean {
+    // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout.
+    if (kind === "update") return awaitingMerge(it);
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
     if (kind === "implement") return it.stage === "RUNNING";
@@ -360,11 +400,15 @@ export class Controller {
 function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusal {
   if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
   if (e.kind === "retry_requested") {
-    const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review):/)?.[1] as RunKind | undefined;
+    const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
     if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
     const next = { ...it, restart_count: it.restart_count + 1 };
+    // A retried update goes back to waiting for the merge, which is the state an update run expects.
+    const unblocked = kind === "update"
+      ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
+      : { blocked_on: "none" as const, blocked_reason: null };
     return {
-      patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+      patch: { ...unblocked, restart_count: next.restart_count },
       actor,
       reason: "retry_requested",
       enqueue: { kind, idempotency_key: runKey(next, kind) },
@@ -386,6 +430,11 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusa
     reason: "spec_approved",
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
+}
+
+/** A PR that passed review and waits for a human merge: the only state an update run may change. */
+function awaitingMerge(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
 }
 
 function renderSpec(spec: TriageOutput, tier: number): string {
