@@ -1,6 +1,11 @@
+import { randomBytes } from "node:crypto";
+import mysql from "mysql2/promise";
+import { onTestFinished } from "vitest";
 import type { Actor, UserId, WorkerId } from "../../src/core/types.js";
-import type { NewWorkItem } from "../../src/interfaces/factory-store.js";
+import type { Clock } from "../../src/interfaces/clock.js";
+import type { FactoryStore, NewWorkItem } from "../../src/interfaces/factory-store.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
+import { MysqlFactoryStore, type MysqlOptions } from "../../src/impl/store/mysql/mysql-store.js";
 import { SqliteFactoryStore } from "../../src/impl/store/sqlite/sqlite-store.js";
 
 export async function newStore(clock = new FakeClock()) {
@@ -8,6 +13,62 @@ export async function newStore(clock = new FakeClock()) {
   await store.migrate();
   return { store, clock };
 }
+
+/**
+ * A MySQL server for tests, e.g. SF_TEST_MYSQL_URL=mysql://root@127.0.0.1:3306. Each store gets its own
+ * throwaway database, dropped when the test finishes. Unset: MySQL tests are skipped.
+ */
+export const MYSQL_URL = process.env.SF_TEST_MYSQL_URL;
+
+function mysqlOptions(url: string, database: string): MysqlOptions {
+  const u = new URL(url);
+  return {
+    host: u.hostname,
+    port: Number(u.port || 3306),
+    user: decodeURIComponent(u.username),
+    password: decodeURIComponent(u.password),
+    database,
+  };
+}
+
+/** A fresh, migrated MySQL database. Every store returned by `open` points at it. */
+export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+  const database = `sf_test_${randomBytes(6).toString("hex")}`;
+  const { database: _, ...server } = mysqlOptions(MYSQL_URL!, "");
+  const admin = await mysql.createConnection(server);
+  await admin.query(`CREATE DATABASE ${database}`);
+  const stores: MysqlFactoryStore[] = [];
+  const open = () => {
+    const s = new MysqlFactoryStore(mysqlOptions(MYSQL_URL!, database), clock);
+    stores.push(s);
+    return s;
+  };
+  onTestFinished(async () => {
+    await Promise.all(stores.map((s) => s.close()));
+    await admin.query(`DROP DATABASE ${database}`);
+    await admin.end();
+  });
+  const store = open();
+  await store.migrate();
+  return { store, open };
+}
+
+export interface Backend {
+  name: string;
+  make(clock?: FakeClock): Promise<{ store: FactoryStore; clock: FakeClock }>;
+}
+
+export const BACKENDS: Backend[] = [
+  { name: "sqlite", make: newStore },
+  ...(MYSQL_URL
+    ? [
+        {
+          name: "mysql",
+          make: async (clock = new FakeClock()) => ({ store: (await newMysqlDatabase(clock)).store, clock }),
+        },
+      ]
+    : []),
+];
 
 export const system: Actor = { kind: "system", id: "system:test" };
 export const human: Actor = { kind: "user", id: "github:1" as UserId };
