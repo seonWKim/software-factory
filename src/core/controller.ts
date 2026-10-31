@@ -2,7 +2,7 @@ import type { FactoryConfig } from "./config.js";
 import type { Logger } from "./log.js";
 import { type TriageOutput, parseReview, parseTriage } from "./outputs.js";
 import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBranch } from "./policy.js";
-import type { Actor, Run, RunKind, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunKind, SourceRef, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
@@ -18,6 +18,15 @@ export interface ControllerDeps {
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
+/** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
+type Refusal = { refuse: string };
+type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" }>;
+
+const COMMAND: Record<CommandEvent["kind"], string> = {
+  spec_approved: "/approve",
+  spec_rejected: "/reject",
+  retry_requested: "/retry",
+};
 
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 const MAX_CONFLICT_RETRIES = 5;
@@ -87,8 +96,8 @@ export class Controller {
   async handleEvent(e: SourceEvent): Promise<void> {
     switch (e.kind) {
       case "item_requested": {
-        const principal = await this.principal(e.requester, "submit_work", e.source.id);
-        if (!principal) return;
+        const principal = await this.authorize(e.requester, "submit_work", e.source.id);
+        if ("refuse" in principal) return;
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: e.source,
@@ -101,49 +110,13 @@ export class Controller {
           { enqueue: { kind: "triage", idempotency_key: `${e.source.type}:${e.source.id}:triage` } },
         );
         if (created) this.d.log.info("intake", { work_item_id: item.id });
+        await this.markSeen(e.source, null);
         return;
       }
       case "spec_approved":
-      case "spec_rejected": {
-        const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
-        if (!item) return;
-        const principal = await this.principal(e.approver, "approve_spec", item.id);
-        if (!principal) return;
-        const actor: Actor = { kind: "user", id: principal.user_id };
-        return this.decide(item.id, (it) => {
-          if (it.stage !== "READY" || it.blocked_reason !== "spec_pending") return null;
-          if (e.kind === "spec_rejected") {
-            return {
-              patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
-              actor,
-              reason: "spec_rejected",
-            };
-          }
-          return {
-            patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
-            actor,
-            reason: "spec_approved",
-            enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
-          };
-        });
-      }
-      case "retry_requested": {
-        const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
-        if (!item) return;
-        const principal = await this.principal(e.requester, "approve_spec", item.id);
-        if (!principal) return;
-        return this.decide(item.id, (it) => {
-          const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review):/)?.[1] as RunKind | undefined;
-          if (it.blocked_on !== "human" || !kind) return null;
-          const next = { ...it, restart_count: it.restart_count + 1 };
-          return {
-            patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
-            actor: { kind: "user", id: principal.user_id },
-            reason: "retry_requested",
-            enqueue: { kind, idempotency_key: runKey(next, kind) },
-          };
-        });
-      }
+      case "spec_rejected":
+      case "retry_requested":
+        return this.handleCommand(e);
       case "pr_merged":
       case "pr_closed": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
@@ -151,7 +124,7 @@ export class Controller {
         // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
         const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
         const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
-        return this.decide(id as WorkItemId, (it) => {
+        await this.decide(id as WorkItemId, (it) => {
           if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
           return e.kind === "pr_merged"
             ? {
@@ -165,8 +138,31 @@ export class Controller {
                 reason: "pr_closed_unmerged",
               };
         });
+        return;
       }
     }
+  }
+
+  /**
+   * A human command on a work item. Applied or not, the comment gets 👀; a refusal also gets one reply
+   * saying why, keyed on the comment id. Commands on issues that are not work items are ignored entirely
+   * (no reaction, no reply): they may be ordinary conversation on an unrelated issue.
+   */
+  private async handleCommand(e: CommandEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item) return;
+    const principal = await this.authorize(e.kind === "retry_requested" ? e.requester : e.approver, "approve_spec", item.id);
+    const refusal = "refuse" in principal
+      ? principal.refuse
+      : await this.decide(item.id, (it) => command(e, it, { kind: "user", id: principal.user_id }));
+    await this.markSeen(e.source, e.comment_id);
+    if (refusal === null) return;
+    this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
+    await this.d.source.postComment(
+      item.source,
+      `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
+      `<!-- factory:refused:${e.comment_id} -->`,
+    );
   }
 
   // Run outcomes
@@ -295,35 +291,56 @@ export class Controller {
     return it.stage === "REVIEW";
   }
 
-  /** Re-read → decide → conditional transition, retrying on version conflicts. */
-  private async decide(id: WorkItemId, fn: (item: WorkItem) => Decision | Promise<Decision>): Promise<void> {
+  /**
+   * Re-read → decide → conditional transition, retrying on version conflicts. Returns the refusal reason
+   * when `fn` refused, else null (applied, or a silent no-op).
+   */
+  private async decide(
+    id: WorkItemId,
+    fn: (item: WorkItem) => Decision | Refusal | Promise<Decision | Refusal>,
+  ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const item = await this.d.store.getWorkItem(id);
-      if (!item) return;
+      if (!item) return null;
       const decision = await fn(item);
-      if (!decision) return;
+      if (!decision) return null;
+      if ("refuse" in decision) return decision.refuse;
       const r = await this.d.store.transition({ ...decision, id, expected_version: item.version });
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
-        return;
+        return null;
       }
       if (r.reason !== "version_conflict") {
         this.d.log.warn("transition refused", { work_item_id: id, reason: r.reason });
-        return;
+        return null;
       }
     }
     this.d.log.warn("transition gave up after conflicts", { work_item_id: id });
+    return null;
   }
 
-  private async principal(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | null> {
+  private async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
     const principal = await this.d.auth.resolve(identity);
-    if (!principal) return null;
+    if (!principal) return { refuse: "the factory could not resolve your account" };
     const decision = await this.d.auth.authorize(principal, action, { kind: "work_item", id: resource });
     if (!decision.allow) {
       this.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });
-      return null;
+      return { refuse: `it needs write permission on this repository (\`${decision.reason}\`)` };
     }
     return principal;
+  }
+
+  /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
+  private async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    try {
+      await this.d.source.markSeen(source, commentId);
+    } catch (err) {
+      this.d.log.warn("mark seen failed", {
+        source_id: source.id,
+        comment_id: commentId,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+    }
   }
 
   private comment(it: WorkItem, key: string, body: string): Promise<void> {
@@ -337,6 +354,38 @@ export class Controller {
       this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
     }
   }
+}
+
+/** The transition a command asks for, or why the item's current state cannot take it. */
+function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusal {
+  if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
+  if (e.kind === "retry_requested") {
+    const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review):/)?.[1] as RunKind | undefined;
+    if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
+    const next = { ...it, restart_count: it.restart_count + 1 };
+    return {
+      patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+      actor,
+      reason: "retry_requested",
+      enqueue: { kind, idempotency_key: runKey(next, kind) },
+    };
+  }
+  if (it.stage !== "READY" || it.blocked_reason !== "spec_pending") {
+    return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
+  }
+  if (e.kind === "spec_rejected") {
+    return {
+      patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+      actor,
+      reason: "spec_rejected",
+    };
+  }
+  return {
+    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+    actor,
+    reason: "spec_approved",
+    enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
+  };
 }
 
 function renderSpec(spec: TriageOutput, tier: number): string {
