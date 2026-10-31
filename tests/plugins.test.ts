@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
 import type { WorkerDeps } from "../src/core/worker.js";
+import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -26,7 +28,7 @@ import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-s
 import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
   type Contexts,
-  DEFAULT_PLUGINS,
+  defaultPlugins,
   PLUGIN_KINDS,
   type PluginKind,
   REGISTRY,
@@ -53,6 +55,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   source: { "github-issues": GitHubIssueSource },
   capability: { "list-all": ListAllCapabilitySearch },
   clock: { system: SystemClock },
+  awake: { caffeinate: CaffeinateKeepAwake, none: NoKeepAwake },
 };
 const STORE_DRIVER: Record<string, Ctor> = { sqlite: SqliteDriver, mysql: MysqlDriver };
 
@@ -67,6 +70,14 @@ function withoutPlugins(over: Record<string, unknown> = {}): Record<string, unkn
 afterEach(() => {
   vi.unstubAllEnvs();
 });
+
+/** A PATH whose first entry holds a fake `caffeinate`, so the caffeinate plugin builds on any OS. */
+function pathWithFakeCaffeinate(): string {
+  const dir = mkdtempSync(join(tmpdir(), "sf-bin-"));
+  writeFileSync(join(dir, "caffeinate"), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(dir, "caffeinate"), 0o755);
+  return [dir, process.env.PATH ?? ""].join(delimiter);
+}
 
 /** A throwaway repo root with its own config, prompts, state dir and secret file. */
 function root(config: Record<string, unknown>, secrets = "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n"): string {
@@ -108,7 +119,8 @@ async function closeIfStore(kind: PluginKind, x: unknown): Promise<void> {
 
 describe("plugin registry: defaults", () => {
   it("config without a plugins object resolves to exactly today's implementations", async () => {
-    const loaded = await loadConfig(root(withoutPlugins()));
+    vi.stubEnv("PATH", pathWithFakeCaffeinate());
+    const loaded = await loadConfig(root(withoutPlugins()), { platform: "darwin" });
     expect(loaded.plugins).toEqual({
       store: "mysql",
       sandbox: "noop",
@@ -122,6 +134,7 @@ describe("plugin registry: defaults", () => {
       source: "github-issues",
       capability: "list-all",
       clock: "system",
+      awake: "caffeinate",
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
@@ -134,16 +147,34 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the same defaults", async () => {
-    const loaded = await loadConfig(root(REAL));
-    const { store: _s, auth: _a, ...rest } = loaded.plugins;
-    expect(rest).toEqual(DEFAULT_PLUGINS);
-    expect(REAL.plugins).toEqual(DEFAULT_PLUGINS);
+  it("the checked-in factory.config.json selects the same defaults, leaving awake to the platform", async () => {
+    for (const platform of ["darwin", "linux"]) {
+      const loaded = await loadConfig(root(REAL), { platform });
+      const { store: _s, auth: _a, ...rest } = loaded.plugins;
+      expect(rest).toEqual(defaultPlugins(platform));
+    }
+    const { awake: _w, ...fixed } = defaultPlugins("darwin");
+    expect(REAL.plugins).toEqual(fixed);
+  });
+
+  it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
+    expect(defaultPlugins("darwin").awake).toBe("caffeinate");
+    for (const platform of ["linux", "win32", "freebsd"]) expect(defaultPlugins(platform).awake).toBe("none");
+    expect((await loadConfig(root(withoutPlugins()), { platform: "darwin" })).plugins.awake).toBe("caffeinate");
+    expect((await loadConfig(root(withoutPlugins()), { platform: "linux" })).plugins.awake).toBe("none");
+    expect((await loadConfig(root(REAL), { platform: "linux" })).plugins.awake).toBe("none");
+  });
+
+  it("an explicit plugins.awake wins over the platform default", async () => {
+    const cfg = (awake: string) => root({ ...REAL, plugins: { ...(REAL.plugins as object), awake } });
+    expect((await loadConfig(cfg("none"), { platform: "darwin" })).plugins.awake).toBe("none");
+    expect((await loadConfig(cfg("caffeinate"), { platform: "linux" })).plugins.awake).toBe("caffeinate");
   });
 });
 
 describe("plugin registry: every registered name", () => {
   it("resolves to an instance of its implementation", async () => {
+    vi.stubEnv("PATH", pathWithFakeCaffeinate());
     const loaded = await loadConfig(root(withoutPlugins()));
     const ctx = await context(loaded);
     let count = 0;
@@ -157,7 +188,7 @@ describe("plugin registry: every registered name", () => {
         count++;
       }
     }
-    expect(count).toBe(14); // 15 classes in the issue list: SqliteDriver and MysqlDriver sit under the two store plugins
+    expect(count).toBe(16); // 17 classes in the issue list: SqliteDriver and MysqlDriver sit under the two store plugins
     await (ctx.store as FactoryStore).close();
   });
 });
@@ -333,6 +364,48 @@ describe("plugin registry: existing config keys keep working", () => {
   });
 });
 
+describe("plugin registry: KeepAwake startup check", () => {
+  const caffeinateConfig = () =>
+    root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), awake: "caffeinate" } });
+
+  it("build() rejects caffeinate when no caffeinate executable is on PATH, naming the key and the none alternative", async () => {
+    const loaded = await loadConfig(caffeinateConfig());
+    vi.stubEnv("PATH", mkdtempSync(join(tmpdir(), "sf-empty-bin-")));
+    const err = await build(loaded, { clock: new FakeClock() }).then(
+      async (b) => {
+        await b.close();
+        return null;
+      },
+      (e: Error) => e.message,
+    );
+    expect(err).toContain("plugins.awake");
+    expect(err).toContain("caffeinate");
+    expect(err).toMatch(/"none"/);
+  });
+
+  it("build() wires caffeinate when the executable is on PATH", async () => {
+    const loaded = await loadConfig(caffeinateConfig());
+    vi.stubEnv("PATH", pathWithFakeCaffeinate());
+    const built = await build(loaded, { clock: new FakeClock() });
+    try {
+      expect((built.worker as unknown as { d: WorkerDeps }).d.awake).toBeInstanceOf(CaffeinateKeepAwake);
+    } finally {
+      await built.close();
+    }
+  });
+
+  it("build() wires none without looking for caffeinate", async () => {
+    const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), awake: "none" } }));
+    vi.stubEnv("PATH", mkdtempSync(join(tmpdir(), "sf-empty-bin-")));
+    const built = await build(loaded, { clock: new FakeClock() });
+    try {
+      expect((built.worker as unknown as { d: WorkerDeps }).d.awake).toBeInstanceOf(NoKeepAwake);
+    } finally {
+      await built.close();
+    }
+  });
+});
+
 describe("plugin registry: only src/plugins.ts constructs implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
     const classes = Object.values(EXPECTED)
@@ -364,7 +437,15 @@ describe("docs/plugins.md", () => {
     });
   }
 
-  it("covers 12 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(12);
+  it("KeepAwake says how to switch it, the platform default, the startup failure and the lid", () => {
+    const s = section("KeepAwake")!;
+    expect(s).toContain("plugins.awake");
+    expect(s).toMatch(/macOS/);
+    expect(s).toMatch(/PATH/);
+    expect(s).toMatch(/lid/);
+  });
+
+  it("covers 13 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(13);
   });
 });

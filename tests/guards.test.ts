@@ -4,6 +4,7 @@ import { Controller } from "../src/core/controller.js";
 import { Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
@@ -117,7 +118,7 @@ describe("G6 (unit): an agent that leaks a canary is stopped before anything lea
     const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
     const worker = new Worker({
       id: "w" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage, clock, config, prompts, log: silent,
-      scanner: new PatternEgressScanner(async () => [canary]), toolEnv: {},
+      scanner: new PatternEgressScanner(async () => [canary]), toolEnv: {}, awake: new NoKeepAwake(),
     });
     source.queue.push({ kind: "item_requested", source: issueRef(9), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();

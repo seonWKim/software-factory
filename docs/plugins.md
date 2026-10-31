@@ -22,6 +22,7 @@ the canary tests.
 | SharedStorage | `plugins.storage` | `fs` | no |
 | CapabilitySearch | `plugins.capability` | `list-all` | no |
 | Clock | `plugins.clock` | `system` | no |
+| KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
 
 ```jsonc
 // factory.config.json (the checked-in defaults)
@@ -31,12 +32,13 @@ the canary tests.
   "secrets": "env-file", "egress": "pattern", "broker": "github",
   "sandbox": "noop", "runner": "claude-code", "llm": "claude-cli",
   "source": "github-issues", "storage": "fs", "capability": "list-all", "clock": "system"
+  // "awake" is left out on purpose: it defaults per platform (see KeepAwake below)
 }
 ```
 
 Rules, checked by `loadConfig` at startup (and again by `build()`):
 
-- **No `plugins` object** means today's defaults for all ten interfaces in it. Store and auth keep their own keys.
+- **No `plugins` object** means today's defaults for all eleven interfaces in it (`awake`'s default depends on the platform). Store and auth keep their own keys.
 - **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
 - **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `auth` under `plugins` are rejected with a pointer to their own keys.
@@ -197,3 +199,23 @@ Plugins:
   - Enable: `"plugins": { "clock": "system", ... }`. Secrets: none.
 
 `FakeClock` is test-only and not registered; tests pass it to `build()` directly. Switch back / disable: `"clock": "system"`.
+
+## KeepAwake
+
+What it does: keeps the host from idle-sleeping while a job runs. The worker holds it right after it claims a run and releases it when the run is done, whether the run succeeded or failed. It is never held while the worker is idle, so the machine can sleep between jobs. Staying awake is best effort: if the hold fails, the worker logs a warning and runs the job anyway.
+
+Plugins:
+
+- `caffeinate`: `CaffeinateKeepAwake`. While held, runs `caffeinate -i -s -w <worker pid>` (macOS): `-i` prevents idle sleep, `-s` prevents system sleep on AC power, `-w` ends caffeinate when the worker process exits, so a crash cannot leave the machine awake. Release kills it.
+  - Enable: `"plugins": { "awake": "caffeinate", ... }`, or leave `awake` out on macOS. Secrets: none. Settings: the `caffeinate` executable on `PATH` (it ships with macOS at `/usr/bin/caffeinate`).
+  - Startup failure: if `caffeinate` is selected (explicitly or by the macOS default) and there is no `caffeinate` executable on `PATH`, `build()` fails at startup with an error naming `plugins.awake`, `caffeinate` and the `none` alternative.
+- `none`: `NoKeepAwake`. Does nothing; the host's own power settings decide.
+  - Enable: `"plugins": { "awake": "none", ... }`, or leave `awake` out on any OS other than macOS. Secrets: none.
+
+Platform default: with no `plugins.awake` key, the factory picks `caffeinate` when `process.platform` is `darwin` and `none` everywhere else. The checked-in `factory.config.json` has no `awake` key, so the platform decides.
+
+Turn on / off: set `plugins.awake` to `caffeinate` (on) or `none` (off); delete the key to go back to the platform default.
+
+**Closing the laptop lid still sleeps a Mac.** `caffeinate` only stops idle and system sleep; macOS sleeps on lid close regardless (unless an external display, power and keyboard are attached). Keep the lid open while jobs run. A worker that sleeps anyway recovers through the lease rules in `docs/design.md` §5 (host sleep).
+
+Linux and Windows plugins do not exist yet.
