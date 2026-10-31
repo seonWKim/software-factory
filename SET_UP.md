@@ -63,6 +63,7 @@ Then on GitHub:
 4. If a step fails, it comments; reply `/retry`.
 
 Only users with write permission on the repository can approve or retry.
+The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ## Routine
 

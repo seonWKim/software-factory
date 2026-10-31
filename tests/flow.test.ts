@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
+import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -8,17 +9,17 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, config, issueRef, mallory, prompts, silent, triageSpec, waitFor,
+  alice, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
-async function factory(runner: FakeRunner, knownSecrets: string[] = []) {
+async function factory(runner: FakeRunner, knownSecrets: string[] = [], log: Logger = silent) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const storage = new MemoryStorage();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config, prompts, log: silent,
     scanner: new PatternEgressScanner(async () => knownSecrets),
@@ -57,11 +58,11 @@ describe("one issue to one merged PR", () => {
     );
 
     // An unauthorized approval is ignored.
-    f.source.queue.push({ kind: "spec_approved", source: src, approver: mallory });
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "101", approver: mallory });
     await f.step();
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("READY");
 
-    f.source.queue.push({ kind: "spec_approved", source: src, approver: alice });
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "102", approver: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42, loop_count: 1 });
@@ -114,7 +115,7 @@ describe("one issue to one merged PR", () => {
     const f = await factory(runner);
     f.source.queue.push({ kind: "item_requested", source: issueRef(2), requester: alice, title: "t", body: "b" });
     await f.step();
-    f.source.queue.push({ kind: "spec_approved", source: issueRef(2), approver: alice });
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(2), comment_id: "103", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#2"))!;
     expect(item.tier).toBe(4);
@@ -129,7 +130,7 @@ describe("one issue to one merged PR", () => {
     const f = await factory(runner);
     f.source.queue.push({ kind: "item_requested", source: issueRef(3), requester: alice, title: "t", body: "b" });
     await f.step();
-    f.source.queue.push({ kind: "spec_approved", source: issueRef(3), approver: alice });
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(3), comment_id: "104", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#3"))!;
     expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", loop_count: 2 });
@@ -148,7 +149,7 @@ describe("one issue to one merged PR", () => {
     expect(item).toMatchObject({ stage: "NEW", blocked_on: "human", blocked_reason: "run_failed:triage:agent_failed" });
 
     fail = false;
-    f.source.queue.push({ kind: "retry_requested", source: issueRef(4), requester: alice });
+    f.source.queue.push({ kind: "retry_requested", source: issueRef(4), comment_id: "105", requester: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "READY", restart_count: 1, blocked_reason: "spec_pending" });
@@ -177,7 +178,7 @@ describe("one issue to one merged PR", () => {
     f.sandbox.commits = [];
     f.source.queue.push({ kind: "item_requested", source: issueRef(5), requester: alice, title: "t", body: "b" });
     await f.step();
-    f.source.queue.push({ kind: "spec_approved", source: issueRef(5), approver: alice });
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "106", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
     expect(item.blocked_reason).toBe("run_failed:implement:no_commits");
@@ -213,7 +214,7 @@ describe("one issue to one merged PR", () => {
 
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await step();
-    f.source.queue.push({ kind: "spec_approved", source: src, approver: alice });
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "107", approver: alice });
     await step();
 
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
@@ -229,9 +230,113 @@ describe("one issue to one merged PR", () => {
     const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }) }));
     f.source.queue.push({ kind: "item_requested", source: issueRef(6), requester: alice, title: "t", body: "b" });
     await f.step();
-    f.source.queue.push({ kind: "spec_rejected", source: issueRef(6), approver: alice, reason: "no" });
+    f.source.queue.push({ kind: "spec_rejected", source: issueRef(6), comment_id: "108", approver: alice, reason: "no" });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#6"))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+  });
+});
+
+describe("acknowledging commands and intake", () => {
+  /** An item at the spec gate: intake + triage done. */
+  async function atSpecGate(n: number, log?: Logger) {
+    const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }) }), [], log);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    return { ...f, src, item };
+  }
+  const refusals = (f: { source: FakeSource }) => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+  const reasons = async (f: Awaited<ReturnType<typeof atSpecGate>>) =>
+    (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
+
+  it("issue intake leaves 👀 on the issue", async () => {
+    const f = await atSpecGate(20);
+    expect(f.source.reactions).toEqual([{ source: f.src, comment_id: null }]);
+  });
+
+  it("/approve leaves exactly one 👀 on that comment after spec_approved", async () => {
+    const f = await atSpecGate(21);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "500", approver: alice });
+    await f.controller.tickIntake();
+    expect(f.source.reactions.filter((r) => r.comment_id === "500")).toHaveLength(1);
+    expect((await f.store.getWorkItem(f.item.id))!.stage).toBe("RUNNING");
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("the same command comment delivered again leaves one reaction, one transition and no refusal", async () => {
+    const f = await atSpecGate(22);
+    const e = { kind: "spec_approved" as const, source: f.src, comment_id: "501", approver: alice };
+    f.source.queue.push(e);
+    await f.controller.tickIntake();
+    f.source.queue.push(e); // a later poll returns the last comment again (updated_at + since)
+    await f.controller.tickIntake();
+    f.source.queue.push(e, e); // and twice in one poll
+    await f.controller.tickIntake();
+    expect(f.source.reactions.filter((r) => r.comment_id === "501")).toHaveLength(1);
+    expect((await reasons(f)).filter((r) => r === "spec_approved")).toHaveLength(1);
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("/approve from a user without write permission leaves 👀 and one explanation, no transition", async () => {
+    const f = await atSpecGate(23);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "502", approver: mallory });
+    await f.controller.tickIntake();
+    expect(f.source.reactions.filter((r) => r.comment_id === "502")).toHaveLength(1);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]).toMatchObject({ source: f.src, marker: "<!-- factory:refused:502 -->" });
+    expect(refusals(f)[0]!.body).toContain("write permission");
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+  });
+
+  it("/approve on a RUNNING item leaves 👀 and one explanation", async () => {
+    const f = await atSpecGate(24);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "503", approver: alice });
+    await f.controller.tickIntake();
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "504", approver: alice });
+    await f.controller.tickIntake();
+    expect(f.source.reactions.filter((r) => r.comment_id === "504")).toHaveLength(1);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.marker).toBe("<!-- factory:refused:504 -->");
+    expect(refusals(f)[0]!.body).toContain("RUNNING");
+    expect((await reasons(f)).filter((r) => r === "spec_approved")).toHaveLength(1);
+  });
+
+  it("/approve on a CLOSED item and /retry with no failed run are refused with a reason", async () => {
+    const f = await atSpecGate(25);
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "505", requester: alice });
+    await f.controller.tickIntake();
+    f.source.queue.push({ kind: "spec_rejected", source: f.src, comment_id: "506", approver: alice, reason: "no" });
+    await f.controller.tickIntake();
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "507", approver: alice });
+    await f.controller.tickIntake();
+    expect(refusals(f).map((c) => c.marker)).toEqual(["<!-- factory:refused:505 -->", "<!-- factory:refused:507 -->"]);
+    expect(refusals(f)[0]!.body).toContain("no failed run");
+    expect(refusals(f)[1]!.body).toContain("closed");
+    expect(f.source.reactions.map((r) => r.comment_id)).toEqual([null, "505", "506", "507"]);
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+  });
+
+  it("a command on an issue that is not a factory work item gets no reaction and no reply", async () => {
+    const f = await factory(new FakeRunner({}));
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(26), comment_id: "508", approver: mallory });
+    await f.controller.tickIntake();
+    expect(f.source.reactions).toEqual([]);
+    expect(f.source.comments).toEqual([]);
+  });
+
+  it("a reaction call that throws still applies the transition and logs a warning", async () => {
+    const log = recordingLog();
+    const f = await atSpecGate(27, log);
+    f.source.reactionError = new Error("GitHub POST reactions → 502");
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "509", approver: alice });
+    f.source.queue.push({ kind: "item_requested", source: issueRef(28), requester: alice, title: "t", body: "b" });
+    await f.controller.tickIntake();
+    expect((await f.store.getWorkItem(f.item.id))!.stage).toBe("RUNNING");
+    expect(await f.store.getWorkItemBySource("github_issue", issueRef(28).id)).not.toBeNull();
+    const warns = log.lines.filter((l) => l.level === "warn" && l.msg === "mark seen failed");
+    expect(warns).toHaveLength(2);
+    expect(log.lines.some((l) => l.level === "error")).toBe(false);
   });
 });

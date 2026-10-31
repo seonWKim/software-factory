@@ -17,6 +17,7 @@ interface GhIssue {
   pull_request?: unknown;
 }
 interface GhComment {
+  id: number;
   issue_url: string;
   body: string;
   user: GhUser;
@@ -34,6 +35,12 @@ interface Cursor {
   issues: string | null;
   comments: string | null;
   pulls: string | null;
+  /**
+   * Highest comment id already read. `since` is inclusive and keyed on updated_at, so the last comment
+   * (and any edit of an old one) comes back on the next poll; ids only grow, so anything at or below this
+   * was already delivered. Absent in cursors written before it existed.
+   */
+  last_comment_id?: number | null;
 }
 
 export class GitHubIssueSource implements SourceAdapter {
@@ -50,7 +57,7 @@ export class GitHubIssueSource implements SourceAdapter {
     const c: Cursor = cursor ? (JSON.parse(cursor) as Cursor) : { issues: null, comments: null, pulls: null };
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const events: SourceEvent[] = [];
-    const next: Cursor = { ...c };
+    const next: Cursor = { ...c, last_comment_id: c.last_comment_id ?? null };
 
     const issues = await this.client.list<GhIssue>(
       `${base}/issues?state=open&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
@@ -71,17 +78,25 @@ export class GitHubIssueSource implements SourceAdapter {
     const comments = await this.client.list<GhComment>(
       `${base}/issues/comments?sort=updated&direction=asc` + (c.comments ? `&since=${c.comments}` : ""),
     );
+    const seen = new Set<number>();
     for (const cm of comments) {
       next.comments = max(next.comments, cm.updated_at);
+      // Compare with the previous poll's mark, not the running one: this page is ordered by updated_at, not id.
+      if ((c.last_comment_id != null && cm.id <= c.last_comment_id) || seen.has(cm.id)) continue;
+      seen.add(cm.id);
+      next.last_comment_id = Math.max(next.last_comment_id ?? 0, cm.id);
       if (cm.user.type === "Bot") continue;
       const source = this.ref(Number(cm.issue_url.split("/").pop()));
+      const comment_id = String(cm.id);
       const [first = "", ...rest] = cm.body.trim().split(/\r?\n/);
       const command = first.trim();
-      if (command === "/approve") events.push({ kind: "spec_approved", source, approver: identity(cm.user) });
+      if (command === "/approve") events.push({ kind: "spec_approved", source, comment_id, approver: identity(cm.user) });
       else if (command.startsWith("/reject")) {
         const reason = [command.slice("/reject".length).trim(), ...rest].join("\n").trim();
-        events.push({ kind: "spec_rejected", source, approver: identity(cm.user), reason });
-      } else if (command === "/retry") events.push({ kind: "retry_requested", source, requester: identity(cm.user) });
+        events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
+      } else if (command === "/retry") {
+        events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
+      }
     }
 
     // Pulls have no `since`: read newest-updated first and stop at the cursor.
@@ -110,6 +125,15 @@ export class GitHubIssueSource implements SourceAdapter {
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
     await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+  }
+
+  /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */
+  async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}/issues`;
+    const path = commentId === null
+      ? `${base}/${issueNumberFromSourceId(source.id)}/reactions`
+      : `${base}/comments/${encodeURIComponent(commentId)}/reactions`;
+    await this.client.request("POST", path, { content: "eyes" });
   }
 
   private ref(number: number): SourceRef {

@@ -36,18 +36,38 @@ export function issueRef(n: number): SourceRef {
   return { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` };
 }
 
+/**
+ * Keeps the SourceAdapter replay contract like GitHubIssueSource does: the cursor holds a comment-id
+ * high-water mark, and a command event at or below it is not delivered again. Records every markSeen call.
+ */
 export class FakeSource implements SourceAdapter {
   readonly type = "github_issue" as const;
   queue: SourceEvent[] = [];
   comments: { source: SourceRef; body: string; marker: string }[] = [];
+  reactions: { source: SourceRef; comment_id: string | null }[] = [];
+  /** When set, markSeen throws this instead of recording. */
+  reactionError: Error | null = null;
 
   async poll(cursor: string | null): Promise<PollResult> {
-    const events = this.queue;
+    const c = cursor ? (JSON.parse(cursor) as { n: number; last_comment_id: number }) : { n: 0, last_comment_id: 0 };
+    let last = c.last_comment_id;
+    const events: SourceEvent[] = [];
+    for (const e of this.queue) {
+      if ("comment_id" in e) {
+        if (Number(e.comment_id) <= last) continue;
+        last = Number(e.comment_id);
+      }
+      events.push(e);
+    }
     this.queue = [];
-    return { events, next_cursor: String(Number(cursor ?? 0) + 1) };
+    return { events, next_cursor: JSON.stringify({ n: c.n + 1, last_comment_id: last }) };
   }
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
     if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+  }
+  async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    if (this.reactionError) throw this.reactionError;
+    this.reactions.push({ source, comment_id: commentId });
   }
 }
 
