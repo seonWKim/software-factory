@@ -227,3 +227,27 @@ graph LR
 **With `NoOpSandbox` (Phase 1), G3 is weak:** the agent runs as the host user, so a secret file anywhere on the host is reachable by absolute path. Until a real sandbox exists, keep the secret file outside the project and home-relative guessable paths, and rely on G1, G2, G4, G5, G6. Moving to a container sandbox makes G3 hard.
 
 **The agent harness's own credential** (the token `claude -p` needs to call the model) is the one secret the agent process must hold. It is passed to the harness only, scrubbed from the environment of the harness's tool subprocesses, and covered by G5.
+
+### Harness controls for `ClaudeCodeRunner` (Claude Code docs, checked 2026-10-31)
+
+The runner writes a per-run Claude Code settings file into the agent's run directory:
+
+```jsonc
+{
+  "env": { "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1" },          // G1: strip credentials from Bash, hooks, stdio MCP children
+  "permissions": {
+    "deny": ["Read(**/.env)", "Read(**/.env.*)", "Read(~/.config/software-factory/**)"],   // G4: file tools + recognized Bash file commands
+    "blockReadsOutsideWorkingDirectories": true
+  },
+  "sandbox": {                                                   // G3 at OS level, even under NoOpSandbox
+    "enabled": true,
+    "filesystem": { "denyRead": ["~/.config/software-factory", "~/.ssh", "~/.aws"] },
+    "credentials": { "envVars": [{ "name": "GITHUB_TOKEN", "mode": "deny" }, { "name": "GH_TOKEN", "mode": "deny" }] }
+  }
+}
+```
+
+What the docs say, and the gaps the canary test (G6) must cover:
+- `Read(...)` deny rules cover the file tools and Bash commands Claude Code recognizes (`cat`, `head`, `tail`, `sed`, `tee`, redirections), **not** `grep -r` or scripts that open files themselves. OS-level `sandbox.filesystem.denyRead` covers Bash and its children but **not** the Read tool, so both are needed.
+- `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps the harness's own credential for model calls and strips credentials from subprocesses. `GITHUB_TOKEN` / `GH_TOKEN` are **not** stripped by it (hence the `credentials.envVars` deny, and G1 never passes them in). Whether `CLAUDE_CODE_OAUTH_TOKEN` is stripped is not stated explicitly: G6 checks it with `env` inside a run.
+- Exact keys and semantics: verify against the installed Claude Code version when implementing (the subprocess scrub list changed in v2.1.251).
