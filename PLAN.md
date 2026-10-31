@@ -14,7 +14,7 @@ Goal: build a minimal factory by hand, then let the factory build the rest of it
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
 | D1 | Language / stack | **TypeScript (Node)** | decided |
-| D2 | Agent harness + LLM provider | Two interfaces. `LLMProvider` (model calls) with an **Anthropic implementation**, whose local transport is the Claude Code CLI on the subscription login (no API key) and whose later transport is the API / gateway. `AgentRunner` (the tool-using loop) with `ClaudeCodeRunner` = `claude -p` in the worktree. Unset `ANTHROPIC_API_KEY`, no `--bare`; `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN` for unattended runs. claude.ai login is not allowed in products offered to others → company deployment uses API key / Bedrock / Vertex / ML gateway | proposed |
+| D2 | Agent harness + LLM provider | Two interfaces. `LLMProvider` (model calls) with an **Anthropic implementation**, whose local transport is the Claude Code CLI on the subscription login (no API key) and whose later transport is the API / gateway. `AgentRunner` (the tool-using loop) with `ClaudeCodeRunner` = `claude -p` in the worktree. Unset `ANTHROPIC_API_KEY`, no `--bare`; `claude setup-token` → `CLAUDE_CODE_OAUTH_TOKEN` for unattended runs. claude.ai login is not allowed in products offered to others → company deployment uses API key / Bedrock / Vertex / ML gateway | decided |
 | D3 | Store | `FactoryStore` interface; first impl = SQLite file | decided |
 | D4 | First intake source | GitHub issues on this repo (the factory's own backlog). Slack later | decided |
 | D5 | Human gate surface | GitHub PR review + issue comments first; the form UI later | decided |
