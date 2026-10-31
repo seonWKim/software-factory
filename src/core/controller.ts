@@ -23,10 +23,20 @@ const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 const MAX_CONFLICT_RETRIES = 5;
 
 /**
- * Control plane: intake, applying run outcomes, the reaper. Deterministic, no LLM, no in-process state:
- * every decision re-reads the store and lands as a conditional transition, so N replicas are safe.
+ * Control plane: intake, applying run outcomes, the reaper. Deterministic, no LLM: every decision re-reads
+ * the store and lands as a conditional transition, so N replicas are safe. The only in-process state is the
+ * reaper's own tick time (see tickReaper), which no other replica needs.
  */
 export class Controller {
+  /**
+   * Reaper grace after this process's own sleep. Per process, not shared between replicas, and not stored:
+   * it only stops this reaper from reaping workers on the same host that slept with it before they can
+   * renew. Losing it (restart) just means no grace for one tick. A reaper on a host that did not sleep
+   * gets no grace and can still requeue a sleeping worker's run once lease_ms passes (design §5).
+   */
+  private lastReaperTick: number | null = null;
+  private reaperGraceUntil = -Infinity;
+
   constructor(private readonly d: ControllerDeps) {}
 
   async run(signal: AbortSignal): Promise<void> {
@@ -58,6 +68,16 @@ export class Controller {
   }
 
   async tickReaper(): Promise<void> {
+    const now = this.d.clock.now().getTime();
+    const previous = this.lastReaperTick;
+    this.lastReaperTick = now;
+    if (previous !== null && now - previous > this.d.config.lease_ms) {
+      // This process slept (or stalled) longer than a lease: every lease looks expired, including those of
+      // workers that slept with us and are about to renew. Give them one heartbeat_ms first.
+      this.reaperGraceUntil = now + this.d.config.heartbeat_ms;
+      this.d.log.warn("reaper woke after a gap; grace before expiring leases", { gap_ms: now - previous });
+    }
+    if (now < this.reaperGraceUntil) return;
     const ids = await this.d.store.expireLeases(this.d.config.max_attempts);
     for (const id of ids) this.d.log.warn("lease expired", { run_id: id });
   }

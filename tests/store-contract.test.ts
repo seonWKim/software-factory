@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { RunId } from "../src/core/types.js";
+import type { RunId, WorkItemId } from "../src/core/types.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
 
@@ -108,16 +109,70 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.claimRun({ worker_id: w1, kinds: ["review"], lease_ms: LEASE })).toBeNull();
     });
 
-    it("heartbeat extends the lease; an expired lease cannot be renewed", async () => {
+    const ok = { status: "succeeded" as const, summary: "", data: { kept: true } };
+
+    /** heartbeat, completeRun and appendHandoff with `token` all return lease_lost. */
+    async function expectAllLost(store: FactoryStore, runId: RunId, item: WorkItemId, token: number) {
+      const lost = { ok: false, reason: "lease_lost" };
+      expect(await store.heartbeat(runId, token, LEASE)).toEqual(lost);
+      expect(await store.completeRun(runId, token, ok)).toEqual(lost);
+      expect(
+        await store.appendHandoff({ run_id: runId, work_item_id: item, commit_sha: "abc", worked_on: "", next_steps: "" }, token),
+      ).toEqual(lost);
+    }
+
+    it("heartbeat extends the lease", async () => {
       const { store, clock } = await queued();
       const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
       clock.advance(LEASE - 1);
       expect((await store.heartbeat(run.id, run.lease!.token, LEASE)).ok).toBe(true);
-      clock.advance(LEASE);
-      expect(await store.heartbeat(run.id, run.lease!.token, LEASE)).toEqual({ ok: false, reason: "lease_lost" });
+      const after = (await store.getRun(run.id))!;
+      expect(new Date(after.lease!.expires_at).getTime()).toBe(clock.now().getTime() + LEASE);
     });
 
-    it("fencing: after expiry and reclaim, the old holder's token is rejected", async () => {
+    it("host sleep: an expired lease nobody reclaimed is renewed by its holder (status and token decide, not the clock)", async () => {
+      const { store, clock, item } = await queued();
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      clock.advance(LEASE * 5);
+      const hb = await store.heartbeat(run.id, run.lease!.token, LEASE);
+      expect(hb.ok).toBe(true);
+      const renewed = (await store.getRun(run.id))!;
+      expect(renewed.status).toBe("running");
+      expect(new Date(renewed.lease!.expires_at).getTime()).toBeGreaterThan(clock.now().getTime());
+
+      // Handoffs and completion after expiry are accepted too, and the outcome is kept.
+      clock.advance(LEASE * 5);
+      const h = await store.appendHandoff(
+        { run_id: run.id, work_item_id: item.id, commit_sha: "abc", worked_on: "x", next_steps: "y" },
+        run.lease!.token,
+      );
+      expect(h.ok).toBe(true);
+      const done = await store.completeRun(run.id, run.lease!.token, ok);
+      expect(done.ok).toBe(true);
+      expect((await store.getRun(run.id))!).toMatchObject({ status: "succeeded", outcome: ok, attempt: 1 });
+    });
+
+    it("fencing: after the reaper requeued the run, the old token is rejected everywhere", async () => {
+      const { store, clock, item } = await queued();
+      const first = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(3)).toEqual([first.id]);
+      expect((await store.getRun(first.id))!.status).toBe("queued");
+      await expectAllLost(store, first.id, item.id, first.lease!.token);
+      expect((await store.getRun(first.id))!.status).toBe("queued");
+    });
+
+    it("fencing: after the reaper failed the run (attempts used up), the old token is rejected everywhere", async () => {
+      const { store, clock, item } = await queued();
+      const first = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(1)).toEqual([first.id]);
+      expect((await store.getRun(first.id))!.status).toBe("failed");
+      await expectAllLost(store, first.id, item.id, first.lease!.token);
+      expect((await store.getRun(first.id))!.outcome).toMatchObject({ error_code: "lease_expired" });
+    });
+
+    it("fencing: after expiry and reclaim, the old holder's token is rejected; the new holder completes after expiry", async () => {
       const { store, clock, item } = await queued();
       const first = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
       clock.advance(LEASE + 1);
@@ -126,16 +181,13 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(second.lease!.token).toBe(first.lease!.token + 1);
       expect(second.attempt).toBe(2);
 
-      const stale = await store.completeRun(first.id, first.lease!.token, { status: "succeeded", summary: "", data: {} });
-      expect(stale).toEqual({ ok: false, reason: "lease_lost" });
-      const staleHandoff = await store.appendHandoff(
-        { run_id: first.id, work_item_id: item.id, commit_sha: "abc", worked_on: "", next_steps: "" },
-        first.lease!.token,
-      );
-      expect(staleHandoff).toEqual({ ok: false, reason: "lease_lost" });
+      await expectAllLost(store, first.id, item.id, first.lease!.token);
+      expect((await store.getRun(second.id))!.status).toBe("running");
 
-      const fresh = await store.completeRun(second.id, second.lease!.token, { status: "succeeded", summary: "", data: {} });
+      clock.advance(LEASE + 1);
+      const fresh = await store.completeRun(second.id, second.lease!.token, ok);
       expect(fresh.ok).toBe(true);
+      expect((await store.getRun(second.id))!).toMatchObject({ status: "succeeded", outcome: ok });
     });
 
     it("the reaper fails a run once attempts are used up", async () => {

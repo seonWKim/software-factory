@@ -93,14 +93,17 @@ export class GitHubToolBroker implements ToolBroker {
     }
   }
 
+  /**
+   * Same rule as the store: status and token fence the caller, not the clock. A run whose lease ran out
+   * during a host sleep but was not reaped still holds it; after a requeue or reclaim it does not.
+   */
   private async holdsLease(ctx: ToolCallContext): Promise<boolean> {
     const run = await this.deps.store.getRun(ctx.run_id);
     return (
       run !== null &&
       run.work_item_id === ctx.work_item_id &&
       run.status === "running" &&
-      run.lease?.token === ctx.lease_token &&
-      new Date(run.lease.expires_at) > this.deps.clock.now()
+      run.lease?.token === ctx.lease_token
     );
   }
 

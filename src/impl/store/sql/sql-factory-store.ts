@@ -157,13 +157,16 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
+  // Lease checks below test status and token only, never lease_expires_at. Fencing comes from the token:
+  // the reaper moves an expired run out of 'running' and only a claim bumps lease_token. So a holder whose
+  // lease ran out (host sleep) but was not reaped yet can still renew and finish (design §5).
   async heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const extended = await tx.run(
         `UPDATE runs SET lease_expires_at = ?, updated_at = ?
-         WHERE id = ? AND status = 'running' AND lease_token = ? AND lease_expires_at > ?`,
-        [this.after(lease_ms), now, runId, token, now],
+         WHERE id = ? AND status = 'running' AND lease_token = ?`,
+        [this.after(lease_ms), now, runId, token],
       );
       return extended === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
@@ -174,8 +177,8 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       const completed = await tx.run(
         `UPDATE runs SET status = ?, outcome = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-         WHERE id = ? AND status = 'running' AND lease_token = ? AND lease_expires_at > ?`,
-        [outcome.status, JSON.stringify(outcome), now, runId, token, now],
+         WHERE id = ? AND status = 'running' AND lease_token = ?`,
+        [outcome.status, JSON.stringify(outcome), now, runId, token],
       );
       return completed === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
@@ -242,11 +245,11 @@ export class SqlFactoryStore implements FactoryStore {
     const { forShare } = this.db.dialect;
     return this.db.transaction(async (tx) => {
       const now = this.now();
-      // FOR SHARE: the lease can't be completed or expired under us until this commits.
+      // FOR SHARE: status and token are what fence the holder; the row lock keeps the reaper and a
+      // completion from moving the run out of 'running' (and a reclaim from bumping the token) until this commits.
       const [holds] = await tx.all(
-        `SELECT 1 AS held FROM runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?
-           AND lease_expires_at > ?${forShare}`,
-        [input.run_id, input.work_item_id, token, now],
+        `SELECT 1 AS held FROM runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        [input.run_id, input.work_item_id, token],
       );
       if (!holds) return { ok: false, reason: "lease_lost" };
       await this.insertOnce(

@@ -7,7 +7,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, config, issueRef, mallory, prompts, silent, triageSpec,
+  alice, config, issueRef, mallory, prompts, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
 async function factory(runner: FakeRunner, knownSecrets: string[] = []) {
@@ -162,6 +162,47 @@ describe("one issue to one merged PR", () => {
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
     expect(item.blocked_reason).toBe("run_failed:implement:no_commits");
     expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
+  });
+
+  it("a host sleep mid-implement does not lose the run: the worker renews, the reaper waits", async () => {
+    let f!: Awaited<ReturnType<typeof factory>>;
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: async (spec) => {
+        // The laptop sleeps: wall time jumps past lease_ms. Both loops tick after waking;
+        // the controller's reaper happens to tick first.
+        f.clock.advance(config.lease_ms + 30_000);
+        const woke = f.clock.now().getTime();
+        await f.controller.tickReaper();
+        await waitFor(async () => {
+          const run = (await f.store.getRun(spec.run_id))!;
+          return run.status === "running" && new Date(run.lease!.expires_at).getTime() === woke + config.lease_ms;
+        }, "worker renewal after wake");
+        await f.controller.tickReaper();
+        return { output: { summary: "added gate", next_steps: "none" } };
+      },
+      review: review("pass"),
+    });
+    f = await factory(runner);
+    const src = issueRef(8);
+    const step = async () => {
+      await f.controller.tickReaper();
+      await f.step();
+      await f.controller.tickReaper();
+    };
+
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await step();
+    f.source.queue.push({ kind: "spec_approved", source: src, approver: alice });
+    await step();
+
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    const runs = await f.store.listRuns(item.id);
+    expect(runs.map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
+    expect(runs.every((r) => r.attempt === 1 && r.status === "succeeded")).toBe(true);
+    expect(JSON.stringify(runs)).not.toContain("lease_expired");
+    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
   });
 
   it("spec rejection closes the item", async () => {

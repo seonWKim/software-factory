@@ -90,9 +90,12 @@ export interface FactoryStore {
 
   /** Pull-based claim: oldest queued run of the given kinds → running, attempt + 1, new lease with token + 1. */
   claimRun(input: ClaimInput): Promise<Run | null>;
-  /** Extends the lease if `token` still matches. lease_lost means stop work immediately. */
+  /**
+   * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
+   * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
+   */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
-  /** Records the outcome and clears the lease if `token` still matches. */
+  /** Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`. */
   completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult>;
   /** Finished runs the controller has not applied yet, oldest first. */
   listUnacknowledgedRuns(limit: number): Promise<Run[]>;
@@ -103,7 +106,10 @@ export interface FactoryStore {
 
   // Handoffs
 
-  /** Accepted only while `token` holds the run's lease. Idempotent on (run_id, commit_sha). */
+  /**
+   * Accepted only while the run is `running` with this `token` (the clock does not decide; see heartbeat).
+   * Idempotent on (run_id, commit_sha).
+   */
   appendHandoff(
     input: Omit<Handoff, "id" | "at">,
     token: number,

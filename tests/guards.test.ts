@@ -153,19 +153,33 @@ describe("Tool broker", () => {
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
-    return { clock, broker, ctx, posted };
+    return { clock, store, broker, ctx, posted };
   }
+  const comment = { number: 1, body: "x", marker: "m" };
 
   it("rejects calls from a run that lost its lease (fencing)", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.comment", { number: 1, body: "x", marker: "m" });
+    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.comment", comment);
     expect(r).toMatchObject({ ok: false, error_code: "lease_lost" });
   });
 
-  it("rejects calls after the lease expired", async () => {
-    const { broker, ctx, clock } = await setup();
+  it("host sleep: accepts the current token after lease expiry while the run is still running", async () => {
+    const { broker, ctx, clock, posted } = await setup();
+    clock.advance(60_001 * 5);
+    expect(await broker.call(ctx, "github.comment", comment)).toEqual({ ok: true, content: { created: true } });
+    expect(posted).toEqual(["x"]);
+  });
+
+  it("rejects the old token after the reaper requeued the run, and after a reclaim", async () => {
+    const { broker, ctx, clock, store } = await setup();
     clock.advance(60_001);
-    expect(await broker.call(ctx, "github.comment", { number: 1, body: "x", marker: "m" })).toMatchObject({ error_code: "lease_lost" });
+    expect(await store.expireLeases(3)).toEqual([ctx.run_id]);
+    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
+
+    const again = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
+    expect(again.lease!.token).toBe(ctx.lease_token + 1);
+    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.comment", comment)).toMatchObject({ ok: true });
   });
 
   it("pushes only factory branches", async () => {
