@@ -6,7 +6,7 @@ import { CODE_ROOT_ENV, Plugins, loadConfig } from "../src/compose.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { defaultSecretsFile } from "../src/impl/secrets/env-file-secret-store.js";
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
-import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
+import { type GitWorktreeOptions, GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import type { ChildHandle, ChildLauncher, ChildSpec, CommandRunner } from "../src/interfaces/updater.js";
@@ -137,13 +137,13 @@ class FakeChild implements ChildHandle {
   constructor(
     readonly pid: number,
     readonly spec: ChildSpec,
-    private readonly events: string[],
+    private readonly world: World,
     public drainMode: DrainMode,
   ) {
     this.exited = new Promise((r) => (this.resolveExit = r));
   }
   requestDrain(): void {
-    this.events.push(`drain ${this.pid}`);
+    this.world.events.push(`drain ${this.pid}`);
     if (this.drainMode === "ack") queueMicrotask(() => this.finishDrain());
   }
   /** The worker's in-flight run is done: acknowledge and exit. */
@@ -152,14 +152,14 @@ class FakeChild implements ChildHandle {
     this.exit(0);
   }
   kill(signal: "SIGTERM" | "SIGKILL"): void {
-    this.events.push(`kill ${signal} ${this.pid}`);
+    this.world.events.push(`kill ${signal} ${this.pid}`);
     this.kills.push(signal);
     if (signal === "SIGKILL" || this.drainMode !== "ignore") this.exit(null);
   }
   exit(code: number | null): void {
     if (!this.alive) return;
     this.alive = false;
-    this.events.push(`exit ${this.pid}`);
+    this.world.events.push(`exit ${this.pid}`);
     this.resolveExit(code);
   }
 }
@@ -172,7 +172,7 @@ class FakeLauncher implements ChildLauncher {
     const pid = this.children.length + 1;
     const built = readFileSync(spec.entry, "utf8");
     this.world.events.push(`launch ${pid} ${relative(this.world.root, spec.entry)} (${built})`);
-    const child = new FakeChild(pid, spec, this.world.events, this.drainMode);
+    const child = new FakeChild(pid, spec, this.world, this.drainMode);
     this.children.push(child);
     return child;
   }
@@ -325,7 +325,7 @@ describe("updater: git-worktree first start", () => {
     await a.updater.start();
     await a.updater.shutdown();
     const launcher = new FakeLauncher(a.world);
-    const again = new GitWorktreeUpdater({ ...(a.updater as unknown as { o: never }).o, launcher });
+    const again = new GitWorktreeUpdater({ ...(a.updater as unknown as { o: GitWorktreeOptions }).o, launcher });
     a.world.events = [];
     await again.start();
     expect(a.world.events).toEqual(["fetch", `launch 1 ${RUNTIME}/dist/main.js (// built from c1)`]);
@@ -482,10 +482,10 @@ describe("updater: git-worktree failed build", () => {
     a.world.heads.set(RUNTIME, "c2");
     a.world.failBuild.add("c2");
     const launcher = new FakeLauncher(a.world);
-    const again = new GitWorktreeUpdater({ ...(a.updater as unknown as { o: never }).o, launcher });
+    const again = new GitWorktreeUpdater({ ...(a.updater as unknown as { o: GitWorktreeOptions }).o, launcher });
     a.world.events = [];
     await again.start();
-    expect(a.world.events).toEqual(["fetch", `build ${RUNTIME}@c2`]);
+    expect(a.world.events).toEqual(["fetch", "ff . c2", `build ${RUNTIME}@c2`]);
     expect(launcher.children).toEqual([]);
   });
 });

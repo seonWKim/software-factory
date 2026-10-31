@@ -3,6 +3,17 @@
 
 import type { ExecResult } from "./sandbox.js";
 
+/**
+ * Set by the supervisor for its child: the runtime copy that holds the code, factory.config.json and
+ * prompts/. Explicit, never inferred. Unset: code and state share one root (today's behaviour).
+ */
+export const CODE_ROOT_ENV = "SOFTWARE_FACTORY_CODE_ROOT";
+/** Set to "1" by the supervisor for its child, so `dev` runs controller + worker instead of supervising. */
+export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
+/** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
+export const DRAIN_MESSAGE = "factory:drain";
+export const DRAINED_MESSAGE = "factory:drained";
+
 /** Runs one host command. Same shape as `runProcess`, so tests can pass a fake. */
 export type CommandRunner = (
   cmd: readonly string[],

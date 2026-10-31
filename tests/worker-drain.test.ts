@@ -46,7 +46,7 @@ describe("worker drain", () => {
     expect(completeRun).toHaveBeenCalledTimes(1);
     const outcome = completeRun.mock.calls[0]![2];
     expect(outcome).toMatchObject({ status: "succeeded", data: { spec: triageSpec } });
-    expect(await completeRun.mock.results[0]!.value).toEqual({ ok: true });
+    expect(await completeRun.mock.results[0]!.value).toMatchObject({ ok: true, run: { status: "succeeded" } });
     expect(claimRun.mock.calls.length).toBe(claimsAtDrain);
     expect(started()).toBe(1);
   });

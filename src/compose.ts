@@ -49,8 +49,13 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
 }
 
+export { CODE_ROOT_ENV } from "./interfaces/updater.js";
+
 export interface Loaded {
+  /** The state root: the main checkout. State dir, worktrees, repo path and the database resolve here. */
   root: string;
+  /** Where factory.config.json and prompts/ were read: the runtime copy under the updater, else `root`. */
+  codeRoot: string;
   file: FileConfig;
   config: FactoryConfig;
   prompts: Prompts;
@@ -63,8 +68,12 @@ export interface Loaded {
   registry: Registry;
 }
 
-export async function loadConfig(root = process.cwd(), opts: { registry?: Registry } = {}): Promise<Loaded> {
-  const file = JSON.parse(await readFile(join(root, "factory.config.json"), "utf8")) as FileConfig;
+export async function loadConfig(
+  root = process.cwd(),
+  opts: { registry?: Registry; codeRoot?: string | undefined } = {},
+): Promise<Loaded> {
+  const codeRoot = resolve(opts.codeRoot ?? root);
+  const file = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8")) as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
     throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
@@ -111,11 +120,11 @@ export async function loadConfig(root = process.cwd(), opts: { registry?: Regist
     agent_git_identity: file.agent_git_identity,
   };
   const prompts: Prompts = {
-    triage: await readFile(join(root, "prompts", "triage.md"), "utf8"),
-    implement: await readFile(join(root, "prompts", "implement.md"), "utf8"),
-    review: await readFile(join(root, "prompts", "review.md"), "utf8"),
+    triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
+    implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
+    review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
-  return { root, file, config, prompts, secretsFile, stateDir, store, plugins, registry };
+  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry };
 }
 
 export interface Built {
