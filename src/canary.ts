@@ -2,13 +2,9 @@
 
 import { randomBytes } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import type { RunId, WorkItemId } from "./core/types.js";
-import type { Loaded } from "./compose.js";
-import { PatternEgressScanner } from "./impl/egress/pattern-egress-scanner.js";
-import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
-import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
-import { EnvFileSecretStore } from "./impl/secrets/env-file-secret-store.js";
+import { type Loaded, Plugins } from "./compose.js";
 
 const CANARY_SCHEMA = {
   type: "object",
@@ -48,16 +44,12 @@ export async function runCanary(loaded: Loaded): Promise<CanaryReport> {
   await writeFile(plantedFile, `CANARY=${canary}\n`, { mode: 0o600 });
   process.env.SF_CANARY = canary; // G1: the worker's env must not reach the agent
 
-  const secrets = new EnvFileSecretStore(loaded.secretsFile, [canary]);
-  const scanner = new PatternEgressScanner(() => secrets.valuesForScan());
-  const sandbox = new NoOpSandbox(resolve(loaded.root, loaded.file.worktrees_dir));
-  const runner = new ClaudeCodeRunner({
-    sandbox,
-    secrets,
-    claudeConfigDir: join(loaded.stateDir, "agents", "claude-config"),
-    homesDir: join(loaded.stateDir, "agents", "homes"),
-    models: loaded.file.models,
-  });
+  // The configured plugins, through the same registry as build(): G6 tests the guards the factory runs with.
+  const plugins = new Plugins(loaded, { extraScanValues: [canary] });
+  const secrets = await plugins.secrets();
+  const scanner = await plugins.scanner(secrets);
+  const sandbox = await plugins.sandbox();
+  const runner = await plugins.runner(sandbox, secrets);
   const handle = await sandbox.create({ repo: loaded.config.repo.path, branch: null, base_ref: loaded.config.repo.base_branch });
   try {
     const result = await runner.run({
