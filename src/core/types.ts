@@ -80,7 +80,8 @@ export interface StateChange {
   changes: { [K in keyof WorkItemPatch]?: { from: WorkItem[K]; to: WorkItem[K] } };
 }
 
-export type RunKind = "triage" | "implement" | "review";
+/** `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5). */
+export type RunKind = "triage" | "implement" | "review" | "update";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Lease {

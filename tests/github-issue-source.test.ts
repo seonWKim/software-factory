@@ -92,3 +92,52 @@ describe("GitHubIssueSource", () => {
     expect(events).toHaveLength(1);
   });
 });
+
+describe("GitHubIssueSource: unmergeable factory PRs", () => {
+  const pull = (number: number, ref: string) => ({
+    number, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:00Z",
+    head: { ref, sha: `head${number}` }, base: { ref: "main", sha: `base${number}` },
+  });
+  const full = (number: number, ref: string, mergeable: boolean | null) => ({ ...pull(number, ref), mergeable });
+
+  /** Answers the single-PR GETs from `byNumber`; everything else as FakeClient. */
+  class PrClient extends FakeClient {
+    byNumber: Record<number, unknown> = {};
+    open: unknown[] = [];
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=open")) {
+        this.calls.push({ method, path, body });
+        return (path.includes("page=1") ? this.open : []) as T;
+      }
+      const m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return this.byNumber[Number(m[1])] as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+
+  it("emits pr_unmergeable only for open factory PRs whose mergeable is false", async () => {
+    const client = new PrClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/");
+    client.open = [
+      pull(1, "factory/wi_a"), pull(2, "factory/wi_b"), pull(3, "factory/wi_c"), pull(4, "feature/x"),
+    ];
+    client.byNumber = {
+      1: full(1, "factory/wi_a", false),
+      2: full(2, "factory/wi_b", true),
+      3: full(3, "factory/wi_c", null),
+      4: full(4, "feature/x", false),
+    };
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "pr_unmergeable", pr_number: 1, head_branch: "factory/wi_a", head_sha: "head1", base_sha: "base1" },
+    ]);
+    const gets = client.calls.filter((c) => c.method === "GET").map((c) => c.path);
+    expect(gets.some((p) => p.startsWith("/repos/o/r/pulls?state=open"))).toBe(true);
+    expect(gets.filter((p) => /^\/repos\/o\/r\/pulls\/\d+$/.test(p)).sort()).toEqual([
+      "/repos/o/r/pulls/1", "/repos/o/r/pulls/2", "/repos/o/r/pulls/3",
+    ]);
+  });
+});

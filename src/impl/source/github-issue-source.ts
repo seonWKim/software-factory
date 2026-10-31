@@ -28,7 +28,13 @@ interface GhPull {
   merged_at: string | null;
   merge_commit_sha: string | null;
   updated_at: string;
-  head: { ref: string };
+  head: { ref: string; sha: string };
+  base: { ref: string; sha: string };
+}
+interface GhPullFull extends GhPull {
+  /** null while GitHub is still computing it. */
+  mergeable: boolean | null;
+  merged_by: GhUser | null;
 }
 
 interface Cursor {
@@ -107,7 +113,7 @@ export class GitHubIssueSource implements SourceAdapter {
       if (!p.head.ref.startsWith(this.branchPrefix)) continue;
       if (p.merged_at && p.merge_commit_sha) {
         // The list endpoint omits merged_by; the single-PR endpoint has it.
-        const full = await this.client.request<{ merged_by: GhUser | null }>("GET", `${base}/pulls/${p.number}`);
+        const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${base}/pulls/${p.number}`);
         events.push({
           kind: "pr_merged",
           pr_number: p.number,
@@ -118,6 +124,22 @@ export class GitHubIssueSource implements SourceAdapter {
       } else {
         events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref });
       }
+    }
+
+    // Open factory PRs that cannot merge into their base. Not cursored: reported on every poll while it lasts,
+    // and the controller keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
+    const open = await this.client.list<GhPull>(`${base}/pulls?state=open&sort=updated&direction=desc`);
+    for (const p of open) {
+      if (!p.head.ref.startsWith(this.branchPrefix)) continue;
+      const full = await this.client.request<GhPullFull>("GET", `${base}/pulls/${p.number}`);
+      if (full.mergeable !== false) continue;
+      events.push({
+        kind: "pr_unmergeable",
+        pr_number: full.number,
+        head_branch: full.head.ref,
+        head_sha: full.head.sha,
+        base_sha: full.base.sha,
+      });
     }
 
     return { events, next_cursor: JSON.stringify(next) };

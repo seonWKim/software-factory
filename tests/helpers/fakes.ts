@@ -9,7 +9,7 @@ import type { PollResult, SourceAdapter, SourceEvent } from "../../src/interface
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
 export const config: FactoryConfig = {
-  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main" },
+  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", test_command: ["npm", "test"] },
   intake_label: "factory",
   branch_prefix: "factory/",
   dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 },

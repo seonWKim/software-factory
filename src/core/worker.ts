@@ -37,7 +37,7 @@ export interface WorkerDeps {
   awake: KeepAwake;
 }
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update"];
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 
@@ -147,6 +147,7 @@ export class Worker {
   }
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal): Promise<Record<string, unknown>> {
+    if (run.kind === "update") return this.update(run, item, ctx, signal);
     const { repo } = this.d.config;
     const branch = run.kind === "triage" ? null : branchFor(item, this.d.config.branch_prefix);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch });
@@ -249,6 +250,86 @@ export class Worker {
     return { review: v, tokens: tokensOf(result) };
   }
 
+  /**
+   * Merges origin/<base> into the PR branch in a fresh worktree, runs the test command, and pushes only a clean,
+   * passing merge (never a force push). No agent. Conflicts and failing tests are reported on the PR and in
+   * `result`; the controller decides the state. Git and push errors fail the run.
+   */
+  private async update(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
+    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    const { repo, branch_prefix } = this.d.config;
+    const branch = branchFor(item, branch_prefix);
+    const baseRef = `origin/${repo.base_branch}`;
+    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+      throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
+    });
+    const comment = async (body: string) => {
+      const r = await this.d.broker.call(ctx, "github.comment", {
+        number: item.pr_number,
+        body,
+        marker: `<!-- factory:update:${run.id} -->`,
+      });
+      if (!r.ok) throw new RunFailure(r.error_code, r.message);
+    };
+    try {
+      // The sandbox starts a missing branch from base; an update must only ever touch the PR's own branch.
+      await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
+      const head_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+      const base_sha = (await this.git(handle, ["rev-parse", baseRef])).trim();
+
+      const ancestor = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseRef, "HEAD"]);
+      if (ancestor.exit_code === 0) return { result: "up_to_date", head_sha, base_sha };
+      if (ancestor.exit_code !== 1) throw new RunFailure("git_failed", `git merge-base: ${ancestor.stderr.trim()}`, true);
+
+      const merge = await this.gitRaw(
+        handle,
+        ["merge", "--no-ff", "--no-edit", "-m", `Merge ${baseRef} into ${branch}`, baseRef],
+        gitIdentity(this.d.config.agent_git_identity),
+      );
+      if (merge.exit_code !== 0) {
+        const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
+        if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+        await comment([
+          `PR #${item.pr_number} could not be updated with ${repo.base_branch}: merging \`${baseRef}\` conflicts in these files.`,
+          "Nothing was pushed. A human needs to resolve them.",
+          "",
+          ...conflicts.map((f) => `- \`${f}\``),
+        ].join("\n"));
+        return { result: "conflict", conflicts, head_sha, base_sha };
+      }
+
+      const cmd = repo.test_command;
+      const tests = await this.d.sandbox
+        .exec(handle, cmd, { env: this.d.toolEnv, timeout_ms: this.d.config.run_timeout_ms, signal })
+        .catch((err: unknown) => {
+          throw new RunFailure("test_command_failed", err instanceof Error ? err.message : "unknown");
+        });
+      if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+      if (tests.exit_code !== 0) {
+        const how = tests.timed_out ? "timed out" : `exited ${tests.exit_code ?? tests.signal ?? "abnormally"}`;
+        await comment([
+          `PR #${item.pr_number} was not updated with ${repo.base_branch}: \`${baseRef}\` merged cleanly, but the tests failed on the updated branch (\`${cmd.join(" ")}\` ${how}).`,
+          "Nothing was pushed. A human needs to look.",
+        ].join("\n"));
+        return { result: "tests_failed", exit_code: tests.exit_code, timed_out: tests.timed_out, head_sha, base_sha };
+      }
+
+      const pushed = await this.d.broker.call(ctx, "github.push_branch", {
+        workdir: handle.workdir,
+        branch,
+        base_ref: repo.base_branch,
+      });
+      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+      const merge_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+      await comment(
+        `PR #${item.pr_number} updated with ${repo.base_branch}: merged \`${baseRef}\` (${base_sha.slice(0, 8)}) cleanly and \`${cmd.join(" ")}\` passed. A human merge is still required.`,
+      );
+      return { result: "pushed", merge_sha, head_sha, base_sha };
+    } finally {
+      await this.d.sandbox.destroy(handle);
+    }
+  }
+
   private async agent(
     run: Run,
     item: WorkItem,
@@ -302,11 +383,13 @@ export class Worker {
   }
 
   private async git(handle: SandboxHandle, args: string[]): Promise<string> {
-    const r = await this.d.sandbox.exec(handle, ["git", ...args], {
-      env: { ...this.d.toolEnv, GIT_TERMINAL_PROMPT: "0" },
-    });
+    const r = await this.gitRaw(handle, args);
     if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${args[0]}: ${r.stderr.trim()}`, true);
     return r.stdout;
+  }
+
+  private gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
+    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, GIT_TERMINAL_PROMPT: "0" } });
   }
 }
 
