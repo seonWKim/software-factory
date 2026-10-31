@@ -24,7 +24,7 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 | 2. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
 | 3. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
 | 4. Label | Creates the `factory` label on the repository | — |
-| 5. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, push access, token expiry ≤ 30 days, label | Fix any `FAIL` line and rerun |
+| 5. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, push access, label; warns on a token that never expires | Fix any `FAIL` line and rerun |
 | 6. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
@@ -35,7 +35,7 @@ GitHub → Settings → Developer settings → Personal access tokens → **Fine
 
 | Field | Value |
 |---|---|
-| Expiration | 7 days (at most 30; `doctor` fails on a token that never expires) |
+| Expiration | Your choice for local use (`doctor` only warns). If the factory is shared or runs in the cloud: 30 days or less |
 | Repository access | Only select repositories → the factory's repository |
 | Contents | Read and write |
 | Issues | Read and write |

@@ -16,11 +16,12 @@ const LABEL = { color: "5319e7", description: "Work item for the software factor
 
 // doctor
 
-type Check = { ok: boolean; msg: string };
+/** `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. */
+type Check = { ok: boolean; msg: string; warn?: boolean };
 
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   const checks: Check[] = [];
-  const add = (ok: boolean, msg: string) => checks.push({ ok, msg });
+  const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
     const s = await stat(loaded.secretsFile);
@@ -49,11 +50,12 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     const r = await client.request<{ permissions?: { push?: boolean } }>("GET", `/repos/${repo.owner}/${repo.name}`);
     add(r.permissions?.push === true, `GitHub token can push to ${repo.owner}/${repo.name}`);
     const exp = await client.tokenExpiration(repo);
-    if (exp === null) add(false, `GitHub token expires (it never does; regenerate it with ≤ ${MAX_TOKEN_DAYS} days)`);
+    // Local use may keep a non-expiring token; a shared or cloud deployment should not.
+    if (exp === null) add(false, `GitHub token never expires (fine locally; use ≤ ${MAX_TOKEN_DAYS} days when shared)`, true);
     else if (Number.isNaN(exp.getTime())) add(false, "GitHub token expiry is readable");
     else {
       const days = Math.round((exp.getTime() - Date.now()) / 86_400_000);
-      add(days <= MAX_TOKEN_DAYS, `GitHub token expires in ${days} days (limit ${MAX_TOKEN_DAYS})`);
+      add(days <= MAX_TOKEN_DAYS, `GitHub token expires in ${days} days (recommended ≤ ${MAX_TOKEN_DAYS} when shared)`, true);
     }
   } catch (err) {
     add(false, `GitHub API: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
@@ -71,8 +73,8 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
 
 export async function doctor(loaded: Loaded): Promise<number> {
   const checks = await doctorChecks(loaded);
-  for (const c of checks) console.log(`${c.ok ? "ok  " : "FAIL"}  ${c.msg}`);
-  return checks.every((c) => c.ok) ? 0 : 1;
+  for (const c of checks) console.log(`${c.ok ? "ok  " : c.warn ? "warn" : "FAIL"}  ${c.msg}`);
+  return checks.every((c) => c.ok || c.warn) ? 0 : 1;
 }
 
 // setup
@@ -116,7 +118,7 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
       [
         `   Opening ${url}`,
         "   Create a fine-grained token with:",
-        `     Expiration:          7 days (at most ${MAX_TOKEN_DAYS})`,
+        `     Expiration:          your choice locally; ≤ ${MAX_TOKEN_DAYS} days if the factory is shared`,
         `     Repository access:   Only select repositories → ${repo.owner}/${repo.name}`,
         "     Contents:            Read and write",
         "     Issues:              Read and write",
