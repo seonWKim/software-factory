@@ -69,7 +69,7 @@ Instructions are soft; tools and permissions are hard. Credentials live only ins
 
 ## 8. Enterprise
 
-- Every infra layer is an interface with local + cloud backends: store, **sandbox**, secrets, shared storage, search, **auth**, **model** (direct API | company ML gateway | self-hosted). Local first.
+- Every infra layer is an interface with local + cloud backends: store, **sandbox**, secrets, shared storage, search, **auth**, **LLM provider** (`LLMProvider`; first impl: Anthropic, transports: Claude Code CLI on subscription locally → API / company ML gateway; other vendors or self-hosted later) and **agent runner** (`AgentRunner`; first impl: `claude -p`). Local first.
 - Environments labeled by humans: test → DB data may reach the model; prod → blocked at the model interface.
 - Tools/MCP: users can add them; automated credential-leak check + human approval; rules scoped to the tool.
 - AuthN/Z behind an `AuthProvider` interface (`resolve`, `authorize`; impls: no-auth, SSO/OIDC, GitHub permissions, policy engine), called by intake, tool wrappers and the human gate. Factory acts on behalf of `requester_id`; effective permission = requester ∩ agent. Classes: local dev (no-auth), internal low risk, team-owned, restricted data, critical (two-person rule).
