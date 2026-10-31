@@ -14,7 +14,12 @@ export type SourceEvent =
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
   /** PR events name the head branch; the controller maps it back to a work item. Reverts: Phase 2. */
   | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null }
-  | { kind: "pr_closed"; pr_number: number; head_branch: string };
+  | { kind: "pr_closed"; pr_number: number; head_branch: string }
+  /**
+   * An open factory PR the forge reports as not mergeable into its base (GitHub: `mergeable === false`).
+   * Delivered on every poll while it stays so; the shas let the controller key one update per (head, base).
+   */
+  | { kind: "pr_unmergeable"; pr_number: number; head_branch: string; head_sha: string; base_sha: string };
 
 export interface PollResult {
   events: SourceEvent[];
