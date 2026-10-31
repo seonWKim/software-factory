@@ -9,6 +9,8 @@ export interface TriageOutput {
   desired_output: string;
   scope: string;
   allowed_paths: string[];
+  /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
+  files_to_change: string[];
   tier: Tier;
   tier_reason: string;
 }
@@ -31,13 +33,14 @@ const strings = { type: "array", items: { type: "string" } };
 export const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["problem", "done_criteria", "desired_output", "scope", "allowed_paths", "tier", "tier_reason"],
+  required: ["problem", "done_criteria", "desired_output", "scope", "allowed_paths", "files_to_change", "tier", "tier_reason"],
   properties: {
     problem: { type: "string" },
     done_criteria: { ...strings, minItems: 1 },
     desired_output: { type: "string" },
     scope: { type: "string" },
     allowed_paths: { ...strings, minItems: 1 },
+    files_to_change: strings,
     tier: tierSchema,
     tier_reason: { type: "string" },
   },
@@ -76,9 +79,14 @@ function isSafePath(p: string): boolean {
   return p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
 }
 
+/** A path is covered when it equals an allowed path, or sits under an allowed path that ends in `/`. */
+function isCovered(path: string, allowed: string[]): boolean {
+  return allowed.some((a) => path === a || (a.endsWith("/") && path.startsWith(a)));
+}
+
 export function parseTriage(v: unknown): Validation<TriageOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
-  const { problem, done_criteria, desired_output, scope, allowed_paths, tier, tier_reason } = v;
+  const { problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason } = v;
   if (!isStr(problem) || !isStr(desired_output) || !isStr(scope) || !isStr(tier_reason)) {
     return { ok: false, error: "missing text field" };
   }
@@ -86,8 +94,16 @@ export function parseTriage(v: unknown): Validation<TriageOutput> {
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
     return { ok: false, error: "allowed_paths" };
   }
+  if (!isStrs(files_to_change) || !files_to_change.every(isSafePath)) return { ok: false, error: "files_to_change" };
+  const uncovered = files_to_change.filter((p) => !isCovered(p, allowed_paths));
+  if (uncovered.length > 0) {
+    return { ok: false, error: `files_to_change not covered by allowed_paths: ${uncovered.join(", ")}` };
+  }
   if (!isTier(tier)) return { ok: false, error: "tier" };
-  return { ok: true, value: { problem, done_criteria, desired_output, scope, allowed_paths, tier, tier_reason } };
+  return {
+    ok: true,
+    value: { problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason },
+  };
 }
 
 export function parseImplement(v: unknown): Validation<ImplementOutput> {
