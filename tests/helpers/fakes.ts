@@ -87,6 +87,10 @@ export class FakeSandbox implements Sandbox {
   destroyed = 0;
   /** Commits the next implement run "makes". */
   commits: string[] = ["c1"];
+  /** Files `git diff --name-only` reports for the branch against base (returned NUL-separated, as with `-z`). */
+  changedFiles: string[] = [];
+  /** Every git command line the worker ran, for asserting on order and arguments. */
+  gitCalls: string[] = [];
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     this.created.push(spec);
@@ -94,11 +98,14 @@ export class FakeSandbox implements Sandbox {
   }
   async exec(_h: SandboxHandle, cmd: readonly string[], _o: ExecOptions): Promise<ExecResult> {
     const args = cmd.slice(1).join(" ");
+    this.gitCalls.push(args);
     const out = (stdout: string): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
     if (args === "rev-parse HEAD") return out("base\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
+    if (args.startsWith("rev-parse --verify")) return out("basesha\n");
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
+    if (args.startsWith("diff --name-only")) return out(this.changedFiles.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff")) return out("+ a change\n");
     return out("");
   }

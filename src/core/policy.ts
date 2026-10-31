@@ -38,3 +38,22 @@ export function branchFor(item: Pick<WorkItem, "id">, prefix: string): string {
 export function workItemIdFromBranch(branch: string, prefix: string): string | null {
   return branch.startsWith(prefix) ? branch.slice(prefix.length) : null;
 }
+
+/**
+ * A path is covered when it equals an allowed path, or sits under an allowed path that ends in `/`.
+ * Shared by triage validation (`files_to_change`) and the pre-push scope gate, so both use one rule.
+ */
+export function isCovered(path: string, allowed: readonly string[]): boolean {
+  return allowed.some((a) => path === a || (a.endsWith("/") && path.startsWith(a)));
+}
+
+/**
+ * Scope gate (design §4): given the NUL-separated output of
+ * `git diff --name-only -z --no-renames <base>...HEAD` and the item's allowed_paths, returns every changed
+ * path that no allowed path covers, sorted and without duplicates. Empty means the branch may be pushed.
+ * With `--no-renames` a rename shows as a delete of the old path plus an add of the new one, so both are checked.
+ */
+export function scopeViolations(nameOnlyZ: string, allowed: readonly string[]): string[] {
+  const changed = new Set(nameOnlyZ.split("\0").filter((p) => p.length > 0));
+  return [...changed].filter((p) => !isCovered(p, allowed)).sort();
+}

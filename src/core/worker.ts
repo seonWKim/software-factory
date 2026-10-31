@@ -8,7 +8,7 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { branchFor } from "./policy.js";
+import { branchFor, scopeViolations } from "./policy.js";
 import type { Run, RunKind, RunOutcome, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -174,7 +174,10 @@ export class Worker {
   }
 
   private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
+    const base = this.d.config.repo.base_branch;
     const start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    // Resolved before the agent runs: its writable git dir includes refs, so it could move origin/<base>.
+    const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
     const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     const previous = await this.previousContext(item);
 
@@ -192,6 +195,7 @@ export class Worker {
 
     const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
     if (commits.length === 0) throw new RunFailure("no_commits", "the implementer made no commits");
+    await this.scopeGate(run, item, handle, ctx, baseSha);
     for (const sha of commits) {
       const subject = (await this.git(handle, ["log", "-1", "--format=%s", sha])).trim();
       const h = await this.d.store.appendHandoff(
@@ -202,7 +206,6 @@ export class Worker {
     }
 
     const branch = branchFor(item, this.d.config.branch_prefix);
-    const base = this.d.config.repo.base_branch;
     const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
     if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
     const issue = item.source.id.split("#")[1];
@@ -215,6 +218,32 @@ export class Worker {
     if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
     const content = pr.content as { number: number };
     return { pr_number: content.number, commits: commits.length, tokens: tokensOf(result) };
+  }
+
+  /**
+   * Scope gate (design §4): runs before every push. Checks the cumulative branch diff against the base SHA
+   * (three-dot, so files only base changed are left out) with the same coverage rule as triage. Not a dial.
+   */
+  private async scopeGate(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, baseSha: string) {
+    const diff = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`]);
+    const outside = scopeViolations(diff, item.allowed_paths);
+    if (outside.length === 0) return;
+    const body = [
+      "## Factory scope check: push blocked",
+      "",
+      "The implementer changed files outside the approved allowed paths, so the branch was not pushed:",
+      "",
+      ...outside.map((p) => `- \`${p}\``),
+    ].join("\n");
+    const posted = await this.d.broker.call(ctx, "github.comment", {
+      number: Number(item.source.id.split("#")[1]),
+      body,
+      marker: `<!-- factory:scope:${run.id} -->`,
+    });
+    if (!posted.ok) {
+      this.d.log.warn("scope violation comment failed", { run_id: run.id, error_code: posted.error_code });
+    }
+    throw new RunFailure("scope_violation", `files outside allowed_paths: ${outside.join(", ")}`.slice(0, 500));
   }
 
   private async review(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
