@@ -189,6 +189,91 @@ describe("one issue to one merged PR", () => {
     expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
   });
 
+  it("an implement run that changes a file outside allowed_paths fails with scope_violation before any push", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const f = await factory(runner);
+    f.sandbox.changedFiles = [".github/workflows/scope.yml", "src/core/worker.ts", "package.json"];
+    f.source.queue.push({ kind: "item_requested", source: issueRef(11), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(11), comment_id: "111", approver: alice });
+    await f.step();
+
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#11"))!;
+    expect(item.blocked_reason).toBe("run_failed:implement:scope_violation");
+    const run = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation", infra: false });
+    if (run.outcome?.status !== "failed") return;
+    expect(run.outcome.detail).toContain("src/core/worker.ts");
+    expect(run.outcome.detail).toContain("package.json");
+    expect(run.outcome.detail).not.toContain(".github/workflows/scope.yml");
+
+    const names = f.broker.calls.map((c) => c.name);
+    expect(names).not.toContain("github.push_branch");
+    expect(names).not.toContain("github.open_pr");
+    expect(await f.store.listHandoffs(item.id)).toEqual([]);
+
+    const comments = f.broker.calls.filter((c) => c.name === "github.comment");
+    expect(comments).toHaveLength(1);
+    const args = comments[0]!.args as { number: number; body: string; marker: string };
+    expect(args.number).toBe(11);
+    expect(args.body).toContain("- `src/core/worker.ts`");
+    expect(args.body).toContain("- `package.json`");
+    expect(args.marker).toBe(`<!-- factory:scope:${run.id} -->`);
+
+    // The diff was taken against the base SHA resolved before the agent ran, over the whole branch.
+    const resolve = f.sandbox.gitCalls.indexOf("rev-parse --verify --end-of-options origin/main^{commit}");
+    expect(resolve).toBeGreaterThanOrEqual(0);
+    expect(f.sandbox.gitCalls).toContain("diff --name-only -z --no-renames basesha...HEAD");
+  });
+
+  it("a scope violation whose issue comment fails still fails the run with scope_violation", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const f = await factory(runner);
+    const call = f.broker.call.bind(f.broker);
+    f.broker.call = async (ctx, name, args) => {
+      if (name === "github.comment") {
+        f.broker.calls.push({ ctx, name, args });
+        return { ok: false, error_code: "egress_blocked", message: "blocked" };
+      }
+      return call(ctx, name, args);
+    };
+    f.sandbox.changedFiles = ["src/core/worker.ts"];
+    f.source.queue.push({ kind: "item_requested", source: issueRef(12), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(12), comment_id: "112", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#12"))!;
+    expect(item.blocked_reason).toBe("run_failed:implement:scope_violation");
+    expect(f.broker.calls.some((c) => c.name === "github.comment")).toBe(true);
+    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
+  });
+
+  it("a scope violation detail is truncated to the 500-char outcome limit", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const f = await factory(runner);
+    f.sandbox.changedFiles = Array.from({ length: 100 }, (_, i) => `outside/file-${i}.ts`);
+    f.source.queue.push({ kind: "item_requested", source: issueRef(13), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(13), comment_id: "113", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#13"))!;
+    const run = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
+    if (run.outcome?.status !== "failed") throw new Error("expected failure");
+    expect(run.outcome.error_code).toBe("scope_violation");
+    expect(run.outcome.detail.length).toBeLessThanOrEqual(500);
+    const body = (f.broker.calls.find((c) => c.name === "github.comment")!.args as { body: string }).body;
+    expect(body).toContain("outside/file-99.ts");
+  });
+
   it("a host sleep mid-implement does not lose the run: the worker renews, the reaper waits", async () => {
     let f!: Awaited<ReturnType<typeof factory>>;
     const runner = new FakeRunner({
