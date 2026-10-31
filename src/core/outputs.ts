@@ -1,3 +1,4 @@
+import { isCovered } from "./policy.js";
 import type { Tier } from "./types.js";
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
@@ -77,11 +78,6 @@ const isTier = (v: unknown): v is Tier => Number.isInteger(v) && (v as number) >
 /** Repo-relative, no traversal, no absolute paths. */
 function isSafePath(p: string): boolean {
   return p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
-}
-
-/** A path is covered when it equals an allowed path, or sits under an allowed path that ends in `/`. */
-function isCovered(path: string, allowed: string[]): boolean {
-  return allowed.some((a) => path === a || (a.endsWith("/") && path.startsWith(a)));
 }
 
 export function parseTriage(v: unknown): Validation<TriageOutput> {
