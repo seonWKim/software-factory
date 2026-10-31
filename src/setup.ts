@@ -240,15 +240,36 @@ function step(n: number, title: string): void {
   console.log(`\n${n}. ${title}`);
 }
 
+/** Creates the secret file from the template, then appends any template key the file lacks, empty. */
 export async function ensureSecretFile(file: string, template: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await chmod(dirname(file), 0o700);
+  const text = await readFile(template, "utf8");
   try {
     await stat(file);
   } catch {
-    await writeFile(file, await readFile(template, "utf8"), { mode: 0o600 });
+    await writeFile(file, text, { mode: 0o600 });
   }
   await chmod(file, 0o600);
+  const added = await addMissingKeys(file, keysOf(text));
+  if (added.length > 0) console.log(`   added empty ${added.join(", ")} (fill in as needed)`);
+}
+
+function keysOf(text: string): string[] {
+  return [...text.matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map((m) => m[1]!);
+}
+
+/** Appends `KEY=` for each key the file lacks. Existing lines and values are untouched; nothing is printed. */
+export async function addMissingKeys(file: string, keys: readonly string[]): Promise<string[]> {
+  const current = await readFile(file, "utf8");
+  const have = new Set(keysOf(current));
+  const missing = keys.filter((k) => !have.has(k));
+  if (missing.length === 0) return [];
+  const tmp = `${file}.tmp-${process.pid}`;
+  const sep = current.endsWith("\n") || current === "" ? "" : "\n";
+  await writeFile(tmp, `${current}${sep}${missing.map((k) => `${k}=`).join("\n")}\n`, { mode: 0o600 });
+  await rename(tmp, file);
+  return missing;
 }
 
 /** Replaces or appends `name=value`, keeping every other line. Atomic rename, mode 600. */

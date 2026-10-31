@@ -20,7 +20,7 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
-import { EnvFileSecretStore, defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
+import { EnvFileSecretStore, defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
 import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
@@ -74,12 +74,9 @@ export async function loadConfig(root = process.cwd()): Promise<Loaded> {
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
-  const store = file.store ?? { type: "sqlite" };
-  if (store.type === "mysql" && !(isSqlName(store.database) && isSqlName(store.user))) {
-    throw new Error("store.database and store.user must match [A-Za-z0-9_]+");
-  }
-
   const secretsFile = defaultSecretsFile();
+  const store = await storeConfig(file.store ?? { type: "sqlite" }, secretsFile);
+
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
   const config: FactoryConfig = {
@@ -176,6 +173,22 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+/** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */
+async function storeConfig(base: StoreConfig, secretsFile: string): Promise<StoreConfig> {
+  if (base.type !== "mysql") return base;
+  const env = await readEnvSettings(secretsFile, ["MYSQL_HOST", "MYSQL_PORT", "MYSQL_DATABASE", "MYSQL_USER"]);
+  const s = {
+    ...base,
+    host: env.get("MYSQL_HOST") ?? base.host,
+    port: Number(env.get("MYSQL_PORT") ?? base.port),
+    database: env.get("MYSQL_DATABASE") ?? base.database,
+    user: env.get("MYSQL_USER") ?? base.user,
+  };
+  if (!Number.isInteger(s.port)) throw new Error("MYSQL_PORT must be a number");
+  if (!(isSqlName(s.database) && isSqlName(s.user))) throw new Error("MySQL database and user must match [A-Za-z0-9_]+");
+  return s;
 }
 
 export async function openStore(loaded: Loaded, secrets: SecretStore, clock: Clock): Promise<FactoryStore> {

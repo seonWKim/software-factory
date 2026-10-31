@@ -74,6 +74,11 @@ describe("Secret store", () => {
     expect([...m.keys()].sort()).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"]);
   });
 
+  it("scans the MySQL password but not connection settings like the host (they would block normal output)", () => {
+    const m = parseEnvFile("MYSQL_HOST=localhost\nMYSQL_USER=factory\nMYSQL_PASSWORD=pw-value\n");
+    expect([...m.keys()]).toEqual(["MYSQL_PASSWORD"]);
+  });
+
   it("a Secret never stringifies to its value", async () => {
     const store = new EnvFileSecretStore("/nonexistent");
     (store as unknown as { loaded: Promise<Map<string, string>> }).loaded = Promise.resolve(new Map([["GITHUB_TOKEN", "ghp_value"]]));
