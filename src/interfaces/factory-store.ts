@@ -156,8 +156,19 @@ export interface ClaimInput {
 
 export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
+/** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
+export interface SchemaVersion {
+  applied: number;
+  latest: number;
+}
+
 export interface FactoryStore {
   migrate(): Promise<void>;
+  /**
+   * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
+   * nothing: no migration, no table creation, no lock. Throws when the database cannot be reached.
+   */
+  schemaVersion(): Promise<SchemaVersion>;
   close(): Promise<void>;
 
   // Work items

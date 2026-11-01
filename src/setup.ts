@@ -12,6 +12,7 @@ import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
 import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
+import type { SchemaVersion } from "./interfaces/factory-store.js";
 import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
 import { type SecretDeclaration, declaredSecrets } from "./plugins.js";
 
@@ -31,6 +32,32 @@ const GUIDED: ReadonlySet<SecretName> = new Set([CLAUDE_CODE_OAUTH_TOKEN, ANTHRO
 /** `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. */
 export type Check = { ok: boolean; msg: string; warn?: boolean };
 
+/** A check's result in one word: what doctor prints and the status page shows. */
+export type CheckStatus = "ok" | "warn" | "fail";
+
+export function checkStatus(c: Check): CheckStatus {
+  return c.ok ? "ok" : c.warn ? "warn" : "fail";
+}
+
+const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
+
+/** doctor's line for one check. */
+export function checkLine(c: Check): string {
+  return `${STATUS_WORD[checkStatus(c)]}  ${c.msg}`;
+}
+
+/** Doctor's exit code: 1 only when a check is FAIL (not warn). */
+export function checksExitCode(checks: readonly Check[]): number {
+  return checks.every((c) => checkStatus(c) !== "fail") ? 0 : 1;
+}
+
+/**
+ * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
+ * Read-only: writes nothing to the store (the MySQL check reads the schema version, it never migrates),
+ * makes no model call, and never puts a secret value in a message itself. Messages may carry error text
+ * from MySQL or GitHub, so a surface that shows them to anyone but the operator's terminal must
+ * egress-scan them first (the status page does).
+ */
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   const checks: Check[] = [];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
@@ -59,12 +86,16 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     const where = `MySQL ${db.user}@${db.host}:${db.port}/${db.database}`;
     try {
       const store = await plugins.store(secrets, await plugins.clock());
+      let v: SchemaVersion;
       try {
-        await store.migrate();
+        v = await store.schemaVersion();
       } finally {
         await store.close();
       }
-      add(true, `${where} reachable, schema up to date`);
+      if (v.applied === v.latest) add(true, `${where} reachable, schema up to date`);
+      // Not a FAIL: the factory migrates the schema when it starts (build()).
+      else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (the factory migrates it when it starts)`, true);
+      else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
     } catch (err) {
       add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
     }
@@ -216,8 +247,8 @@ export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Prom
     const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");
     checks.push({ ok: r.ok, msg: r.summary });
   }
-  for (const c of checks) console.log(`${c.ok ? "ok  " : c.warn ? "warn" : "FAIL"}  ${c.msg}`);
-  return checks.every((c) => c.ok || c.warn) ? 0 : 1;
+  for (const c of checks) console.log(checkLine(c));
+  return checksExitCode(checks);
 }
 
 // setup

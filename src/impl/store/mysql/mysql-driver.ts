@@ -12,6 +12,7 @@ export interface MysqlOptions {
 }
 
 const ER_DUP_ENTRY = 1062;
+const ER_NO_SUCH_TABLE = 1146;
 const ER_LOCK_WAIT_TIMEOUT = 1205;
 const ER_LOCK_DEADLOCK = 1213;
 const TX_ATTEMPTS = 5;
@@ -64,6 +65,17 @@ export class MysqlDriver implements SqlDriver {
     } finally {
       await c.query("SELECT RELEASE_LOCK('software_factory_migrate')").catch(() => undefined);
       c.release();
+    }
+  }
+
+  /** One SELECT on the pool: no named lock, no CREATE TABLE. A missing table means nothing applied yet. */
+  async schemaVersion(): Promise<{ applied: number; latest: number }> {
+    try {
+      const [row] = await all(this.pool, "SELECT MAX(version) AS v FROM schema_migrations");
+      return { applied: Number(row?.v ?? 0), latest: MIGRATIONS.length };
+    } catch (err) {
+      if (errno(err) === ER_NO_SUCH_TABLE) return { applied: 0, latest: MIGRATIONS.length };
+      throw err;
     }
   }
 

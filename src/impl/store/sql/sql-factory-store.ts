@@ -42,6 +42,7 @@ import type {
   OpenBudgetCheckpointInput,
   RecordVerdictInput,
   RecordVerdictResult,
+  SchemaVersion,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
@@ -75,6 +76,10 @@ export class SqlFactoryStore implements FactoryStore {
 
   migrate(): Promise<void> {
     return this.db.migrate();
+  }
+
+  schemaVersion(): Promise<SchemaVersion> {
+    return this.db.schemaVersion();
   }
 
   close(): Promise<void> {

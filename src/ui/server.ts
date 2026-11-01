@@ -1,5 +1,5 @@
 // `factory ui`: a read-only status page over FactoryStore (design §9, architecture §1).
-// node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only. The Host header must name
+// node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too). The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash), same-origin fetches and same-origin GET forms.
 
@@ -49,6 +49,10 @@ function html(status: number, body: string, extra: Record<string, string> = {}):
   return { status, headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS, ...extra }, body };
 }
 
+function json(status: number, value: unknown): UiResponse {
+  return { status, headers: { "content-type": "application/json; charset=utf-8", ...SECURITY_HEADERS }, body: `${JSON.stringify(value)}\n` };
+}
+
 function error(status: number, message: string, extra: Record<string, string> = {}): UiResponse {
   return html(status, page(`${status}`, `<h1>${esc(status)}</h1><p>${esc(message)}</p>`), extra);
 }
@@ -68,8 +72,11 @@ export async function respond(d: UiDeps, req: UiRequest): Promise<UiResponse> {
   if (url.pathname === "/") {
     const parsed = parseFilters(url.searchParams);
     if (!parsed.ok) return error(400, parsed.error);
-    return html(200, await renderIndex(d, parsed.filters, url.pathname + url.search));
+    const healthRefresh = url.searchParams.get("health") === "refresh";
+    return html(200, await renderIndex(d, parsed.filters, url.pathname + url.search, healthRefresh));
   }
+
+  if (url.pathname === "/api/health") return json(200, await d.health.report(d.scanner));
 
   const m = /^\/items\/([^/]+)$/.exec(url.pathname);
   if (m) {

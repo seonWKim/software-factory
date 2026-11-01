@@ -10,6 +10,7 @@ import {
   isFiltered, runKindOf, searchKeys,
 } from "./filters.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
+import type { HealthMonitor } from "./health.js";
 import { type Level, NEEDS_YOU, type PriorityInput, rank } from "./priority.js";
 import { Withholder } from "./withhold.js";
 
@@ -23,6 +24,8 @@ export interface UiDeps {
   lease_ms: number;
   /** The forge's URL for PR `n` of `project` ("owner/name"). */
   prUrl(project: string, n: number): string;
+  /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
+  health: HealthMonitor;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -72,8 +75,11 @@ class Ctx {
   }
 }
 
-/** `self` is this page's path and query, for the noscript Refresh link. */
-export async function renderIndex(d: UiDeps, f: Filters, self = "/"): Promise<string> {
+/**
+ * `self` is this page's path and query, for the noscript Refresh link. `healthRefresh`: the Health panel's
+ * refresh link asked for a fresh run (still at most one a minute).
+ */
+export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefresh = false): Promise<string> {
   const c = new Ctx(d);
   const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const rows = await listRows(c, f);
@@ -81,6 +87,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/"): Promise<st
     await totalsSection(c),
     filtersSection(f, facetCounts(rows, f)),
     await itemsSection(c, applyFilters(rows, f), f),
+    await d.health.section(d.scanner, { refresh: healthRefresh }),
     await runningSection(c),
     await queueSection(c),
   ];
