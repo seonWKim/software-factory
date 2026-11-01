@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { uiPort } from "../src/compose.js";
@@ -107,28 +108,42 @@ describe("ui: read-only status page", () => {
     expect(ui.port).toBeGreaterThan(0);
   });
 
-  it("GET / shows every section in order with the seeded items and runs", async () => {
+  it("GET / shows every section in order: one ranked list, with what to do for items that wait on a person", async () => {
     const { port, items, claimed } = await seeded();
     const page = await get(port, "/");
     expect(page.status).toBe(200);
     expect(page.headers["content-type"]).toMatch(/^text\/html; charset=utf-8/);
-    expect(page.body).toContain('<meta http-equiv="refresh" content="5">');
-    expect(page.body).not.toMatch(/<script/i);
+    expect(page.body).not.toContain('http-equiv="refresh"');
+    expect(page.body.match(/<script/gi)).toHaveLength(1);
 
-    const order = ["needs", "running", "queue", "items", "totals"].map((id) => page.body.indexOf(`<section id="${id}">`));
+    const order = ["totals", "filters", "items", "running", "queue"].map((id) => page.body.indexOf(`<section id="${id}">`));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(page.body).not.toContain('<section id="waiting">');
+    expect(page.body).not.toContain('<section id="needs">');
 
-    const needs = section(page.body, "needs");
-    expect(needs).toContain("<h2>Needs you (2)</h2>");
     expect(page.body).toMatch(/<title>[^<]*\(2\)[^<]*<\/title>/);
-    expect(needs).toContain("spec ready");
-    expect(needs).toContain("ready to merge");
-    expect(needs).toContain(`href="https://github.com/o/r/issues/1"`);
-    expect(needs).toContain(`href="https://github.com/o/r/pull/42"`);
-    expect(needs).toContain("Merge me");
-    expect(needs).not.toContain("Running item");
+    expect(section(page.body, "filters")).toContain("Needs you (2)");
+
+    // Ranked: ready to merge, needs approval, stuck (stale heartbeat), queued. CLOSED hidden.
+    const list = rows(page.body);
+    expect(list.map((r) => r[2])).toEqual([
+      expect.stringContaining("Merge me"),
+      expect.stringContaining("Spec for"),
+      expect.stringContaining("Running item"),
+      expect.stringContaining("o/r#5"),
+    ]);
+    expect(list[0]![0]).toContain("ready to merge");
+    expect(list[0]![5]).toContain("ready to merge");
+    expect(list[0]![5]).toContain(`href="https://github.com/o/r/pull/42"`);
+    expect(list[0]![6]).toContain(`href="https://github.com/o/r/pull/42"`);
+    expect(list[0]![4]).toBe("2");
+    expect(list[1]![0]).toContain("needs approval");
+    expect(list[1]![5]).toContain("spec ready");
+    expect(list[1]![1]).toContain(`href="https://github.com/o/r/issues/1"`);
+    expect(list[2]![0]).toMatch(/stuck \d+ min/);
+    expect(list[2]![5]).toBe("");
+    expect(list[3]![0]).toContain("queued triage");
+    expect(section(page.body, "items")).not.toContain("Done item");
 
     const running = section(page.body, "running");
     expect(running).toContain("Running item");
@@ -142,11 +157,6 @@ describe("ui: read-only status page", () => {
     expect(queue).toContain("o/r#5"); // no title: source id
     expect(queue).toContain("triage");
     expect(queue).not.toContain("Running item");
-
-    const all = section(page.body, "items");
-    for (const t of ["Merge me", "Running item", "o/r#5"]) expect(all).toContain(t);
-    expect(all).not.toContain("Done item"); // CLOSED hidden by default
-    expect(all).toContain(`href="https://github.com/o/r/pull/42"`);
 
     const totals = section(page.body, "totals");
     expect(totals).toMatch(/CLOSED<\/th><td>1</);
@@ -170,7 +180,8 @@ describe("ui: read-only status page", () => {
     const { port, items } = await seeded();
     const page = await get(port, `/items/${items.done.id}`);
     expect(page.status).toBe(200);
-    expect(page.body).toContain('<meta http-equiv="refresh" content="5">');
+    expect(page.body).not.toContain('http-equiv="refresh"');
+    expect(page.body).toContain('id="ago"');
     const timeline = section(page.body, "timeline");
     expect(timeline).toContain("intake");
     expect(timeline).toContain("CLOSED");
@@ -182,11 +193,13 @@ describe("ui: read-only status page", () => {
     expect(runs).toContain("agent_error");
   });
 
-  it("escapes HTML: a <script> title never appears raw on any page", async () => {
+  it("escapes HTML: a <script> title never appears raw on any page; the only script is the page's own", async () => {
     const { port, items } = await seeded();
-    for (const path of ["/", "/?closed=1", `/items/${items.waiting.id}`, `/items/${items.done.id}`]) {
+    for (const path of ["/", "/?closed=1", "/?q=script", `/items/${items.waiting.id}`, `/items/${items.done.id}`]) {
       const { body } = await get(port, path);
-      expect(body).not.toMatch(/<script/i);
+      expect(body).not.toMatch(/<script>alert/i);
+      expect(body.match(/<script/gi), path).toHaveLength(1);
+      expect(body).toContain("<script>(function(){");
     }
     expect((await get(port, "/")).body).toContain("Spec for &lt;script&gt;alert(1)&lt;/script&gt; the gate");
   });
@@ -275,9 +288,16 @@ describe("ui: config and intake", () => {
 
 const HOUR = 60 * 60 * 1000;
 
-/** The rows (<tr>…</tr>) of the Needs you table, header excluded. */
-function needsRows(body: string): string[] {
-  return section(body, "needs").split("<tr>").slice(2).map((r) => r.slice(0, r.indexOf("</tr>")));
+/** The cells of each row of the work item list: state, number, title, stage, tier, next step, PR, waiting. */
+function rows(body: string): string[][] {
+  const list = section(body, "items");
+  const tbody = list.indexOf("<tbody>");
+  if (tbody < 0) return [];
+  return list
+    .slice(tbody + "<tbody>".length, list.indexOf("</tbody>"))
+    .split("</tr>")
+    .filter((r) => r.includes("<td>"))
+    .map((r) => r.split("<td>").slice(1).map((c) => c.slice(0, c.lastIndexOf("</td>"))));
 }
 
 async function startOn(store: FactoryStore, clock: FakeClock) {
@@ -332,77 +352,87 @@ async function seededNeeds() {
   return { store, port: await startOn(store, clock) };
 }
 
-describe("ui: Needs you", () => {
-  it("one row per waiting item, oldest wait first, with number, title, wait, reason, link and command", async () => {
+describe("ui: Needs you (?state=needs)", () => {
+  it("one row per waiting item: ready to merge, then needs approval, then the rest, oldest wait first", async () => {
     const { port } = await seededNeeds();
-    const page = await get(port, "/");
-    const needs = section(page.body, "needs");
-    expect(needs).toContain("<h2>Needs you (9)</h2>");
+    const page = await get(port, "/?state=needs");
     expect(page.body).toMatch(/<title>[^<]*\(9\)[^<]*<\/title>/);
-    expect(needs).not.toContain("Closed item");
+    expect(section(page.body, "filters")).toContain("Needs you (9)");
+    expect(section(page.body, "items")).not.toContain("Closed item");
 
-    const rows = needsRows(page.body);
-    const titles = ["Spec item", "Merge item", "Failed item", "Maxed item", "Loops item", "Conflict item", "Unknown item", "Old spec", "Restarted item"];
-    expect(rows).toHaveLength(titles.length);
-    rows.forEach((r, i) => expect(r, titles[i]).toContain(titles[i]));
+    const list = rows(page.body);
+    const titles = ["Merge item", "Spec item", "Old spec", "Failed item", "Maxed item", "Loops item", "Conflict item", "Unknown item", "Restarted item"];
+    expect(list.map((r) => r[2])).toEqual(titles.map((t) => expect.stringContaining(t)));
+    const by = Object.fromEntries(titles.map((t, i) => [t, list[i]!])) as Record<string, string[]>;
+    const [, number, , , , next, , waiting] = [0, 1, 2, 3, 4, 5, 6, 7];
 
-    const [spec, merge, failed, maxed, loops, conflict, unknown, oldSpec, restarted] = rows as [string, string, string, string, string, string, string, string, string];
     // Issue number and how long it has waited (from the change that set its current block, not updated_at).
-    expect(spec).toContain("<td>#1</td>");
-    expect(spec).toContain("<td>10h 00m</td>");
-    expect(merge).toContain("<td>9h 00m</td>");
-    expect(failed).toContain("<td>8h 00m</td>");
-    expect(maxed).toContain("<td>7h 00m</td>");
-    expect(conflict).toContain("<td>#6</td>");
-    expect(conflict).toContain("<td>4h 00m</td>");
-    expect(unknown).toContain("<td>3h 30m</td>");
+    expect(by["Spec item"]![number]).toContain(">#1</a>");
+    expect(by["Spec item"]![waiting]).toBe("10h 00m");
+    expect(by["Merge item"]![waiting]).toBe("9h 00m");
+    expect(by["Failed item"]![waiting]).toBe("8h 00m");
+    expect(by["Maxed item"]![waiting]).toBe("7h 00m");
+    expect(by["Conflict item"]![number]).toContain(">#6</a>");
+    expect(by["Conflict item"]![waiting]).toBe("4h 00m");
+    expect(by["Unknown item"]![waiting]).toBe("3h 30m");
+    expect(by["Old spec"]![waiting]).toBe("3h 00m");
 
+    const spec = by["Spec item"]![next]!;
     expect(spec).toContain("spec ready");
     expect(spec).toContain(`href="https://github.com/o/r/issues/1#issuecomment-11"`);
     expect(spec).toContain("/approve or /reject &lt;reason&gt;");
+    expect(by["Spec item"]![0]).toContain("needs approval");
 
+    const merge = by["Merge item"]![next]!;
     expect(merge).toContain("ready to merge");
     expect(merge).toContain(`href="https://github.com/o/r/pull/42"`);
     expect(merge).toContain("merge the PR");
 
+    const failed = by["Failed item"]![next]!;
     expect(failed).toContain("failed: diff_too_large");
     expect(failed).toContain(`href="https://github.com/o/r/issues/3#issuecomment-33"`);
     expect(failed).toContain("/retry");
+    expect(by["Failed item"]![0]).toContain(">failed<");
 
     // max_attempts / max_restart: the code of the latest failed run; no stored link falls back to the issue.
+    const maxed = by["Maxed item"]![next]!;
     expect(maxed).toContain("failed: agent_failed");
     expect(maxed).not.toContain("agent_timed_out");
     expect(maxed).toContain(`href="https://github.com/o/r/issues/4"`);
     expect(maxed).toContain("/retry");
-    expect(restarted).toContain("<td>2h 45m</td>");
-    expect(restarted).toContain("failed: lease_expired");
-    expect(restarted).toContain("/retry");
+    expect(by["Restarted item"]![waiting]).toBe("2h 45m");
+    expect(by["Restarted item"]![next]).toContain("failed: lease_expired");
+    expect(by["Restarted item"]![next]).toContain("/retry");
 
-    expect(loops).toContain("review found bugs too many times");
-    expect(conflict).toContain("merge conflict");
-    expect(unknown).toContain("max revisions");
-    for (const [r, n] of [[loops, 5], [conflict, 6], [unknown, 7]] as const) {
+    expect(by["Loops item"]![next]).toContain("review found bugs too many times");
+    expect(by["Loops item"]![0]).toContain("too many loops");
+    expect(by["Conflict item"]![next]).toContain("merge conflict");
+    expect(by["Unknown item"]![next]).toContain("max revisions");
+    for (const [t, n] of [["Loops item", 5], ["Conflict item", 6], ["Unknown item", 7]] as const) {
+      const r = by[t]![next]!;
       expect(r).toContain(`href="https://github.com/o/r/issues/${n}"`);
       expect(r).not.toContain("/pull/");
       for (const cmd of ["/retry", "/approve", "merge the PR"]) expect(r).not.toContain(cmd);
     }
 
+    const oldSpec = by["Old spec"]![next]!;
     expect(oldSpec).toContain("spec ready");
     expect(oldSpec).toContain(`href="https://github.com/o/r/issues/8"`);
     expect(oldSpec).not.toContain("issuecomment");
   });
 
-  it("the page has no form, button or input", async () => {
-    const { port } = await seededNeeds();
-    for (const path of ["/", "/?closed=1"]) expect((await get(port, path)).body).not.toMatch(/<(form|button|input|select|textarea)\b/i);
-  });
-
-  it("says so when nothing waits, and the title shows 0", async () => {
+  it("says so when nothing is listed, offers one next action, and the title shows 0", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const page = await get(await startOn(store, clock), "/");
-    expect(section(page.body, "needs")).toContain("<h2>Needs you (0)</h2>");
+    const port = await startOn(store, clock);
+    const page = await get(port, "/");
+    expect(section(page.body, "items")).toContain("No open work items.");
+    expect(section(page.body, "items")).toContain(`<a href="/?closed=1">Show closed items</a>`);
+    expect(section(page.body, "filters")).toContain("Needs you (0)");
     expect(page.body).toMatch(/<title>[^<]*\(0\)[^<]*<\/title>/);
+    const filtered = section((await get(port, "/?state=needs")).body, "items");
+    expect(filtered).toContain("No items match these filters.");
+    expect(filtered).toContain(`<a href="/">Clear filters</a>`);
   });
 
   it("N counts every waiting item past the 200-row list limit", async () => {
@@ -413,8 +443,159 @@ describe("ui: Needs you", () => {
       await store.transition({ id: item.id, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: n }, actor: system, reason: "x" });
     }
     const page = await get(await startOn(store, clock), "/");
-    expect(section(page.body, "needs")).toContain("<h2>Needs you (205)</h2>");
     expect(page.body).toMatch(/<title>[^<]*\(205\)[^<]*<\/title>/);
-    expect(needsRows(page.body)).toHaveLength(200);
+    expect(rows(page.body)).toHaveLength(200);
+  });
+});
+
+describe("ui: filters and search", () => {
+  it("each filter narrows the list from the query string, and each option shows its count", async () => {
+    const { port } = await seeded();
+    const titles = async (q: string) => rows((await get(port, q)).body).map((r) => r[2]!.replace(/<[^>]+>/g, ""));
+    expect(await titles("/?state=needs")).toEqual(["Merge me", expect.stringContaining("Spec for")]);
+    expect(await titles("/?state=ready_to_merge")).toEqual(["Merge me"]);
+    expect(await titles("/?state=stuck")).toEqual(["Running item"]);
+    expect(await titles("/?state=closed")).toEqual(["Done item"]);
+    expect(await titles("/?stage=REVIEW")).toEqual(["Merge me"]);
+    expect(await titles("/?stage=CLOSED")).toEqual(["Done item"]);
+    expect(await titles("/?closed=1")).toContain("Done item");
+    expect(await titles("/?tier=2")).toEqual(["Merge me"]);
+    expect(await titles("/?kind=implement")).toEqual(["Running item"]);
+    expect(await titles("/?kind=triage")).toEqual(["o/r#5"]);
+    expect(await titles("/?unblocks=1")).toEqual([]);
+    expect(await titles("/?state=needs&stage=READY")).toEqual([expect.stringContaining("Spec for")]);
+
+    const f = section((await get(port, "/?stage=REVIEW")).body, "filters");
+    expect(f).toContain("Needs you (1)");
+    expect(f).toContain("Ready to merge (1)");
+    expect(f).toContain("Unblocks others (0)");
+    expect(f).toMatch(/<option value="REVIEW" selected>REVIEW \(1\)<\/option>/);
+    expect(f).toContain("READY (1)");
+    expect(section((await get(port, "/?unblocks=1")).body, "items")).toContain("No items match these filters.");
+  });
+
+  it("search matches the issue number and the shown title", async () => {
+    const { port } = await seeded();
+    const titles = async (q: string) => rows((await get(port, q)).body).map((r) => r[2]!.replace(/<[^>]+>/g, ""));
+    expect(await titles("/?q=merge")).toEqual(["Merge me"]);
+    expect(await titles("/?q=MERGE%20ME")).toEqual(["Merge me"]);
+    expect(await titles("/?q=%235")).toEqual(["o/r#5"]);
+    expect(await titles("/?q=4")).toEqual(["Running item"]);
+    expect(await titles("/?q=nothing-like-this")).toEqual([]);
+    expect(section((await get(port, "/?q=merge")).body, "filters")).toContain(`value="merge"`);
+  });
+
+  it("a withheld title can be neither found nor shown in a title attribute", async () => {
+    const { port, store } = await seeded();
+    await setTitle(store, 7, `leak ${SECRET} here`);
+    const all = (await get(port, "/")).body;
+    expect(all).not.toContain(SECRET);
+    expect(section(all, "items")).toContain("[withheld: github_token]");
+    expect(rows((await get(port, "/?q=leak")).body)).toEqual([]);
+    expect(rows((await get(port, "/?q=%237")).body)).toHaveLength(1); // still found by its number
+  });
+
+  it("long titles are cut with an ellipsis and keep their full text in a title attribute", async () => {
+    const { port, store } = await seeded();
+    const long = `A ${"very ".repeat(40)}long title`;
+    await setTitle(store, 8, long);
+    const row = rows((await get(port, "/?q=%238")).body)[0]!;
+    expect(row[2]).toContain('class="title"');
+    expect(row[2]).toContain(`title="${long}"`);
+    expect(row[2]).toContain("…");
+  });
+
+  it("an unknown filter value is a 400", async () => {
+    const { port } = await seeded();
+    for (const q of ["stage=BOGUS", "state=bogus", "tier=9", "kind=deploy", "unblocks=2", "closed=yes"]) {
+      const res = await get(port, `/?${q}`);
+      expect(res.status, q).toBe(400);
+      expect(res.body).not.toContain("Merge me");
+    }
+  });
+});
+
+describe("ui: page shell, script and CSP", () => {
+  const inline = (body: string, tag: string) => {
+    const m = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(body);
+    return `sha256-${createHash("sha256").update(m![1]!, "utf8").digest("base64")}`;
+  };
+
+  it("the CSP allows only the page's own inline script and style by hash, same-origin fetch and GET forms", async () => {
+    const { port, items } = await seeded();
+    for (const path of ["/", `/items/${items.done.id}`]) {
+      const page = await get(port, path);
+      const csp = String(page.headers["content-security-policy"]);
+      expect(csp).toContain("default-src 'none'");
+      expect(csp).toContain(`script-src '${inline(page.body, "script")}'`);
+      expect(csp).toContain(`style-src '${inline(page.body, "style")}'`);
+      expect(csp).toContain("connect-src 'self'");
+      expect(csp).toContain("form-action 'self'");
+      expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).not.toContain("unsafe-inline");
+      expect(page.headers["cache-control"]).toBe("no-store");
+    }
+  });
+
+  it("no script, style, image or frame loads from anywhere, and no element has a style attribute", async () => {
+    const { port } = await seeded();
+    const { body } = await get(port, "/");
+    expect(body).not.toMatch(/\bsrc=/i);
+    expect(body).not.toMatch(/<link\b/i);
+    expect(body).not.toMatch(/\bstyle="/i);
+    expect(body).not.toMatch(/<(iframe|img|object|embed)\b/i);
+  });
+
+  it("has a GET filter form with labelled controls, a refresh button with an aria-label, and a noscript Refresh link", async () => {
+    const { port } = await seeded();
+    const { body } = await get(port, "/?stage=READY&q=spec");
+    expect(body).toContain(`<form class="filters" method="get" action="/">`);
+    for (const id of ["f-q", "f-state", "f-stage", "f-tier", "f-kind", "f-unblocks", "f-closed"]) {
+      expect(body, id).toContain(`for="${id}"`);
+      expect(body, id).toContain(`id="${id}"`);
+    }
+    expect(body).toMatch(/<button type="button" id="refresh" aria-label="Refresh now"[^>]* hidden>/);
+    expect(body).toContain(`<noscript><a href="/?stage=READY&amp;q=spec">Refresh</a></noscript>`);
+    expect(body).toContain(`updated <span id="ago">0s</span> ago`);
+    expect(body).toMatch(/<header class="top">/);
+    expect(body).toMatch(/<main>/);
+    expect(body).toMatch(/<th scope="col">/);
+    expect(body).toMatch(/<th scope="row">/);
+  });
+
+  it("the script polls every 5 s, pauses while the tab is hidden, and swaps only changed sections", async () => {
+    const { port } = await seeded();
+    const script = /<script>([\s\S]*?)<\/script>/.exec((await get(port, "/")).body)![1]!;
+    expect(() => new Function(script)).not.toThrow(); // parses as JavaScript
+    expect(script).toContain("PERIOD=5000");
+    expect(script).toContain("visibilitychange");
+    expect(script).toContain("document.hidden");
+    expect(script).toContain('querySelectorAll("main > section[id]")');
+    expect(script).toContain("cur.innerHTML!==s.innerHTML");
+    expect(script).toContain("scrollTo");
+    expect(script).toContain('classList.add("changed")');
+  });
+
+  it("the CSS has theme tokens, a dark theme, tabular numbers, a short opacity flash and none for reduced motion", async () => {
+    const { port } = await seeded();
+    const css = /<style>([\s\S]*?)<\/style>/.exec((await get(port, "/")).body)![1]!;
+    expect(css).toMatch(/:root\{--bg:/);
+    expect(css).toContain("--radius:");
+    expect(css).toContain("--sp1:");
+    expect(css).toContain("@media (prefers-color-scheme:dark)");
+    expect(css).toContain("font-variant-numeric:tabular-nums");
+    expect(css).toMatch(/tr\.changed\{animation:flash (\d+)ms/);
+    expect(Number(/tr\.changed\{animation:flash (\d+)ms/.exec(css)![1])).toBeLessThanOrEqual(200);
+    expect(css).toMatch(/@keyframes flash\{from\{opacity:[^}]*\}to\{opacity:1\}\}/);
+    expect(css).toContain("@media (prefers-reduced-motion:reduce){tr.changed{animation:none}}");
+    expect(css).toContain(".scroll{overflow-x:auto");
+    expect(css).toContain("text-overflow:ellipsis");
+  });
+
+  it("rows carry a key and a signature, so the script can highlight the ones that changed", async () => {
+    const { port, items } = await seeded();
+    const list = section((await get(port, "/")).body, "items");
+    expect(list).toMatch(new RegExp(`data-key="${items.merging.id}" data-sig="\\d+:ready_to_merge:none"`));
+    expect(list).toMatch(new RegExp(`data-key="${items.running.id}" data-sig="\\d+:stuck:running"`));
   });
 });

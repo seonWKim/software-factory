@@ -16,15 +16,26 @@ export class Withholder {
     value: string | null | undefined,
     opts: { channel?: EgressChannel; max?: number; fallback?: string } = {},
   ): Promise<string> {
+    return (await this.shown(value, opts)).html;
+  }
+
+  /**
+   * `text`'s HTML plus the plain text the page shows (full, not cut), or null when the value is empty or
+   * withheld. Search and title attributes use `plain`, so a withheld value can be neither found nor hovered.
+   */
+  async shown(
+    value: string | null | undefined,
+    opts: { channel?: EgressChannel; max?: number; fallback?: string } = {},
+  ): Promise<{ html: string; plain: string | null }> {
     if (value === null || value === undefined || value === "") {
-      return `<span class="muted">${esc(opts.fallback ?? "unknown")}</span>`;
+      return { html: `<span class="muted">${esc(opts.fallback ?? "unknown")}</span>`, plain: null };
     }
     const result = await this.scanner.scan(opts.channel ?? "log", value);
     if (!result.clean) {
       const rules = [...new Set(result.findings.map((f) => f.rule))].join(", ");
-      return `<strong>${esc(`[withheld: ${rules}]`)}</strong>`;
+      return { html: `<strong>${esc(`[withheld: ${rules}]`)}</strong>`, plain: null };
     }
     const max = opts.max ?? Infinity;
-    return esc(value.length > max ? `${value.slice(0, max)}…` : value);
+    return { html: esc(value.length > max ? `${value.slice(0, max)}…` : value), plain: value };
   }
 }
