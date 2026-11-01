@@ -82,6 +82,8 @@ form.filters label{display:flex;flex-direction:column;gap:2px;color:var(--muted)
 form.filters label.check{flex-direction:row;align-items:center;gap:var(--sp1);color:var(--fg)}
 .title{display:block;max-width:40ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .badge{display:inline-block;border-radius:var(--radius);padding:0 var(--sp1);margin:0 2px 2px 0;white-space:nowrap;background:var(--idle-bg);color:var(--idle-fg)}
+.banner{border-radius:var(--radius);padding:var(--sp1) var(--sp2);margin:0}
+.banner.ok{background:var(--ok-bg);color:var(--ok-fg)}.banner.warn{background:var(--warn-bg);color:var(--warn-fg)}.banner.bad{background:var(--bad-bg);color:var(--bad-fg)}
 .l-ready_to_merge{background:var(--ok-bg);color:var(--ok-fg)}
 .l-needs_approval,.l-needs_human{background:var(--warn-bg);color:var(--warn-fg)}
 .l-stuck{background:var(--bad-bg);color:var(--bad-fg)}

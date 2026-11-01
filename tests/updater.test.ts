@@ -12,7 +12,7 @@ import type { ExecResult } from "../src/interfaces/sandbox.js";
 import type { ChildHandle, ChildLauncher, ChildSpec, CommandRunner } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { SUPERVISED_ENV, createUpdater, supervise } from "../src/supervisor.js";
-import { recordingLog } from "./helpers/fakes.js";
+import { recordingLog, waitFor } from "./helpers/fakes.js";
 
 // A fake git remote + checkout, fake npm, and a fake process launcher. Commands touch a real temp dir
 // (worktree add creates the directory, build writes dist/), so the updater's file moves are real.
@@ -129,6 +129,7 @@ type DrainMode = "ack" | "hold" | "ignore";
 
 class FakeChild implements ChildHandle {
   drainAcknowledged = false;
+  lastError: string | null = null;
   readonly exited: Promise<number | null>;
   alive = true;
   kills: string[] = [];
@@ -181,7 +182,7 @@ class FakeLauncher implements ChildLauncher {
   }
 }
 
-function setup(opts: { runTimeoutMs?: number } = {}) {
+function setup(opts: { runTimeoutMs?: number; statusFile?: string } = {}) {
   const world = new World();
   const launcher = new FakeLauncher(world);
   const log = recordingLog();
@@ -197,6 +198,7 @@ function setup(opts: { runTimeoutMs?: number } = {}) {
     log,
     env: { PATH: "/usr/bin" },
     runTimeoutMs: opts.runTimeoutMs ?? 1000,
+    ...(opts.statusFile ? { statusFile: opts.statusFile } : {}),
   });
   return { world, launcher, log, clock, updater };
 }
@@ -403,6 +405,55 @@ describe("updater: git-worktree code change", () => {
     world.events = [];
     await updater.poll();
     expect(world.events).toEqual(["fetch"]);
+  });
+});
+
+describe("updater: git-worktree status file", () => {
+  it("reports running, building, draining, then running on the new revision; stopped on shutdown", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; rev: string | null; target_rev: string | null; child_pid: number | null };
+    const { world, launcher, updater } = setup({ statusFile: file });
+    await updater.start();
+    expect(read()).toMatchObject({ state: "running", rev: "c1", target_rev: null, child_pid: 1 });
+
+    launcher.children[0]!.drainMode = "hold";
+    world.push("c2", ["src/core/worker.ts"]);
+    const polling = updater.poll();
+    await waitFor(() => existsSync(file) && read().state === "draining", "draining status");
+    expect(read()).toMatchObject({ state: "draining", rev: "c1", target_rev: "c2", child_pid: 1 });
+    launcher.children[0]!.finishDrain();
+    await polling;
+    expect(read()).toMatchObject({ state: "running", rev: "c2", target_rev: null, child_pid: 2 });
+
+    await updater.shutdown();
+    expect(read()).toMatchObject({ state: "stopped", child_pid: null });
+  });
+  it("a child that exits on its own is crashed with its error; repeated crashes keep the first time", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; error: string | null; since: string; child_pid: number | null };
+    const { launcher, clock, updater } = setup({ statusFile: file });
+    await updater.start();
+    const pending = "1 schema step pending (state none, latest 11): run `npm run migrate`";
+    const crash = async (i: number) => {
+      launcher.children[i]!.lastError = pending;
+      launcher.children[i]!.exit(1);
+      await waitFor(() => read().state === "crashed", "crashed status");
+    };
+    await crash(0);
+    const first = read();
+    expect(first).toMatchObject({ state: "crashed", error: pending, child_pid: null });
+
+    clock.advance(30_000);
+    await updater.poll(); // restarts the child, which fails the same way
+    expect(read().state).toBe("running");
+    await crash(1);
+    expect(read()).toMatchObject({ state: "crashed", error: pending, since: first.since });
+
+    clock.advance(30_000);
+    await updater.poll();
+    launcher.children[2]!.exit(1); // no error sent: the exit code stands in
+    await waitFor(() => read().error === "exit code 1", "exit code error");
+    await updater.shutdown();
   });
 });
 

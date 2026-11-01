@@ -175,7 +175,7 @@ describe("worker pool", () => {
       onDrain: (cb: () => void) => void (onDrain = cb),
       acknowledge: async () => void s.events.push("ack"),
     };
-    const controller = { run: async (signal: AbortSignal) => new Promise<void>((r) => signal.addEventListener("abort", () => r())) };
+    const controller = { run: async (signal: AbortSignal) => new Promise<void>((r) => signal.addEventListener("abort", () => r())), tickRuns: async () => {} };
     const stop = new AbortController();
     const child = runDevChild({ controller, worker: s.pool }, channel, stop.signal);
     await waitFor(() => s.started() === 3, "three runs in flight");
