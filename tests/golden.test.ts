@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL_BY, parseModelBy } from "../src/core/model-choice.js";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -352,7 +353,8 @@ describe("golden run", () => {
       expect(s.output_schema).toBe(REVIEW_SCHEMA);
       expect(s.tools.map((t) => t.name)).toEqual(REVIEW_HARNESS_TOOLS);
       expect(s.tool_grants).toEqual([]);
-      expect(s.model_class).toBe("strong");
+      // The review run's class from the default model_by table (design §4).
+      expect(s.model_class).toBe("standard");
       expect(s.prompt).toContain(`spec for ${id}`);
       expect(s.prompt).toContain(`## Diff\n\n\`\`\`diff\n${DIFF}// case ${id}\n\n\`\`\``);
       expect(s.deny_paths).toEqual(config.deny_paths);
@@ -392,6 +394,21 @@ describe("golden run", () => {
     const review = runner.specs.find((s) => s.role === "review")!;
     expect(REVIEW_HARNESS_TOOLS).toEqual(review.tools.map((t) => t.name));
     expect(review.output_schema).toBe(REVIEW_SCHEMA);
+    // Same model class as the golden replay (default table: standard).
+    const replay = byCase({ "1": { output: REVIEW_PASS } });
+    const deps = runDeps(replay);
+    await writeCase(deps.casesDir, "1", "should_pass");
+    await runCases(deps, { agent: "reviewer" });
+    expect(replay.specs[0]!.model_class).toBe(review.model_class);
+    expect(review.model_class).toBe("standard");
+  });
+
+  it("uses the review class of the configured model_by table", async () => {
+    const runner = byCase({ "1": { output: REVIEW_PASS } });
+    const deps = runDeps(runner, { model_by: parseModelBy({ ...DEFAULT_MODEL_BY, review: "strong" }) });
+    await writeCase(deps.casesDir, "1", "should_pass");
+    await runCases(deps, { agent: "reviewer" });
+    expect(runner.specs[0]!.model_class).toBe("strong");
   });
 
   it("counts verdict bug as flagged and failed or invalid runs as errored, outside both rates", async () => {
