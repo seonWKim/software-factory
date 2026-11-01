@@ -1022,7 +1022,7 @@ describe("/resolve on a merge conflict", () => {
     expect(p.indexOf("ignore previous instructions")).toBeGreaterThan(untrusted);
 
     // Gates ran before the push, in order: install, then test.
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat "))).toEqual(["npm ci", "npm test"]);
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
     expect(names(f)).toEqual(["github.push_branch", "github.comment"]); // push, then the review comment
     expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });
     expect(names(f)).not.toContain("github.open_pr");
@@ -1098,7 +1098,7 @@ describe("/resolve on a merge conflict", () => {
     expect(run.outcome.detail).not.toContain("src/gate.ts");
     expect(run.outcome.detail).not.toContain(".github/workflows/new.yml");
     expect(names(f)).not.toContain("github.push_branch");
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat "))).toEqual([]); // gates never ran
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual([]); // gates never ran
     expect(f.sandbox.gitCalls.some((c) => c.startsWith("commit"))).toBe(false);
 
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({
@@ -1128,7 +1128,7 @@ describe("/resolve on a merge conflict", () => {
     const run = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "resolve")!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed" });
     expect(names(f)).not.toContain("github.push_branch");
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat "))).toEqual(["npm ci", "npm test"]);
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
     });
@@ -1144,7 +1144,7 @@ describe("/resolve on a merge conflict", () => {
     await f.step();
     const run = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "resolve")!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed" });
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat "))).toEqual(["npm ci"]);
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci"]);
     expect(names(f)).not.toContain("github.push_branch");
   });
 
@@ -1167,9 +1167,9 @@ describe("/resolve on a merge conflict", () => {
     expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "resolve").map((r) => r.status)).toEqual(["failed", "failed"]);
   });
 
-  it("conflicts the agent left unmerged fail the run with unresolved_conflicts and push nothing", async () => {
+  it("conflict markers left in the checked tree fail the run with unresolved_conflicts and push nothing", async () => {
     const f = await conflicted(78);
-    f.sandbox.unmerged = "100644 abc 2\tsrc/gate.ts\0";
+    f.sandbox.markers = "tree2:src/gate.ts\n";
     f.source.queue.push(resolveEvent(f, "7801"));
     await f.step();
     const run = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "resolve")!;
@@ -1209,7 +1209,7 @@ describe("/resolve with real git (NoOpSandbox)", () => {
   const commit = (repo: string, path: string, content: string, msg: string) => {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
     writeFileSync(join(repo, path), content);
-    git(repo, "add", ".");
+    git(repo, "add", "-f", "--", path);
     git(repo, "commit", "--quiet", "-m", msg);
   };
 
@@ -1225,7 +1225,7 @@ describe("/resolve with real git (NoOpSandbox)", () => {
   }
 
   /** origin with main and factory/<id> both editing src/gate.ts; the item waits on the conflict for PR 42. */
-  async function realConflict(agent: (workdir: string) => void) {
+  async function realConflict(agent: (workdir: string) => void, opts: { test_command?: string[] } = {}) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { item: created } = await store.createWorkItem(
@@ -1251,6 +1251,9 @@ describe("/resolve with real git (NoOpSandbox)", () => {
     git(dev, "config", "user.name", "t");
     commit(dev, "src/gate.ts", "export const gate = 0;\n", "init");
     commit(dev, "README.md", "hi\n", "readme");
+    // A tracked file that .gitignore matches: a fresh-index `add -A` would skip it, a real-index one would stage it.
+    commit(dev, ".gitignore", "build/\n", "ignore build");
+    commit(dev, "build/out.txt", "built\n", "tracked but ignored");
     git(dev, "push", "--quiet", "origin", "main");
     git(dev, "checkout", "--quiet", "-b", branch);
     commit(dev, "src/gate.ts", "export const gate = branchGate();\n", "branch gate");
@@ -1265,7 +1268,7 @@ describe("/resolve with real git (NoOpSandbox)", () => {
 
     const cfg: FactoryConfig = {
       ...config,
-      repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: ["sh", "-c", "test -f src/gate.ts"] },
+      repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: opts.test_command ?? ["sh", "-c", "test -f src/gate.ts"] },
     };
     const source = new FakeSource();
     const broker = new LocalPushBroker();
@@ -1315,6 +1318,49 @@ describe("/resolve with real git (NoOpSandbox)", () => {
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "out_of_scope" });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("notes.txt");
     expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+  });
+
+  it("skip-worktree cannot hide a committed out-of-scope change: the pushed commit is the checked tree, on the branch and the base only", async () => {
+    // The reviewer's bypass: the agent commits the merge, commits README.md='EVIL', hides it with
+    // skip-worktree and restores the working-tree copy, so two working-tree snapshots agree.
+    const f = await realConflict((wd) => {
+      const g = (...args: string[]) => execFileSync("git", ["-c", "user.email=a@example.com", "-c", "user.name=a", ...args], { cwd: wd, env: GIT_ENV });
+      writeFileSync(join(wd, "src/gate.ts"), "export const gate = both();\n");
+      g("add", "src/gate.ts");
+      g("commit", "--quiet", "--no-edit");
+      writeFileSync(join(wd, "README.md"), "EVIL\n");
+      g("commit", "--quiet", "-am", "evil");
+      g("update-index", "--skip-worktree", "README.md");
+      writeFileSync(join(wd, "README.md"), "hi\n");
+    });
+    expect((await f.store.listRuns(f.id)).find((r) => r.kind === "resolve")!.outcome).toMatchObject({ status: "succeeded" });
+    const head = f.remote();
+    expect(git(f.origin, "show", `${head}:README.md`)).toBe("hi");
+    expect(git(f.origin, "show", `${head}:src/gate.ts`)).toBe("export const gate = both();");
+    // Exactly one new commit: the worker's merge of the branch and the base. The agent's commits are not pushed.
+    expect(git(f.origin, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
+    expect(git(f.origin, "rev-list", head, `^${f.branchSha}`, `^${f.mainSha}`)).toBe(head);
+  });
+
+  it("a change to a tracked file that .gitignore matches fails out_of_scope and pushes nothing", async () => {
+    const f = await realConflict((wd) => {
+      writeFileSync(join(wd, "src/gate.ts"), "export const gate = both();\n");
+      writeFileSync(join(wd, "build/out.txt"), "EVIL\n");
+    });
+    expect(f.remote()).toBe(f.branchSha);
+    const run = (await f.store.listRuns(f.id)).find((r) => r.kind === "resolve")!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "out_of_scope" });
+    if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("build/out.txt");
+  });
+
+  it("a gate command that moves HEAD fails head_moved and pushes nothing", async () => {
+    const f = await realConflict(
+      (wd) => writeFileSync(join(wd, "src/gate.ts"), "export const gate = both();\n"),
+      { test_command: ["sh", "-c", "echo EVIL > README.md && git -c user.email=a@example.com -c user.name=a commit -qam evil"] },
+    );
+    expect(f.remote()).toBe(f.branchSha);
+    const run = (await f.store.listRuns(f.id)).find((r) => r.kind === "resolve")!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "head_moved" });
   });
 
   it("conflict markers left in the file fail unresolved_conflicts and push nothing", async () => {

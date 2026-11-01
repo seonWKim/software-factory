@@ -270,12 +270,14 @@ export class FakeSandbox implements Sandbox {
   conflicts: string[] = [];
   /** Text `cat -- <path>` returns, e.g. a conflicting file with its markers. */
   files: Record<string, string> = {};
-  /** What `git ls-files --unmerged -z` prints after the resolve agent ran (non-empty: conflicts left). */
-  unmerged = "";
+  /** What `git grep -l` for conflict markers prints in the resolve run's checked tree (non-empty: markers left). */
+  markers = "";
   /** Files the resolve run changed between its pre-agent and post-agent snapshots. */
   resolveChanged: string[] = [];
   /** Exit codes of non-git commands by argv joined with spaces, e.g. { "npm test": 1 }. Default 0. */
   exits: Record<string, number> = {};
+  /** What `git rev-parse HEAD` prints. A resolve run's checkout makes it its commit-tree result. */
+  head = "base\n";
   private trees = 0;
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
@@ -293,7 +295,7 @@ export class FakeSandbox implements Sandbox {
     }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
-    if (args === "rev-parse HEAD") return out("base\n");
+    if (args === "rev-parse HEAD") return out(this.head);
     if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
     if (args.startsWith("rev-parse --verify")) return out("basesha\n");
@@ -302,8 +304,9 @@ export class FakeSandbox implements Sandbox {
     if (args.startsWith("merge-base --is-ancestor")) return res(this.ancestorExit);
     if (args.startsWith("merge ")) return res(this.mergeExit);
     if (args === "write-tree") return out(`tree${++this.trees}\n`);
-    if (args.startsWith("ls-files --unmerged")) return out(this.unmerged);
-    if (args.startsWith("grep")) return res(1); // no conflict markers left
+    if (args.startsWith("grep")) return this.markers ? out(this.markers) : res(1);
+    if (args.startsWith("commit-tree")) return out("resolvedsha\n");
+    if (/(^| )checkout /.test(args)) this.head = `${cmd.at(-1)}\n`;
     if (args.startsWith("diff --cached --quiet")) return res(1);
     if (args.startsWith("diff --numstat")) {
       return out(this.numstat ?? this.changedFiles.map((f) => `1\t0\t${f}\0`).join(""));
