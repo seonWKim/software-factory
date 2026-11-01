@@ -68,6 +68,35 @@ describe("GitHubIssueSource", () => {
     ]);
   });
 
+  it("parses /revise with its feedback, and /reject with and without a reason", async () => {
+    const { client, source } = setup();
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(20, "/revise keep the CLI flag\nand drop the config key", "2026-11-01T00:00:01Z"),
+      comment(21, "/revise", "2026-11-01T00:00:02Z"),
+      comment(22, "/revise   \n", "2026-11-01T00:00:03Z"),
+      comment(23, "/reject", "2026-11-01T00:00:04Z"),
+      comment(24, "/reject duplicate of #3", "2026-11-01T00:00:05Z"),
+      comment(25, "/revised plan below", "2026-11-01T00:00:06Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: alice, feedback: "keep the CLI flag\nand drop the config key" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: alice, feedback: "" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+    ]);
+  });
+
+  it("closes an issue as not planned", async () => {
+    const { client, source } = setup();
+    await source.closeIssue(issueRef(7));
+    expect(client.calls).toEqual([
+      { method: "PATCH", path: "/repos/o/r/issues/7", body: { state: "closed", state_reason: "not_planned" } },
+    ]);
+  });
+
   it("does not deliver a comment again once the cursor's high-water mark passed it", async () => {
     const { client, source } = setup();
     client.responses["/repos/o/r/issues/comments"] = [comment(10, "/approve", "2026-11-01T00:00:01Z")];
