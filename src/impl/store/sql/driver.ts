@@ -23,6 +23,8 @@ export interface SqlDriver extends SqlExecutor {
   readonly dialect: SqlDialect;
   /** Applies the driver's schema migrations. Safe to run from several processes at once. */
   migrate(): Promise<void>;
+  /** The highest applied migration (0 when none) and the driver's latest. Read-only: creates nothing. */
+  schemaVersion(): Promise<{ applied: number; latest: number }>;
   /**
    * Runs `fn` as one transaction: commits if it resolves, rolls back if it throws. May run `fn` again
    * after a transient lock failure (deadlock), so `fn` must only touch the database.

@@ -43,6 +43,15 @@ export class SqliteDriver implements SqlDriver {
     });
   }
 
+  /** Reads sqlite_master first, so a database without the table stays untouched. */
+  schemaVersion(): Promise<{ applied: number; latest: number }> {
+    return this.serialize(async () => {
+      const table = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
+      const row = table ? (this.db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null }) : null;
+      return { applied: Number(row?.v ?? 0), latest: MIGRATIONS.length };
+    });
+  }
+
   transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {
     return this.serialize(async () => {
       this.db.exec("BEGIN IMMEDIATE");
