@@ -21,6 +21,10 @@ export interface FactoryConfig {
   retry_base_ms: number;
   /** Cap on a retry wait, and the pause after a rate limit with no reset time. Default 1800000. */
   retry_max_ms: number;
+  /** Pre-push size gate: added plus deleted lines over the whole branch diff. Default 1500. */
+  max_diff_lines: number;
+  /** Pre-push size gate: changed files over the whole branch diff. Default 40. */
+  max_diff_files: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;

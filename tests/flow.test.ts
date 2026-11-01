@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/core/worker.js";
@@ -12,7 +13,12 @@ import {
   alice, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
-async function factory(runner: FakeRunner, knownSecrets: string[] = [], log: Logger = silent) {
+async function factory(
+  runner: FakeRunner,
+  knownSecrets: string[] = [],
+  log: Logger = silent,
+  opts: { workerConfig?: FactoryConfig | undefined } = {},
+) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
@@ -22,7 +28,7 @@ async function factory(runner: FakeRunner, knownSecrets: string[] = [], log: Log
   const scanner = new PatternEgressScanner(async () => knownSecrets);
   const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner });
   const worker = new Worker({
-    id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config, prompts, log: silent,
+    id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: opts.workerConfig ?? config, prompts, log: silent,
     scanner,
     toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
   });
@@ -460,5 +466,165 @@ describe("acknowledging commands and intake", () => {
     const warns = log.lines.filter((l) => l.level === "warn" && l.msg === "mark seen failed");
     expect(warns).toHaveLength(2);
     expect(log.lines.some((l) => l.level === "error")).toBe(false);
+  });
+});
+
+describe("pre-push diff gates: size limit and floor check", () => {
+  const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
+  const numstat = (entries: [number, number, string][]) => entries.map(([a, d, p]) => `${a}\t${d}\t${p}\0`).join("");
+  const files = (n: number) => Array.from({ length: n }, (_, i): [number, number, string] => [1, 0, `.github/workflows/f${i}.yml`]);
+
+  /** An item through triage (tier `tier`) and /approve, so its first implement run has finished. */
+  async function implemented(n: number, setup: (f: Awaited<ReturnType<typeof factory>>) => void, o: {
+    tier?: number;
+    workerConfig?: FactoryConfig;
+  } = {}) {
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, tier: o.tier ?? 2 } }),
+      implement: implementOk,
+      review: review("pass", o.tier ?? 2),
+    });
+    const f = await factory(runner, [], silent, { workerConfig: o.workerConfig });
+    setup(f);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    return { ...f, runner, src, item };
+  }
+  const names = (f: { broker: FakeBroker }) => f.broker.calls.map((c) => c.name);
+
+  it("a diff at exactly max_diff_lines and max_diff_files pushes and opens the PR", async () => {
+    const f = await implemented(60, (f) => {
+      f.sandbox.numstat = numstat([...files(39), [1000, 461, ".github/workflows/scope.yml"]]);
+    });
+    expect(f.item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(names(f)).toContain("github.push_branch");
+  });
+
+  it("one line over max_diff_lines fails with diff_too_large, pushes nothing, writes no handoffs, comments and blocks", async () => {
+    const f = await implemented(61, (f) => {
+      f.sandbox.numstat = numstat([[1000, 501, ".github/workflows/scope.yml"]]);
+    });
+    const runs = (await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement");
+    expect(runs).toHaveLength(1); // no automatic retry
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "diff_too_large", infra: false });
+    if (runs[0]!.outcome?.status !== "failed") return;
+    expect(runs[0]!.outcome.detail).toContain("1501 lines");
+    expect(runs[0]!.outcome.detail).toContain("1 files");
+    expect(runs[0]!.outcome.detail).toContain("max_diff_lines = 1500");
+    expect(runs[0]!.outcome.detail).toContain("max_diff_files = 40");
+
+    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("github.open_pr");
+    expect(await f.store.listHandoffs(f.item.id)).toEqual([]);
+    expect(f.item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" });
+    const note = f.source.comments.find((c) => c.marker === `<!-- factory:run-failed:${runs[0]!.id} -->`)!;
+    expect(note.body).toContain("1501 lines");
+    expect(note.body).toContain("`max_diff_lines` = 1500");
+    expect(note.body).toContain("`max_diff_files` = 40");
+
+    // /retry reruns the implement; a smaller diff goes through.
+    f.sandbox.numstat = numstat([[10, 1, ".github/workflows/scope.yml"]]);
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "6101", requester: alice });
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+  });
+
+  it("41 changed files fail with diff_too_large", async () => {
+    const f = await implemented(62, (f) => {
+      f.sandbox.numstat = numstat(files(41));
+    });
+    const run = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "implement")!;
+    expect(run.outcome).toMatchObject({ error_code: "diff_too_large" });
+    if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("41 files");
+    expect(names(f)).not.toContain("github.push_branch");
+  });
+
+  it("the size and floor checks run in the pre-push step, after the scope gate and before any push", async () => {
+    const f = await implemented(63, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    });
+    const calls = f.sandbox.gitCalls;
+    const scope = calls.indexOf("diff --name-only -z --no-renames basesha...HEAD");
+    const size = calls.indexOf("diff --numstat -z -M basesha...HEAD");
+    expect(scope).toBeGreaterThanOrEqual(0);
+    expect(size).toBeGreaterThan(scope);
+    expect(calls.findIndex((c) => c.startsWith("log -1"))).toBeGreaterThan(size); // handoffs come after
+    expect(calls.filter((c) => c.startsWith("diff --numstat"))).toHaveLength(1);
+  });
+
+  // The floor list changed after triage: the worker's floors now cover .github/workflows/ at tier 3.
+  const raised: FactoryConfig = { ...config, floors: [...config.floors, { prefix: ".github/workflows/", tier: 3 }] };
+
+  it("floor block → /retry refused → /approve by a non-writer refused → /approve raises the tier, reruns, pushes and opens the PR", async () => {
+    const f = await implemented(64, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    }, { workerConfig: raised });
+
+    // Floor block: nothing pushed, item blocked on a human, still RUNNING.
+    expect(f.item).toMatchObject({ stage: "RUNNING", tier: 2, blocked_on: "human", blocked_reason: "floor_tier" });
+    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("github.open_pr");
+    expect(await f.store.listHandoffs(f.item.id)).toEqual([]);
+    const note = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:floor:"))!;
+    expect(note.body).toContain("- `.github/workflows/scope.yml` needs tier 3");
+    const blocked = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "floor_blocked")!;
+    expect(blocked.detail).toMatchObject({ required_tier: 3, item_tier: 2 });
+    const firstRun = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "implement")!;
+    expect(firstRun.status).toBe("succeeded");
+
+    const refusals = () => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "6401", requester: alice });
+    await f.step();
+    expect(refusals()).toHaveLength(1);
+    expect(refusals()[0]!.body).toContain("not a failed run");
+
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "6402", approver: mallory });
+    await f.step();
+    expect(refusals()).toHaveLength(2);
+    expect(refusals()[1]!.body).toContain("write permission");
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_reason: "floor_tier", tier: 2 });
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(1);
+
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "6403", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, pr_number: 42 });
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+
+    const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
+    expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
+    expect(approval.detail).toMatchObject({ previous_tier: 2, tier: 3 });
+    const implementRuns = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    expect(implementRuns).toHaveLength(2);
+    expect(implementRuns[1]!.idempotency_key).not.toBe(implementRuns[0]!.idempotency_key);
+    expect(f.runner.specs.filter((s) => s.role === "implement")).toHaveLength(2);
+    expect(refusals()).toHaveLength(2);
+  });
+
+  it("the same diff on an item already at the floor's tier pushes and opens the PR", async () => {
+    const f = await implemented(65, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    }, { tier: 3, workerConfig: raised });
+    expect(f.item).toMatchObject({ stage: "REVIEW", tier: 3, pr_number: 42 });
+    expect(names(f)).toContain("github.open_pr");
+    expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:floor:"))).toBe(false);
+  });
+
+  it("/approve delivered twice on a floor block enqueues one implement run", async () => {
+    const f = await implemented(66, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    }, { workerConfig: raised });
+    const e = { kind: "spec_approved" as const, source: f.src, comment_id: "6601", approver: alice };
+    f.source.queue.push(e, e);
+    await f.controller.tickIntake();
+    f.source.queue.push(e);
+    await f.controller.tickIntake();
+    const runs = (await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement");
+    expect(runs.map((r) => r.status)).toEqual(["succeeded", "queued"]);
+    expect((await f.store.listStateChanges(f.item.id)).filter((c) => c.reason === "floor_tier_approved")).toHaveLength(1);
   });
 });
