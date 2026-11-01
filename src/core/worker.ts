@@ -399,7 +399,7 @@ export class Worker {
   }
 
   /**
-   * Merges origin/<base> into the PR branch in a fresh worktree, runs the test command, and pushes only a clean,
+   * Merges origin/<base> into the PR branch in a fresh run folder (its own clone), runs the test command, and pushes only a clean,
    * passing merge (never a force push). No agent. Conflicts and failing tests are reported on the PR and in
    * `result`; the controller decides the state. Git and push errors fail the run.
    */
