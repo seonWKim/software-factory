@@ -3,6 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
+import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 
 export const TOP_LEVEL_KEYS = [
@@ -38,6 +39,8 @@ export const TOP_LEVEL_KEYS = [
   "budgets",
   "budget_min_sample",
   "inbox_retention_days",
+  "defaults",
+  "projects",
 ] as const satisfies readonly (keyof FileConfig)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -53,7 +56,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
 
 export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
-export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof FileConfig["floors"][number])[];
+export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof NonNullable<FileConfig["floors"]>[number])[];
 export const MODELS_KEYS = ["cheap", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
@@ -128,14 +131,30 @@ export function unknownConfigKeys(raw: unknown): string[] {
   if (isObject(store) && typeof store.type === "string" && Object.hasOwn(STORE_KEYS, store.type)) {
     check(store, "store", `store (type "${store.type}")`, STORE_KEYS[store.type]!);
   }
+  // Each floors entry, wherever floors may be set: top level, `defaults`, a project block.
+  const checkFloorEntries = (block: unknown, path: string) => {
+    if (!isObject(block) || !Array.isArray(block.floors)) return;
+    block.floors.forEach((f, i) => check(f, `${path}floors[${i}]`, "floors entry", FLOOR_KEYS));
+  };
   check(raw.repo, "repo", "repo", REPO_KEYS);
   check(raw.dials, "dials", "dials", DIALS_KEYS);
-  if (Array.isArray(raw.floors)) raw.floors.forEach((f, i) => check(f, `floors[${i}]`, "floors entry", FLOOR_KEYS));
+  checkFloorEntries(raw, "");
   check(raw.models, "models", "models", MODELS_KEYS);
   check(raw.agent_git_identity, "agent_git_identity", "agent_git_identity", AGENT_GIT_IDENTITY_KEYS);
   check(raw.ui, "ui", "ui", UI_KEYS);
   check(raw.stats, "stats", "stats", STATS_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
+  // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
+  // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
+  check(raw.defaults, "defaults", "defaults", PROJECT_SETTING_KEYS);
+  checkFloorEntries(raw.defaults, "defaults.");
+  if (isObject(raw.projects)) {
+    for (const [id, block] of Object.entries(raw.projects)) {
+      const at = `projects[${JSON.stringify(id)}]`;
+      check(block, at, `project ${JSON.stringify(id)}`, PROJECT_SETTING_KEYS);
+      checkFloorEntries(block, `${at}.`);
+    }
+  }
   return problems;
 }
 

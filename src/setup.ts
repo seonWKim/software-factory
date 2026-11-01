@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { describeSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
 import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
@@ -59,7 +60,7 @@ export function checksExitCode(checks: readonly Check[]): number {
  * egress-scan them first (the status page does).
  */
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
-  const checks: Check[] = [];
+  const checks: Check[] = [...settingsChecks(loaded)];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
@@ -146,6 +147,19 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/**
+ * One ok line per project and per-project setting: its effective value and the layer it came from
+ * (design 2026-11-01). Informational: the config already loaded, so every value passed its checks. The
+ * status page's Health panel shows the same lines, since it runs doctorChecks.
+ */
+export function settingsChecks(loaded: Pick<Loaded, "config">): Check[] {
+  const { owner, name } = loaded.config.repo;
+  const projects = [...new Set([`${owner}/${name}`, ...Object.keys(loaded.config.settings.projects)])];
+  return projects.flatMap((p) =>
+    describeSettings(settingsFor(p, loaded.config.settings)).map((line) => ({ ok: true, msg: `setting for ${p}: ${line}` })),
+  );
 }
 
 /**

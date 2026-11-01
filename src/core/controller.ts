@@ -10,6 +10,7 @@ import {
 } from "./budget.js";
 import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, phaseLabel, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
+import { type LearnedSettingsSource, type ProjectSettings, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
@@ -64,6 +65,8 @@ export interface ControllerDeps {
    * controller's state decisions never use it.
    */
   llm?: LLMProvider;
+  /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
+  learned?: LearnedSettingsSource;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -327,7 +330,9 @@ export class Controller {
       this.d.log.warn("reaper woke after a gap; grace before expiring leases", { gap_ms: now - previous });
     }
     if (now < this.reaperGraceUntil) return;
-    const { max_attempts, retry_base_ms, retry_max_ms } = this.d.config;
+    const { retry_base_ms, retry_max_ms } = this.d.config;
+    // One repository per factory today, so the configured repo's limit applies to every lease.
+    const { max_attempts } = this.settings(this.project());
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
     const ids = await this.d.store.expireLeases(max_attempts, (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms));
     for (const id of ids) this.d.log.warn("lease expired", { run_id: id });
@@ -972,6 +977,11 @@ export class Controller {
     return `${this.d.config.repo.owner}/${this.d.config.repo.name}`;
   }
 
+  /** The per-project gate settings of `project` (design 2026-11-01): the only way core reads them. */
+  private settings(project: string): ProjectSettings {
+    return settingValues(project, this.d.config.settings, this.d.learned);
+  }
+
   // Run outcomes
 
   async applyRun(run: Run): Promise<void> {
@@ -1002,7 +1012,7 @@ export class Controller {
           const parsed = parseTriage(data.spec);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
-          const floor = floorTier(spec.allowed_paths, this.d.config.floors);
+          const floor = floorTier(spec.allowed_paths, this.settings(it.project).floors);
           const tier = effectiveTier(spec.tier, floor, it.tier);
           const fields = {
             problem: spec.problem,
@@ -1047,7 +1057,7 @@ export class Controller {
         case "review": {
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
-          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.d.config.floors), it.tier);
+          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.d.config.max_loops) {
               const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -1215,7 +1225,8 @@ export class Controller {
    * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
    */
   private async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
-    const { max_attempts, max_restart, retry_base_ms, retry_max_ms } = this.d.config;
+    const { max_restart, retry_base_ms, retry_max_ms } = this.d.config;
+    const { max_attempts } = this.settings(it.project);
     const step = (await this.d.store.listRuns(it.id)).filter(
       (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null),
     );
@@ -1283,7 +1294,7 @@ export class Controller {
    */
   private async diffTooLarge(it: WorkItem, run: Run): Promise<Decision> {
     const detail = run.outcome?.status === "failed" ? run.outcome.detail : "";
-    const { max_diff_lines, max_diff_files } = this.d.config;
+    const { max_diff_lines, max_diff_files } = this.settings(it.project);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` };
     const url = await this.comment(it, `run-failed:${run.id}`, [
       "## Factory size check: push blocked",
@@ -1341,7 +1352,7 @@ export class Controller {
   private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<string | null> {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
-      ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.d.config.max_attempts}), so the factory stopped retrying it.`
+      ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.settings(it.project).max_attempts}), so the factory stopped retrying it.`
       : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.d.config.max_restart}), so the factory stopped restarting it.`;
     const tail = (out?.output_tail || out?.detail || "").trim();
     const body = [
@@ -1424,7 +1435,7 @@ export class Controller {
     if (!run || (run.kind !== "implement" && run.kind !== "review")) return null;
     const next = { ...it, ...d.patch };
     if (next.tier === null) return null;
-    const base = tierBudget(this.d.config.budgets, next.tier);
+    const base = tierBudget(this.settings(it.project).budgets, next.tier);
     if (base === null) return null;
     const budget = currentBudget(base, await this.d.store.listBudgetCheckpoints(it.id));
     if (!overBudget(next.token_cost, budget)) return null;
