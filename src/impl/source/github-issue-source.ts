@@ -1,3 +1,4 @@
+import { parseComment } from "../../core/commands.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
@@ -143,21 +144,35 @@ export class GitHubIssueSource implements SourceAdapter {
       if (cm.user.type === "Bot") continue;
       const source = this.ref(Number(cm.issue_url.split("/").pop()));
       const comment_id = String(cm.id);
-      const [first = "", ...rest] = cm.body.trim().split(/\r?\n/);
-      const command = first.trim();
-      if (command === "/approve") events.push({ kind: "spec_approved", source, comment_id, approver: identity(cm.user) });
-      else if (command.startsWith("/reject")) {
-        const reason = [command.slice("/reject".length).trim(), ...rest].join("\n").trim();
-        events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
-      } else if (/^\/revise(\s|$)/.test(command)) {
-        const feedback = [command.slice("/revise".length).trim(), ...rest].join("\n").trim();
-        events.push({ kind: "revise_requested", source, comment_id, requester: identity(cm.user), feedback });
-      } else if (command === "/retry") {
-        events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
-      } else if (command === "/verdict" || /^\/verdict\s/.test(command)) {
-        const args = [command.slice("/verdict".length).trim(), ...rest].join("\n").trim();
-        const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
-        if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: identity(cm.user), args });
+      const parsed = parseComment(cm.body);
+      if (parsed === null) continue;
+      const who = identity(cm.user);
+      if (parsed.kind === "unknown") {
+        events.push({ kind: "unknown_command", source, comment_id, requester: who, command: parsed.word });
+        continue;
+      }
+      const text = parsed.text;
+      switch (parsed.name) {
+        case "approve":
+          events.push({ kind: "spec_approved", source, comment_id, approver: who, note: text });
+          break;
+        case "reject":
+          events.push({ kind: "spec_rejected", source, comment_id, approver: who, reason: text });
+          break;
+        case "revise":
+          events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text });
+          break;
+        case "retry":
+          events.push({ kind: "retry_requested", source, comment_id, requester: who });
+          break;
+        case "help":
+          events.push({ kind: "help_requested", source, comment_id, requester: who });
+          break;
+        case "verdict": {
+          const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
+          if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: who, args: text });
+          break;
+        }
       }
     }
 
