@@ -91,14 +91,15 @@ export interface DrainChannel {
 }
 
 interface Loops {
-  controller: { run(signal: AbortSignal): Promise<void> };
+  controller: { run(signal: AbortSignal): Promise<void>; tickRuns(): Promise<void> };
   worker: { run(signal: AbortSignal): Promise<void> };
 }
 
 /**
  * The supervised `dev` child. A drain stops the worker from claiming; its in-flight run finishes (it runs
- * on its own lease signal). The controller keeps running until the worker has drained, so that run's
- * outcome is still handled. Then the drain is acknowledged. `stop` (SIGINT/SIGTERM) is the hard stop.
+ * on its own lease signal). The controller keeps running until the worker has drained, then handles finished
+ * runs once more: the last run usually finishes after the loop's final pass, and its outcome (a failure that
+ * blocks the item, say) would otherwise wait for the next process. Then the drain is acknowledged. `stop` (SIGINT/SIGTERM) is the hard stop.
  */
 export async function runDevChild(app: Loops, channel: DrainChannel, stop: AbortSignal): Promise<"drained" | "stopped"> {
   const drain = new AbortController();
@@ -108,6 +109,7 @@ export async function runDevChild(app: Loops, channel: DrainChannel, stop: Abort
   const controller = app.controller.run(AbortSignal.any([controllerStop.signal, stop]));
   await Promise.all([worker, controller]);
   if (stop.aborted || !drain.signal.aborted) return "stopped";
+  await app.controller.tickRuns().catch(() => undefined); // the next process handles it if this fails
   await channel.acknowledge();
   return "drained";
 }
