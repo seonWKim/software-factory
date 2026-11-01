@@ -1,3 +1,4 @@
+import { parseComment } from "../../core/commands.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
@@ -16,6 +17,10 @@ interface GhIssue {
   user: GhUser;
   updated_at: string;
   pull_request?: unknown;
+}
+interface GhIssueFull extends GhIssue {
+  /** Only on the single-issue endpoint. Null when GitHub does not know who closed it. */
+  closed_by: GhUser | null;
 }
 interface GhComment {
   id: number;
@@ -59,6 +64,13 @@ interface Cursor {
    */
   commits?: string | null;
   commit_shas?: string[];
+  /**
+   * Newest updated_at of a closed factory issue already read, and the issue numbers read at exactly that
+   * time (`since` is inclusive; those are skipped unless updated again). Absent in cursors written before
+   * closes were polled: that poll reads every closed factory issue.
+   */
+  closed?: string | null;
+  closed_numbers?: number[];
 }
 
 /**
@@ -130,6 +142,10 @@ export class GitHubIssueSource implements SourceAdapter {
       });
     }
 
+    // Closed factory issues. Read before the pulls (a merge that closes its issue happens before the close, so
+    // the pulls read below already sees it) but delivered after them, so pr_merged is applied first.
+    const closes = await this.closedIssues(c, next);
+
     const comments = await this.client.list<GhComment>(
       `${base}/issues/comments?sort=updated&direction=asc` + (c.comments ? `&since=${c.comments}` : ""),
     );
@@ -143,21 +159,35 @@ export class GitHubIssueSource implements SourceAdapter {
       if (cm.user.type === "Bot") continue;
       const source = this.ref(Number(cm.issue_url.split("/").pop()));
       const comment_id = String(cm.id);
-      const [first = "", ...rest] = cm.body.trim().split(/\r?\n/);
-      const command = first.trim();
-      if (command === "/approve") events.push({ kind: "spec_approved", source, comment_id, approver: identity(cm.user) });
-      else if (command.startsWith("/reject")) {
-        const reason = [command.slice("/reject".length).trim(), ...rest].join("\n").trim();
-        events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
-      } else if (/^\/revise(\s|$)/.test(command)) {
-        const feedback = [command.slice("/revise".length).trim(), ...rest].join("\n").trim();
-        events.push({ kind: "revise_requested", source, comment_id, requester: identity(cm.user), feedback });
-      } else if (command === "/retry") {
-        events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
-      } else if (command === "/verdict" || /^\/verdict\s/.test(command)) {
-        const args = [command.slice("/verdict".length).trim(), ...rest].join("\n").trim();
-        const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
-        if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: identity(cm.user), args });
+      const parsed = parseComment(cm.body);
+      if (parsed === null) continue;
+      const who = identity(cm.user);
+      if (parsed.kind === "unknown") {
+        events.push({ kind: "unknown_command", source, comment_id, requester: who, command: parsed.word });
+        continue;
+      }
+      const text = parsed.text;
+      switch (parsed.name) {
+        case "approve":
+          events.push({ kind: "spec_approved", source, comment_id, approver: who, note: text });
+          break;
+        case "reject":
+          events.push({ kind: "spec_rejected", source, comment_id, approver: who, reason: text });
+          break;
+        case "revise":
+          events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text });
+          break;
+        case "retry":
+          events.push({ kind: "retry_requested", source, comment_id, requester: who });
+          break;
+        case "help":
+          events.push({ kind: "help_requested", source, comment_id, requester: who });
+          break;
+        case "verdict": {
+          const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
+          if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: who, args: text });
+          break;
+        }
       }
     }
 
@@ -220,7 +250,35 @@ export class GitHubIssueSource implements SourceAdapter {
       }
     }
 
+    events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */
+  private async closedIssues(c: Cursor, next: Cursor): Promise<SourceEvent[]> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const issues = await this.client.list<GhIssue>(
+      `${base}/issues?state=closed&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
+        (c.closed ? `&since=${c.closed}` : ""),
+    );
+    const already = new Set(c.closed ? (c.closed_numbers ?? []) : []);
+    next.closed = c.closed ?? null;
+    next.closed_numbers = [...already];
+    const events: SourceEvent[] = [];
+    for (const i of issues) {
+      if (i.updated_at === c.closed && already.has(i.number)) continue;
+      if (next.closed === null || i.updated_at > next.closed) {
+        next.closed = i.updated_at;
+        next.closed_numbers = [i.number];
+      } else if (i.updated_at === next.closed) {
+        next.closed_numbers.push(i.number);
+      }
+      if (i.pull_request) continue;
+      // The list endpoint omits closed_by; the single-issue endpoint has it.
+      const full = await this.client.request<Pick<GhIssueFull, "closed_by">>("GET", `${base}/issues/${i.number}`);
+      events.push({ kind: "source_closed", source: this.ref(i.number), closer: full.closed_by ? identity(full.closed_by) : null });
+    }
+    return events;
   }
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {

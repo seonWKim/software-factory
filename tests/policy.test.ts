@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  effectiveTier, failureClass, floorTier, retryDelayMs, retryKey, runKey, sameStep, workItemIdFromBranch,
+  IMPLEMENT_KINDS, allowedPathsOverlap, effectiveTier, failureClass, floorTier, pathsOverlap, retryDelayMs, retryKey, runKey,
+  sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { parseTriage } from "../src/core/outputs.js";
 import type { WorkItemId } from "../src/core/types.js";
@@ -104,5 +105,32 @@ describe("policy", () => {
 
   it("rejects a files_to_change entry with a .. segment", () => {
     expect(parseTriage({ ...triageSpec, allowed_paths: ["tests/"], files_to_change: ["tests/../src/x.ts"] }).ok).toBe(false);
+  });
+});
+
+describe("overlap rule for parallel implement-type runs", () => {
+  it("two paths overlap when equal, or when one is a prefix ending in / of the other", () => {
+    expect(pathsOverlap("src/a.ts", "src/a.ts")).toBe(true);
+    expect(pathsOverlap("src/", "src/a.ts")).toBe(true);
+    expect(pathsOverlap("src/a.ts", "src/")).toBe(true);
+    expect(pathsOverlap("src/", "src/core/")).toBe(true);
+    expect(pathsOverlap("src/core/", "src/")).toBe(true);
+  });
+
+  it("a prefix without a trailing / is not an overlap, nor are siblings", () => {
+    expect(pathsOverlap("src/a", "src/a.ts")).toBe(false);
+    expect(pathsOverlap("src", "src/a.ts")).toBe(false);
+    expect(pathsOverlap("src/core/", "src/impl/")).toBe(false);
+    expect(pathsOverlap("docs/a.md", "docs/b.md")).toBe(false);
+  });
+
+  it("two path lists overlap when any pair overlaps; an empty list overlaps nothing", () => {
+    expect(allowedPathsOverlap(["docs/", "src/a.ts"], ["tests/", "src/a.ts"])).toBe(true);
+    expect(allowedPathsOverlap(["docs/"], ["src/", "tests/x.ts"])).toBe(false);
+    expect(allowedPathsOverlap([], ["src/"])).toBe(false);
+  });
+
+  it("implement-type kinds are implement (also a review fix) and update; triage and review are not", () => {
+    expect([...IMPLEMENT_KINDS].sort()).toEqual(["implement", "update"]);
   });
 });

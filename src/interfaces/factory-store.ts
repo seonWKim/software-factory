@@ -23,6 +23,7 @@ import type {
   WorkItemPatch,
   WorkerId,
 } from "../core/types.js";
+import type { StatsRecord } from "../core/stats.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -61,10 +62,17 @@ export interface TransitionInput {
   ack_run?: RunId;
   /** Enqueue a run in the same transaction. No-op if its idempotency_key already exists. */
   enqueue?: Omit<NewRun, "work_item_id">;
+  /**
+   * Cancel every `queued` run of this item in the same transaction (waiting on `not_before` or not), so no
+   * worker can claim one afterwards. Running runs are left alone. Cancelled runs are unacknowledged, with no
+   * outcome and no `finished_at`, and go through the controller's ack path like any finished run.
+   */
+  cancel_queued_runs?: boolean;
 }
 
 export type TransitionResult =
-  | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null }
+  /** `cancelled`: the runs `cancel_queued_runs` cancelled (empty without it). */
+  | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null; cancelled: RunId[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   /** ack_run was given but that run is not finished, belongs to another item, or is already acknowledged. */
@@ -147,6 +155,12 @@ export interface FactoryStore {
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
+  /**
+   * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
+   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * Read-only.
+   */
+  listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
 
   // Runs
 
@@ -174,6 +188,7 @@ export interface FactoryStore {
   /**
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
+   * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
