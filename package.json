@@ -7,12 +7,12 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run",
-    "factory": "tsc -p tsconfig.json && node --disable-warning=ExperimentalWarning dist/main.js",
-    "setup": "npm install --silent && tsc -p tsconfig.json && node --disable-warning=ExperimentalWarning dist/main.js setup"
+    "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
+    "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
