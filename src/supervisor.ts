@@ -1,6 +1,7 @@
 // The `dev` entry point. Resolves the Updater through the plugin registry. Under `none` it runs controller +
-// worker in this process, as before. Under `git-worktree` it runs them in a child forked from the built
-// runtime copy, forwards drain (an IPC message) and stop (SIGTERM) to it, and restarts it on a new base commit.
+// worker in this process, as before. Under `git-worktree` it runs them in children forked from built version
+// folders: on a new base commit it starts the new child first, then asks the old one to drain (an IPC message);
+// stop (SIGTERM) goes to every live child.
 
 import { type ChildProcess, fork } from "node:child_process";
 import { type Loaded, Plugins } from "./compose.js";
@@ -36,7 +37,7 @@ export interface SuperviseDeps {
   inPlace(signal: AbortSignal): Promise<void>;
 }
 
-/** Runs until SIGINT/SIGTERM. Then stops the child (if any) and returns, so no child outlives it. */
+/** Runs until SIGINT/SIGTERM. Then stops every live child (old and new) and returns once all have exited. */
 export async function supervise(d: SuperviseDeps): Promise<number> {
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"] as const) d.signals.once(sig, () => stop.abort());
@@ -48,7 +49,7 @@ export async function supervise(d: SuperviseDeps): Promise<number> {
   stop.signal.addEventListener(
     "abort",
     () => {
-      d.log.info("stop requested: stopping the child");
+      d.log.info("stop requested: stopping every live child", { pids: (d.updater.childPids?.() ?? [d.updater.childPid()].filter((p) => p !== null)).join(",") });
       stopping.done = d.updater.shutdown();
     },
     { once: true },
@@ -63,6 +64,8 @@ export async function supervise(d: SuperviseDeps): Promise<number> {
     await step("poll", () => d.updater.poll());
   }
   await (stopping.done ?? d.updater.shutdown());
+  const left = d.updater.childPids?.() ?? [];
+  if (left.length) d.log.error("children still live after shutdown", { pids: left.join(",") });
   d.log.info("supervisor stopped");
   return 0;
 }
@@ -141,7 +144,7 @@ export function processChannel(proc: NodeJS.Process = process): DrainChannel {
 
 // --- supervisor side ------------------------------------------------------------------------------------
 
-/** Forks `dist/main.js` of the runtime copy with an IPC channel. Output goes to the supervisor's terminal. */
+/** Forks `dist/main.js` of a version folder with an IPC channel. Output goes to the supervisor's terminal. */
 export class ForkLauncher implements ChildLauncher {
   launch(spec: ChildSpec): ChildHandle {
     const child = fork(spec.entry, [...spec.args], {
