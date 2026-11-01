@@ -126,4 +126,12 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
     ) ${TABLE}`,
   ],
+  // 6: parallel workers (architecture §4). One lock row the claim takes first (FOR UPDATE), so two claimers
+  // never both pass the overlap check for overlapping items.
+  [
+    `CREATE TABLE claim_locks (
+      name  VARCHAR(64) NOT NULL PRIMARY KEY
+    ) ${TABLE}`,
+    "INSERT INTO claim_locks (name) VALUES ('claim')",
+  ],
 ];

@@ -113,4 +113,12 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
   `,
+  // 6: parallel workers (architecture §4). One lock row the claim takes first, so two claimers never both pass
+  // the overlap check. SQLite's BEGIN IMMEDIATE already serializes claims; the row keeps both schemas alike.
+  `
+  CREATE TABLE claim_locks (
+    name  TEXT PRIMARY KEY
+  );
+  INSERT INTO claim_locks (name) VALUES ('claim');
+  `,
 ];
