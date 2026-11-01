@@ -1,13 +1,20 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
-import type { Run, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import {
+  type FacetCounts, type FilterRow, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts,
+  isFiltered, runKindOf, searchKeys,
+} from "./filters.js";
+import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
 import type { HealthMonitor } from "./health.js";
-import { between, duration, esc, link, page, table } from "./html.js";
+import { type Level, NEEDS_YOU, type PriorityInput, rank } from "./priority.js";
 import { Withholder } from "./withhold.js";
+
+export { STAGES } from "./filters.js";
 
 export interface UiDeps {
   store: FactoryStore;
@@ -21,16 +28,8 @@ export interface UiDeps {
   health: HealthMonitor;
 }
 
-export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LIST_LIMIT = 200;
-
-export interface IndexQuery {
-  stage: Stage | undefined;
-  closed: boolean;
-  /** The Health panel's refresh link asked for a fresh run (still at most one a minute). */
-  refresh?: boolean;
-}
 
 /** Tokens a succeeded run reported (outcome data.tokens), the same source the controller adds to token_cost. */
 export function runTokens(run: Run): number | null {
@@ -76,21 +75,159 @@ class Ctx {
   }
 }
 
-export async function renderIndex(d: UiDeps, q: IndexQuery): Promise<string> {
+/**
+ * `self` is this page's path and query, for the noscript Refresh link. `healthRefresh`: the Health panel's
+ * refresh link asked for a fresh run (still at most one a minute).
+ */
+export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefresh = false): Promise<string> {
   const c = new Ctx(d);
-  const needs = await needsSection(c);
+  const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
+  const rows = await listRows(c, f);
   const sections = [
-    needs.html,
-    await d.health.section(d.scanner, { refresh: q.refresh === true }),
+    await totalsSection(c),
+    filtersSection(f, facetCounts(rows, f)),
+    await itemsSection(c, applyFilters(rows, f), f),
+    await d.health.section(d.scanner, { refresh: healthRefresh }),
     await runningSection(c),
     await queueSection(c),
-    await itemsSection(c, q),
-    await totalsSection(c),
   ];
   const body =
-    `<h1>software-factory</h1><p class="muted">Read-only. Refreshes every 5 s. As of ${esc(c.now.toISOString())}.</p>` +
-    sections.join("");
-  return page(`(${needs.count}) software-factory status`, body);
+    `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` + sections.join("");
+  return page(`(${waiting}) software-factory status`, body, self);
+}
+
+/** One ranked row of the list, with what the filters read. */
+interface ListRow extends FilterRow {
+  item: WorkItem;
+  input: PriorityInput;
+  badges: string[];
+  /** Escaped title HTML (withheld marker when withheld; source id when untitled). */
+  titleHtml: string;
+  /** The full title as shown, for the title attribute; null when withheld or untitled. */
+  titlePlain: string | null;
+  runStatus: "queued" | "running" | null;
+}
+
+/** Every listed item, ranked (closed items too when the filters may show them). */
+async function listRows(c: Ctx, f: Filters): Promise<ListRow[]> {
+  const withClosed = f.closed || f.state === "closed" || f.stage === "CLOSED";
+  const items = await c.d.store.listWorkItemsWhere({ exclude_closed: !withClosed, limit: LIST_LIMIT });
+  const active = new Map<WorkItemId, Run>();
+  for (const r of await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT)) if (!active.has(r.work_item_id)) active.set(r.work_item_id, r);
+  for (const r of await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)) active.set(r.work_item_id, r); // running wins
+
+  const inputs: (PriorityInput & { item: WorkItem })[] = [];
+  for (const it of items) {
+    const run = active.get(it.id);
+    const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
+    inputs.push({
+      item: it,
+      stage: it.stage,
+      blocked_on: it.blocked_on,
+      blocked_reason: it.blocked_reason,
+      close_reason: it.close_reason,
+      tier: it.tier,
+      since: blocked && it.stage !== "CLOSED" ? await waitingSince(c, it) : it.updated_at,
+      run: run && (run.status === "queued" || run.status === "running") ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at } : null,
+      dependents: 0,
+      waiting_on: 0,
+    });
+  }
+
+  const out: ListRow[] = [];
+  for (const r of rank(inputs, c.now, c.d.lease_ms)) {
+    const it = r.input.item;
+    const t = it.title ? await c.w.shown(it.title, { max: 120 }) : { html: esc(it.source.id), plain: null };
+    out.push({
+      item: it,
+      input: r.input,
+      level: r.level,
+      badges: r.badges,
+      stage: it.stage,
+      tier: it.tier,
+      kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? null),
+      dependents: r.input.dependents,
+      search: searchKeys(it.source.id, it.title ? t.plain : null),
+      titleHtml: t.html,
+      titlePlain: t.plain,
+      runStatus: r.input.run?.status ?? null,
+    });
+  }
+  return out;
+}
+
+function option(value: string, label: string, n: number, selected: boolean): string {
+  return `<option value="${esc(value)}"${selected ? " selected" : ""}>${esc(`${label} (${n})`)}</option>`;
+}
+
+function select(name: string, label: string, opts: string[]): string {
+  return `<label for="f-${esc(name)}">${esc(label)}<select id="f-${esc(name)}" name="${esc(name)}">${opts.join("")}</select></label>`;
+}
+
+/** The GET filter form; each option shows how many rows it would give with the other filters kept. */
+function filtersSection(f: Filters, n: FacetCounts): string {
+  const state = select("state", "State", [
+    option("", "All", n.allStates, f.state === undefined),
+    ...STATE_OPTIONS.map((o) => option(o.value, o.label, n.state[o.value], f.state === o.value)),
+  ]);
+  const stage = select("stage", "Stage", [
+    option("", "All", n.allStages, f.stage === undefined),
+    ...STAGES.map((s) => option(s, s, n.stage[s], f.stage === s)),
+  ]);
+  const tier = select("tier", "Tier", [
+    option("", "All", n.allTiers, f.tier === undefined),
+    ...TIERS.map((t) => option(String(t), `Tier ${t}`, n.tier[t], f.tier === t)),
+  ]);
+  const kind = select("kind", "Run kind", [
+    option("", "All", n.allKinds, f.kind === undefined),
+    ...RUN_KINDS.map((k: RunKind) => option(k, k, n.kind[k], f.kind === k)),
+  ]);
+  const check = (name: string, label: string, on: boolean) =>
+    `<label class="check" for="f-${name}"><input type="checkbox" id="f-${name}" name="${name}" value="1"${on ? " checked" : ""}>${esc(label)}</label>`;
+  return (
+    `<section id="filters"><h2>Filters</h2><nav aria-label="Filters"><form class="filters" method="get" action="/">` +
+    `<label for="f-q">Search (number or title)<input type="search" id="f-q" name="q" value="${esc(f.q)}" maxlength="200"></label>` +
+    state + stage + tier + kind +
+    check("unblocks", `Unblocks others (${n.unblocks})`, f.unblocks) +
+    check("closed", "Show closed", f.closed) +
+    `<input type="submit" value="Apply"> <a href="/">Clear filters</a>` +
+    `</form></nav></section>`
+  );
+}
+
+/** The single prioritised list. Rows that wait for a person say what to do next. */
+async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string> {
+  const out = [];
+  for (const r of rows) {
+    const it = r.item;
+    let next = "";
+    if (NEEDS_YOU.includes(r.level)) {
+      const need = await needOf(c, it);
+      next = `${need.reason} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
+    }
+    const title = `<a class="title" href="/items/${esc(encodeURIComponent(it.id))}"${r.titlePlain === null ? "" : ` title="${esc(r.titlePlain)}"`}>${r.titleHtml}</a>`;
+    out.push({
+      attrs: ` data-key="${esc(it.id)}" data-sig="${esc(`${it.version}:${r.level}:${r.runStatus ?? "none"}`)}"`,
+      cells: [
+        r.badges.map((b, i) => `<span class="badge${i === 0 ? ` l-${esc(r.level)}` : ""}">${esc(b)}</span>`).join(""),
+        link(it.source.link, issueNumber(it.source.id)),
+        title,
+        esc(it.stage),
+        it.tier === null ? "" : esc(it.tier),
+        next,
+        c.prLink(it),
+        c.ago(r.input.since),
+      ],
+    });
+  }
+  const empty = isFiltered(f)
+    ? `<p>No items match these filters. <a href="/">Clear filters</a></p>`
+    : `<p>No open work items. <a href="/?closed=1">Show closed items</a></p>`;
+  const body =
+    out.length === 0
+      ? empty
+      : table(["state", "number", "title", "stage", "tier", "next step", "PR", "waiting"], out);
+  return `<section id="items"><h2>Work items (${esc(rows.length)})</h2>${body}</section>`;
 }
 
 /** What a waiting item's row says: the reason in plain words, where to act, and the command to type. */
@@ -107,38 +244,6 @@ const PLAIN_REASONS: Record<string, string> = {
   max_loops: "review found bugs too many times",
   merge_conflict_pending: "merge conflict",
 };
-
-/**
- * "Needs you (N)": one row per item blocked on a human and not CLOSED, oldest wait first. N is an exact
- * count; the rows are the LIST_LIMIT most recently updated of them.
- */
-async function needsSection(c: Ctx): Promise<{ count: number; html: string }> {
-  const filter = { blocked_on: "human" as const, exclude_closed: true };
-  const count = await c.d.store.countWorkItemsWhere(filter);
-  const items = await c.d.store.listWorkItemsWhere({ ...filter, limit: LIST_LIMIT });
-  const waiting = await Promise.all(items.map(async (it) => ({ it, since: await waitingSince(c, it) })));
-  waiting.sort((a, b) => a.since.localeCompare(b.since) || a.it.created_at.localeCompare(b.it.created_at) || a.it.id.localeCompare(b.it.id));
-  const rows = [];
-  for (const { it, since } of waiting) {
-    const need = await needOf(c, it);
-    rows.push({
-      cells: [
-        esc(issueNumber(it.source.id)),
-        await c.itemLink(it, it.id),
-        c.ago(since),
-        need.reason,
-        link(need.url, need.label),
-        need.command === null ? "" : `<code>${esc(need.command)}</code>`,
-      ],
-    });
-  }
-  const html = `<section id="needs"><h2>Needs you (${esc(count)})</h2>${table(
-    ["number", "title", "waiting", "reason", "where", "command"],
-    rows,
-    "nothing waits for you",
-  )}</section>`;
-  return { count, html };
-}
 
 /**
  * When the item started waiting: the latest state change that set its blocked_on or blocked_reason
@@ -225,51 +330,18 @@ async function queueSection(c: Ctx): Promise<string> {
   return `<section id="queue"><h2>Queue</h2>${table(["#", "kind", "item", "attempts so far", "queued for"], rows, "queue is empty")}</section>`;
 }
 
-async function itemsSection(c: Ctx, q: IndexQuery): Promise<string> {
-  const items = await c.d.store.listWorkItemsWhere({ stage: q.stage, exclude_closed: !q.closed, limit: LIST_LIMIT });
-  const closedParam = q.closed ? "&closed=1" : "";
-  const nav =
-    `<nav>Stage: ${link(q.closed ? "/?closed=1" : "/", "all")}` +
-    STAGES.map((s) => link(`/?stage=${s}${closedParam}`, s)).join("") +
-    ` | ${q.closed ? link(q.stage ? `/?stage=${q.stage}` : "/", "hide closed") : link(`/?closed=1${q.stage ? `&stage=${q.stage}` : ""}`, "show closed")}` +
-    `</nav>`;
-  const rows = [];
-  for (const it of items) {
-    rows.push({
-      cells: [
-        link(it.source.link, it.source.id),
-        await c.itemLink(it, it.id),
-        esc(it.stage),
-        await c.blocked(it),
-        it.tier === null ? "" : esc(it.tier),
-        esc(it.loop_count),
-        esc(it.restart_count),
-        esc(it.token_cost),
-        c.prLink(it),
-        esc(it.updated_at),
-      ],
-    });
-  }
-  const filter = q.stage ? ` (stage ${esc(q.stage)})` : q.closed ? "" : " (CLOSED hidden)";
-  return `<section id="items"><h2>All work items${filter}</h2>${nav}${table(
-    ["number", "title", "stage", "blocked", "tier", "loops", "restarts", "tokens", "PR", "updated"],
-    rows,
-    "no work items",
-  )}</section>`;
-}
-
 async function totalsSection(c: Ctx): Promise<string> {
   const counts = await c.d.store.countWorkItemsByStage();
   const recent = await c.d.store.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   const failed = recent.filter((r) => r.status === "failed");
   const tokens = succeeded.reduce((sum, r) => sum + (runTokens(r) ?? 0), 0);
-  const row = (k: string, v: number) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`;
+  const row = (k: string, v: number) => `<tr><th scope="row">${esc(k)}</th><td>${esc(v)}</td></tr>`;
   return (
-    `<section id="totals"><h2>Totals</h2>` +
-    `<h3>Items per stage</h3><table>${STAGES.map((s) => row(s, counts[s])).join("")}</table>` +
-    `<h3>Last 24 h (by finish time)</h3><table>${row("succeeded", succeeded.length)}${row("failed", failed.length)}${row("tokens", tokens)}</table>` +
-    `</section>`
+    `<section id="totals"><h2>Totals</h2><div class="strip">` +
+    `<div><h3>Items per stage</h3><div class="scroll"><table><tbody>${STAGES.map((s) => row(s, counts[s])).join("")}</tbody></table></div></div>` +
+    `<div><h3>Last 24 h (by finish time)</h3><div class="scroll"><table><tbody>${row("succeeded", succeeded.length)}${row("failed", failed.length)}${row("tokens", tokens)}</tbody></table></div></div>` +
+    `</div></section>`
   );
 }
 
@@ -334,14 +406,14 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
 
   const body =
     `<p>${link("/", "← all items")}</p><h1>${title}</h1>` +
-    `<table>${facts.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${v}</td></tr>`).join("")}</table>` +
+    `<section id="facts">${factsTable(facts)}</section>` +
     `<section id="timeline"><h2>Timeline</h2>${table(["version", "at", "actor", "reason", "changes", "detail"], timeline)}</section>` +
     `<section id="runs"><h2>Runs</h2>${table(
       ["kind", "status", "attempt", "started", "finished", "duration", "tokens", "error"],
       runRows,
       "no runs",
     )}</section>`;
-  return page(`${item.source.id} — software-factory`, body);
+  return page(`${item.source.id} — software-factory`, body, `/items/${encodeURIComponent(item.id)}`);
 }
 
 async function renderChanges(c: Ctx, sc: StateChange): Promise<string> {

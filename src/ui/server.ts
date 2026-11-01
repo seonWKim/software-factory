@@ -1,12 +1,14 @@
 // `factory ui`: a read-only status page over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too). The Host header must name
-// 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding.
+// 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
+// allows only the page's own inline style and script (by hash), same-origin fetches and same-origin GET forms.
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Stage, WorkItemId } from "../core/types.js";
-import { esc, page } from "./html.js";
-import { STAGES, type UiDeps, renderIndex, renderItem } from "./pages.js";
+import type { WorkItemId } from "../core/types.js";
+import { parseFilters } from "./filters.js";
+import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
+import { type UiDeps, renderIndex, renderItem } from "./pages.js";
 
 export type { UiDeps } from "./pages.js";
 
@@ -15,7 +17,9 @@ const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const ALLOW = "GET, HEAD";
 
 const SECURITY_HEADERS: Record<string, string> = {
-  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  "content-security-policy":
+    `default-src 'none'; script-src '${SCRIPT_HASH}'; style-src '${STYLE_HASH}'; connect-src 'self'; ` +
+    "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
@@ -66,14 +70,10 @@ export async function respond(d: UiDeps, req: UiRequest): Promise<UiResponse> {
   }
 
   if (url.pathname === "/") {
-    const stage = url.searchParams.get("stage");
-    if (stage !== null && stage !== "" && !STAGES.includes(stage as Stage)) return error(400, "Unknown stage.");
-    const body = await renderIndex(d, {
-      stage: stage ? (stage as Stage) : undefined,
-      closed: url.searchParams.get("closed") === "1",
-      refresh: url.searchParams.get("health") === "refresh",
-    });
-    return html(200, body);
+    const parsed = parseFilters(url.searchParams);
+    if (!parsed.ok) return error(400, parsed.error);
+    const healthRefresh = url.searchParams.get("health") === "refresh";
+    return html(200, await renderIndex(d, parsed.filters, url.pathname + url.search, healthRefresh));
   }
 
   if (url.pathname === "/api/health") return json(200, await d.health.report(d.scanner));

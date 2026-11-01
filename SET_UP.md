@@ -98,6 +98,8 @@ A command is the first line of a comment: `/` and the command name (any case), t
 
 Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
 
+If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
+
 ### Status labels
 
 Each work item's issue carries exactly one status label, and so does its PR once there is one. The factory sets it on every change of state, and again for every open item when it starts. Names are `status_label_prefix` (in `factory.config.json`, default `sf: `) plus the name below. The factory creates a missing one on first use; `doctor` only warns about a missing one.
@@ -139,7 +141,28 @@ Unknown config keys are rejected at load: a typo in `factory.config.json` (for e
 
 ### Status page
 
-`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). Open it to see what needs you: the "Needs you (N)" list at the top has one row per item waiting for a human, oldest first, with a link to the exact comment or PR and the command to type there. Below it the page shows what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
+`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). The top is one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Below it the page shows what runs now and the queue; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+
+The list's order:
+1. Ready to merge
+2. Needs approval
+3. Needs you for another reason (failed, merge conflict, too many loops, budget)
+4. Stuck (a run past its lease, or nothing moves the item)
+5. Running
+6. Queued
+7. Waiting on another issue (empty until dependencies are tracked)
+8. Closed (hidden unless asked for)
+
+Within a level: items that unblock more others first, then the longest wait, then the higher tier.
+
+Filters (in the URL, so a filtered view can be bookmarked; each option shows how many items it would show):
+- `state`: `needs` (the first three levels) or one level
+- `stage`: `NEW`, `READY`, `RUNNING`, `REVIEW`, `CLOSED`
+- `tier`: `1` to `5`
+- `kind`: the run kind in a failure reason, else the kind of the queued or running run (`triage`, `implement`, `review`, `update`)
+- `unblocks=1`: only items others wait on
+- `closed=1`: show closed items too
+- `q`: search the issue number (`#12` or `12`) and the title as shown
 
 Slack (optional, for real-time threads): [`docs/slack-setup.md`](docs/slack-setup.md), mostly `scripts/slack-app.sh create|tokens|check`.
 

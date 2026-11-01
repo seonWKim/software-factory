@@ -66,6 +66,7 @@ describe("GitHubIssueSource", () => {
         approver: { provider: "github", subject: "1", login: "alice" }, reason: "too big\nsplit it",
       },
       { kind: "retry_requested", source: issueRef(7), comment_id: "12", requester: { provider: "github", subject: "1", login: "alice" } },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: { provider: "github", subject: "1", login: "alice" }, body: "looks good" },
     ]);
   });
 
@@ -94,7 +95,7 @@ describe("GitHubIssueSource", () => {
     ]);
   });
 
-  it("emits one approval with its note, an unknown command for a typo, a help event, and nothing for other text", async () => {
+  it("emits one approval with its note, an unknown command for a typo, a help event, and a plain comment for other text", async () => {
     const { client, source } = setup();
     const alice = { provider: "github", subject: "1", login: "alice" };
     client.responses["/repos/o/r/issues/comments"] = [
@@ -117,7 +118,27 @@ describe("GitHubIssueSource", () => {
       { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: alice, note: "note below" },
       { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: alice, command: "aprove" },
       { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: alice },
+      // Text that is not a command is passed on whole, for a suggestion (design §4).
+      { kind: "plain_comment", source: issueRef(7), comment_id: "46", author: alice, body: "thanks!" },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "47", author: alice, body: "/" },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "48", author: alice, body: "/ approve" },
       { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice },
+    ]);
+  });
+
+  it("emits plain_comment for a person's non-command issue comment, never for a bot's or a PR conversation's", async () => {
+    const { client, source } = setup();
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(60, "ship it", "2026-11-01T00:00:01Z"),
+      { ...comment(61, "ship it", "2026-11-01T00:00:02Z"), user: { id: 9, login: "sf[bot]", type: "Bot" } },
+      { ...comment(62, "ship it", "2026-11-01T00:00:03Z", 8), html_url: "https://github.com/o/r/pull/8#issuecomment-62" },
+      comment(63, "can you split this\ninto two parts?", "2026-11-01T00:00:04Z", 9),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "plain_comment", source: issueRef(7), comment_id: "60", author: alice, body: "ship it" },
+      { kind: "plain_comment", source: issueRef(9), comment_id: "63", author: alice, body: "can you split this\ninto two parts?" },
     ]);
   });
 
@@ -163,6 +184,7 @@ describe("GitHubIssueSource", () => {
       { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver, amount: "1.5" },
       // Not /budget: an unknown command word gets a reply (design §4).
       { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: approver, command: "budgetx" },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "34", author: approver, body: "please /budget 5" },
     ]);
   });
 
@@ -291,6 +313,7 @@ describe("GitHubIssueSource: /verdict", () => {
         args: "changes minor rename it\nand split the test",
       },
       { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver, args: "" },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "22", author: approver, body: "/verdict/x accept none" },
     ]);
   });
 
@@ -445,6 +468,7 @@ describe("GitHubIssueSource: /resolve", () => {
         notes: "keep main's API\n\n  and the new flag", pr: null,
       },
       { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: alice, command: "resolver" },
+      { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: alice, body: "please /resolve" },
     ]);
   });
 
@@ -457,7 +481,7 @@ describe("GitHubIssueSource: /resolve", () => {
       prComment(20, "/resolve take both", 42),
       prComment(21, "/resolve", 43), // not a factory PR: ignored
       prComment(22, "/resolve", 44), // PR gone (404): ignored, the poll still succeeds
-      prComment(23, "lgtm", 42), // not a command: no PR lookup
+      prComment(23, "lgtm", 42), // not a command: no PR lookup, and no plain_comment on a PR conversation
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
