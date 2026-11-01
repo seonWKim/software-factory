@@ -14,6 +14,8 @@ export type CommandPhase =
   | "max_revisions"
   | "implementing"
   | "floor_tier"
+  | "too_large"
+  | "failed_implement"
   | "failed_run"
   | "reviewing"
   | "merge_pending"
@@ -23,8 +25,8 @@ export type CommandPhase =
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
-  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "floor_tier", "failed_run",
-  "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
+  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "floor_tier", "too_large",
+  "failed_implement", "failed_run", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
@@ -64,7 +66,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "reject",
     usage: "/reject <reason>",
     description: "Close the item without a merge, giving your reason",
-    phases: ["spec_pending", "max_revisions", "floor_tier", "budget_checkpoint"],
+    phases: ["spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement"],
     needs_pr: false,
     changes_state: true,
   },
@@ -72,7 +74,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    phases: ["spec_pending"],
+    phases: ["spec_pending", "too_large", "failed_implement"],
     needs_pr: false,
     changes_state: true,
   },
@@ -80,7 +82,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "retry",
     usage: "/retry",
     description: "Run the failed run again",
-    phases: ["failed_run"],
+    phases: ["failed_run", "too_large", "failed_implement"],
     needs_pr: false,
     changes_state: true,
   },
@@ -142,7 +144,11 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.stage === "CLOSED") return "closed";
   if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
   if (it.blocked_reason === "floor_tier") return "floor_tier";
-  if (it.blocked_on === "human" && failedRunKind(it as WorkItem)) return "failed_run";
+  if (it.blocked_on === "human") {
+    const kind = failedRunKind(it as WorkItem);
+    if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
+    if (kind) return "failed_run";
+  }
   if (it.stage === "READY" && it.blocked_reason === "spec_pending") return "spec_pending";
   if (it.stage === "READY" && it.blocked_reason === "max_revisions") return "max_revisions";
   if (it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending") return "merge_pending";
@@ -187,7 +193,7 @@ export function helpReply(s: CommandState): string {
   return [
     "## Factory commands",
     "",
-    `Commands marked **(now)** apply to this item in its current state (\`${s.phase}\`).`,
+    `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
     "",
     ...COMMANDS.map((c) => `- \`${c.usage}\`${applies(c, s) ? " **(now)**" : ""}: ${c.description}.`),
   ].join("\n");
@@ -200,6 +206,8 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   max_revisions: "spec at the revision limit",
   implementing: "implementing",
   floor_tier: "blocked by the floor check",
+  too_large: "blocked: the change was too large",
+  failed_implement: "blocked by a failed implement run",
   failed_run: "blocked by a failed run",
   reviewing: "in review",
   merge_pending: "waiting for a human merge",
@@ -208,6 +216,11 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   other_blocked: "blocked for another reason",
   closed: "closed",
 };
+
+/** The phase in the words the owner sees: `/help`, the command table and every refusal use it, never a stage name. */
+export function phaseLabel(p: CommandPhase): string {
+  return PHASE_LABELS[p];
+}
 
 function whenText(c: CommandSpec): string {
   const all = (ps: readonly CommandPhase[]) => ps.length === c.phases.length && ps.every((p) => c.phases.includes(p));
