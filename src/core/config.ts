@@ -1,4 +1,15 @@
-import type { Tier } from "./types.js";
+import type { Tier, VerdictSeverity } from "./types.js";
+
+/**
+ * The `stats` key of factory.config.json (design §6 Measurement). Read only by `factory stats`; it changes
+ * no dial. Every weight is required (non-negative number); `min_sample` is an integer ≥ 1, default 10.
+ */
+export interface StatsConfig {
+  /** Feedback weight per `/verdict` severity. */
+  weights: Record<VerdictSeverity, number>;
+  /** A tier with fewer closed items than this shows no rate. */
+  min_sample: number;
+}
 
 /** Runtime config for core code. Built by the composition root; core never reads env or files itself. */
 export interface FactoryConfig {
