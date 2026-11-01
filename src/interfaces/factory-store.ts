@@ -23,6 +23,7 @@ import type {
   WorkItemPatch,
   WorkerId,
 } from "../core/types.js";
+import type { SourceEvent } from "./source-adapter.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -201,4 +202,62 @@ export interface FactoryStore {
   getCursor(name: string): Promise<string | null>;
   /** Sets the cursor only if it still equals `expected`. */
   advanceCursor(name: string, expected: string | null, next: string): Promise<boolean>;
+
+  // Stream intake (docs/architecture.md, Intake): the inbox of pushed events and the listener lease.
+
+  /**
+   * Stores one pushed event, in the same transaction as a check that `lease_token` is still the token of
+   * `source_type`'s listener lease (fenced by the token, not the clock, as run leases are). A dedupe_key
+   * already stored for this source type is a no-op that reports the existing row. Sequence numbers only
+   * grow, and appends for one source type commit in sequence order (they serialize on the lease row).
+   */
+  appendInbox(input: NewInboxEvent): Promise<AppendInboxResult>;
+  /** Rows of `source_type` with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
+  listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]>;
+  /**
+   * Deletes rows of `source_type` that are both at or below `through_seq` and received more than
+   * `older_than_ms` ago (store clock). Returns how many went.
+   */
+  pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number>;
+  /**
+   * Takes `source_type`'s listener lease for `owner` if nobody holds it or the holder's lease expired;
+   * the token goes up by one on every take. Otherwise reports the current holder.
+   */
+  acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult>;
+  /** Extends the lease while `token` is still current, whatever the clock says (like heartbeat). */
+  renewListenerLease(source_type: SourceType, token: number, lease_ms: number): Promise<ListenerLeaseResult>;
+  /** Ends the lease now if `token` is still current, so another replica can take it at once. */
+  releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
 }
+
+export interface NewInboxEvent {
+  source_type: SourceType;
+  dedupe_key: string;
+  event: SourceEvent;
+  /** The caller's listener lease token for `source_type`. */
+  lease_token: number;
+}
+
+export interface InboxRow {
+  seq: number;
+  source_type: SourceType;
+  dedupe_key: string;
+  event: SourceEvent;
+  received_at: Timestamp;
+}
+
+export type AppendInboxResult =
+  | { ok: true; row: InboxRow; duplicate: boolean }
+  | { ok: false; reason: "lease_lost" };
+
+export interface ListenerLease {
+  source_type: SourceType;
+  owner: string;
+  token: number;
+  expires_at: Timestamp;
+}
+
+export type ListenerLeaseResult =
+  | { ok: true; lease: ListenerLease }
+  /** `holder`: the current lease, or null when there is none (renew of a lease that was never taken). */
+  | { ok: false; reason: "held" | "lease_lost"; holder: ListenerLease | null };

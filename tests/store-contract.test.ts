@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunId, UserId, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
 
@@ -514,6 +515,151 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.advanceCursor("intake", "a", "b")).toBe(true);
       expect(await store.advanceCursor("intake", "a", "c")).toBe(false);
       expect(await store.getCursor("intake")).toBe("b");
+    });
+  });
+
+  describe("source inbox", () => {
+    const slack = "slack_thread" as const;
+    const ev = (n: number): SourceEvent => ({
+      kind: "item_requested",
+      source: { type: slack, id: `C1/${n}`, link: `https://slack.example/C1/${n}` },
+      requester: { provider: "slack", subject: "U1" },
+      title: `t${n}`,
+      body: `b${n}`,
+    });
+    async function leased(store: FactoryStore): Promise<number> {
+      const r = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!r.ok) throw new Error(r.reason);
+      return r.lease.token;
+    }
+
+    it("appends in sequence order and reads back after a cursor", async () => {
+      const { store } = await make();
+      const token = await leased(store);
+      const seqs: number[] = [];
+      for (const n of [1, 2, 3]) {
+        const r = await store.appendInbox({ source_type: slack, dedupe_key: `k${n}`, event: ev(n), lease_token: token });
+        if (!r.ok) throw new Error(r.reason);
+        expect(r.duplicate).toBe(false);
+        seqs.push(r.row.seq);
+      }
+      expect([...seqs].sort((a, b) => a - b)).toEqual(seqs);
+      expect(new Set(seqs).size).toBe(3);
+
+      const all = await store.listInboxAfter(slack, 0, 10);
+      expect(all.map((r) => r.dedupe_key)).toEqual(["k1", "k2", "k3"]);
+      expect(all[0]).toMatchObject({ seq: seqs[0], source_type: slack, event: ev(1) });
+      expect(typeof all[0]!.received_at).toBe("string");
+      expect((await store.listInboxAfter(slack, seqs[0]!, 10)).map((r) => r.dedupe_key)).toEqual(["k2", "k3"]);
+      expect((await store.listInboxAfter(slack, 0, 2)).map((r) => r.dedupe_key)).toEqual(["k1", "k2"]);
+      expect(await store.listInboxAfter("github_issue", 0, 10)).toEqual([]);
+    });
+
+    it("a duplicate dedupe_key is a no-op that reports the stored row", async () => {
+      const { store } = await make();
+      const token = await leased(store);
+      const first = await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: token });
+      const again = await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(2), lease_token: token });
+      expect(again).toEqual({ ok: true, duplicate: true, row: first.ok && first.row });
+      expect(await store.listInboxAfter(slack, 0, 10)).toHaveLength(1);
+    });
+
+    it("refuses the write without the listener lease, or with a stale token", async () => {
+      const { store, clock } = await make();
+      expect(await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: 1 })).toEqual({
+        ok: false, reason: "lease_lost",
+      });
+      const old = await leased(store);
+      clock.advance(LEASE + 1);
+      const b = await store.acquireListenerLease(slack, "replica-b", LEASE);
+      if (!b.ok) throw new Error(b.reason);
+      expect(await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: old })).toEqual({
+        ok: false, reason: "lease_lost",
+      });
+      expect(await store.listInboxAfter(slack, 0, 10)).toEqual([]);
+      expect((await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: b.lease.token })).ok).toBe(true);
+    });
+
+    it("prune deletes only rows both older than the retention and at or below the cursor", async () => {
+      const { store, clock } = await make();
+      const token = await leased(store);
+      const append = async (k: string) => {
+        const r = await store.appendInbox({ source_type: slack, dedupe_key: k, event: ev(1), lease_token: token });
+        if (!r.ok) throw new Error(r.reason);
+        return r.row.seq;
+      };
+      const oldA = await append("old-a");
+      const oldB = await append("old-b");
+      clock.advance(10_000);
+      const fresh = await append("fresh");
+      clock.advance(5_000);
+      // Retention 8s: old-a and old-b are older, fresh is not. Cursor at old-a: old-b is still ahead of it.
+      expect(await store.pruneInbox(slack, oldA, 8_000)).toBe(1);
+      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["old-b", "fresh"]);
+      // Cursor past everything: fresh stays because it is newer than the retention.
+      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
+      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["fresh"]);
+      expect(oldB).toBeGreaterThan(oldA);
+      // Sequence numbers keep growing after the newest rows are deleted.
+      clock.advance(10_000);
+      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
+      expect(await append("next")).toBeGreaterThan(fresh);
+    });
+  });
+
+  describe("listener lease", () => {
+    const slack = "slack_thread" as const;
+
+    it("one owner at a time; the token goes up on every take", async () => {
+      const { store } = await make();
+      const [a, b] = await Promise.all([
+        store.acquireListenerLease(slack, "replica-a", LEASE),
+        store.acquireListenerLease(slack, "replica-b", LEASE),
+      ]);
+      const won = [a, b].filter((r) => r.ok);
+      expect(won).toHaveLength(1);
+      const lost = [a, b].find((r) => !r.ok)!;
+      expect(lost).toMatchObject({ ok: false, reason: "held", holder: { token: 1 } });
+      // Another source type has its own lease.
+      expect((await store.acquireListenerLease("github_issue", "replica-b", LEASE)).ok).toBe(true);
+    });
+
+    it("renew extends the lease while the token is current, even past expiry", async () => {
+      const { store, clock } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE - 1);
+      const r = await store.renewListenerLease(slack, a.lease.token, LEASE);
+      expect(r).toMatchObject({ ok: true, lease: { owner: "replica-a", token: a.lease.token } });
+      expect(r.ok && r.lease.expires_at).toBe(new Date(clock.now().getTime() + LEASE).toISOString());
+      clock.advance(LEASE - 1);
+      expect((await store.acquireListenerLease(slack, "replica-b", LEASE)).ok).toBe(false);
+      // Expired but not taken: the holder can still renew (host sleep), as with run leases.
+      clock.advance(10);
+      expect((await store.renewListenerLease(slack, a.lease.token, LEASE)).ok).toBe(true);
+    });
+
+    it("another owner takes over after expiry; the old token is refused", async () => {
+      const { store, clock } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE);
+      const b = await store.acquireListenerLease(slack, "replica-b", LEASE);
+      expect(b).toMatchObject({ ok: true, lease: { owner: "replica-b", token: a.lease.token + 1 } });
+      expect(await store.renewListenerLease(slack, a.lease.token, LEASE)).toMatchObject({
+        ok: false, reason: "lease_lost", holder: { owner: "replica-b" },
+      });
+      // A stale release changes nothing.
+      await store.releaseListenerLease(slack, a.lease.token);
+      expect((await store.acquireListenerLease(slack, "replica-c", LEASE)).ok).toBe(false);
+    });
+
+    it("release lets another owner take the lease at once", async () => {
+      const { store } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      await store.releaseListenerLease(slack, a.lease.token);
+      expect(await store.acquireListenerLease(slack, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
     });
   });
 });

@@ -1,7 +1,7 @@
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { PollResult, SourceAdapter, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
+import type { PollResult, PollSource, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
@@ -96,8 +96,9 @@ export function statusLabels(prefix: string): StatusLabel[] {
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
-export class GitHubIssueSource implements SourceAdapter {
+export class GitHubIssueSource implements PollSource {
   readonly type = "github_issue" as const;
+  readonly intake = "poll" as const;
 
   constructor(
     private readonly client: GitHubClient,
