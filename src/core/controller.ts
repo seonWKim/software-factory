@@ -37,13 +37,15 @@ export interface ControllerDeps {
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 /** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
 type Refusal = { refuse: string };
-type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" }>;
+type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" | "resolve_requested" }>;
+type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
   spec_rejected: "/reject",
   retry_requested: "/retry",
+  resolve_requested: "/resolve",
 };
 
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
@@ -52,6 +54,8 @@ const LINKS: Actor = { kind: "system", id: "system:links" };
 const MAX_CONFLICT_RETRIES = 5;
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 const FLOOR_TIER = "floor_tier";
+/** blocked_reason of a PR whose base no longer merges cleanly; `/resolve` starts a resolve run (design §5). */
+const CONFLICT_PENDING = "merge_conflict_pending";
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -167,6 +171,7 @@ export class Controller {
       case "spec_approved":
       case "spec_rejected":
       case "retry_requested":
+      case "resolve_requested":
         return this.handleCommand(e);
       case "pr_merged":
       case "pr_closed": {
@@ -214,9 +219,13 @@ export class Controller {
    * (no reaction, no reply): they may be ordinary conversation on an unrelated issue.
    */
   private async handleCommand(e: CommandEvent): Promise<void> {
-    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = e.kind === "resolve_requested" && e.pr
+      ? await this.itemOfPr(e.pr)
+      : await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
-    const principal = await this.authorize(e.kind === "retry_requested" ? e.requester : e.approver, "approve_spec", item.id);
+    // /resolve uses the same write-permission check as /approve and /retry; no new AuthAction.
+    const who = e.kind === "retry_requested" || e.kind === "resolve_requested" ? e.requester : e.approver;
+    const principal = await this.authorize(who, "approve_spec", item.id);
     const refusal = "refuse" in principal
       ? principal.refuse
       : await this.decide(item.id, async (it) =>
@@ -224,11 +233,20 @@ export class Controller {
     await this.markSeen(e.source, e.comment_id);
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
+    // A /resolve sent on the PR is answered on the PR; every other command on the item's own issue.
     await this.d.source.postComment(
-      item.source,
+      e.kind === "resolve_requested" ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /** The work item of a factory PR, from its head branch; null unless that item's PR is this one. */
+  private async itemOfPr(pr: { pr_number: number; head_branch: string }): Promise<WorkItem | null> {
+    const id = workItemIdFromBranch(pr.head_branch, this.d.config.branch_prefix);
+    if (!id) return null;
+    const it = await this.d.store.getWorkItem(id as WorkItemId);
+    return it && it.pr_number === pr.pr_number ? it : null;
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -309,6 +327,7 @@ export class Controller {
       if (!run.outcome || run.outcome.status !== "succeeded") {
         if (!this.expects(it, run.kind)) return ack("run_ignored");
         const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+        if (run.kind === "resolve") return this.resolveFailed(it, run, code);
         if (run.kind === "implement" && code === DIFF_TOO_LARGE) return this.diffTooLarge(it, run);
         if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
         await this.comment(it, `run-failed:${run.id}`,
@@ -402,6 +421,17 @@ export class Controller {
             ack_run: run.id,
           };
         }
+        case "resolve":
+          // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
+          // this run's id, so it never collides with the review of an earlier loop or resolve.
+          return {
+            patch: { stage: "REVIEW", token_cost: tokens },
+            actor: SYSTEM,
+            reason: "resolved",
+            detail: { run_id: run.id },
+            ack_run: run.id,
+            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
+          };
         case "update": {
           // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
           switch (data.result) {
@@ -412,7 +442,7 @@ export class Controller {
             case "conflict":
             case "tests_failed":
               return {
-                patch: { blocked_reason: "merge_conflict_pending" },
+                patch: { blocked_reason: CONFLICT_PENDING },
                 actor: SYSTEM,
                 reason: data.result === "conflict" ? "update_conflict" : "update_tests_failed",
                 ack_run: run.id,
@@ -472,6 +502,31 @@ export class Controller {
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
       enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore },
+    };
+  }
+
+  /**
+   * Any failed resolve run (agent, scope, tests, push, egress, rate limit, lease): nothing was pushed, so the
+   * PR is as it was. The item goes back to waiting on the conflict, not to run_failed:*, so the next `/resolve`
+   * is accepted. No automatic retry: a human starts every resolve. One comment, keyed on the run, names the code.
+   */
+  private async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const body = (withDetail: boolean) => [
+      `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      "",
+      `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
+      "Comment `/resolve [notes]` to try again, or resolve it by hand.",
+    ].join("\n");
+    // The detail is run output (G5): post it only if the scan passes, else the comment without it.
+    const scan = await this.d.scanner.scan("comment", body(true));
+    await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    return {
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING },
+      actor: SYSTEM,
+      reason: "resolve_failed",
+      detail: { run_id: run.id, error_code: code },
+      ack_run: run.id,
     };
   }
 
@@ -561,7 +616,7 @@ export class Controller {
     if (kind === "update") return awaitingMerge(it);
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
-    if (kind === "implement") return it.stage === "RUNNING";
+    if (kind === "implement" || kind === "resolve") return it.stage === "RUNNING";
     return it.stage === "REVIEW";
   }
 
@@ -654,6 +709,7 @@ export class Controller {
 
 /** The transition a command asks for, or why the item's current state cannot take it. */
 function command(e: CommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Decision | Refusal {
+  if (e.kind === "resolve_requested") return resolveCommand(e, it, actor);
   if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
   if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
   if (e.kind === "retry_requested") {
@@ -688,6 +744,33 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor, floorNeed: number 
     reason: "spec_approved",
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
+}
+
+/**
+ * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict. Starts a resolve
+ * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
+ * /resolve would otherwise be a silent no-op. The notes go on the run for the worker; they are untrusted.
+ */
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor): Decision | Refusal {
+  if (!conflictPending(it)) {
+    return {
+      refuse: `the item is not waiting on a merge conflict (stage \`${it.stage}\`, blocked_on \`${it.blocked_on}\`, ` +
+        `blocked_reason \`${it.blocked_reason ?? "none"}\`); \`/resolve\` needs blocked_reason \`${CONFLICT_PENDING}\``,
+    };
+  }
+  const next = { ...it, restart_count: it.restart_count + 1 };
+  return {
+    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+    actor,
+    reason: "resolve_requested",
+    detail: { comment_id: e.comment_id },
+    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: e.notes } },
+  };
+}
+
+/** A PR whose base no longer merges cleanly, waiting for a human (set by the update run, design §5). */
+function conflictPending(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
 }
 
 /**
@@ -733,6 +816,13 @@ const FAILURES: Record<string, string> = {
   no_commits: "the implementer made no commits",
   scope_violation: "the branch changed files outside the allowed paths",
   diff_too_large: "the branch diff is over max_diff_lines or max_diff_files",
+  out_of_scope: "the resolve run changed files that are neither conflicting nor under the allowed paths",
+  tests_failed: "the install or test command failed on the resolved branch",
+  unresolved_conflicts: "conflicts were left unresolved",
+  merge_incomplete: "the result does not contain the base branch (the merge was not completed)",
+  prompt_missing: "prompts/resolve.md is missing",
+  push_failed: "the push was rejected",
+  rate_limited: "the model provider's usage or rate limit was hit",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",
