@@ -5,7 +5,7 @@ import {
   commandTableMarkdown, helpReply, parseComment, unknownCommandReply,
 } from "../src/core/commands.js";
 import { Controller } from "../src/core/controller.js";
-import type { WorkItemPatch } from "../src/interfaces/factory-store.js";
+import type { WorkItemPatch } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
