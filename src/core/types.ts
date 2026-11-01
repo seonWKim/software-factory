@@ -138,10 +138,35 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  */
 export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual";
 
-/** What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. */
+/**
+ * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
+ * failed implement run's commits on the forge; the retry pushes them with no agent run (design §5 Restarts).
+ */
 export interface RunInput {
   notes?: string;
+  wip?: WipRef;
 }
+
+/**
+ * An implement run's commits kept on the forge after its push or PR failed (design §5 Restarts), on `branch`
+ * (under the branch prefix) at `head`. The rest is what the retry needs instead of the agent's answer: the commit
+ * count, the summary for the PR body, the next steps for any new handoff row, and the files the base merge
+ * conflicted in, which the scope gate lets through. Agent text, egress-scanned with the outcome.
+ */
+export interface WipRef {
+  branch: string;
+  head: string;
+  commits: number;
+  summary: string;
+  next_steps: string;
+  conflicts: string[];
+}
+
+/**
+ * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
+ * refused the factory's credentials (401/403), so no implement-type claim (implement, update).
+ */
+export type ClaimPauseName = "rate_limit" | "forge_auth";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Lease {
@@ -190,10 +215,14 @@ export type RunOutcome =
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
       infra: boolean;
-      /** For `rate_limited`: when the limit resets, if the runner could tell. */
+      /** For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth`: when the pause ends. */
       reset_at?: Timestamp | null;
       /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
       output_tail?: string;
+      /** A failed push or PR after the agent step: where its commits were kept; the retry resumes from it. */
+      wip?: WipRef;
+      /** For `forge_auth`: this run's failure started the forge-auth claim pause (one owner comment per pause). */
+      pause_started?: boolean;
     };
 
 /** One row per implementer commit (design §4). Truth for resuming on any node. */
