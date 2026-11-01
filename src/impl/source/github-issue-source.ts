@@ -163,8 +163,12 @@ export class GitHubIssueSource implements PollSource {
       const source = this.ref(Number(cm.issue_url.split("/").pop()));
       const comment_id = String(cm.id);
       const parsed = parseComment(cm.body);
-      if (parsed === null) continue;
       const who = identity(cm.user);
+      if (parsed === null) {
+        // Suggestions answer issue comments only; PR conversation comments are left alone (design §4).
+        if (!cm.html_url?.includes("/pull/")) events.push({ kind: "plain_comment", source, comment_id, author: who, body: cm.body });
+        continue;
+      }
       if (parsed.kind === "unknown") {
         events.push({ kind: "unknown_command", source, comment_id, requester: who, command: parsed.word });
         continue;
