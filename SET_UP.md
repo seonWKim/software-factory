@@ -58,11 +58,11 @@ To run your working tree instead (as before), set `"updater": "none"` in the `pl
 Then on GitHub:
 
 1. Label an issue `factory`.
-2. The factory posts a spec on the issue. Reply `/approve`, or `/reject <reason>`.
+2. The factory posts a spec on the issue. Reply `/approve`, `/reject <reason>`, or `/revise <feedback>`. `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
 
-Only users with write permission on the repository can approve or retry.
+Only users with write permission on the repository can approve, reject, revise or retry.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Status labels
@@ -72,7 +72,7 @@ Each work item's issue carries exactly one status label, and so does its PR once
 | Label | Meaning |
 |---|---|
 | `sf: triaging` | Taken in; the triage agent is writing the spec |
-| `sf: needs approval` | The spec is posted; reply `/approve` or `/reject <reason>` |
+| `sf: needs approval` | The spec is posted; reply `/approve`, `/reject <reason>`, or `/revise <feedback>` |
 | `sf: implementing` | The implementer agent is working on the branch |
 | `sf: in review` | The PR is open and the reviewer agent is checking it |
 | `sf: ready to merge` | The PR passed review; a human merges it |
