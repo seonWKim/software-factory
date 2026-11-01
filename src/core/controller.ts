@@ -6,6 +6,7 @@ import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBran
 import { renderSpec } from "./spec-comment.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
+import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
@@ -25,6 +26,7 @@ type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 type Refusal = { refuse: string };
 type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
+type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -148,6 +150,8 @@ export class Controller {
       case "spec_rejected":
       case "retry_requested":
         return this.handleCommand(e);
+      case "verdict_submitted":
+        return this.handleVerdict(e);
       case "pr_merged":
       case "pr_closed": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
@@ -208,6 +212,72 @@ export class Controller {
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * A `/verdict` on a work item's issue or PR (design §4): stores one verdict and changes no field but the
+   * version. Like the other commands: 👀 on the comment, and a refusal gets one reply on the issue keyed on
+   * the comment id. A comment already stored is a silent no-op, so a redelivery never replies.
+   */
+  private async handleVerdict(e: VerdictEvent): Promise<void> {
+    const item = await this.verdictItem(e);
+    if (!item) return;
+    const principal = await this.authorize(e.approver, "record_verdict", item.id);
+    let refusal: string | null;
+    if ("refuse" in principal) refusal = principal.refuse;
+    else {
+      const parsed = parseVerdict(e.args);
+      refusal = parsed.ok ? await this.recordVerdict(item.id, e, principal, parsed.value) : parsed.refuse;
+    }
+    await this.markSeen(item.source, e.comment_id);
+    if (refusal === null) return;
+    // A refused comment that was stored before (e.g. a since-revoked permission) is not answered either.
+    if ((await this.d.store.listVerdicts(item.id)).some((v) => v.comment_id === e.comment_id)) return;
+    this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
+    await this.d.source.postComment(
+      item.source,
+      `\`/verdict\` was not applied: ${refusal}.`,
+      `<!-- factory:refused:${e.comment_id} -->`,
+    );
+  }
+
+  /** The work item a verdict names: by issue, or by the PR's head branch when that PR is the item's. */
+  private async verdictItem(e: VerdictEvent): Promise<WorkItem | null> {
+    if (e.target.kind === "issue") return this.d.store.getWorkItemBySource(e.target.source.type, e.target.source.id);
+    const id = workItemIdFromBranch(e.target.head_branch, this.d.config.branch_prefix);
+    const item = id ? await this.d.store.getWorkItem(id as WorkItemId) : null;
+    return item && (item.pr_number === null || item.pr_number === e.target.pr_number) ? item : null;
+  }
+
+  /** Re-read → check → recordVerdict, retrying on version conflicts. Returns the refusal reason, else null. */
+  private async recordVerdict(
+    id: WorkItemId,
+    e: VerdictEvent,
+    principal: Principal,
+    v: ParsedVerdict,
+  ): Promise<string | null> {
+    for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
+      const it = await this.d.store.getWorkItem(id);
+      if (!it) return null;
+      if ((await this.d.store.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
+      if (it.stage === "CLOSED") return "the work item is closed";
+      if (it.pr_number === null) return "the work item has no PR yet";
+      const r = await this.d.store.recordVerdict({
+        id,
+        expected_version: it.version,
+        actor: { kind: "user", id: principal.user_id },
+        ...v,
+        comment_id: e.comment_id,
+        target: e.target.kind,
+      });
+      if (r.ok) {
+        this.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
+        return null;
+      }
+      if (r.reason !== "version_conflict") return null;
+    }
+    this.d.log.warn("verdict gave up after conflicts", { work_item_id: id });
+    return null;
   }
 
   /**
