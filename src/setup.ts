@@ -8,7 +8,8 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
-import { GitHubClient, GitHubError } from "./impl/github/github-client.js";
+import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
+import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { SecretName } from "./interfaces/secret-store.js";
 
@@ -18,7 +19,7 @@ const LABEL = { color: "5319e7", description: "Work item for the software factor
 // doctor
 
 /** `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. */
-type Check = { ok: boolean; msg: string; warn?: boolean };
+export type Check = { ok: boolean; msg: string; warn?: boolean };
 
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   const checks: Check[] = [];
@@ -89,7 +90,44 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     if (!(err instanceof GitHubError && err.status === 404)) throw err;
     add(false, `label "${loaded.config.intake_label}" exists (run: npm run setup)`);
   }
+  checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/**
+ * One check per status label. A missing one is a warning, never a FAIL: the factory creates it on first
+ * use, so it only means setup has not run since status labels were added.
+ */
+export async function statusLabelChecks(client: GitHubClient, repo: RepoRef, prefix: string): Promise<Check[]> {
+  const checks: Check[] = [];
+  for (const l of statusLabels(prefix)) {
+    try {
+      await client.request("GET", `/repos/${repo.owner}/${repo.name}/labels/${encodeURIComponent(l.name)}`);
+      checks.push({ ok: true, msg: `status label "${l.name}" exists` });
+    } catch (err) {
+      const why = err instanceof GitHubError && err.status === 404
+        ? "run: npm run setup"
+        : `could not check: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
+      checks.push({ ok: false, msg: `status label "${l.name}" exists (${why})`, warn: true });
+    }
+  }
+  return checks;
+}
+
+/** Creates each label, printing created / already exists / could not create per label. */
+export async function createLabels(
+  client: GitHubClient,
+  repo: RepoRef,
+  labels: readonly { name: string; color: string; description: string }[],
+): Promise<void> {
+  for (const l of labels) {
+    try {
+      const r = await ensureLabel(client, repo, l);
+      console.log(`   "${l.name}": ${r === "created" ? "created" : "already exists"}`);
+    } catch (err) {
+      console.log(`   "${l.name}": could not create it: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+    }
+  }
 }
 
 export async function doctor(loaded: Loaded): Promise<number> {
@@ -157,16 +195,13 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   step(4, "Database");
   if (!(await provisionDatabase(loaded, opts.rotate.includes("MYSQL_PASSWORD")))) return 1;
 
-  step(5, `Label "${loaded.config.intake_label}" on ${repo.owner}/${repo.name}`);
+  step(5, `Labels on ${repo.owner}/${repo.name}: intake "${loaded.config.intake_label}" and the status labels`);
   secrets = await plugins.secrets();
   const client = new GitHubClient(secrets);
-  try {
-    await client.request("POST", `/repos/${repo.owner}/${repo.name}/labels`, { name: loaded.config.intake_label, ...LABEL });
-    console.log("   created");
-  } catch (err) {
-    if (err instanceof GitHubError && err.status === 422) console.log("   already exists");
-    else console.log(`   could not create it: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
-  }
+  await createLabels(client, repo, [
+    { name: loaded.config.intake_label, ...LABEL },
+    ...statusLabels(loaded.config.status_label_prefix),
+  ]);
 
   step(6, "Checks");
   const code = await doctor(loaded);
