@@ -1,356 +1,217 @@
 // Plugin registry (design D6): every implementation of an infra interface is a named plugin, chosen by
-// name in factory.config.json. This file is the only non-test code that constructs those implementations;
-// src/compose.ts, src/canary.ts and src/setup.ts resolve them through it. docs/plugins.md describes each
-// one and `tests/plugins.test.ts` keeps the two in step.
+// name in factory.config.json. Each plugin describes itself in a `*.plugin.ts` file beside its
+// implementation under src/impl/ (`export default definePlugin({...})`, src/plugin-api.ts). At startup the
+// loader below finds those files (`*.plugin.js` once built), sorts them by path, imports each and fills
+// REGISTRY. This file names no plugin and imports no implementation: only a new interface edits it.
+// src/compose.ts, src/canary.ts and src/setup.ts resolve plugins through it; docs/plugins.md describes
+// each one and `tests/plugins.test.ts` keeps the two in step.
 //
 // Guards (SecretStore, EgressScanner, ToolBroker; docs/architecture.md §5, G1–G6) can be switched to
 // another plugin, but never disabled: config that selects nothing for a guard fails at startup.
 
-import { join, resolve } from "node:path";
-import type { Loaded } from "./compose.js";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
-import type { Logger } from "./core/log.js";
-import type { AgentRunner } from "./interfaces/agent-runner.js";
-import type { AuthProvider } from "./interfaces/auth-provider.js";
-import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
-import type { Clock } from "./interfaces/clock.js";
-import type { EgressScanner } from "./interfaces/egress-scanner.js";
-import type { FactoryStore } from "./interfaces/factory-store.js";
-import type { KeepAwake } from "./interfaces/keep-awake.js";
-import type { LLMProvider } from "./interfaces/llm-provider.js";
-import type { Sandbox } from "./interfaces/sandbox.js";
-import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
-import type { SharedStorage } from "./interfaces/shared-storage.js";
-import type { SourceAdapter } from "./interfaces/source-adapter.js";
-import type { ToolBroker } from "./interfaces/tool-broker.js";
-import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
-import { CaffeinateKeepAwake, requireExecutable, spawnLauncher } from "./impl/awake/caffeinate-keep-awake.js";
-import { NoKeepAwake } from "./impl/awake/no-keep-awake.js";
-import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
-import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
-import { Bm25CapabilitySearch } from "./impl/capability/bm25-capability-search.js";
-import { ListAllCapabilitySearch } from "./impl/capability/list-all-capability-search.js";
-import { SystemClock } from "./impl/clock/system-clock.js";
-import { PatternEgressScanner } from "./impl/egress/pattern-egress-scanner.js";
-import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
-import { ConsoleLogger } from "./impl/log/console-logger.js";
-import { ClaudeCliLLMProvider } from "./impl/llm/claude-cli-llm-provider.js";
-import { ClaudeCodeRunner } from "./impl/runner/claude-code-runner.js";
-import { NoOpSandbox } from "./impl/sandbox/noop-sandbox.js";
-import { EnvFileSecretStore } from "./impl/secrets/env-file-secret-store.js";
-import { GitHubIssueSource } from "./impl/source/github-issue-source.js";
-import { FsSharedStorage } from "./impl/storage/fs-shared-storage.js";
-import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
-import { SqlFactoryStore } from "./impl/store/sql/sql-factory-store.js";
-import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
-import { baseEnv } from "./impl/process/run-process.js";
-import { GitWorktreeUpdater } from "./impl/updater/git-worktree.js";
-import { NoneUpdater } from "./impl/updater/none.js";
+import type {
+  Contexts,
+  Instances,
+  InterfaceEntry,
+  KindDefaults,
+  PluginDescriptor,
+  PluginFactory,
+  PluginKind,
+  Registry,
+  SecretDeclaration,
+  Selection,
+} from "./plugin-api.js";
 
-/** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
-export interface Instances {
-  store: FactoryStore;
-  sandbox: Sandbox;
-  runner: AgentRunner;
-  llm: LLMProvider;
-  auth: AuthProvider;
-  secrets: SecretStore;
-  egress: EgressScanner;
-  broker: ToolBroker;
-  storage: SharedStorage;
-  source: SourceAdapter;
-  capability: CapabilitySearch;
-  clock: Clock;
-  updater: Updater;
-  awake: KeepAwake;
-}
+export type {
+  BaseContext,
+  Contexts,
+  InterfaceEntry,
+  Instances,
+  KindDefaults,
+  PluginDefault,
+  PluginDescriptor,
+  PluginFactory,
+  PluginKind,
+  Registry,
+  SecretDeclaration,
+  Selection,
+} from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, definePlugin } from "./plugin-api.js";
 
-export type PluginKind = keyof Instances;
-
-/** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
-export interface BaseContext {
-  loaded: Loaded;
-  repo: RepoRef;
-  /** Values that are not secrets of ours but must never leave (the G6 canary). */
-  extraScanValues: readonly string[];
-}
-
-/** The typed context each interface's factories get: only the dependencies that interface needs. */
-export interface Contexts {
-  store: BaseContext & { secrets: SecretStore; clock: Clock };
-  sandbox: BaseContext;
-  runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore };
-  llm: BaseContext & { secrets: SecretStore };
-  auth: BaseContext & { github: GitHubClient };
-  secrets: BaseContext;
-  egress: BaseContext & { secrets: SecretStore };
-  broker: BaseContext & { github: GitHubClient; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
-  storage: BaseContext;
-  source: BaseContext & { github: GitHubClient };
-  capability: BaseContext & { capabilities: readonly Capability[] };
-  clock: BaseContext;
-  /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
-  updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
-  awake: BaseContext & { clock: Clock };
-}
-
-export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
-
-export interface InterfaceEntry<K extends PluginKind> {
+interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
   interface: string;
   /** Where config selects it, for error messages. */
   configKey: string;
   /** Guards can be switched but never disabled (architecture §5). */
   guard: boolean;
-  plugins: Readonly<Record<string, PluginFactory<K>>>;
-  /**
-   * The secret names each plugin reads, one per plugin name (an empty list for none). The SecretStore
-   * loads and scans exactly the union of the selected plugins' names (declaredSecretNames).
-   */
-  secrets: Readonly<Record<string, readonly SecretDeclaration[]>>;
 }
 
-/** One secret a plugin reads from the SecretStore, with one line on what it is for. */
-export interface SecretDeclaration {
-  name: SecretName;
-  purpose: string;
-  /**
-   * Declarations with the same `oneOf` label are alternatives: one present value is enough (for
-   * example the model credential, an OAuth token or an API key). Absent: the secret is required.
-   */
-  oneOf?: string;
-}
-
-export type Registry = { readonly [K in PluginKind]: InterfaceEntry<K> };
-
-/** One plugin name per interface, as selected by config. */
-export type Selection = { [K in PluginKind]: string };
-
-const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
-const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
-
-/** The model credential for the Claude Code CLI: the subscription token, or an API key instead. */
-const MODEL_CREDENTIAL: readonly SecretDeclaration[] = [
-  { name: secretName("CLAUDE_CODE_OAUTH_TOKEN"), purpose: "Claude subscription token for the claude CLI (claude setup-token)", oneOf: "model credential" },
-  { name: secretName("ANTHROPIC_API_KEY"), purpose: "Anthropic API key for the claude CLI, used when there is no OAuth token", oneOf: "model credential" },
-];
-
-const dirs = (c: BaseContext) => ({
-  claudeConfigDir: join(c.loaded.stateDir, "agents", "claude-config"),
-  homesDir: join(c.loaded.stateDir, "agents", "homes"),
-});
-
-export const REGISTRY: Registry = {
-  store: {
-    interface: "FactoryStore",
-    configKey: "store.type",
-    guard: false,
-    plugins: {
-      sqlite: (c) => new SqlFactoryStore(new SqliteDriver(join(c.loaded.stateDir, "db", "factory.db")), c.clock),
-      mysql: async (c) => {
-        const s = c.loaded.store;
-        if (s.type !== "mysql") throw new Error('store plugin "mysql" needs a store block with type "mysql"');
-        const password = await c.secrets.get(MYSQL_PASSWORD);
-        if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
-        const driver = new MysqlDriver({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() });
-        return new SqlFactoryStore(driver, c.clock);
-      },
-    },
-    secrets: {
-      sqlite: [],
-      mysql: [{ name: MYSQL_PASSWORD, purpose: "password of the factory's own MySQL user (npm run setup generates it)" }],
-    },
-  },
-  sandbox: {
-    interface: "Sandbox",
-    configKey: "plugins.sandbox",
-    guard: false,
-    plugins: { noop: (c) => new NoOpSandbox(resolve(c.loaded.root, c.loaded.file.worktrees_dir)) },
-    secrets: { noop: [] },
-  },
-  runner: {
-    interface: "AgentRunner",
-    configKey: "plugins.runner",
-    guard: false,
-    plugins: {
-      "claude-code": (c) => new ClaudeCodeRunner({ sandbox: c.sandbox, secrets: c.secrets, ...dirs(c), models: c.loaded.file.models }),
-    },
-    secrets: { "claude-code": MODEL_CREDENTIAL },
-  },
-  llm: {
-    interface: "LLMProvider",
-    configKey: "plugins.llm",
-    guard: false,
-    plugins: {
-      "claude-cli": (c) =>
-        new ClaudeCliLLMProvider({
-          secrets: c.secrets,
-          claudeConfigDir: dirs(c).claudeConfigDir,
-          workDir: join(c.loaded.stateDir, "agents", "llm"),
-          models: c.loaded.file.models,
-        }),
-    },
-    secrets: { "claude-cli": MODEL_CREDENTIAL },
-  },
-  auth: {
-    interface: "AuthProvider",
-    configKey: "auth",
-    guard: false,
-    plugins: {
-      github: (c) => new GitHubAuthProvider(c.github, c.repo),
-      none: () => new NoAuthProvider(),
-    },
-    secrets: {
-      github: [{ name: GITHUB_TOKEN, purpose: "reads a user's permission on the repository (shared GitHub client)" }],
-      none: [],
-    },
-  },
-  secrets: {
-    interface: "SecretStore",
-    configKey: "plugins.secrets",
-    guard: true,
-    plugins: {
-      "env-file": (c) =>
-        new EnvFileSecretStore(c.loaded.secretsFile, declaredSecretNames(c.loaded.registry, c.loaded.plugins), c.extraScanValues),
-    },
-    secrets: { "env-file": [] },
-  },
-  egress: {
-    interface: "EgressScanner",
-    configKey: "plugins.egress",
-    guard: true,
-    plugins: { pattern: (c) => new PatternEgressScanner(() => c.secrets.valuesForScan()) },
-    secrets: { pattern: [] },
-  },
-  broker: {
-    interface: "ToolBroker",
-    configKey: "plugins.broker",
-    guard: true,
-    plugins: {
-      github: (c) =>
-        new GitHubToolBroker({
-          client: c.github,
-          secrets: c.secrets,
-          store: c.store,
-          scanner: c.scanner,
-          clock: c.clock,
-          repo: c.repo,
-          branchPrefix: c.loaded.config.branch_prefix,
-        }),
-    },
-    secrets: { github: [{ name: GITHUB_TOKEN, purpose: "pushes factory branches, opens pull requests and comments" }] },
-  },
-  storage: {
-    interface: "SharedStorage",
-    configKey: "plugins.storage",
-    guard: false,
-    plugins: { fs: (c) => new FsSharedStorage(join(c.loaded.stateDir, "storage")) },
-    secrets: { fs: [] },
-  },
-  source: {
-    interface: "SourceAdapter",
-    configKey: "plugins.source",
-    guard: false,
-    plugins: {
-      "github-issues": (c) =>
-        new GitHubIssueSource(
-          c.github, c.repo, c.loaded.config.intake_label, c.loaded.config.branch_prefix, c.loaded.config.repo.base_branch,
-          c.loaded.config.status_label_prefix,
-        ),
-    },
-    secrets: { "github-issues": [{ name: GITHUB_TOKEN, purpose: "reads issues, comments and commits; posts comments and status labels" }] },
-  },
-  capability: {
-    interface: "CapabilitySearch",
-    configKey: "plugins.capability",
-    guard: false,
-    plugins: {
-      "list-all": (c) => new ListAllCapabilitySearch(c.capabilities),
-      bm25: (c) => new Bm25CapabilitySearch(c.loaded.codeRoot),
-    },
-    secrets: { "list-all": [], bm25: [] },
-  },
-  clock: {
-    interface: "Clock",
-    configKey: "plugins.clock",
-    guard: false,
-    plugins: { system: () => new SystemClock() },
-    secrets: { system: [] },
-  },
-  updater: {
-    interface: "Updater",
-    configKey: "plugins.updater",
-    guard: false,
-    plugins: {
-      none: () => new NoneUpdater(),
-      "git-worktree": (c) =>
-        new GitWorktreeUpdater({
-          repoPath: c.loaded.root,
-          runtimeDir: join(c.loaded.stateDir, "runtime"),
-          stagingDir: join(c.loaded.stateDir, "runtime-next"),
-          baseBranch: c.loaded.config.repo.base_branch,
-          run: c.run,
-          launcher: c.launcher,
-          clock: c.clock,
-          log: c.log,
-          env: baseEnv(),
-          runTimeoutMs: c.loaded.config.run_timeout_ms,
-        }),
-    },
-    secrets: { none: [], "git-worktree": [] },
-  },
-  awake: {
-    interface: "KeepAwake",
-    configKey: "plugins.awake",
-    guard: false,
-    plugins: {
-      caffeinate: (c) => {
-        try {
-          requireExecutable("caffeinate", process.env.PATH);
-        } catch {
-          throw new Error(
-            'plugins.awake selects "caffeinate", but there is no caffeinate executable on PATH (it ships with macOS). ' +
-              'On this machine set "plugins": { "awake": "none" } (docs/plugins.md, KeepAwake)',
-          );
-        }
-        return new CaffeinateKeepAwake({ launch: spawnLauncher, log: new ConsoleLogger(c.clock, "keep-awake"), pid: process.pid });
-      },
-      none: () => new NoKeepAwake(),
-    },
-    secrets: { caffeinate: [], none: [] },
-  },
+/** The interfaces, in order. A new interface is the only reason to edit this file. */
+const KINDS: { readonly [K in PluginKind]: KindInfo } = {
+  store: { interface: "FactoryStore", configKey: "store.type", guard: false },
+  sandbox: { interface: "Sandbox", configKey: "plugins.sandbox", guard: false },
+  runner: { interface: "AgentRunner", configKey: "plugins.runner", guard: false },
+  llm: { interface: "LLMProvider", configKey: "plugins.llm", guard: false },
+  auth: { interface: "AuthProvider", configKey: "auth", guard: false },
+  secrets: { interface: "SecretStore", configKey: "plugins.secrets", guard: true },
+  egress: { interface: "EgressScanner", configKey: "plugins.egress", guard: true },
+  broker: { interface: "ToolBroker", configKey: "plugins.broker", guard: true },
+  storage: { interface: "SharedStorage", configKey: "plugins.storage", guard: false },
+  source: { interface: "SourceAdapter", configKey: "plugins.source", guard: false },
+  capability: { interface: "CapabilitySearch", configKey: "plugins.capability", guard: false },
+  clock: { interface: "Clock", configKey: "plugins.clock", guard: false },
+  updater: { interface: "Updater", configKey: "plugins.updater", guard: false },
+  awake: { interface: "KeepAwake", configKey: "plugins.awake", guard: false },
 };
 
-export const PLUGIN_KINDS = Object.keys(REGISTRY) as PluginKind[];
+export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];
+
+/** Store and auth are selected by their own top-level config keys, so they take no default. */
+const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "auth"];
 
 /** The interfaces selected under the `plugins` config object. Store and auth keep their own keys. */
-export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => k !== "store" && k !== "auth");
-
-/**
- * Today's behaviour, used for every `plugins` key that config leaves out (or all of them when there is no
- * `plugins` object). Only `awake` depends on the host: `caffeinate` on macOS, `none` everywhere else.
- */
-export function defaultPlugins(platform: string = process.platform): Readonly<Record<(typeof PLUGINS_KEYS)[number], string>> {
-  return { ...FIXED_DEFAULTS, awake: platform === "darwin" ? "caffeinate" : "none" };
-}
-
-const FIXED_DEFAULTS = {
-  sandbox: "noop",
-  runner: "claude-code",
-  llm: "claude-cli",
-  secrets: "env-file",
-  egress: "pattern",
-  broker: "github",
-  storage: "fs",
-  source: "github-issues",
-  capability: "list-all",
-  clock: "system",
-  updater: "git-worktree",
-} as const;
+export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => !TOP_LEVEL_KINDS.includes(k));
 
 /** Values that mean "turn this off". Never accepted for a guard. */
 const DISABLING = new Set<unknown>([undefined, null, false, "", "none"]);
+
+/** Where the built-in descriptors live: src/impl in the source tree, dist/impl once built. */
+export const IMPL_DIR = join(import.meta.dirname, "impl");
+
+/** `*.plugin.ts` (source) or `*.plugin.js` (built); never a `*.d.ts`. */
+const DESCRIPTOR_FILE = /\.plugin\.(?:ts|js)$/;
+
+/** Every descriptor file under `dirs`, recursively, sorted by path so registration order is stable. */
+export function findPluginFiles(dirs: readonly string[]): string[] {
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, e.name);
+      if (e.isDirectory()) walk(path);
+      else if (e.isFile() && DESCRIPTOR_FILE.test(e.name) && !e.name.endsWith(".d.ts")) out.push(path);
+    }
+  };
+  for (const dir of dirs) walk(dir);
+  return out.sort();
+}
+
+interface Found {
+  file: string;
+  descriptor: PluginDescriptor;
+}
+
+/** Imports every descriptor file under `dirs` and builds a checked registry. Any problem fails startup. */
+export async function loadRegistry(dirs: readonly string[]): Promise<Registry> {
+  const found: Found[] = [];
+  for (const file of findPluginFiles(dirs)) {
+    const mod = (await import(pathToFileURL(file).href)) as { default?: unknown };
+    found.push({ file, descriptor: checkDescriptor(file, mod.default) });
+  }
+  return registryOf(found);
+}
+
+function checkDescriptor(file: string, d: unknown): PluginDescriptor {
+  const bad = (why: string) => new Error(`plugin descriptor ${file}: ${why} (docs/plugins.md, "Adding a plugin")`);
+  if (d === null || typeof d !== "object") throw bad("no default export; write `export default definePlugin({...})`");
+  const { kind, name, create, secrets, default: dflt } = d as Record<string, unknown>;
+  if (typeof kind !== "string" || !Object.hasOwn(KINDS, kind)) {
+    throw bad(`unknown kind ${JSON.stringify(kind)}; known kinds: ${PLUGIN_KINDS.join(", ")}`);
+  }
+  const info = KINDS[kind as PluginKind];
+  if (typeof name !== "string" || name === "") throw bad("name must be a non-empty string");
+  if (info.guard && DISABLING.has(name)) throw bad(`"${name}" cannot name a ${info.interface} plugin: it means disabled`);
+  if (typeof create !== "function") throw bad("create must be a function");
+  if (secrets !== undefined && !Array.isArray(secrets)) throw bad("secrets must be a list");
+  if (dflt !== undefined) {
+    if (TOP_LEVEL_KINDS.includes(kind as PluginKind)) {
+      throw bad(`${kind} plugins take no default: the top-level "${info.configKey}" config key always picks one`);
+    }
+    const platforms = (dflt as { platforms?: unknown } | null)?.platforms;
+    const ok = dflt === true || (Array.isArray(platforms) && platforms.length > 0 && platforms.every((p) => typeof p === "string"));
+    if (!ok) throw bad('default must be true or { platforms: ["darwin", ...] }');
+  }
+  return d as PluginDescriptor;
+}
+
+function registryOf(found: readonly Found[]): Registry {
+  const errors: string[] = [];
+  const registry = {} as Record<PluginKind, InterfaceEntry<PluginKind>>;
+  for (const kind of PLUGIN_KINDS) {
+    const info = KINDS[kind];
+    const mine = found.filter((f) => f.descriptor.kind === kind);
+    const label = `${info.interface} (${kind})`;
+    const plugins: Record<string, PluginFactory<PluginKind>> = {};
+    const secrets: Record<string, readonly SecretDeclaration[]> = {};
+    const fileOf = new Map<string, string>();
+    for (const { file, descriptor: d } of mine) {
+      const first = fileOf.get(d.name);
+      if (first !== undefined) {
+        errors.push(`${label} has two plugins named "${d.name}": ${first} and ${file}`);
+        continue;
+      }
+      fileOf.set(d.name, file);
+      plugins[d.name] = d.create as PluginFactory<PluginKind>;
+      secrets[d.name] = d.secrets ?? [];
+    }
+    if (info.guard && mine.length === 0) {
+      errors.push(`${label} is a guard and has no plugin; guards cannot be disabled (docs/architecture.md §5)`);
+    }
+    const defaults: { fallback?: string; platforms: Record<string, string> } = { platforms: {} };
+    const fallbackFile: string[] = [];
+    const platformFile: Record<string, string> = {};
+    for (const { file, descriptor: d } of mine) {
+      if (d.default === undefined) continue;
+      if (d.default === true) {
+        if (defaults.fallback !== undefined) errors.push(`${label} has two defaults for every platform: ${fallbackFile[0]} and ${file}`);
+        else {
+          defaults.fallback = d.name;
+          fallbackFile.push(file);
+        }
+        continue;
+      }
+      for (const p of d.default.platforms) {
+        if (Object.hasOwn(defaults.platforms, p)) errors.push(`${label} has two defaults for ${p}: ${platformFile[p]} and ${file}`);
+        else {
+          defaults.platforms[p] = d.name;
+          platformFile[p] = file;
+        }
+      }
+    }
+    if (!info.guard && !TOP_LEVEL_KINDS.includes(kind) && defaults.fallback === undefined) {
+      const files = mine.length > 0 ? mine.map((f) => f.file).join(", ") : "no plugin files";
+      errors.push(`${label} has no default plugin; mark one descriptor \`default: true\` (${files})`);
+    }
+    registry[kind] = { ...info, plugins, secrets, defaults };
+  }
+  if (errors.length > 0) throw new Error(`plugin registry: ${errors.join("; ")}`);
+  return registry as unknown as Registry;
+}
+
+/** The built-in registry: every descriptor under IMPL_DIR, loaded once at startup. */
+export const REGISTRY: Registry = await loadRegistry([IMPL_DIR]);
+
+/**
+ * The plugin each `plugins` key falls back to when config leaves it out (or all of them when there is no
+ * `plugins` object), from the descriptors' `default` fields. Only `awake` depends on the host today:
+ * `caffeinate` on macOS, `none` everywhere else.
+ */
+export function defaultPlugins(
+  platform: string = process.platform,
+  registry: Registry = REGISTRY,
+): Readonly<Partial<Record<(typeof PLUGINS_KEYS)[number], string>>> {
+  const out: Partial<Record<PluginKind, string>> = {};
+  for (const kind of PLUGINS_KEYS) {
+    const d: KindDefaults = registry[kind].defaults;
+    const name = Object.hasOwn(d.platforms, platform) ? d.platforms[platform] : d.fallback;
+    if (name !== undefined) out[kind] = name;
+  }
+  return out;
+}
 
 /**
  * Throws unless `value` names a plugin registered for `kind`. For guards, any disabling value (missing,
@@ -372,7 +233,7 @@ export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown
 }
 
 /**
- * Turns the raw config into one checked plugin name per interface. No `plugins` object means today's
+ * Turns the raw config into one checked plugin name per interface. No `plugins` object means the
  * defaults. A `plugins` object must name every guard explicitly; other interfaces fall back to defaults.
  */
 export function selectPlugins(
@@ -380,7 +241,7 @@ export function selectPlugins(
   raw: { store: { type: unknown }; auth: unknown; plugins?: unknown },
   opts: { platform?: string | undefined } = {},
 ): Selection {
-  const defaults = defaultPlugins(opts.platform);
+  const defaults: Partial<Record<PluginKind, string>> = defaultPlugins(opts.platform, registry);
   let chosen: Record<string, unknown>;
   if (raw.plugins === undefined) chosen = { ...defaults };
   else {
@@ -421,8 +282,8 @@ export async function createPlugin<K extends PluginKind>(
 }
 
 /**
- * A copy of `registry` with one more plugin, and the secrets it declares (none if left out). For tests and
- * in-repo additions; there is no external loading.
+ * A copy of `registry` with one more plugin, and the secrets it declares (none if left out). For tests;
+ * in-repo plugins are descriptor files instead. Never a default.
  */
 export function withPlugin<K extends PluginKind>(
   registry: Registry,
@@ -437,25 +298,4 @@ export function withPlugin<K extends PluginKind>(
     ...registry,
     [kind]: { ...entry, plugins: { ...entry.plugins, [name]: factory }, secrets: { ...entry.secrets, [name]: secrets } },
   };
-}
-
-/**
- * Every secret the selected plugins declare, one entry per name (in interface order; purposes of a
- * name declared by several plugins are joined with "; "). What setup and doctor list.
- */
-export function declaredSecrets(registry: Registry, selection: Selection): SecretDeclaration[] {
-  const byName = new Map<SecretName, SecretDeclaration>();
-  for (const kind of PLUGIN_KINDS) {
-    for (const d of registry[kind].secrets[selection[kind]] ?? []) {
-      const seen = byName.get(d.name);
-      if (!seen) byName.set(d.name, { ...d });
-      else if (!seen.purpose.includes(d.purpose)) seen.purpose = `${seen.purpose}; ${d.purpose}`;
-    }
-  }
-  return [...byName.values()];
-}
-
-/** The secret set: the union of the names the selected plugins declare. The SecretStore loads and scans these. */
-export function declaredSecretNames(registry: Registry, selection: Selection): ReadonlySet<SecretName> {
-  return new Set(declaredSecrets(registry, selection).map((d) => d.name));
 }
