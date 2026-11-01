@@ -16,6 +16,11 @@ export type SourceEvent =
   /** `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that). */
   | { kind: "revise_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; feedback: string }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /**
+   * A `/verdict` comment on an issue or on a PR. `args` is the raw text after `/verdict` (following lines
+   * included); the controller parses it. A PR target names the head branch, which maps to the work item.
+   */
+  | { kind: "verdict_submitted"; target: VerdictEventTarget; comment_id: string; approver: ExternalIdentity; args: string }
   /** PR events name the head branch; the controller maps it back to a work item. */
   | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null }
   | { kind: "pr_closed"; pr_number: number; head_branch: string }
@@ -29,6 +34,10 @@ export type SourceEvent =
    * factory merges in it (design §6). A boundary commit may be delivered again; handling is idempotent.
    */
   | { kind: "base_commit"; sha: string; message: string };
+
+export type VerdictEventTarget =
+  | { kind: "issue"; source: SourceRef }
+  | { kind: "pr"; pr_number: number; head_branch: string };
 
 export interface PollResult {
   events: SourceEvent[];

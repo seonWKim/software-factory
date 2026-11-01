@@ -15,7 +15,8 @@ export interface ExternalIdentity {
   login?: string;
 }
 
-export type AuthAction = "submit_work" | "approve_spec" | "approve_merge" | "use_tool";
+/** `record_verdict`: a `/verdict` comment (design §4); kept apart from `approve_spec` so it can be granted on its own. */
+export type AuthAction = "submit_work" | "approve_spec" | "approve_merge" | "use_tool" | "record_verdict";
 
 export interface AuthResource {
   kind: "project" | "work_item" | "tool";

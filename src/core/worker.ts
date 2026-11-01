@@ -1,4 +1,5 @@
 import type { FactoryConfig, Prompts } from "./config.js";
+import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import {
   IMPLEMENT_SCHEMA,
@@ -226,7 +227,11 @@ export class Worker {
     if (commits.length === 0) {
       throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
     }
-    await this.scopeGate(run, item, handle, ctx, baseSha);
+    const floor = await this.prePush(run, item, handle, ctx, baseSha);
+    if (floor) {
+      // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
+      return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor, tokens: tokensOf(result) };
+    }
     for (const sha of commits) {
       const subject = (await this.git(handle, ["log", "-1", "--format=%s", sha])).trim();
       const h = await this.d.store.appendHandoff(
@@ -252,9 +257,34 @@ export class Worker {
   }
 
   /**
-   * Scope gate (design §4): runs before every push. Checks the cumulative branch diff against the base SHA
-   * (three-dot, so files only base changed are left out) with the same coverage rule as triage. Not a dial.
+   * The pre-push step (design §4): runs before any handoff row and before every push, on the cumulative
+   * branch diff against the base SHA (three-dot, so files only base changed are left out). In order:
+   * scope gate (fails `scope_violation`), size gate (fails `diff_too_large`), floor check (returns the floor
+   * paths above the item's tier, for the controller to block on; null means the branch may be pushed).
+   * Gates, not dials: no config turns them off.
    */
+  private async prePush(
+    run: Run,
+    item: WorkItem,
+    handle: SandboxHandle,
+    ctx: ToolCallContext,
+    baseSha: string,
+  ): Promise<FloorHit[] | null> {
+    await this.scopeGate(run, item, handle, ctx, baseSha);
+    const numstat = await this.git(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...HEAD`]);
+    let stat;
+    try {
+      stat = diffStat(numstat);
+    } catch (err) {
+      throw new RunFailure("git_failed", `git diff --numstat: ${err instanceof Error ? err.message : "unparsable"}`, true);
+    }
+    const limits = { max_diff_lines: this.d.config.max_diff_lines, max_diff_files: this.d.config.max_diff_files };
+    if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
+    const hits = floorHits(stat.paths, this.d.config.floors, item.tier ?? 1);
+    return hits.length > 0 ? hits : null;
+  }
+
+  /** Scope gate: the files the branch changes against allowed_paths, with the same coverage rule as triage. */
   private async scopeGate(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, baseSha: string) {
     const diff = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`]);
     const outside = scopeViolations(diff, item.allowed_paths);

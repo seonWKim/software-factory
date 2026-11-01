@@ -22,6 +22,8 @@ export const config: FactoryConfig = {
   max_restart: 3,
   retry_base_ms: 60_000,
   retry_max_ms: 1_800_000,
+  max_diff_lines: 1500,
+  max_diff_files: 40,
   lease_ms: 60_000,
   heartbeat_ms: 10_000,
   tick_ms: 1000,
@@ -136,6 +138,10 @@ export class FakeSandbox implements Sandbox {
   commits: string[] = ["c1"];
   /** Files `git diff --name-only` reports for the branch against base (returned NUL-separated, as with `-z`). */
   changedFiles: string[] = [];
+  /**
+   * `git diff --numstat -z` output for the branch against base. Null: one line added per `changedFiles` entry.
+   */
+  numstat: string | null = null;
   /** Every git command line the worker ran, for asserting on order and arguments. */
   gitCalls: string[] = [];
 
@@ -152,6 +158,9 @@ export class FakeSandbox implements Sandbox {
     if (args.startsWith("rev-parse --verify")) return out("basesha\n");
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
+    if (args.startsWith("diff --numstat")) {
+      return out(this.numstat ?? this.changedFiles.map((f) => `1\t0\t${f}\0`).join(""));
+    }
     if (args.startsWith("diff --name-only")) return out(this.changedFiles.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff")) return out("+ a change\n");
     return out("");
@@ -211,6 +220,18 @@ export class FakeBroker implements ToolBroker {
     this.calls.push({ ctx, name, args });
     if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
+  }
+}
+
+/** Read-only PR diffs by number, standing in for GitHubClient.pullDiff. Records every PR asked for. */
+export class FakeGitHubDiff {
+  calls: number[] = [];
+  constructor(private readonly diffs: Record<number, string>) {}
+  async pullDiff(pr: number): Promise<string> {
+    this.calls.push(pr);
+    const d = this.diffs[pr];
+    if (d === undefined) throw new Error(`no diff for PR ${pr}`);
+    return d;
   }
 }
 

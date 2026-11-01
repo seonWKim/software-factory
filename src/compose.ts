@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import type { FactoryConfig, Prompts } from "./core/config.js";
 import type { Tier, WorkerId } from "./core/types.js";
 import { Controller } from "./core/controller.js";
+import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -49,6 +50,10 @@ export interface FileConfig {
   retry_base_ms?: number;
   /** Cap on a retry wait, and the rate-limit pause with no reset time. Absent: 1800000. */
   retry_max_ms?: number;
+  /** Pre-push size gate (design §4): added plus deleted lines. Absent: 1500. */
+  max_diff_lines?: number;
+  /** Pre-push size gate (design §4): changed files. Absent: 40. */
+  max_diff_files?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -100,6 +105,7 @@ export async function loadConfig(
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   uiPort(file.ui);
   const retry = retryConfig(file);
+  const diff = diffLimits(file);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -120,6 +126,8 @@ export async function loadConfig(
     max_restart: retry.max_restart,
     retry_base_ms: retry.retry_base_ms,
     retry_max_ms: retry.retry_max_ms,
+    max_diff_lines: diff.max_diff_lines,
+    max_diff_files: diff.max_diff_files,
     lease_ms: file.lease_ms,
     heartbeat_ms: file.heartbeat_ms,
     tick_ms: file.tick_ms,
@@ -321,6 +329,20 @@ export function retryConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   if (r.retry_base_ms > r.retry_max_ms) throw new Error("retry_base_ms must not exceed retry_max_ms");
+  return r;
+}
+
+/** The pre-push size limits (design §4) with their defaults. Positive integers, or startup fails. */
+export function diffLimits(
+  file: Pick<FileConfig, "max_diff_lines" | "max_diff_files">,
+): { max_diff_lines: number; max_diff_files: number } {
+  const r = {
+    max_diff_lines: file.max_diff_lines ?? DIFF_LIMIT_DEFAULTS.max_diff_lines,
+    max_diff_files: file.max_diff_files ?? DIFF_LIMIT_DEFAULTS.max_diff_files,
+  };
+  for (const [k, v] of Object.entries(r)) {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
+  }
   return r;
 }
 

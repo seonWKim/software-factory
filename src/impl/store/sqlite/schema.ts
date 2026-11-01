@@ -98,7 +98,22 @@ export const MIGRATIONS: readonly string[] = [
     resume_at  TEXT NOT NULL
   );
   `,
-  // 5: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  `
+  CREATE TABLE verdicts (
+    id               TEXT PRIMARY KEY,
+    work_item_id     TEXT NOT NULL REFERENCES work_items(id),
+    state_change_id  TEXT NOT NULL REFERENCES state_changes(id),
+    verdict          TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    reason           TEXT,
+    comment_id       TEXT NOT NULL UNIQUE,
+    target           TEXT NOT NULL,
+    at               TEXT NOT NULL
+  );
+  CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
+  `,
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
   `
   ALTER TABLE work_items ADD COLUMN issue_text TEXT;
   ALTER TABLE work_items ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0;

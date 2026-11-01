@@ -14,6 +14,10 @@ import type {
   Stage,
   Timestamp,
   UserId,
+  Verdict,
+  VerdictKind,
+  VerdictSeverity,
+  VerdictTarget,
   WorkItem,
   WorkItemId,
   WorkItemPatch,
@@ -66,6 +70,26 @@ export type TransitionResult =
   /** ack_run was given but that run is not finished, belongs to another item, or is already acknowledged. */
   | { ok: false; reason: "run_not_ackable" };
 
+export interface RecordVerdictInput {
+  id: WorkItemId;
+  /** Applies only if the item's current version equals this. */
+  expected_version: number;
+  /** The human who wrote the verdict. */
+  actor: Extract<Actor, { kind: "user" }>;
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  reason: string | null;
+  comment_id: string;
+  target: VerdictTarget;
+}
+
+export type RecordVerdictResult =
+  | { ok: true; item: WorkItem; state_change: StateChange; verdict: Verdict }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "version_conflict"; current: WorkItem }
+  /** A verdict from this comment is already stored (checked before the version). Nothing changed. */
+  | { ok: false; reason: "duplicate"; verdict: Verdict };
+
 /** Read-only filter for listWorkItemsWhere. Absent fields do not filter. */
 export interface WorkItemFilter {
   stage?: Stage | undefined;
@@ -113,6 +137,14 @@ export interface FactoryStore {
   /** The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue). */
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
+  /**
+   * Stores a human verdict: bumps the version and writes a state_changes row (reason `human_verdict`, the
+   * user as actor, `changes` = {}) and a linked verdicts row, in one transaction. No other field changes.
+   * Idempotent on `comment_id`.
+   */
+  recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
+  /** The item's verdicts, oldest first. Read-only. */
+  listVerdicts(id: WorkItemId): Promise<Verdict[]>;
 
   // Runs
 

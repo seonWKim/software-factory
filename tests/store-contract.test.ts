@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunId, WorkItemId } from "../src/core/types.js";
+import type { RunId, UserId, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
@@ -378,6 +378,70 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       await store.listRunsByStatus(["queued", "running"], 10);
       await store.listRunsFinishedWithin(1_000);
       expect({ item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) }).toEqual(before);
+    });
+  });
+
+  describe("verdicts", () => {
+    const user = { kind: "user" as const, id: "github:1" as UserId };
+    const verdict = (id: WorkItemId, expected_version: number, comment_id = "c1") => ({
+      id, expected_version, actor: user, verdict: "changes" as const, severity: "minor" as const,
+      reason: "rename it", comment_id, target: "pr" as const,
+    });
+
+    it("records a verdict: version + 1, a human_verdict state change with empty changes, and a linked verdict row", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "x",
+        patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 9 },
+      });
+      const r = await store.recordVerdict(verdict(item.id, 2));
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item).toMatchObject({ version: 3, stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      expect(r.state_change).toMatchObject({ version: 3, actor: user, reason: "human_verdict", changes: {}, detail: null });
+      expect(r.verdict).toMatchObject({
+        work_item_id: item.id, state_change_id: r.state_change.id, verdict: "changes", severity: "minor",
+        reason: "rename it", comment_id: "c1", target: "pr",
+      });
+      expect(await store.listVerdicts(item.id)).toEqual([r.verdict]);
+      expect((await store.listStateChanges(item.id)).at(-1)).toEqual(r.state_change);
+
+      const accept = await store.recordVerdict({ ...verdict(item.id, 3, "c2"), verdict: "accept", severity: "none", reason: null, target: "issue" });
+      expect(accept.ok && accept.verdict.reason).toBeNull();
+      expect((await store.listVerdicts(item.id)).map((v) => v.comment_id)).toEqual(["c1", "c2"]);
+    });
+
+    it("a duplicate comment id is a no-op, whatever the expected version", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const first = await store.recordVerdict(verdict(item.id, 1));
+      if (!first.ok) throw new Error(first.reason);
+      for (const v of [2, 1]) {
+        expect(await store.recordVerdict(verdict(item.id, v))).toEqual({ ok: false, reason: "duplicate", verdict: first.verdict });
+      }
+      expect((await store.getWorkItem(item.id))!.version).toBe(2);
+      expect(await store.listVerdicts(item.id)).toHaveLength(1);
+      expect(await store.listStateChanges(item.id)).toHaveLength(2);
+    });
+
+    it("concurrent deliveries of one comment store one verdict", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const rs = await Promise.all([store.recordVerdict(verdict(item.id, 1)), store.recordVerdict(verdict(item.id, 1))]);
+      expect(rs.filter((r) => r.ok)).toHaveLength(1);
+      expect(await store.listVerdicts(item.id)).toHaveLength(1);
+      expect(await store.listStateChanges(item.id)).toHaveLength(2);
+    });
+
+    it("applies only on the expected version; a conflict stores nothing", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "READY" } });
+      const r = await store.recordVerdict(verdict(item.id, 1));
+      expect(r).toMatchObject({ ok: false, reason: "version_conflict", current: { version: 2, stage: "READY" } });
+      expect(await store.listVerdicts(item.id)).toEqual([]);
+      expect(await store.listStateChanges(item.id)).toHaveLength(2);
+      expect(await store.recordVerdict(verdict("wi_missing" as WorkItemId, 1))).toEqual({ ok: false, reason: "not_found" });
     });
   });
 
