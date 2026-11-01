@@ -13,7 +13,7 @@ import {
 import { AUTO_RESOLVE_LIMIT, RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
-import type { Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkerId } from "./types.js";
+import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -149,6 +149,12 @@ function tail(s: string): string {
  * transition; the controller does that from the outcome. Holds nothing between runs.
  */
 export class Worker {
+  /**
+   * The usage of the run being executed, summed over its agent calls (design §6 Measurement). Scratch for one
+   * execute() call only, keyed by the claimed Run object; nothing another replica needs.
+   */
+  private readonly meters = new WeakMap<Run, RunUsage>();
+
   constructor(private readonly d: WorkerDeps) {}
 
   get id(): WorkerId {
@@ -190,19 +196,24 @@ export class Worker {
     const stopHeartbeat = new AbortController();
     const heartbeat = this.heartbeat(run, token, lease, stopHeartbeat.signal);
 
+    // Every outcome carries what the run's agent calls used, failed or not (design §6 Measurement).
+    const usage: RunUsage = { ...NO_USAGE };
+    this.meters.set(run, usage);
     let outcome: RunOutcome;
     try {
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
       const data = await this.role(run, item, ctx, lease.signal);
-      outcome = { status: "succeeded", summary: `${run.kind} done`, data };
+      // data.tokens: the full count, where readers from before usage existed look for it.
+      outcome = { status: "succeeded", summary: `${run.kind} done`, data: { ...data, tokens: usageTokens(usage), usage } };
     } catch (err) {
       outcome =
         err instanceof RunFailure
-          ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra }
-          : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true };
+          ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra, usage }
+          : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true, usage };
     } finally {
+      this.meters.delete(run);
       stopHeartbeat.abort();
       await heartbeat;
     }
@@ -210,7 +221,7 @@ export class Worker {
     // G5: the outcome is stored and later rendered on GitHub by the controller.
     const scan = await this.d.scanner.scan("run_outcome", JSON.stringify(outcome));
     if (!scan.clean) {
-      outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false };
+      outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false, usage };
     }
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
@@ -279,7 +290,7 @@ export class Worker {
     });
     const spec = parseTriage(result.output);
     if (!spec.ok) throw new RunFailure("invalid_output", spec.error, false, { output_tail: tail(result.transcript) });
-    return { spec: spec.value, tokens: tokensOf(result) };
+    return { spec: spec.value };
   }
 
   private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
@@ -315,11 +326,10 @@ export class Worker {
     }
     // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in.
     const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha);
-    const tokens = tokensOf(result) + sync.tokens;
     const floor = await this.prePush(run, item, handle, ctx, sync.baseSha, sync.conflicts);
     if (floor) {
       // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
-      return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor, tokens };
+      return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
     }
     // First parent only: the agent's commits plus our merge commit, not the base commits it brought in.
     const pushedCommits = sync.merged
@@ -349,7 +359,7 @@ export class Worker {
     if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
     const content = pr.content as { number: number };
     // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict).
-    return { pr_number: content.number, commits: commits.length, tokens, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
+    return { pr_number: content.number, commits: commits.length, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
   }
 
   /**
@@ -373,7 +383,7 @@ export class Worker {
     gitDir: string,
     dirs: string,
     trustedBaseSha: string,
-  ): Promise<{ baseSha: string; merged: boolean; tokens: number; conflicts: string[] }> {
+  ): Promise<{ baseSha: string; merged: boolean; conflicts: string[] }> {
     const { repo } = this.d.config;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
@@ -388,7 +398,7 @@ export class Worker {
     }
 
     const ancestor = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
-    if (ancestor.exit_code === 0) return { baseSha, merged: false, tokens: 0, conflicts: [] };
+    if (ancestor.exit_code === 0) return { baseSha, merged: false, conflicts: [] };
     if (ancestor.exit_code !== 1) throw new RunFailure("git_failed", `git merge-base: ${ancestor.stderr.trim()}`, true);
     const fork = (await this.git(handle, ["merge-base", "HEAD", baseSha])).trim();
     // The implementer's last commit: a failed conflict step is retried from here.
@@ -398,7 +408,7 @@ export class Worker {
     const branch = branchFor(item, this.d.config.branch_prefix);
     const message = `Merge ${baseRef} (${baseSha.slice(0, 8)}) into ${branch}`;
     const merge = await this.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
-    if (merge.exit_code === 0) return { baseSha, merged: true, tokens: 0, conflicts: [] };
+    if (merge.exit_code === 0) return { baseSha, merged: true, conflicts: [] };
 
     const conflicts = await this.unmerged(handle);
     if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
@@ -423,15 +433,14 @@ export class Worker {
       ].join("\n"),
       output_schema: IMPLEMENT_SCHEMA,
     });
-    let tokens = first.tokens;
-    if (first.failure === null) return this.commitSync(handle, baseSha, conflicts, tokens, first.pending, identity);
+    if (first.failure === null) return this.commitSync(handle, baseSha, conflicts, first.pending, identity);
 
     // Retry as a resolve step (decision changed 2026-11-02): same run, nothing pushed in between.
     const resolvePrompt = this.d.prompts.resolve;
     if (!resolvePrompt) return this.mergeConflict(run, item, ctx, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
     await this.restartMerge(handle, tip, branch);
     const again = await this.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
-    if (again.exit_code === 0) return { baseSha, merged: true, tokens, conflicts: [] };
+    if (again.exit_code === 0) return { baseSha, merged: true, conflicts: [] };
     const left = await this.unmerged(handle);
     if (left.length === 0) throw new RunFailure("git_failed", `git merge: ${again.stderr.trim()}`, true);
     const files: ConflictFile[] = [];
@@ -450,11 +459,10 @@ export class Worker {
       ].join("\n"),
       output_schema: IMPLEMENT_SCHEMA,
     });
-    tokens += second.tokens;
     if (second.failure !== null) {
       return this.mergeConflict(run, item, ctx, left, `${first.failure}; the retry as a resolve step failed too: ${second.failure}`, second.transcript);
     }
-    return this.commitSync(handle, baseSha, left, tokens, second.pending, identity);
+    return this.commitSync(handle, baseSha, left, second.pending, identity);
   }
 
   /** Commits a resolved, checked merge that is still pending (the agent may have committed it already). */
@@ -462,12 +470,11 @@ export class Worker {
     handle: SandboxHandle,
     baseSha: string,
     conflicts: string[],
-    tokens: number,
     pending: boolean,
     identity: Record<string, string>,
-  ): Promise<{ baseSha: string; merged: boolean; tokens: number; conflicts: string[] }> {
+  ): Promise<{ baseSha: string; merged: boolean; conflicts: string[] }> {
     if (pending) await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-edit"], identity);
-    return { baseSha, merged: true, tokens, conflicts };
+    return { baseSha, merged: true, conflicts };
   }
 
   /**
@@ -495,7 +502,7 @@ export class Worker {
     },
     name: "merge" | "resolve",
     spec: Pick<AgentRunSpec, "system_prompt" | "prompt" | "output_schema">,
-  ): Promise<{ failure: string | null; pending: boolean; tokens: number; transcript: string }> {
+  ): Promise<{ failure: string | null; pending: boolean; transcript: string }> {
     const { run, item, handle, signal, conflicts } = s;
     const result = await this.agent(run, item, handle, signal, {
       ...spec,
@@ -506,7 +513,7 @@ export class Worker {
       env_allowlist: s.identity,
     }, name);
     await this.distrustAgentGit(handle, s.dirs);
-    const done = (failure: string | null, pending = false) => ({ failure, pending, tokens: tokensOf(result), transcript: result.transcript });
+    const done = (failure: string | null, pending = false) => ({ failure, pending, transcript: result.transcript });
 
     const pending = (await this.gitRaw(handle, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).exit_code === 0;
     if (name === "resolve" && pending) {
@@ -696,7 +703,7 @@ export class Worker {
       marker: `<!-- factory:review:${run.id} -->`,
     });
     if (!posted.ok) throw new RunFailure(posted.error_code, posted.message);
-    return { review: v, tokens: tokensOf(result) };
+    return { review: v };
   }
 
   /**
@@ -826,7 +833,6 @@ export class Worker {
       if (cp.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${cp.stderr.trim()}`, true);
       const before = await this.snapshot(handle, index);
       let tree = before;
-      let tokens = 0;
       if (conflicts.length > 0) {
         const files: ConflictFile[] = [];
         for (const path of conflicts) {
@@ -845,7 +851,6 @@ export class Worker {
         });
         const out = parseImplement(result.output);
         if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
-        tokens = tokensOf(result);
         await this.distrustAgentGit(handle, dirs);
 
         // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
@@ -869,7 +874,7 @@ export class Worker {
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
-      return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, tokens };
+      return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha };
     } finally {
       await this.d.sandbox.destroy(handle);
     }
@@ -948,6 +953,9 @@ export class Worker {
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
     });
+    // Counted before anything below can fail the run, so a failed run keeps what this call used.
+    const meter = this.meters.get(run);
+    if (meter) addUsage(meter, result.usage);
 
     // G5 before the transcript is stored anywhere.
     const scan = await this.d.scanner.scan("log", result.transcript);
@@ -1233,8 +1241,22 @@ function gitIdentity(id: { name: string; email: string }): Record<string, string
   };
 }
 
-function tokensOf(r: AgentRunResult): number {
-  return r.usage.input_tokens + r.usage.output_tokens;
+const NO_USAGE: Readonly<RunUsage> = {
+  input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, model: null,
+};
+
+/**
+ * Adds one agent call's usage to the run's sum. Cost: the sum of the calls that reported one, null while none
+ * has. Model: the latest call that named one.
+ */
+function addUsage(sum: RunUsage, u: AgentRunResult["usage"]): void {
+  const n = (v: number | undefined) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
+  sum.input_tokens += n(u.input_tokens);
+  sum.output_tokens += n(u.output_tokens);
+  sum.cache_read_tokens += n(u.cache_read_tokens);
+  sum.cache_write_tokens += n(u.cache_write_tokens);
+  if (typeof u.cost_usd === "number" && Number.isFinite(u.cost_usd)) sum.cost_usd = (sum.cost_usd ?? 0) + u.cost_usd;
+  if (u.model) sum.model = u.model;
 }
 
 function firstLine(s: string): string {

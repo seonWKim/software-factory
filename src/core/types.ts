@@ -181,10 +181,54 @@ export interface Run {
   updated_at: Timestamp;
 }
 
+/**
+ * What a run's agent calls used (design §6 Measurement), summed over every call in the run. `cost_usd` is the
+ * harness's own figure (not checked against the bill): the sum of the calls that reported one, null when none
+ * did. `model`: the model the last reporting call named, null when none did.
+ */
+export interface RunUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  cost_usd: number | null;
+  model: string | null;
+}
+
+/** A run's full token count: input + output + cache read + cache write. */
+export function usageTokens(u: RunUsage): number {
+  return u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens;
+}
+
+/**
+ * The tokens an outcome adds to its item's `token_cost`. Succeeded: `data.tokens` (the full count since
+ * 2026-11-02; older rows keep the input + output count they stored). Failed: its `usage`, 0 when it has none
+ * (rows from before it existed, reaper failures, cancelled runs).
+ */
+export function outcomeTokens(outcome: RunOutcome | null): number {
+  if (!outcome) return 0;
+  if (outcome.status === "succeeded") {
+    const t = Number(outcome.data.tokens);
+    return Number.isFinite(t) && t >= 0 ? t : 0;
+  }
+  return outcome.usage ? usageTokens(outcome.usage) : 0;
+}
+
+/** The harness cost of an outcome in USD, or null when unknown (no usage stored, or the harness gave none). */
+export function outcomeCost(outcome: RunOutcome | null): number | null {
+  if (!outcome) return null;
+  const u = outcome.status === "succeeded" ? (outcome.data.usage as Partial<RunUsage> | undefined) : outcome.usage;
+  const c = u?.cost_usd;
+  return typeof c === "number" && Number.isFinite(c) ? c : null;
+}
+
 export type RunOutcome =
+  /** `data.tokens`: the run's full token count; `data.usage`: its RunUsage (absent on older rows). */
   | { status: "succeeded"; summary: string; data: Record<string, unknown> }
   | {
       status: "failed";
+      /** What the run's agent calls used before it failed. Absent on rows from before it existed. */
+      usage?: RunUsage;
       /** `rate_limited` means a usage or rate limit, not a failed attempt (design §5 Restarts). */
       error_code: string;
       detail: string;
