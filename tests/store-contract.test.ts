@@ -442,6 +442,24 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("run input", () => {
+    it("stores a run's input (e.g. /resolve notes) with the run; runs enqueued without one have input null", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const notes = "keep main's API\n`x` and ünïcode, 'quotes'";
+      const r = await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "resolve", idempotency_key: "r", input: { notes } },
+      });
+      expect(r.ok && r.enqueued?.input).toEqual({ notes });
+      const runs = await store.listRuns(item.id);
+      expect(runs.map((x) => [x.kind, x.input])).toEqual([["triage", null], ["resolve", { notes }]]);
+      const claimed = (await store.claimRun({ worker_id: w1, kinds: ["resolve"], lease_ms: LEASE }))!;
+      expect(claimed.input).toEqual({ notes });
+      expect((await store.getRun(claimed.id))!.input).toEqual({ notes });
+    });
+  });
+
   describe("cursors", () => {
     it("advances only from the expected value", async () => {
       const { store } = await make();

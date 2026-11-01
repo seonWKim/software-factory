@@ -4,6 +4,7 @@ import type {
   Handoff,
   Run,
   RunId,
+  RunInput,
   RunKind,
   RunOutcome,
   RunStatus,
@@ -42,6 +43,8 @@ export interface NewRun {
   idempotency_key: string;
   /** Earliest claim time (retry backoff). Absent or null: claimable at once. */
   not_before?: Timestamp | null;
+  /** Stored with the run for the worker to read (e.g. `/resolve` notes). Absent or null: none. */
+  input?: RunInput | null;
 }
 
 export interface TransitionInput {

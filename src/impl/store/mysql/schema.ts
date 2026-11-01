@@ -107,4 +107,6 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       resume_at  CHAR(24) NOT NULL
     ) ${TABLE}`,
   ],
+  // 5: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
+  ["ALTER TABLE runs ADD COLUMN input MEDIUMTEXT NULL"],
 ];
