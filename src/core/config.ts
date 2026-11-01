@@ -30,6 +30,8 @@ export interface FactoryConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
+  workers: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
