@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
@@ -110,11 +112,29 @@ describe("G5: egress scan", () => {
   it("passes ordinary text", async () => {
     expect(await scanner.scan("pr", "Fix the lease reaper")).toEqual({ clean: true });
   });
+  it("passes every tracked file of this repository, so an agent that reads or edits one is not blocked", async () => {
+    // A fixture that looks like a secret (a canary, a key header) fails every run that touches its file.
+    const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean);
+    const patternsOnly = new PatternEgressScanner(async () => []);
+    const flagged: string[] = [];
+    for (const f of files) {
+      let text: string;
+      try {
+        text = readFileSync(f, "utf8");
+      } catch {
+        continue; // a tracked file deleted in the working tree
+      }
+      if (!(await patternsOnly.scan("pr", text)).clean) flagged.push(f);
+    }
+    expect(flagged).toEqual([]);
+  });
 });
 
 describe("G6 (unit): an agent that leaks a canary is stopped before anything leaves", () => {
   it("fails the run, stores no transcript, posts nothing", async () => {
-    const canary = "sf-canary-abcdef123456";
+    // Built at runtime: the literal would match the scanner's own canary rule, so any agent run that reads
+    // this file would be blocked as a leak.
+    const canary = ["sf", "canary", "abcdef123456"].join("-");
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const source = new FakeSource();
