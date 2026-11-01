@@ -12,7 +12,7 @@ export interface ClaudeCodeRunnerOptions {
   claudeConfigDir: string;
   /** Per-run throwaway HOME, so ~/.ssh, ~/.gitconfig, ~/.config/gh are not where the agent looks. */
   homesDir: string;
-  models: { cheap: string; strong: string };
+  models: { cheap: string; standard: string; strong: string };
   claudeBin?: string;
   /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
   now?: () => Date;

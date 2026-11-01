@@ -32,7 +32,14 @@
     "updater": "git-worktree",
     "github_auth": "app"
   },
-  "models": { "cheap": "haiku", "strong": "opus" },
+  "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
+  "model_by": {
+    "triage": "cheap",
+    "implement": { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
+    "review": "standard",
+    "resolve": { "1": "standard", "2": "standard", "3": "strong", "4": "strong", "5": "strong" },
+    "retry_up": true
+  },
   "max_loops": 3,
   "max_attempts": 3,
   "max_restart": 3,
