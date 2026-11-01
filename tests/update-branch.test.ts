@@ -125,7 +125,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
     repo: { ...config.repo, path: repo, test_command: opts.testCommand ?? ["sh", "-c", "exit 0"] },
   };
   const source = new FakeSource();
-  // Inside the checkout, as in production (.worktrees): NoOpSandbox.destroy runs `git worktree remove` from there.
+  // Inside the checkout, as in production (.worktrees): each run clones into its own folder there.
   const sandbox = new RecordingSandbox(join(repo, ".worktrees"));
   const broker = new GitPushBroker();
   const runner = new FakeRunner({}); // no script: any agent start throws
