@@ -8,7 +8,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { runProcess } from "../src/impl/process/run-process.js";
 import { defaultSecretsFile } from "../src/impl/secrets/env-file-secret-store.js";
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
-import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, removeWorktree } from "../src/impl/updater/git-worktree.js";
+import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, isCodePath, removeWorktree } from "../src/impl/updater/git-worktree.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
@@ -381,6 +381,15 @@ describe("updater: code root and state root", () => {
     const dirs = u as unknown as { versionsDir: string; depsDir: string };
     expect(dirs.versionsDir).toBe(join(main, ".factory", "versions"));
     expect(dirs.depsDir).toBe(join(main, ".factory", "deps"));
+  });
+});
+
+describe("updater: which changes need a build", () => {
+  it("isCodePath counts the web app under web/ as code, like src/ and prompts/; docs stay docs-only", () => {
+    for (const f of ["web/index.html", "web/src/main.tsx", "web/vite.config.ts", "src/ui/app.ts", "prompts/triage.md", "package.json", "tsconfig.json"]) {
+      expect(isCodePath(f), f).toBe(true);
+    }
+    for (const f of ["docs/design.md", "README.md", "website/index.html", "tests/web/a.test.ts"]) expect(isCodePath(f), f).toBe(false);
   });
 });
 
