@@ -55,7 +55,7 @@ export class ScriptedRunner implements AgentRunner {
     });
     const ctx = { sandbox: this.sandbox, handle: spec.sandbox, policy, signal: spec.signal };
     const transcript: string[] = [];
-    const usage = { input_tokens: 0, output_tokens: 0, cost_usd: null };
+    const usage = { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, model: null };
     let last: Observation | null = null;
     try {
       for (;;) {

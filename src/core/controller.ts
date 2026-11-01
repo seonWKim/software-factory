@@ -39,7 +39,10 @@ import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./re
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, CloseReason, Run, RunId, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import {
+  type Actor, type CloseReason, type Run, type RunId, type RunKind, type SourceRef, type SourceType, type StateChangeDetail, type Tier,
+  type Timestamp, type WorkItem, type WorkItemId, outcomeTokens,
+} from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -1141,27 +1144,9 @@ export class Controller {
   async applyRun(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
-      const tokens = it.token_cost + Number((run.outcome?.status === "succeeded" && run.outcome.data.tokens) || 0);
-      if (!run.outcome || run.outcome.status !== "succeeded") {
-        // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
-        if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
-          await this.forgeAuthComment(it, run);
-        }
-        if (!this.expects(it, run.kind)) return ack("run_ignored");
-        const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
-        if (run.kind === "resolve") return this.resolveFailed(it, run, code);
-        if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-        if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
-        const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
-        const url = await this.comment(it, `run-failed:${run.id}`,
-          `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
-        return {
-          patch: { ...patch, failure_comment_url: url },
-          actor: SYSTEM,
-          reason: "run_failed",
-          ack_run: run.id,
-        };
-      }
+      // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
+      const tokens = it.token_cost + outcomeTokens(run.outcome);
+      if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
 
@@ -1301,6 +1286,29 @@ export class Controller {
         }
       }
     });
+  }
+
+  /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
+  private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
+    // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
+    if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
+      await this.forgeAuthComment(it, run);
+    }
+    if (!this.expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
+    const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+    if (run.kind === "resolve") return this.resolveFailed(it, run, code);
+    // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
+    if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
+    if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
+    const url = await this.comment(it, `run-failed:${run.id}`,
+      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      ack_run: run.id,
+    };
   }
 
   /**
@@ -1883,6 +1891,17 @@ export class Controller {
 }
 
 /** A human `/retry`: the failed run again, or why there is none. */
+/**
+ * A failed or cancelled run's decision with its usage added to `token_cost` (design §6 Measurement): only a
+ * decision that acknowledges this run, so the add lands in the ack's transaction and the ack fences it (a
+ * second apply is refused as already acknowledged, and adds nothing). A run with no usage changes nothing.
+ */
+function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
+  const spent = outcomeTokens(run.outcome);
+  if (!d || spent === 0 || d.ack_run !== run.id || "token_cost" in d.patch) return d;
+  return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
+}
+
 function retry(it: WorkItem, actor: Actor): Decision | Refusal {
   const kind = failedRunKind(it);
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };

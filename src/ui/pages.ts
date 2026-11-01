@@ -2,7 +2,7 @@
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
-import type { Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -35,11 +35,21 @@ export interface UiDeps {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const LIST_LIMIT = 200;
 
-/** Tokens a succeeded run reported (outcome data.tokens), the same source the controller adds to token_cost. */
+/** Days the cost section covers, today (UTC) included. */
+const COST_DAYS = 7;
+/** The cost section's columns: every run kind that can run an agent. `manual` is a record, never work. */
+const COST_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve", "update"];
+
+/**
+ * Tokens a run used, the same count the controller adds to token_cost (design §6 Measurement): a succeeded
+ * run's data.tokens, a failed run's usage. Null when the run stored none (unfinished, or an older failed row).
+ */
 export function runTokens(run: Run): number | null {
-  if (run.outcome?.status !== "succeeded") return null;
-  const t = Number(run.outcome.data.tokens);
-  return Number.isFinite(t) && t >= 0 ? t : null;
+  if (run.outcome?.status === "succeeded") {
+    const t = Number(run.outcome.data.tokens);
+    return Number.isFinite(t) && t >= 0 ? t : null;
+  }
+  return run.outcome?.status === "failed" && run.outcome.usage ? outcomeTokens(run.outcome) : null;
 }
 
 class Ctx {
@@ -90,6 +100,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
   const sections = [
     await factorySection(c),
     await totalsSection(c),
+    await costSection(c),
     filtersSection(f, facetCounts(rows, f)),
     await itemsSection(c, applyFilters(rows, f), f),
     await d.health.section(d.scanner, { refresh: healthRefresh }),
@@ -391,13 +402,59 @@ async function totalsSection(c: Ctx): Promise<string> {
   const recent = await c.d.store.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   const failed = recent.filter((r) => r.status === "failed");
-  const tokens = succeeded.reduce((sum, r) => sum + (runTokens(r) ?? 0), 0);
+  // Every finished run, failed included: its full count, as in token_cost.
+  const tokens = recent.reduce((sum, r) => sum + outcomeTokens(r.outcome), 0);
   const row = (k: string, v: number) => `<tr><th scope="row">${esc(k)}</th><td>${esc(v)}</td></tr>`;
   return (
     `<section id="totals"><h2>Totals</h2><div class="strip">` +
     `<div><h3>Items per stage</h3><div class="scroll"><table><tbody>${STAGES.map((s) => row(s, counts[s])).join("")}</tbody></table></div></div>` +
     `<div><h3>Last 24 h (by finish time)</h3><div class="scroll"><table><tbody>${row("succeeded", succeeded.length)}${row("failed", failed.length)}${row("tokens", tokens)}</tbody></table></div></div>` +
     `</div></section>`
+  );
+}
+
+/**
+ * USD per UTC day of `finished_at`, for the last COST_DAYS days, one column per run kind and a total. The cost
+ * is the harness's own figure (design §6 Measurement). A run with no cost is counted as unknown, never as 0.
+ */
+async function costSection(c: Ctx): Promise<string> {
+  const today = Date.UTC(c.now.getUTCFullYear(), c.now.getUTCMonth(), c.now.getUTCDate());
+  const from = today - (COST_DAYS - 1) * DAY_MS;
+  const days = Array.from({ length: COST_DAYS }, (_, i) => new Date(today - i * DAY_MS).toISOString().slice(0, 10));
+  type Cell = { usd: number; known: number; unknown: number };
+  const cells = new Map<string, Cell>();
+  const add = (key: string, cost: number | null) => {
+    const cell = cells.get(key) ?? { usd: 0, known: 0, unknown: 0 };
+    if (cost === null) cell.unknown++;
+    else {
+      cell.usd += cost;
+      cell.known++;
+    }
+    cells.set(key, cell);
+  };
+  for (const r of await c.d.store.listRunsFinishedWithin(c.now.getTime() - from)) {
+    if (!r.finished_at || !COST_KINDS.includes(r.kind)) continue;
+    const at = Date.parse(r.finished_at);
+    if (Number.isNaN(at) || at < from) continue;
+    const day = r.finished_at.slice(0, 10);
+    const cost = outcomeCost(r.outcome);
+    add(`${day}|${r.kind}`, cost);
+    add(`${day}|total`, cost);
+  }
+  const show = (cell: Cell | undefined): string => {
+    if (!cell) return "";
+    const usd = `$${cell.usd.toFixed(4)}`;
+    if (cell.unknown === 0) return esc(usd);
+    if (cell.known === 0) return `<span class="muted">${esc(`unknown (${cell.unknown} run${cell.unknown === 1 ? "" : "s"})`)}</span>`;
+    return `${esc(usd)} <span class="muted">${esc(`+ ${cell.unknown} unknown`)}</span>`;
+  };
+  const rows = days.map((day) => ({
+    cells: [esc(day), ...[...COST_KINDS, "total"].map((k) => show(cells.get(`${day}|${k}`)))],
+  }));
+  return (
+    `<section id="cost"><h2>Cost (USD, last ${COST_DAYS} days)</h2>` +
+    `<p class="muted">The agent harness's own figure per run, by UTC day of finish; not checked against the bill. Runs that reported no cost are counted as unknown.</p>` +
+    `${table(["day (UTC)", ...COST_KINDS, "total"], rows)}</section>`
   );
 }
 
