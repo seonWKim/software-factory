@@ -15,6 +15,7 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
+import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
 
 const USAGE = `factory <command>
 
@@ -28,6 +29,10 @@ const USAGE = `factory <command>
   stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
                --json for one JSON object
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  migrate [--status | --dry-run]
+               MySQL schema steps (migrations/mysql/): --status lists the state and pending steps,
+               --dry-run prints what would run, no flag applies them (back up first). The other
+               commands refuse to start on MySQL while steps are pending. SQLite has no steps
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
   llm-check [--model cheap|strong]
@@ -138,6 +143,25 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       await ui.close();
       await parts.close();
       return 0;
+    }
+    case "migrate": {
+      const mode = parseMigrateArgs(args, process.env);
+      if (typeof mode !== "string") {
+        console.log(mode.error);
+        return 1;
+      }
+      const db = loaded.store;
+      if (db.type !== "mysql") {
+        console.log(SQLITE_MIGRATE_MESSAGE);
+        return 1;
+      }
+      const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+      if (!password) {
+        console.log("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+        return 1;
+      }
+      const { host, port, database, user } = db;
+      return migrateCommand({ host, port, database, user, password: password.reveal() }, mode, (line) => console.log(line));
     }
     case "setup": {
       const rotate: SecretName[] = [];

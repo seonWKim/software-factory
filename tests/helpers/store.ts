@@ -5,6 +5,7 @@ import type { Actor, UserId, WorkerId } from "../../src/core/types.js";
 import type { Clock } from "../../src/interfaces/clock.js";
 import type { FactoryStore, NewWorkItem } from "../../src/interfaces/factory-store.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
+import { MysqlMigrations } from "../../src/impl/store/mysql/migrations.js";
 import { MysqlDriver, type MysqlOptions } from "../../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
@@ -32,25 +33,50 @@ function mysqlOptions(url: string, database: string): MysqlOptions {
   };
 }
 
-/** A fresh, migrated MySQL database. Every store returned by `open` points at it. */
-export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+/**
+ * An empty throwaway MySQL database, dropped when the test finishes. `connect` opens one connection to it
+ * (closed at the end too); `options` is what a MysqlDriver needs.
+ */
+export async function newEmptyMysqlDatabase() {
   const database = `sf_test_${randomBytes(6).toString("hex")}`;
   const { database: _, ...server } = mysqlOptions(MYSQL_URL!, "");
   const admin = await mysql.createConnection(server);
   await admin.query(`CREATE DATABASE ${database}`);
-  const stores: SqlFactoryStore[] = [];
-  const open = () => {
-    const s = new SqlFactoryStore(new MysqlDriver(mysqlOptions(MYSQL_URL!, database)), clock);
-    stores.push(s);
-    return s;
+  const options = mysqlOptions(MYSQL_URL!, database);
+  const connections: mysql.Connection[] = [];
+  const cleanups: (() => Promise<void>)[] = [];
+  const connect = async () => {
+    const c = await mysql.createConnection(options);
+    connections.push(c);
+    return c;
   };
   onTestFinished(async () => {
-    await Promise.all(stores.map((s) => s.close()));
+    for (const f of cleanups) await f();
+    await Promise.all(connections.map((c) => c.end()));
     await admin.query(`DROP DATABASE ${database}`);
     await admin.end();
   });
+  return { database, options, connect, onCleanup: (f: () => Promise<void>) => cleanups.push(f) };
+}
+
+/**
+ * A fresh MySQL database brought up to date through `npm run migrate`'s path (MysqlMigrations.apply),
+ * not through the store: opening a store never applies a step. Every store returned by `open` points at it.
+ */
+export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+  const db = await newEmptyMysqlDatabase();
+  await new MysqlMigrations(await db.connect()).apply(() => undefined);
+  const stores: SqlFactoryStore[] = [];
+  const open = () => {
+    const s = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    stores.push(s);
+    return s;
+  };
+  db.onCleanup(async () => {
+    await Promise.all(stores.map((s) => s.close()));
+  });
   const store = open();
-  await store.migrate();
+  await store.migrate(); // a check on MySQL: throws if a step were still pending
   return { store, open };
 }
 

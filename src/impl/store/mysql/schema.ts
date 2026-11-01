@@ -1,11 +1,13 @@
-// Append-only list. Never edit a migration that has shipped; add a new one.
-// Each migration is a list of statements (the driver runs one statement per query).
+// The frozen baseline: state 11. Never edit or append. New schema changes are step files in
+// migrations/mysql/ (0012 onward), run by `npm run migrate` (src/impl/store/mysql/migrations.ts).
+// The baseline only builds an empty database; an existing database (whose `schema_migrations` already
+// holds 1..11) is only stamped state 11. Each group is a list of statements (one statement per query).
 // Same columns as the SQLite schema, plus `seq` for stable insertion order (SQLite uses rowid).
 // utf8mb4_bin: ids, ISO timestamps and cursor values compare byte-for-byte, as in SQLite.
 
-const TABLE = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
+export const TABLE = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
 
-export const MIGRATIONS: readonly (readonly string[])[] = [
+export const BASELINE: readonly (readonly string[])[] = [
   [
     `CREATE TABLE work_items (
       seq             BIGINT NOT NULL AUTO_INCREMENT UNIQUE,

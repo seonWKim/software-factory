@@ -7,11 +7,12 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.migrations.json",
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run",
     "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
+    "migrate": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js migrate",
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup"
   },
   "devDependencies": {
