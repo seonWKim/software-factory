@@ -16,6 +16,7 @@ import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
 import {
   type FailureClass,
+  SKIP_LABEL,
   effectiveTier,
   failureClass,
   floorTier,
@@ -79,6 +80,8 @@ type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
+type PrOpenEvent = Extract<SourceEvent, { kind: "pr_open" }>;
+type PrFinishedEvent = Extract<SourceEvent, { kind: "pr_merged" | "pr_closed" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -96,6 +99,12 @@ const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 const LINKS: Actor = { kind: "system", id: "system:links" };
 /** Closes an item whose source was closed by someone the factory cannot name (design §4). */
 const INTAKE: Actor = { kind: "system", id: "system:intake" };
+/** The actor of a person's push whose commit author does not resolve to a user (design 2026-11-01). */
+const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
+/** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
+const CHANGES_REQUESTED = "changes_requested";
+/** blocked_reason of an adopted PR that passed review but whose checks failed. */
+const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
@@ -373,28 +382,10 @@ export class Controller {
       case "plain_comment":
         return this.handlePlainComment(e);
       case "pr_merged":
-      case "pr_closed": {
-        const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
-        if (!id) return;
-        // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
-        const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
-        const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
-        await this.decide(id as WorkItemId, (it) => {
-          if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
-          return e.kind === "pr_merged"
-            ? {
-                patch: { stage: "CLOSED", close_reason: "completed", merge_sha: e.merge_sha, blocked_on: "none", blocked_reason: null },
-                actor,
-                reason: "pr_merged",
-              }
-            : {
-                patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
-                actor: { kind: "system", id: "system:post-merge" },
-                reason: "pr_closed_unmerged",
-              };
-        });
-        return;
-      }
+      case "pr_closed":
+        return this.prFinished(e);
+      case "pr_open":
+        return this.prOpen(e);
       case "pr_unmergeable": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
         if (!id) return;
@@ -410,6 +401,158 @@ export class Controller {
         return;
       }
     }
+  }
+
+  /**
+   * A merged or closed PR (design 2026-11-01). A factory branch maps to its item, any other PR to its adopted
+   * item by number; either closes the same way (a merge: CLOSED / completed, the merger as approver of record).
+   * A merge with no item (skipped, never adopted, a fork, merged before a poll) writes one unreviewed merge.
+   */
+  private async prFinished(e: PrFinishedEvent): Promise<void> {
+    const item = await this.itemOfFinishedPr(e);
+    if (!item) {
+      if (e.kind === "pr_merged") await this.recordUnreviewedMerge(e);
+      return;
+    }
+    // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
+    const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
+    const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
+    await this.decide(item.id, (it) => {
+      if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
+      return e.kind === "pr_merged"
+        ? {
+            patch: { stage: "CLOSED", close_reason: "completed", merge_sha: e.merge_sha, blocked_on: "none", blocked_reason: null },
+            actor,
+            reason: "pr_merged",
+          }
+        : {
+            patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+            actor: { kind: "system", id: "system:post-merge" },
+            reason: "pr_closed_unmerged",
+          };
+    });
+  }
+
+  /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
+  private async itemOfFinishedPr(e: PrFinishedEvent): Promise<WorkItem | null> {
+    if (e.fork) return null;
+    const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+    if (id) return this.d.store.getWorkItem(id as WorkItemId);
+    const it = await this.d.store.getWorkItemByPr(this.project(), e.pr_number);
+    return it?.origin === "adopted" ? it : null;
+  }
+
+  /** One row per merged PR with no item; the merger by user ID, null when the forge names none or it does not resolve. */
+  private async recordUnreviewedMerge(e: Extract<PrFinishedEvent, { kind: "pr_merged" }>): Promise<void> {
+    const merger = e.merger ? await this.d.auth.resolve(e.merger) : null;
+    const { created } = await this.d.store.recordUnreviewedMerge({
+      project: this.project(),
+      pr_number: e.pr_number,
+      merge_sha: e.merge_sha,
+      merger_id: merger?.user_id ?? null,
+    });
+    if (created) {
+      this.d.log.warn("unreviewed merge", { pr_number: e.pr_number, merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
+    }
+  }
+
+  /**
+   * An open PR (design 2026-11-01). A factory PR or an adopted one: its head is compared with the recorded
+   * head. Any other PR is adopted, unless a user with write permission put `factory: skip` on it.
+   */
+  private async prOpen(e: PrOpenEvent): Promise<void> {
+    const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+    if (id) {
+      const it = await this.d.store.getWorkItem(id as WorkItemId);
+      if (it && it.pr_number === e.pr_number) await this.recordHead(it, e);
+      return;
+    }
+    const known = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (known) return this.recordHead(known, e);
+    await this.adopt(e);
+  }
+
+  /**
+   * Adoption: one item at REVIEW whose source is the PR, requested by its author, with the PR's files as
+   * allowed_paths (so the floor tiers apply) and one review run, in one store transaction. The skip label is
+   * checked here only; once adopted, a label changes nothing. The files are read only for a PR the store does
+   * not know yet.
+   */
+  private async adopt(e: PrOpenEvent): Promise<void> {
+    const log = { pr_number: e.pr_number };
+    const author = e.author ? await this.d.auth.resolve(e.author) : null;
+    if (!author) {
+      this.d.log.warn("PR not adopted: its author does not resolve to a user", log);
+      return;
+    }
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    if (e.labels.includes(SKIP_LABEL)) {
+      const adder = forge?.labelAddedBy ? await forge.labelAddedBy(e.pr_number, SKIP_LABEL) : null;
+      const who = adder ? await this.authorize(adder, "approve_spec", e.source.id) : null;
+      if (who && !("refuse" in who)) {
+        this.d.log.info("PR skipped: factory: skip label", { ...log, user_id: who.user_id });
+        return;
+      }
+      this.d.log.warn("factory: skip label ignored: not added by a user with write permission; PR adopted", log);
+    }
+    const files = forge?.prFiles ? await forge.prFiles(e.pr_number) : [];
+    const { item, created } = await this.d.store.createWorkItem(
+      {
+        source: e.source,
+        title: e.title,
+        requester_id: author.user_id,
+        project: this.project(),
+        problem: `${e.title}\n\n${e.body}`.trim(),
+        resources: [e.source.link],
+        adopted: {
+          pr_number: e.pr_number,
+          head_branch: e.head_branch,
+          head_sha: e.head_sha,
+          allowed_paths: files,
+          tier: floorTier(files, this.d.config.floors),
+        },
+      },
+      { kind: "user", id: author.user_id },
+      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review` } },
+    );
+    if (!created) return;
+    this.d.log.info("PR adopted", { ...log, work_item_id: item.id });
+    await this.showStatus(item);
+  }
+
+  /**
+   * A head the factory did not record, on an open factory or adopted PR: one `manual` run with the pusher and
+   * the range, changing no stage or blocked field (design 2026-11-01). Nothing is re-queued. While a run of the
+   * item is running it may be pushing, and it records its own head; the PR is looked at again on a later poll.
+   * An item with no recorded head (from before this) only takes the current head as its baseline.
+   */
+  private async recordHead(it: WorkItem, e: PrOpenEvent): Promise<void> {
+    if (it.stage === "CLOSED" || it.last_head_sha === e.head_sha) return;
+    if ((await this.d.store.listRuns(it.id)).some((r) => r.status === "running")) return;
+    if (it.last_head_sha === null) {
+      await this.d.store.recordPrHead({ id: it.id, expected_head: null, head_sha: e.head_sha, manual: null });
+      return;
+    }
+    const actor = await this.pusher(it.id, e.head_sha);
+    const r = await this.d.store.recordPrHead({
+      id: it.id,
+      expected_head: it.last_head_sha,
+      head_sha: e.head_sha,
+      manual: { actor, pr_number: e.pr_number },
+    });
+    if (r.ok && r.run) {
+      this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
+    }
+  }
+
+  /** The pushed head commit's author as a user: the forge does not name who pushed. Else system:pr-sync. */
+  private async pusher(id: WorkItemId, sha: string): Promise<Actor> {
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    const author = forge?.commitAuthor ? await forge.commitAuthor(sha) : null;
+    const principal = author ? await this.d.auth.resolve(author) : null;
+    if (principal) return { kind: "user", id: principal.user_id };
+    this.d.log.warn("pusher did not resolve to a user; recorded as system:pr-sync", { work_item_id: id, head_sha: sha });
+    return PR_SYNC;
   }
 
   /**
@@ -991,6 +1134,16 @@ export class Controller {
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.d.config.floors), it.tier);
+          if (parsed.value.verdict === "bug" && it.origin === "adopted") {
+            // A person's branch: the review comment is on the PR, and the author fixes it. No implement run.
+            return {
+              patch: { tier, token_cost: tokens, blocked_on: "human", blocked_reason: CHANGES_REQUESTED },
+              actor: SYSTEM,
+              reason: CHANGES_REQUESTED,
+              detail: { run_id: run.id },
+              ack_run: run.id,
+            };
+          }
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.d.config.max_loops) {
               const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -1025,6 +1178,9 @@ export class Controller {
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
           };
+        case "manual":
+          // Written already acknowledged, so never here; kept for exhaustiveness.
+          return ack("run_ignored");
         case "update": {
           // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
           switch (data.result) {
@@ -1084,6 +1240,12 @@ export class Controller {
     if (checks.state === "failed") {
       const names = checks.failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
       const detail = { failed_checks: JSON.stringify(names), review_run_id: reviewRunId };
+      if (it.origin === "adopted") {
+        const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
+        await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
+          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not change a pull request a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
+        return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
+      }
       const loop = it.loop_count + 1;
       if (loop >= this.d.config.max_loops) {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -1315,6 +1477,7 @@ export class Controller {
   private expects(it: WorkItem, kind: RunKind): boolean {
     // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout.
     if (kind === "update") return awaitingMerge(it);
+    if (kind === "manual") return false;
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
     if (kind === "implement" || kind === "resolve") return it.stage === "RUNNING";
@@ -1441,11 +1604,14 @@ export class Controller {
     }
   }
 
-  /** The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. */
+  /**
+   * The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. An
+   * adopted item's source is its PR, so it is labelled once.
+   */
   private async showStatus(it: WorkItem): Promise<void> {
     const status = statusOf(it);
     await this.setStatus(it.source, status, null);
-    if (it.pr_number !== null) await this.setStatus(it.source, status, it.pr_number);
+    if (it.pr_number !== null && it.origin !== "adopted") await this.setStatus(it.source, status, it.pr_number);
   }
 
   /**
