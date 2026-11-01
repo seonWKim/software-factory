@@ -71,6 +71,29 @@ export function failureClass(outcome: RunOutcome | null): FailureClass {
 /** The error code of a run stopped by a usage or rate limit. */
 export const RATE_LIMITED = "rate_limited";
 
+/**
+ * The error code of a forge 401 or 403 (preflight, push or PR). A task failure; it also pauses implement-type
+ * claims for every worker (the `forge_auth` claim pause, design §5 Restarts), and its retry waits for the pause.
+ */
+export const FORGE_AUTH = "forge_auth";
+
+/** The error code of a failed implement preflight check; the detail starts with the check's name. */
+export const PREFLIGHT_FAILED = "preflight_failed";
+
+/** The implement preflight's checks, in order. Each failure's detail starts with `<check>: `. */
+export const PREFLIGHT_CHECKS = ["push_access", "pr_api", "base_fetch"] as const;
+
+/**
+ * Implement failure codes never retried automatically (design §5 Restarts, decided 2026-11-02): the same spec
+ * fails the same way. The item blocks on a human with `run_failed:implement:<code>`; `/retry` or `/revise` go on.
+ */
+export const NO_AUTO_RETRY: readonly string[] = ["no_commits", "scope_violation", "egress_blocked", "diff_too_large"];
+
+/** The forge branch that keeps a failed implement run's commits: under the branch prefix, one per run. */
+export function wipBranchFor(item: Pick<WorkItem, "id">, prefix: string, runId: string): string {
+  return `${prefix}wip/${item.id}/${runId}`;
+}
+
 /** The item's PR branch: an adopted PR's own head branch, else the factory branch `${prefix}${id}`. */
 export function branchFor(item: Pick<WorkItem, "id"> & Partial<Pick<WorkItem, "head_branch">>, prefix: string): string {
   return item.head_branch ?? `${prefix}${item.id}`;

@@ -45,6 +45,7 @@
   "max_restart": 3,
   "retry_base_ms": 60000,
   "retry_max_ms": 1800000,
+  "auth_pause_ms": 1800000,
   "max_diff_lines": 1500,
   "max_diff_files": 40,
   "lease_ms": 300000,

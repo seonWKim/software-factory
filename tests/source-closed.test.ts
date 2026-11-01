@@ -201,12 +201,16 @@ describe("closing the source issue stops its work item", () => {
     expect(await f.worker.tick()).toBe(true);
     const { broker, remote } = gh[0]!;
     // Nothing the run did after the close reached GitHub: every tool call it made was refused.
-    expect(broker.results.every((r) => !r.result.ok && r.result.error_code === "lease_lost")).toBe(true);
-    expect(remote).toEqual([]);
+    // The read-only preflight ran before the close, so it is not one of them.
+    const afterClose = broker.results.filter((r) => r.name !== "github.preflight");
+    expect(afterClose.every((r) => !r.result.ok && r.result.error_code === "lease_lost")).toBe(true);
+    // Only the preflight's reads reached GitHub; nothing was written.
+    const writes = () => remote.filter((r) => !r.startsWith("GET "));
+    expect(writes()).toEqual([]);
     // The broker refuses the stopped run's push outright.
     const push = await broker.call(ctx, "github.push_branch", { workdir: "/wt/2", branch: `factory/${ctx.work_item_id}`, base_ref: "main" });
     expect(push).toMatchObject({ ok: false, error_code: "lease_lost" });
-    expect(remote).toEqual([]);
+    expect(writes()).toEqual([]);
 
     const implement = (await f.store.listRuns((await item(f)).id)).find((r) => r.kind === "implement")!;
     expect(implement).toMatchObject({ status: "cancelled", outcome: null });

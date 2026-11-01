@@ -25,6 +25,7 @@ import type {
   VerdictSeverity,
   WorkItem,
   WorkItemId,
+  ClaimPauseName,
 } from "../../../core/types.js";
 import { IMPLEMENT_KINDS } from "../../../core/policy.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -393,9 +394,15 @@ export class SqlFactoryStore implements FactoryStore {
       // serializes; the select is a no-op.)
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
-      // A usage or rate limit pauses every claim, for every item, on every replica (design §5 Restarts).
-      const [pause] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
-      if (pause && (pause.resume_at as string) > now) return null;
+      // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
+      // implement-type claims only (design §5 Restarts). Both are rows of claim_pauses, read under the lock.
+      const pauses = new Map(
+        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE]))
+          .map((r) => [r.name as string, r.resume_at as string]),
+      );
+      const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
+      if (active(RATE_LIMIT_PAUSE)) return null;
+      const forgePaused = active(FORGE_AUTH_PAUSE);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -416,8 +423,10 @@ export class SqlFactoryStore implements FactoryStore {
         [...input.kinds, now, ...CLAIM_ORDER],
       );
       for (const next of queued) {
-        // An implement-type run waits while its own item has one running; it stays queued. Triage and review never wait.
-        if ((IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string) && busy.has(next.work_item_id as string)) continue;
+        // An implement-type run waits while its own item has one running, or while the forge refuses the
+        // credentials; it stays queued. Triage and review never wait.
+        const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
+        if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
         const id = next.id as RunId;
         const claimed = await tx.run(
           `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
@@ -431,23 +440,23 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
-  async pauseClaims(resume_at: Timestamp): Promise<{ extended: boolean; resume_at: Timestamp }> {
+  async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; resume_at: Timestamp }> {
     return this.db.transaction(async (tx) => {
-      if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [RATE_LIMIT_PAUSE, resume_at])) {
+      if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
         return { extended: true, resume_at };
       }
       // Conditional: only a later time moves it, so concurrent pauses keep the latest.
       const moved = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [
-        resume_at, RATE_LIMIT_PAUSE, resume_at,
+        resume_at, name, resume_at,
       ]);
       if (moved === 1) return { extended: true, resume_at };
-      const [row] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
+      const [row] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
       return { extended: false, resume_at: row!.resume_at as Timestamp };
     });
   }
 
-  async getClaimPause(): Promise<Timestamp | null> {
-    const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
+  async getClaimPause(name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
     const at = (row?.resume_at as Timestamp | undefined) ?? null;
     return at !== null && at > this.now() ? at : null;
   }
@@ -889,8 +898,13 @@ class CheckpointAnswered extends Error {}
 /** A closed item's checkpoint outcome, by close_reason. Other close reasons leave it null. */
 const OUTCOME: Partial<Record<CloseReason, BudgetOutcome>> = { completed: "merged", rejected: "rejected", failed: "failed" };
 
-/** The one claim pause today: a usage or rate limit on the agent harness. */
-const RATE_LIMIT_PAUSE = "rate_limit";
+/** The claim pause for a usage or rate limit on the agent harness: no claim of any kind. */
+const RATE_LIMIT_PAUSE: ClaimPauseName = "rate_limit";
+/**
+ * The claim pause for a forge 401/403: no implement-type claim. A second row of the same table (migration 4,
+ * both backends), so no schema change.
+ */
+const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
 
 function rowToInbox(row: Row): InboxRow {
   return {

@@ -5,6 +5,7 @@ import type {
   BudgetAnswer,
   BudgetCheckpoint,
   BudgetCheckpointId,
+  ClaimPauseName,
   Tier,
   Handoff,
   Run,
@@ -295,16 +296,19 @@ export interface FactoryStore {
    * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first by kind
    * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
-   * skipped, never blocking the runs after it. Returns null while a claim pause (pauseClaims) is in effect.
+   * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
+   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**
-   * Stops every claim, for every work item and worker, until `resume_at` (a usage or rate limit). Only ever
-   * moves the pause later. `extended` is true when this call moved it, so exactly one caller logs it.
+   * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
+   * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
+   * refused the credentials). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
+   * when this call moved it, so exactly one caller logs it.
    */
-  pauseClaims(resume_at: Timestamp): Promise<{ extended: boolean; resume_at: Timestamp }>;
-  /** The current claim pause's end, or null if there is none or it has passed. Read-only. */
-  getClaimPause(): Promise<Timestamp | null>;
+  pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; resume_at: Timestamp }>;
+  /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
+  getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.

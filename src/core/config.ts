@@ -38,6 +38,10 @@ export interface FactoryConfig {
   retry_base_ms: number;
   /** Cap on a retry wait, and the pause after a rate limit with no reset time. Default 1800000. */
   retry_max_ms: number;
+  /**
+   * How long a forge 401/403 pauses implement-type claims (design §5 Restarts). Absent: `retry_max_ms`.
+   */
+  auth_pause_ms?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;

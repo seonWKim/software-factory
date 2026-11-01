@@ -6,6 +6,13 @@ import type { FileConfig } from "./compose.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 
+/**
+ * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
+ * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
+ * `retry_max_ms`, which is also its default.
+ */
+type CoreOnlyKey = "auth_pause_ms";
+
 export const TOP_LEVEL_KEYS = [
   "env",
   "store",
@@ -24,6 +31,7 @@ export const TOP_LEVEL_KEYS = [
   "max_restart",
   "retry_base_ms",
   "retry_max_ms",
+  "auth_pause_ms",
   "max_diff_lines",
   "max_diff_files",
   "lease_ms",
@@ -42,7 +50,7 @@ export const TOP_LEVEL_KEYS = [
   "inbox_retention_days",
   "defaults",
   "projects",
-] as const satisfies readonly (keyof FileConfig)[];
+] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
 type MissingTopLevel = Exclude<keyof FileConfig, (typeof TOP_LEVEL_KEYS)[number]>;

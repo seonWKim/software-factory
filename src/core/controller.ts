@@ -32,6 +32,8 @@ import {
   runKey,
   sameStep,
   workItemIdFromBranch,
+  FORGE_AUTH,
+  NO_AUTO_RETRY,
 } from "./policy.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
@@ -1288,10 +1290,15 @@ export class Controller {
 
   /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
   private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
+    // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
+    if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
+      await this.forgeAuthComment(it, run);
+    }
     if (!this.expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
-    if (run.kind === "implement" && code === DIFF_TOO_LARGE) return this.diffTooLarge(it, run);
+    // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
+    if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
@@ -1439,16 +1446,21 @@ export class Controller {
       };
     }
     const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
+    const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
+    // A forge 401/403: the retry also waits for the forge-auth pause to end (design §5 Restarts).
+    const authEnd = code === FORGE_AUTH && reset ? Date.parse(reset) : Number.NaN;
     const notBefore = cls === "rate_limited"
       ? (reset ?? iso(failedAt + retry_max_ms))
-      : iso(failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms));
+      : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
+    // A failed push or PR kept the commits on a wip branch: the retry pushes them with no agent run.
+    const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
     return {
       patch: restart,
       actor: SYSTEM,
       reason: cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
-      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore },
+      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(wip ? { input: { wip } } : {}) },
     };
   }
 
@@ -1560,31 +1572,66 @@ export class Controller {
   }
 
   /**
-   * The pre-push size gate failed (design §4): no automatic retry, since the same spec would likely overreach
-   * again. Blocks on a human with the usual run_failed reason, so `/retry` reruns the implement.
+   * An implement failure the factory never retries automatically (design §5 Restarts, decided 2026-11-02; before,
+   * only `diff_too_large`): `no_commits`, `scope_violation`, `egress_blocked` and the pre-push size gate's
+   * `diff_too_large` (design §4). The same spec would fail the same way. Blocks on a human with the usual
+   * run_failed reason, so `/retry` reruns the implement and `/revise` asks for a new spec. One comment, keyed on
+   * the run; its detail is dropped if the egress scan flags it.
    */
-  private async diffTooLarge(it: WorkItem, run: Run): Promise<Decision> {
-    const detail = run.outcome?.status === "failed" ? run.outcome.detail : "";
-    const { max_diff_lines, max_diff_files } = this.settings(it.project);
-    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` };
-    const url = await this.comment(it, `run-failed:${run.id}`, [
-      "## Factory size check: push blocked",
-      "",
-      `The implement run's diff is too large to review, so nothing was pushed: ${detail}.`,
-      "",
-      `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
-      "",
-      "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
-      "",
-      footerAfter(it, patch),
-    ].join("\n"));
+  private async noAutoRetry(it: WorkItem, run: Run, code: string): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${code}` };
+    const body = (withDetail: boolean) => {
+      if (code === DIFF_TOO_LARGE) {
+        const { max_diff_lines, max_diff_files } = this.settings(it.project);
+        return [
+          "## Factory size check: push blocked",
+          "",
+          `The implement run's diff is too large to review (\`${DIFF_TOO_LARGE}\`), so nothing was pushed${withDetail && detail ? `: ${detail}` : ""}.`,
+          "",
+          `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
+          "",
+          "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
+          "",
+          footerAfter(it, patch),
+        ].join("\n");
+      }
+      return [
+        "## Factory check: implement run stopped",
+        "",
+        `The implement run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} Nothing was pushed.`,
+        "",
+        "The factory does not retry this automatically, since the same spec would most likely fail the same way. Comment `/revise <feedback>` to get a new spec written with your feedback, or `/retry` to run the implementer again on the same spec.",
+        "",
+        footerAfter(it, patch),
+      ].join("\n");
+    };
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
-      detail: { run_id: run.id, error_code: DIFF_TOO_LARGE },
+      detail: { run_id: run.id, error_code: code },
       ack_run: run.id,
     };
+  }
+
+  /**
+   * The owner comment for a forge-auth pause (design §5 Restarts): on the item whose run started the pause, once
+   * per pause (the marker is keyed on the pause's end). It names the code and the time only, never the forge's
+   * answer or a credential.
+   */
+  private async forgeAuthComment(it: WorkItem, run: Run): Promise<void> {
+    const until = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
+    if (!until) return;
+    await this.comment(it, `forge-auth:${until}`, [
+      "## Factory forge check: implement runs paused",
+      "",
+      `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
+      "",
+      "Check the factory's GitHub credentials (the app installation or token): they need write access to contents and pull requests on this repository. The run is retried after the pause ends.",
+    ].join("\n"));
   }
 
   /**
@@ -1975,6 +2022,8 @@ const FAILURES: Record<string, string> = {
   head_moved: "the install or test command moved HEAD off the commit the gates checked",
   prompt_missing: "prompts/resolve.md is missing",
   push_failed: "the push was rejected",
+  forge_auth: "the forge refused the factory's credentials (401 or 403); implement and update runs are paused",
+  preflight_failed: "a check before the agent started failed (push access, the PR API or the base fetch); no agent ran",
   rate_limited: "the model provider's usage or rate limit was hit",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

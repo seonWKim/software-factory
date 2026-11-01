@@ -170,14 +170,14 @@ describe("infra vs task failures", () => {
     });
   }
 
-  it("no commits does not count as a restart", async () => {
+  it("no commits does not count as a restart (and blocks on a human: it is deterministic)", async () => {
     const f = await factory({});
     const it0 = await f.submit();
     // FakeSandbox commits are per worker sandbox; make both report none.
     for (const w of [f.w1, f.w2]) ((w as unknown as { d: { sandbox: FakeSandbox } }).d.sandbox).commits = [];
     await f.step();
     expect((await f.runs(it0, "implement"))[0]!.outcome).toMatchObject({ error_code: "no_commits" });
-    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", restart_count: 0, blocked_on: "none" });
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", restart_count: 0, blocked_on: "human", blocked_reason: "run_failed:implement:no_commits" });
   });
 
   it("task failures stop at max_attempts with blocked_reason max_attempts", async () => {

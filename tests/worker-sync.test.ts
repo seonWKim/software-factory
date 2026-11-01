@@ -53,12 +53,18 @@ class RecordingSandbox extends NoOpSandbox {
 
 /** Like the real broker's push_branch (never a force push), but to the local bare remote. */
 class GitPushBroker implements ToolBroker {
+  /** Every call that acts on the forge, in order. The read-only preflight is in `preflights` (as in FakeBroker). */
   calls: { ctx: ToolCallContext; name: string; args: Record<string, unknown> }[] = [];
+  preflights: string[] = [];
   listTools(): ToolDescriptor[] {
     return [];
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
+    if (name === "github.preflight") {
+      this.preflights.push(name);
+      return { ok: true, content: {} };
+    }
     this.calls.push({ ctx, name, args: a });
     if (name === "github.push_branch") {
       const workdir = String(a.workdir);

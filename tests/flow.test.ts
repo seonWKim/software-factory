@@ -345,10 +345,11 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "106", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
-    // A task failure: retried after a backoff, and restart_count is not touched.
-    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: 0 });
+    // A deterministic failure (design §5 Restarts): the same spec fails the same way, so it blocks on a human
+    // instead of being retried, and restart_count is not touched.
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:no_commits", restart_count: 0 });
     const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
-    expect(runs.map((r) => r.status)).toEqual(["failed", "queued"]);
+    expect(runs.map((r) => r.status)).toEqual(["failed"]);
     expect(runs[0]!.outcome).toMatchObject({ error_code: "no_commits", infra: false });
     expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
   });
@@ -366,7 +367,8 @@ describe("one issue to one merged PR", () => {
     await f.step();
 
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#11"))!;
-    expect(item).toMatchObject({ blocked_on: "none", restart_count: 0 });
+    // Deterministic (design §5 Restarts): blocks on a human, no retry.
+    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "run_failed:implement:scope_violation", restart_count: 0 });
     const run = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation", infra: false });
     if (run.outcome?.status !== "failed") return;

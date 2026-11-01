@@ -11,10 +11,10 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { AUTO_RESOLVE_LIMIT, RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
+import { AUTO_RESOLVE_LIMIT, FORGE_AUTH, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
-import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "./types.js";
+import { type Run, type RunKind, type RunOutcome, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -98,6 +98,8 @@ const INDEX_SIZE = 8;
 const TAIL_CHARS = 2000;
 /** Base commits listed per conflict prompt. */
 const MAX_CONFLICT_COMMITS = 30;
+/** Characters of the agent's summary and next steps kept on a wip ref, for the retry's PR body and handoffs. */
+const WIP_TEXT_CHARS = 4000;
 
 /**
  * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
@@ -140,7 +142,7 @@ class RunFailure extends Error {
     readonly code: string,
     detail: string,
     readonly infra = false,
-    readonly extra: { output_tail?: string; reset_at?: Timestamp | null } = {},
+    readonly extra: { output_tail?: string; reset_at?: Timestamp | null; wip?: WipRef } = {},
   ) {
     super(detail);
   }
@@ -243,6 +245,18 @@ export class Worker {
         this.d.log.warn(`rate limited: all runs paused, work resumes at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
+    if (outcome.status === "failed" && outcome.error_code === FORGE_AUTH) {
+      // The forge refused the credentials: implement-type claims pause for every worker, also before the outcome
+      // is stored (design §5 Restarts). A pause that was not in effect starts here: one log line, and the
+      // controller posts one owner comment for it. Only the code goes in the line, never the forge's answer.
+      const before = await this.d.store.getClaimPause("forge_auth");
+      const pause = await this.d.store.pauseClaims(this.after(this.d.config.auth_pause_ms ?? this.d.config.retry_max_ms), "forge_auth");
+      const started = before === null && pause.extended;
+      outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
+      if (started) {
+        this.d.log.warn(`forge auth refused: implement and update runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
+    }
     const done = await this.d.store.completeRun(run.id, token, outcome);
     if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", log);
     else this.d.log.info("run done", { ...log, status: outcome.status });
@@ -314,73 +328,169 @@ export class Worker {
     return { spec: spec.value };
   }
 
+  /**
+   * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
+   * carries a wip ref (design §5 Restarts) checks that branch out instead of running the agent. Then sync, the
+   * pre-push gates, handoffs for commits not yet recorded, push and PR. A push or PR failure keeps the commits on
+   * a wip branch on the forge before the run fails.
+   */
   private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
     const base = this.d.config.repo.base_branch;
+    const branch = branchFor(item, this.d.config.branch_prefix);
     const start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const baseSha = await this.trustedBase(handle);
+    await this.preflight(handle, ctx, branch);
     const dirs = await this.gitDirs(handle);
     // The run's own git folder, inside its workdir: the merge step below may write only there.
     const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
-    const previous = await this.previousContext(item);
-    const notes = await this.approverNotes(item);
 
-    const result = await this.agent(run, item, handle, signal, {
-      system_prompt: this.d.prompts.implement,
-      prompt: await this.withIndex(
-        [renderWorkItem(item, { includeSpec: true }), notes, previous].filter(Boolean).join("\n\n"),
-        specQuery(item),
-      ),
-      tools: WRITE_TOOLS,
-      model_class: model,
-      output_schema: IMPLEMENT_SCHEMA,
-      // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
-      writable_paths: [],
-      env_allowlist: gitIdentity(this.d.config.agent_git_identity),
-    });
-    const out = parseImplement(result.output);
-    if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
-    await this.distrustAgentGit(handle, dirs);
+    const resumed = await this.resumeWip(run, handle, branch);
+    let work: { commits: number; summary: string; next_steps: string; conflicts: string[] };
+    if (resumed) {
+      work = { commits: resumed.commits, summary: resumed.summary, next_steps: resumed.next_steps, conflicts: resumed.conflicts };
+    } else {
+      const previous = await this.previousContext(item);
+      const notes = await this.approverNotes(item);
+      const result = await this.agent(run, item, handle, signal, {
+        system_prompt: this.d.prompts.implement,
+        prompt: await this.withIndex(
+          [renderWorkItem(item, { includeSpec: true }), notes, previous].filter(Boolean).join("\n\n"),
+          specQuery(item),
+        ),
+        tools: WRITE_TOOLS,
+        model_class: model,
+        output_schema: IMPLEMENT_SCHEMA,
+        // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
+        writable_paths: [],
+        env_allowlist: gitIdentity(this.d.config.agent_git_identity),
+      });
+      const out = parseImplement(result.output);
+      if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+      await this.distrustAgentGit(handle, dirs);
 
-    const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
-    if (commits.length === 0) {
-      throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
+      const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
+      if (commits.length === 0) {
+        throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
+      }
+      work = { commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [] };
     }
-    // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in.
-    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha, model);
-    const floor = await this.prePush(run, item, handle, ctx, sync.baseSha, sync.conflicts);
+    // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
+    // run has no agent, so a conflict there fails with merge_conflict.
+    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha, model, resumed !== null);
+    // The files an earlier sync of these commits conflicted in still pass the scope gate.
+    const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
+    const floor = await this.prePush(run, item, handle, ctx, sync.baseSha, conflicts);
     if (floor) {
       // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
       return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
     }
-    // First parent only: the agent's commits plus our merge commit, not the base commits it brought in.
-    const pushedCommits = sync.merged
-      ? (await this.git(handle, ["rev-list", "--reverse", "--first-parent", `${start}..HEAD`])).split("\n").filter(Boolean)
-      : commits;
+    // First parent only: the agent's commits plus our merge commits, not the base commits they brought in.
+    const pushedCommits = (await this.git(handle, [
+      "rev-list", "--reverse", ...(sync.merged || resumed ? ["--first-parent"] : []), `${start}..HEAD`,
+    ])).split("\n").filter(Boolean);
+    // A resumed run's commits were recorded by the run that made them: no second row for one commit.
+    const recorded = resumed ? new Set((await this.d.store.listHandoffs(item.id)).map((h) => h.commit_sha)) : new Set<string>();
     for (const sha of pushedCommits) {
+      if (recorded.has(sha)) continue;
       const subject = (await this.git(handle, ["log", "-1", "--format=%s", sha])).trim();
       const h = await this.d.store.appendHandoff(
-        { run_id: run.id, work_item_id: item.id, commit_sha: sha, worked_on: subject, next_steps: out.value.next_steps },
+        { run_id: run.id, work_item_id: item.id, commit_sha: sha, worked_on: subject, next_steps: work.next_steps },
         ctx.lease_token,
       );
       if (!h.ok) throw new RunFailure("lease_lost", "lease lost while writing handoffs", true);
     }
 
-    const branch = branchFor(item, this.d.config.branch_prefix);
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-    const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
-    if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
-    await this.recordPushedHead(run, ctx, head);
-    const issue = item.source.id.split("#")[1];
-    const pr = await this.d.broker.call(ctx, "github.open_pr", {
-      branch,
-      base_ref: base,
-      title: prTitle(item),
-      body: `${out.value.summary}\n\nCloses #${issue}\n\nWork item: \`${item.id}\``,
-    });
-    if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
-    const content = pr.content as { number: number };
+    const wip = (): WipRef => resumed ?? {
+      branch: wipBranchFor(item, this.d.config.branch_prefix, run.id),
+      head,
+      commits: work.commits,
+      summary: work.summary.slice(0, WIP_TEXT_CHARS),
+      next_steps: work.next_steps.slice(0, WIP_TEXT_CHARS),
+      conflicts,
+    };
+    let content: { number: number };
+    try {
+      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
+      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+      await this.recordPushedHead(run, ctx, head);
+      const issue = item.source.id.split("#")[1];
+      const pr = await this.d.broker.call(ctx, "github.open_pr", {
+        branch,
+        base_ref: base,
+        title: prTitle(item),
+        body: `${work.summary}\n\nCloses #${issue}\n\nWork item: \`${item.id}\``,
+      });
+      if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
+      content = pr.content as { number: number };
+    } catch (err) {
+      throw await this.keepWip(run, ctx, handle, err, wip(), resumed !== null);
+    }
     // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict).
-    return { pr_number: content.number, commits: commits.length, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
+    return { pr_number: content.number, commits: work.commits, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
+  }
+
+  /**
+   * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
+   * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
+   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403) or `preflight_failed`; its
+   * detail starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
+   */
+  private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
+    const { repo } = this.d.config;
+    const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
+    if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
+    const baseRef = `origin/${repo.base_branch}`;
+    try {
+      await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+    } catch (err) {
+      throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
+    }
+    const fetched = await this.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, `+refs/remotes/${baseRef}:refs/remotes/${baseRef}`]);
+    if (fetched.exit_code !== 0) throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${fetched.stderr.trim()}`.slice(0, 500));
+  }
+
+  /**
+   * A retry of an implement run whose push or PR failed (design §5 Restarts): its input names the wip branch and
+   * head. The head comes from the store, not the forge: if `origin/<wip branch>` is gone or not that commit, the
+   * branch is not trusted and the run goes on as a fresh agent run. Otherwise the run's branch is put on that
+   * commit and no agent runs. Null: run the agent.
+   */
+  private async resumeWip(run: Run, handle: SandboxHandle, branch: string): Promise<WipRef | null> {
+    const wip = run.input?.wip;
+    if (!wip) return null;
+    const ref = wip.branch.startsWith(this.d.config.branch_prefix)
+      ? await this.gitRaw(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${wip.branch}^{commit}`])
+      : null;
+    if (!ref || ref.exit_code !== 0 || ref.stdout.trim() !== wip.head) {
+      this.d.log.warn("wip branch missing or moved; running the agent again", { run_id: run.id, wip_branch: wip.branch });
+      return null;
+    }
+    await this.git(handle, ["read-tree", wip.head]);
+    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, wip.head]);
+    return wip;
+  }
+
+  /**
+   * A push or PR failure after the agent step (design §5 Restarts): keeps the commits on the forge before the run
+   * fails, so the retry needs no agent. A run that resumed from a wip branch names it again and pushes nothing. A
+   * failed wip push is only logged: the run fails with its original code, without a wip ref, and is retried as
+   * before (a new agent run). Returns the failure to throw.
+   */
+  private async keepWip(run: Run, ctx: ToolCallContext, handle: SandboxHandle, err: unknown, wip: WipRef, resumed: boolean): Promise<RunFailure> {
+    const failure = err instanceof RunFailure
+      ? err
+      : new RunFailure("exception", err instanceof Error ? err.message.slice(0, 500) : "", true);
+    if (failure.code === "lease_lost") return failure;
+    let kept = resumed;
+    if (!resumed) {
+      const pushed = await this.d.broker
+        .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: this.d.config.repo.base_branch })
+        .catch((e: unknown) => ({ ok: false as const, error_code: "exception", message: e instanceof Error ? e.message : "unknown" }));
+      kept = pushed.ok;
+      if (!pushed.ok) this.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: pushed.error_code });
+    }
+    return kept ? new RunFailure(failure.code, failure.message, failure.infra, { ...failure.extra, wip }) : failure;
   }
 
   /**
@@ -405,6 +515,8 @@ export class Worker {
     dirs: string,
     trustedBaseSha: string,
     model: ModelClass,
+    /** A resumed run (design §5 Restarts): no agent step, so a conflict fails with merge_conflict at once. */
+    noAgent = false,
   ): Promise<{ baseSha: string; merged: boolean; conflicts: string[] }> {
     const { repo } = this.d.config;
     const baseRef = `origin/${repo.base_branch}`;
@@ -434,6 +546,9 @@ export class Worker {
 
     const conflicts = await this.unmerged(handle);
     if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+    if (noAgent) {
+      return this.mergeConflict(run, item, ctx, conflicts, "no agent step on a resumed run", "", true);
+    }
     const touched = (await this.git(handle, [
       "log", "--no-merges", `--max-count=${MAX_CONFLICT_COMMITS}`, "--format=%H %s", `${fork}..${baseSha}`, "--", ...conflicts,
     ])).split("\n").filter(Boolean).map((l) => `- ${l.slice(0, 8)} ${l.slice(41)}`);
@@ -586,12 +701,13 @@ export class Worker {
     conflicts: string[],
     why: string,
     transcript: string,
+    resumed = false,
   ): Promise<never> {
     const base = this.d.config.repo.base_branch;
     const body = [
       "## Factory sync check: push blocked",
       "",
-      `Before pushing, the implement run merged \`origin/${base}\` into the branch and the merge conflicted. The conflict could not be resolved, also after a retry as a resolve step: ${why}.`,
+      `Before pushing, the implement run merged \`origin/${base}\` into the branch and the merge conflicted. ${resumed ? "The run resumed from its wip branch and runs no agent, so the conflict was not resolved" : "The conflict could not be resolved, also after a retry as a resolve step"}: ${why}.`,
       "",
       "Nothing was pushed. Conflicting files:",
       "",
