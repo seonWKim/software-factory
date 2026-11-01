@@ -98,6 +98,8 @@ A command is the first line of a comment: `/` and the command name (any case), t
 
 Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
 
+If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
+
 ### Status labels
 
 Each work item's issue carries exactly one status label, and so does its PR once there is one. The factory sets it on every change of state, and again for every open item when it starts. Names are `status_label_prefix` (in `factory.config.json`, default `sf: `) plus the name below. The factory creates a missing one on first use; `doctor` only warns about a missing one.

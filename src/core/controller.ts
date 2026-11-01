@@ -27,6 +27,7 @@ import {
   workItemIdFromBranch,
 } from "./policy.js";
 import { renderSpec } from "./spec-comment.js";
+import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -34,6 +35,7 @@ import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../i
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, NewBudgetCheckpoint, TransitionInput } from "../interfaces/factory-store.js";
+import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
@@ -50,6 +52,11 @@ export interface ControllerDeps {
    * id per Controller. Unused for poll sources.
    */
   replica_id?: string;
+  /**
+   * Suggests a command for a plain-language comment (design §4). Absent: plain comments get no reply. The
+   * controller's state decisions never use it.
+   */
+  llm?: LLMProvider;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -64,6 +71,7 @@ type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
+type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -292,6 +300,8 @@ export class Controller {
       case "help_requested":
       case "unknown_command":
         return this.handleInfo(e);
+      case "plain_comment":
+        return this.handlePlainComment(e);
       case "pr_merged":
       case "pr_closed": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
@@ -521,6 +531,48 @@ export class Controller {
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * A plain-language comment on a work item (design §4): at most one reply, keyed on the comment id, that
+   * names a suggested command or lists the commands for the item's state. Changes no state: the person
+   * confirms by typing the command. In order: the work item, the commenter's write permission (no LLM call
+   * and no reply without it), the length and open-item filters, the model call, validation, the egress scan.
+   */
+  private async handlePlainComment(e: PlainCommentEvent): Promise<void> {
+    const llm = this.d.llm;
+    if (!llm) return;
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item) return;
+    const principal = await this.authorize(e.author, "approve_spec", item.id);
+    if ("refuse" in principal) return;
+    const text = e.body.trim();
+    if (text === "" || text.length > SUGGEST_MAX_CHARS || item.stage === "CLOSED") return;
+    const state = commandState(item);
+    const suggestion = await suggestCommand(text, state, llm);
+    let body: string;
+    if (suggestion === null) {
+      body = ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(state)].join("\n");
+    } else {
+      const scan = suggestion.args ? await this.d.scanner.scan("comment", suggestion.args) : { clean: true as const };
+      if (!scan.clean) {
+        const rules = scan.findings.map((f) => f.rule).join(",");
+        this.d.log.warn("suggestion blocked by the egress scan", { work_item_id: item.id, command: suggestion.command, rules });
+        body = ["The factory could not suggest a command for your comment, so nothing changed.", "", commandFooter(state)].join("\n");
+      } else {
+        const typed = formatSuggestion(suggestion);
+        const fence = "`".repeat(Math.max(3, ...[...typed.matchAll(/`+/g)].map((m) => m[0].length + 1)));
+        body = [
+          `Did you mean \`/${suggestion.command}\`? Nothing has changed. To apply it, reply with:`,
+          "",
+          fence,
+          typed,
+          fence,
+        ].join("\n");
+      }
+    }
+    this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
+    await this.d.source.postComment(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */

@@ -25,6 +25,11 @@ export type SourceEvent =
   /** A command word the factory does not know, as typed (letters only, without the `/`). */
   | { kind: "unknown_command"; source: SourceRef; comment_id: string; requester: ExternalIdentity; command: string }
   /**
+   * A comment by a person (not a bot) that is not a command. `body` is the whole comment, untrusted. The
+   * controller may answer it once with a suggested command (design §4); nothing it does changes state.
+   */
+  | { kind: "plain_comment"; source: SourceRef; comment_id: string; author: ExternalIdentity; body: string }
+  /**
    * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
    * when the source does not say. May be delivered again (same close, later poll); handling is idempotent.
    * Delivered after any PR events of the same poll, so a merge that closed the issue is seen first.
