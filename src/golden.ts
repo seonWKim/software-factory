@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FactoryConfig, Prompts } from "./core/config.js";
+import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/model-choice.js";
 import { REVIEW_SCHEMA, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { toolsNamed } from "./core/worker.js";
@@ -280,6 +281,8 @@ export interface GoldenRunDeps {
   config: Pick<FactoryConfig, "repo" | "deny_paths" | "run_timeout_ms" | "agent_git_identity">;
   /** prompts/review.md: the worker's review system prompt. */
   reviewPrompt: string;
+  /** `model_by` from config: the replay uses the review run's class. Absent: the default table. */
+  model_by?: ModelTable;
   signal?: AbortSignal;
 }
 
@@ -295,7 +298,7 @@ export interface GoldenPlugins {
 /** Builds golden run's parts through the configured plugins: no store, no broker, no GitHub client. */
 export async function buildGoldenRunDeps(
   p: GoldenPlugins,
-  loaded: { root: string; stateDir: string; config: FactoryConfig; prompts: Prompts },
+  loaded: { root: string; stateDir: string; config: FactoryConfig; prompts: Prompts; model_by?: ModelTable },
 ): Promise<GoldenRunDeps> {
   const clock = await p.clock();
   const secrets = await p.secrets();
@@ -311,6 +314,7 @@ export async function buildGoldenRunDeps(
     clock,
     config: loaded.config,
     reviewPrompt: loaded.prompts.review,
+    ...(loaded.model_by ? { model_by: loaded.model_by } : {}),
   };
 }
 
@@ -462,7 +466,9 @@ async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal:
       env_allowlist: gitIdentity(deps.config.agent_git_identity),
       deny_paths: deps.config.deny_paths,
       writable_paths: [],
-      model_class: "strong",
+      // The review run's class (cases carry no tier or loop: tier 5's entry, no retry bump), so golden
+      // results match production review.
+      model_class: modelClassFor(deps.model_by ?? DEFAULT_MODEL_TABLE, "review", null, 0),
       timeout_ms: deps.config.run_timeout_ms,
       output_schema: REVIEW_SCHEMA,
       signal,
