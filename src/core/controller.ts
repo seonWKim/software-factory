@@ -8,7 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
-import { commandFooter, commandState, failedRunKind, helpReply, unknownCommandReply } from "./commands.js";
+import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, phaseLabel, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
@@ -667,7 +667,12 @@ export class Controller {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor);
-    if (!awaitingSpec(it)) return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
+    const phase = commandPhase(it);
+    const afterFailure = phase === "too_large" || phase === "failed_implement";
+    if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
+    if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
+      return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})` };
+    }
     switch (e.kind) {
       case "spec_rejected":
         // Recorded first; the comment and the close follow (finishReject), and survive a stop in between.
@@ -718,6 +723,42 @@ export class Controller {
           enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
         };
     }
+  }
+
+  /**
+   * `/revise <feedback>` at a failed implement run or a `diff_too_large` block (design §4): the item goes back
+   * through triage with the feedback, then to the spec gate. The revision counter and `max_loops` apply as at
+   * the spec gate, but at the limit nothing changes: the item keeps its block, where `/retry` and `/reject`
+   * still apply. restart_count + 1 so the implement run after the next `/approve` gets a new run key; the old
+   * failure comment is unlinked.
+   */
+  private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
+    const feedback = e.feedback.trim();
+    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+    const limit = this.d.config.max_loops;
+    if (it.revision_count >= limit) {
+      return {
+        refuse: `the spec was revised ${it.revision_count} times, the revision limit (\`max_loops\` = ${limit}); ` +
+          "reply `/retry` to run the implementer again or `/reject <reason>` to close",
+      };
+    }
+    const n = it.revision_count + 1;
+    return {
+      patch: {
+        stage: "NEW",
+        blocked_on: "none",
+        blocked_reason: null,
+        revision_count: n,
+        restart_count: it.restart_count + 1,
+        spec_feedback: feedback,
+        failure_comment_url: null,
+      },
+      actor,
+      reason: "spec_revision_requested",
+      detail: { previous_blocked_reason: it.blocked_reason },
+      // The spec-gate revision key: differs from the intake key and from every earlier revision's key.
+      enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
+    };
   }
 
   /**
@@ -1035,7 +1076,7 @@ export class Controller {
       "",
       `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
       "",
-      "Split the work item, or comment `/retry` to run the implementer again; it must make a smaller change.",
+      "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
       "",
       footerAfter(it, patch),
     ].join("\n"));
@@ -1317,8 +1358,8 @@ function quote(text: string): string {
 function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor): Decision | Refusal {
   if (!conflictPending(it)) {
     return {
-      refuse: `the item is not waiting on a merge conflict (stage \`${it.stage}\`, blocked_on \`${it.blocked_on}\`, ` +
-        `blocked_reason \`${it.blocked_reason ?? "none"}\`); \`/resolve\` needs blocked_reason \`${CONFLICT_PENDING}\``,
+      refuse: `the item is not waiting on a merge conflict (it is ${phaseLabel(commandPhase(it))}); ` +
+        `\`/resolve\` applies only when the ${phaseLabel("merge_conflict")}`,
     };
   }
   const next = { ...it, restart_count: it.restart_count + 1 };
@@ -1343,10 +1384,10 @@ function conflictPending(it: WorkItem): boolean {
  */
 function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
-    return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
+    return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
   }
   if (e.kind === "revise_requested") {
-    return { refuse: "the item is blocked by the floor check (`floor_tier`), not waiting on a spec; reply `/approve` to raise its tier or `/reject <reason>` to close" };
+    return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
   }
   if (e.kind === "spec_rejected") {
     return {
