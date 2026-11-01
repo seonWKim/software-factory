@@ -33,6 +33,7 @@ import {
   type Contexts,
   defaultPlugins,
   PLUGIN_KINDS,
+  PLUGINS_KEYS,
   type PluginKind,
   REGISTRY,
   type Registry,
@@ -241,6 +242,49 @@ describe("plugin registry: unknown names fail at startup", () => {
     await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), auth: "none" } }))).rejects.toThrow(
       /top-level "auth" key/,
     );
+  });
+
+  it('an unknown plugins key keeps the known keys and suggests a close one: "sandox" -> "sandbox"', async () => {
+    const err = await loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), sandox: "noop" } })).then(
+      () => null,
+      (e: Error) => e.message,
+    );
+    expect(err).toContain('did you mean "sandbox"?');
+    for (const k of PLUGINS_KEYS) expect(err).toContain(k);
+  });
+
+  it("an unknown plugins key that is not close gets no suggestion", async () => {
+    await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), zzzzzzzz: "x" } }))).rejects.toThrow(
+      /^(?!.*did you mean).*unknown plugins key "zzzzzzzz"/s,
+    );
+  });
+
+  it("every unknown plugins key is reported in one error", async () => {
+    const err = await loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), sandox: "noop", runer: "x" } })).then(
+      () => null,
+      (e: Error) => e.message,
+    );
+    expect(err).toContain('"sandox"');
+    expect(err).toContain('"runer"');
+    expect(err).toContain('did you mean "runner"?');
+  });
+
+  it("an unknown plugin name keeps every available name and suggests a close one", async () => {
+    const sandbox = await loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), sandbox: "nop" } })).then(
+      () => null,
+      (e: Error) => e.message,
+    );
+    expect(sandbox).toMatch(/unknown Sandbox plugin "nop".*available: noop; did you mean "noop"\?/);
+    const guard = await loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), egress: "patern" } })).then(
+      () => null,
+      (e: Error) => e.message,
+    );
+    expect(guard).toMatch(/unknown EgressScanner plugin "patern".*available: pattern; did you mean "pattern"\?/);
+    const far = await loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), sandbox: "docker" } })).then(
+      () => null,
+      (e: Error) => e.message,
+    );
+    expect(far).not.toContain("did you mean");
   });
 });
 

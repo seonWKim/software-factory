@@ -44,6 +44,7 @@ Rules, checked by `loadConfig` at startup (and again by `build()`):
 - **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
 - **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `auth` under `plugins` are rejected with a pointer to their own keys.
+- **Unknown config keys are rejected at load**, at every level of `factory.config.json` (top level, `store` for its `type`, `repo`, `dials`, each `floors[i]`, `models`, `agent_git_identity`, `ui`, `stats`, `plugins`): one error lists every unknown key with its path and the valid keys, and adds `did you mean "…"?` when a valid key is within edit distance 2. `npm run factory -- doctor` prints each as a FAIL line and exits 1.
 - **Guards cannot be disabled.** For `secrets`, `egress` and `broker`, leaving the key out of a `plugins` object, or setting it to `null`, `false`, `""`, `"none"` or anything that is not a registered name, fails startup with an error that the plugin is a guard and points to `docs/architecture.md` §5. You can switch a guard to another registered plugin; you cannot turn it off.
 
 To switch back to the defaults, set the key back to the default name above, or delete the whole `plugins` object. There is no loading from external packages: a plugin is code in this repository, registered in `src/plugins.ts`.
