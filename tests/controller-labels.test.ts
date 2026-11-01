@@ -3,14 +3,14 @@ import { Controller } from "../src/core/controller.js";
 import type { Logger } from "../src/core/log.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, labelTarget, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, config, issueRef, labelTarget, recordingLog, silent, triageSpec, waitFor, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 async function setup(log: Logger = silent) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   return { clock, store, source, controller };
 }
 

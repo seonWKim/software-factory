@@ -8,7 +8,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  config, prompts, recordingLog, silent, triageSpec, waitFor,
+  config, prompts, recordingLog, silent, triageSpec, waitFor, cleanScanner,
 } from "./helpers/fakes.js";
 
 const { lease_ms, heartbeat_ms } = config;
@@ -53,7 +53,7 @@ describe("host sleep: controller reaper grace", () => {
   async function setup() {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent });
+    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
     const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms }))!;
     const status = async (id: RunId = run.id) => (await store.getRun(id))!.status;

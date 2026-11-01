@@ -11,7 +11,7 @@ import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Capability, CapabilitySearch } from "../src/interfaces/capability-search.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec, cleanScanner,
 } from "./helpers/fakes.js";
 
 const RESULTS: Capability[] = [
@@ -38,7 +38,7 @@ async function flow(capability?: CapabilitySearch): Promise<AgentRunSpec[]> {
     implement: () => ({ output: { summary: "s", next_steps: "n" } }),
     review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "ok" } }),
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(),

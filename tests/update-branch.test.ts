@@ -15,7 +15,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -130,7 +130,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
   const broker = new GitPushBroker();
   const runner = new FakeRunner({}); // no script: any agent start throws
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts: {
       triage: "T", implement: "I", review: "R",

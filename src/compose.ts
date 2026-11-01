@@ -218,6 +218,7 @@ export async function build(
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),
+    scanner,
   });
 
   const worker = new Worker({

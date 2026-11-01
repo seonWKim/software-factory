@@ -8,8 +8,8 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { branchFor, scopeViolations } from "./policy.js";
-import type { Run, RunKind, RunOutcome, WorkItem, WorkerId } from "./types.js";
+import { RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
+import type { Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -48,15 +48,22 @@ const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 /** How many search results go into the prompt's doc index. */
 const INDEX_SIZE = 8;
+/** Characters of the agent's output kept on a failed outcome, for the last-attempt comment. */
+const TAIL_CHARS = 2000;
 
 class RunFailure extends Error {
   constructor(
     readonly code: string,
     detail: string,
     readonly infra = false,
+    readonly extra: { output_tail?: string; reset_at?: Timestamp | null } = {},
   ) {
     super(detail);
   }
+}
+
+function tail(s: string): string {
+  return s.length > TAIL_CHARS ? s.slice(-TAIL_CHARS) : s;
 }
 
 /**
@@ -111,7 +118,7 @@ export class Worker {
     } catch (err) {
       outcome =
         err instanceof RunFailure
-          ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra }
+          ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra }
           : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true };
     } finally {
       stopHeartbeat.abort();
@@ -122,6 +129,15 @@ export class Worker {
     const scan = await this.d.scanner.scan("run_outcome", JSON.stringify(outcome));
     if (!scan.clean) {
       outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false };
+    }
+    if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
+      // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
+      const resume = outcome.reset_at ?? this.after(this.d.config.retry_max_ms);
+      outcome = { ...outcome, reset_at: resume };
+      const pause = await this.d.store.pauseClaims(resume);
+      if (pause.extended) {
+        this.d.log.warn(`rate limited: all runs paused, work resumes at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
     }
     const done = await this.d.store.completeRun(run.id, token, outcome);
     if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", log);
@@ -177,7 +193,7 @@ export class Worker {
       output_schema: TRIAGE_SCHEMA,
     });
     const spec = parseTriage(result.output);
-    if (!spec.ok) throw new RunFailure("invalid_output", spec.error);
+    if (!spec.ok) throw new RunFailure("invalid_output", spec.error, false, { output_tail: tail(result.transcript) });
     return { spec: spec.value, tokens: tokensOf(result) };
   }
 
@@ -202,10 +218,12 @@ export class Worker {
       env_allowlist: gitIdentity(this.d.config.agent_git_identity),
     });
     const out = parseImplement(result.output);
-    if (!out.ok) throw new RunFailure("invalid_output", out.error);
+    if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
 
     const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
-    if (commits.length === 0) throw new RunFailure("no_commits", "the implementer made no commits");
+    if (commits.length === 0) {
+      throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
+    }
     await this.scopeGate(run, item, handle, ctx, baseSha);
     for (const sha of commits) {
       const subject = (await this.git(handle, ["log", "-1", "--format=%s", sha])).trim();
@@ -273,7 +291,7 @@ export class Worker {
       env_allowlist: gitIdentity(this.d.config.agent_git_identity),
     });
     const review = parseReview(result.output);
-    if (!review.ok) throw new RunFailure("invalid_output", review.error);
+    if (!review.ok) throw new RunFailure("invalid_output", review.error, false, { output_tail: tail(result.transcript) });
 
     const v = review.value;
     const body = [
@@ -402,8 +420,18 @@ export class Worker {
     await this.d.storage.put(`transcripts/${item.id}/${run.id}.json`, new TextEncoder().encode(result.transcript));
 
     if (result.status === "aborted") throw new RunFailure("lease_lost", "run aborted", true);
-    if (result.status !== "completed") throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out");
+    if (result.status === "rate_limited") {
+      const reset = result.reset_at && !Number.isNaN(Date.parse(result.reset_at)) ? (new Date(result.reset_at).toISOString() as Timestamp) : null;
+      throw new RunFailure(RATE_LIMITED, result.error ?? "usage or rate limit", false, { reset_at: reset, output_tail: tail(result.transcript) });
+    }
+    if (result.status !== "completed") {
+      throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
+    }
     return result;
+  }
+
+  private after(ms: number): Timestamp {
+    return new Date(this.d.clock.now().getTime() + ms).toISOString() as Timestamp;
   }
 
   /**

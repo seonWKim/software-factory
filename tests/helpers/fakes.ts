@@ -3,6 +3,7 @@ import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
 import type { SourceRef, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
+import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
@@ -31,6 +32,9 @@ export const config: FactoryConfig = {
 };
 
 export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW" };
+
+/** The real pattern scanner with no known secret values: blocks token-shaped text only. */
+export const cleanScanner = new PatternEgressScanner(async () => []);
 
 export const silent: Logger = { info() {}, warn() {}, error() {} };
 

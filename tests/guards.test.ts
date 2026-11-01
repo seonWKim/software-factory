@@ -13,7 +13,7 @@ import { EnvFileSecretStore, parseEnvFile } from "../src/impl/secrets/env-file-s
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent,
+  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
 } from "./helpers/fakes.js";
 
 const cred = { name: "CLAUDE_CODE_OAUTH_TOKEN" as const, value: "oauth-value-123456" };
@@ -115,7 +115,7 @@ describe("G6 (unit): an agent that leaks a canary is stopped before anything lea
     const storage = new MemoryStorage();
     const broker = new FakeBroker();
     const runner = new FakeRunner({ triage: () => ({ output: { problem: canary }, transcript: `found ${canary}` }) });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage, clock, config, prompts, log: silent,
       scanner: new PatternEgressScanner(async () => [canary]), toolEnv: {}, awake: new NoKeepAwake(),
@@ -126,7 +126,8 @@ describe("G6 (unit): an agent that leaks a canary is stopped before anything lea
     await controller.tickRuns();
 
     const item = (await store.getWorkItemBySource("github_issue", "o/r#9"))!;
-    expect(item.blocked_reason).toBe("run_failed:triage:egress_blocked");
+    const [failed] = await store.listRuns(item.id);
+    expect(failed!.outcome).toMatchObject({ status: "failed", error_code: "egress_blocked" });
     expect(storage.data.size).toBe(0);
     expect(broker.calls).toHaveLength(0);
     const runs = await store.listRuns(item.id);
