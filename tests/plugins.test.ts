@@ -88,7 +88,7 @@ function pathWithFakeCaffeinate(): string {
 function root(config: Record<string, unknown>, secrets = "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n"): string {
   const dir = mkdtempSync(join(tmpdir(), "sf-plugins-"));
   mkdirSync(join(dir, "prompts"));
-  for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+  for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
   writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...config, state_dir: "state", worktrees_dir: "wt" }));
   mkdirSync(join(dir, "secrets"));
   writeFileSync(join(dir, "secrets", ".env"), secrets);

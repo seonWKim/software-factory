@@ -173,4 +173,8 @@ export const MIGRATIONS: readonly string[] = [
     expires_at   TEXT NOT NULL
   );
   `,
+  // 11: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
+  `
+  ALTER TABLE runs ADD COLUMN input TEXT;
+  `,
 ];

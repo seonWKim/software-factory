@@ -108,8 +108,16 @@ export interface StateChange {
 
 export type StateChangeDetail = Record<string, string | number | boolean | null>;
 
-/** `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5). */
-export type RunKind = "triage" | "implement" | "review" | "update";
+/**
+ * `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5).
+ * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
+ */
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve";
+
+/** What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. */
+export interface RunInput {
+  notes?: string;
+}
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Lease {
@@ -142,6 +150,8 @@ export interface Run {
    * the run so every worker and replica waits, not only the one that saw the failure (design §5 Restarts).
    */
   not_before: Timestamp | null;
+  /** Set at enqueue (e.g. the notes of a `/resolve`). Null when none was given, and on rows from before it existed. */
+  input: RunInput | null;
   created_at: Timestamp;
   /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;

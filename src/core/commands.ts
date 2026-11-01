@@ -35,7 +35,7 @@ export interface CommandState {
   has_pr: boolean;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "budget" | "verdict" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -81,6 +81,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/retry",
     description: "Run the failed run again",
     phases: ["failed_run"],
+    needs_pr: false,
+    changes_state: true,
+  },
+  {
+    name: "resolve",
+    usage: "/resolve [notes]",
+    description: "Let an agent resolve the PR's merge conflict; notes go to the agent",
+    phases: ["merge_conflict"],
     needs_pr: false,
     changes_state: true,
   },

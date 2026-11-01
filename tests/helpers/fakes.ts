@@ -12,7 +12,7 @@ import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
 export const config: FactoryConfig = {
-  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", test_command: ["npm", "test"] },
+  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", install_command: ["npm", "ci"], test_command: ["npm", "test"] },
   intake_label: "factory",
   status_label_prefix: "sf: ",
   branch_prefix: "factory/",
@@ -36,7 +36,7 @@ export const config: FactoryConfig = {
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
 
-export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW" };
+export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW", resolve: "RESOLVE" };
 
 /** The real pattern scanner with no known secret values: blocks token-shaped text only. */
 export const cleanScanner = new PatternEgressScanner(async () => []);
@@ -258,23 +258,58 @@ export class FakeSandbox implements Sandbox {
   numstat: string | null = null;
   /** Every git command line the worker ran, for asserting on order and arguments. */
   gitCalls: string[] = [];
+  /** Every non-git command (argv joined by spaces), e.g. the install and test gate commands. */
+  commands: string[] = [];
+
+  // Merging the base branch (update and resolve runs).
+  /** Exit of `git merge-base --is-ancestor`: 0 = the base is already in the branch. */
+  ancestorExit = 0;
+  /** Exit of `git merge`: non-zero with `conflicts` set is a conflicted merge. */
+  mergeExit = 0;
+  /** Files `git diff --diff-filter=U` reports as conflicting after the merge. */
+  conflicts: string[] = [];
+  /** Text `cat -- <path>` returns, e.g. a conflicting file with its markers. */
+  files: Record<string, string> = {};
+  /** What `git ls-files --unmerged -z` prints after the resolve agent ran (non-empty: conflicts left). */
+  unmerged = "";
+  /** Files the resolve run changed between its pre-agent and post-agent snapshots. */
+  resolveChanged: string[] = [];
+  /** Exit codes of non-git commands by argv joined with spaces, e.g. { "npm test": 1 }. Default 0. */
+  exits: Record<string, number> = {};
+  private trees = 0;
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     this.created.push(spec);
     return { id: `sbx${this.created.length}`, workdir: `/wt/${this.created.length}` };
   }
   async exec(_h: SandboxHandle, cmd: readonly string[], _o: ExecOptions): Promise<ExecResult> {
+    const res = (exit_code: number, stdout = ""): ExecResult => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false });
+    const out = (stdout: string): ExecResult => res(0, stdout);
+    if (cmd[0] !== "git") {
+      const line = cmd.join(" ");
+      this.commands.push(line);
+      if (cmd[0] === "cat") return out(this.files[cmd.at(-1)!] ?? "");
+      return res(this.exits[line] ?? 0);
+    }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
-    const out = (stdout: string): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
     if (args === "rev-parse HEAD") return out("base\n");
+    if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
     if (args.startsWith("rev-parse --verify")) return out("basesha\n");
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
+    if (args.startsWith("merge-base --is-ancestor")) return res(this.ancestorExit);
+    if (args.startsWith("merge ")) return res(this.mergeExit);
+    if (args === "write-tree") return out(`tree${++this.trees}\n`);
+    if (args.startsWith("ls-files --unmerged")) return out(this.unmerged);
+    if (args.startsWith("grep")) return res(1); // no conflict markers left
+    if (args.startsWith("diff --cached --quiet")) return res(1);
     if (args.startsWith("diff --numstat")) {
       return out(this.numstat ?? this.changedFiles.map((f) => `1\t0\t${f}\0`).join(""));
     }
+    if (args.startsWith("diff --name-only -z --diff-filter=U")) return out(this.conflicts.map((f) => `${f}\0`).join(""));
+    if (args.startsWith("diff --name-only -z --no-renames tree")) return out(this.resolveChanged.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff --name-only")) return out(this.changedFiles.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff")) return out("+ a change\n");
     return out("");

@@ -406,6 +406,70 @@ describe("GitHubIssueSource: unmergeable factory PRs", () => {
   });
 });
 
+describe("GitHubIssueSource: /resolve", () => {
+  const alice = { provider: "github", subject: "1", login: "alice" };
+  const prComment = (id: number, body: string, pr: number) => ({
+    ...comment(id, body, `2026-11-01T00:00:${String(id).padStart(2, "0")}Z`, pr),
+    html_url: `https://github.com/o/r/pull/${pr}#issuecomment-${id}`,
+  });
+
+  /** Answers GET /pulls/<n> from `pulls` (404 when absent); everything else as FakeClient. */
+  class PullClient extends FakeClient {
+    pulls: Record<number, { number: number; head: { ref: string; sha: string } }> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      const m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        const p = this.pulls[Number(m[1])];
+        if (!p) throw new GitHubError(404, "Not Found");
+        return p as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+
+  it("turns /resolve on an issue into resolve_requested with the notes (rest of the comment, trimmed)", async () => {
+    const { client, source } = setup();
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(10, "/resolve", "2026-11-01T00:00:01Z"),
+      comment(11, "  /resolve keep main's API  \n\n  and the new flag \n", "2026-11-01T00:00:02Z"),
+      comment(12, "/resolver nope", "2026-11-01T00:00:03Z"),
+      comment(13, "please /resolve", "2026-11-01T00:00:04Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "resolve_requested", source: issueRef(7), comment_id: "10", requester: alice, notes: "", pr: null },
+      {
+        kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: alice,
+        notes: "keep main's API\n\n  and the new flag", pr: null,
+      },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: alice, command: "resolver" },
+    ]);
+  });
+
+  it("a /resolve on a factory PR's conversation names the PR and its head branch, and its source is the PR", async () => {
+    const client = new PullClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    client.pulls[42] = { number: 42, head: { ref: "factory/wi_a", sha: "h" } };
+    client.pulls[43] = { number: 43, head: { ref: "feature/x", sha: "h" } };
+    client.responses["/repos/o/r/issues/comments"] = [
+      prComment(20, "/resolve take both", 42),
+      prComment(21, "/resolve", 43), // not a factory PR: ignored
+      prComment(22, "/resolve", 44), // PR gone (404): ignored, the poll still succeeds
+      prComment(23, "lgtm", 42), // not a command: no PR lookup
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      {
+        kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: alice, notes: "take both",
+        pr: { pr_number: 42, head_branch: "factory/wi_a" },
+      },
+    ]);
+    const lookups = client.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
+    expect(lookups).toEqual(["/repos/o/r/pulls/42", "/repos/o/r/pulls/43", "/repos/o/r/pulls/44"]);
+  });
+});
+
 describe("GitHubIssueSource: status labels", () => {
   /** Keeps repo labels and per-issue labels like GitHub does, and answers the labels endpoints from them. */
   class LabelClient extends GitHubClient {

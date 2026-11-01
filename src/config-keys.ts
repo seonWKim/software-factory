@@ -51,7 +51,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
   mysql: ["type", "host", "port", "database", "user"],
 };
 
-export const REPO_KEYS = ["owner", "name", "path", "base_branch", "test_command"] as const satisfies readonly (keyof FileConfig["repo"])[];
+export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
 export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof FileConfig["floors"][number])[];
 export const MODELS_KEYS = ["cheap", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];

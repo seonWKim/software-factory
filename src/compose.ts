@@ -33,8 +33,8 @@ export type StoreConfig =
 export interface FileConfig {
   env: "local" | "cloud";
   store?: StoreConfig;
-  /** test_command: argv, default ["npm", "test"]. */
-  repo: { owner: string; name: string; path: string; base_branch: string; test_command?: unknown };
+  /** install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. */
+  repo: { owner: string; name: string; path: string; base_branch: string; install_command?: unknown; test_command?: unknown };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
   status_label_prefix?: string;
@@ -137,7 +137,12 @@ export async function loadConfig(
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
   const config: FactoryConfig = {
-    repo: { ...file.repo, path: resolve(root, file.repo.path), test_command: testCommand(file.repo.test_command) },
+    repo: {
+      ...file.repo,
+      path: resolve(root, file.repo.path),
+      install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
+      test_command: testCommand(file.repo.test_command),
+    },
     intake_label: file.intake_label,
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
@@ -180,6 +185,11 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
+  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return undefined;
+    throw err;
+  });
+  if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
   return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats };
 }
 
@@ -386,9 +396,14 @@ export function isSqlName(s: string): boolean {
 
 /** Absent: ["npm", "test"]. Otherwise a non-empty argv of non-empty strings, or startup fails. */
 export function testCommand(value: unknown): string[] {
-  if (value === undefined) return ["npm", "test"];
+  return argvConfig("repo.test_command", value, ["npm", "test"]);
+}
+
+/** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */
+export function argvConfig(key: string, value: unknown, fallback: readonly string[]): string[] {
+  if (value === undefined) return [...fallback];
   if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v !== "")) {
-    throw new Error("repo.test_command must be a non-empty array of non-empty strings (argv), e.g. [\"npm\", \"test\"]");
+    throw new Error(`${key} must be a non-empty array of non-empty strings (argv), e.g. ${JSON.stringify(fallback)}`);
   }
   return [...(value as string[])];
 }

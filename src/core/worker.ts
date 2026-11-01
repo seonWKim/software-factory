@@ -10,6 +10,7 @@ import {
   parseTriage,
 } from "./outputs.js";
 import { RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
+import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import type { Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
@@ -54,7 +55,7 @@ export interface WorkerDeps {
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 /** How many search results go into the prompt's doc index. */
@@ -187,6 +188,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
+    if (run.kind === "resolve") return this.resolve(run, item, ctx, signal);
     const { repo } = this.d.config;
     const branch = run.kind === "triage" ? null : branchFor(item, this.d.config.branch_prefix);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch });
@@ -439,6 +441,131 @@ export class Worker {
     }
   }
 
+  /**
+   * The resolve run (design §5 Merge conflict), started by a human's `/resolve`. In the PR branch's sandbox:
+   * merge origin/<base> with --no-commit and leave the conflicts; snapshot the tree; let the agent resolve;
+   * then, before any push, the worker's own gates: nothing left unmerged, the scope gate (every file changed
+   * since the snapshot, tracked or untracked, is a conflicting file or under allowed_paths), the merge commit
+   * contains the base, and the install and test commands pass. Only then push through the broker (same branch,
+   * same PR, never a force push). Any failure throws: nothing is pushed and the controller re-blocks the item.
+   */
+  private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
+    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    const system_prompt = this.d.prompts.resolve;
+    if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
+    const { repo, branch_prefix } = this.d.config;
+    const branch = branchFor(item, branch_prefix);
+    const baseRef = `origin/${repo.base_branch}`;
+    const identity = gitIdentity(this.d.config.agent_git_identity);
+    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+      throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
+    });
+    try {
+      // The sandbox starts a missing branch from base; a resolve must only ever touch the PR's own branch.
+      await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
+      // Resolved before the agent runs: its writable git dir includes refs, so it could move origin/<base>.
+      const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
+      const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+      const index = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "sf-resolve-index"])).trim();
+
+      const merge = await this.gitRaw(
+        handle,
+        ["merge", "--no-ff", "--no-commit", "-m", `Merge ${baseRef} into ${branch}`, baseRef],
+        identity,
+      );
+      const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
+      if (merge.exit_code !== 0 && conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+
+      let tokens = 0;
+      if (conflicts.length > 0) {
+        const files: ConflictFile[] = [];
+        for (const path of conflicts) {
+          const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
+          files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
+        }
+        const before = await this.snapshot(handle, index);
+        const notes = run.input?.notes ?? "";
+        const result = await this.agent(run, item, handle, signal, {
+          system_prompt,
+          prompt: await this.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
+          harness_tools: WRITE_TOOLS,
+          model_class: "strong",
+          output_schema: IMPLEMENT_SCHEMA,
+          writable_paths: [gitDir],
+          env_allowlist: identity,
+        });
+        const out = parseImplement(result.output);
+        if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+        tokens = tokensOf(result);
+
+        const after = await this.snapshot(handle, index);
+        const changed = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, after]);
+        const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
+        if (outside.length > 0) {
+          throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
+        }
+        const markers = await this.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", after, "--", ...conflicts]);
+        if (markers.exit_code === 0) throw new RunFailure("unresolved_conflicts", `conflict markers left in: ${markers.stdout.trim()}`.slice(0, 500));
+      }
+
+      await this.commitResolution(handle, identity);
+      const contains = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
+      if (contains.exit_code === 1) throw new RunFailure("merge_incomplete", `HEAD does not contain ${baseRef} (${baseSha.slice(0, 8)})`);
+      if (contains.exit_code !== 0) throw new RunFailure("git_failed", `git merge-base: ${contains.stderr.trim()}`, true);
+
+      for (const cmd of [repo.install_command, repo.test_command]) await this.gate(handle, cmd, signal);
+
+      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
+      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+      const head_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+      return { result: "pushed", conflicts, head_sha, base_sha: baseSha, tokens };
+    } finally {
+      await this.d.sandbox.destroy(handle);
+    }
+  }
+
+  /**
+   * The working tree as a tree object (tracked and untracked, .gitignore respected), written through a separate
+   * index file so the merge's own index, with its conflict stages, is untouched.
+   */
+  private async snapshot(handle: SandboxHandle, index: string): Promise<string> {
+    const env = { GIT_INDEX_FILE: index };
+    await this.gitEnv(handle, ["read-tree", "--empty"], env);
+    await this.gitEnv(handle, ["add", "-A"], env);
+    return (await this.gitEnv(handle, ["write-tree"], env)).trim();
+  }
+
+  /**
+   * Stages the tree the gates checked and commits it: the open merge (MERGE_HEAD) with its message, or staged
+   * leftovers. A path still unmerged after `add -A` (git could not stage it) fails `unresolved_conflicts`.
+   */
+  private async commitResolution(handle: SandboxHandle, identity: Record<string, string>): Promise<void> {
+    await this.git(handle, ["add", "-A"]);
+    const unmerged = (await this.git(handle, ["ls-files", "--unmerged", "-z"])).trim();
+    if (unmerged) throw new RunFailure("unresolved_conflicts", "files are still unmerged after the agent ran");
+    const merging = await this.gitRaw(handle, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+    if (merging.exit_code === 0) {
+      await this.gitEnv(handle, ["commit", "--no-edit"], identity);
+      return;
+    }
+    const staged = await this.gitRaw(handle, ["diff", "--cached", "--quiet"]);
+    if (staged.exit_code === 1) await this.gitEnv(handle, ["commit", "-m", "Resolve merge conflicts"], identity);
+  }
+
+  /** One gate command (install or test) in the sandbox with the worker's tool env. Non-zero: `tests_failed`. */
+  private async gate(handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal): Promise<void> {
+    const r = await this.d.sandbox
+      .exec(handle, cmd, { env: this.d.toolEnv, timeout_ms: this.d.config.run_timeout_ms, signal })
+      .catch((err: unknown) => {
+        throw new RunFailure("tests_failed", `\`${cmd.join(" ")}\` could not run: ${err instanceof Error ? err.message : "unknown"}`);
+      });
+    if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+    if (r.exit_code !== 0) {
+      const how = r.timed_out ? "timed out" : `exited ${r.exit_code ?? r.signal ?? "abnormally"}`;
+      throw new RunFailure("tests_failed", `\`${cmd.join(" ")}\` ${how}`, false, { output_tail: tail(`${r.stdout}${r.stderr}`) });
+    }
+  }
+
   private async agent(
     run: Run,
     item: WorkItem,
@@ -549,6 +676,12 @@ export class Worker {
 
   private async git(handle: SandboxHandle, args: string[]): Promise<string> {
     const r = await this.gitRaw(handle, args);
+    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${args[0]}: ${r.stderr.trim()}`, true);
+    return r.stdout;
+  }
+
+  private async gitEnv(handle: SandboxHandle, args: string[], env: Record<string, string>): Promise<string> {
+    const r = await this.gitRaw(handle, args, env);
     if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${args[0]}: ${r.stderr.trim()}`, true);
     return r.stdout;
   }

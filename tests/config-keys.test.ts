@@ -74,7 +74,7 @@ describe("config keys: unknown keys fail at load", () => {
   });
 
   const nested: [string, string, string[]][] = [
-    ["repo", "repo.zzzzzz", ["owner", "name", "path", "base_branch", "test_command"]],
+    ["repo", "repo.zzzzzz", ["owner", "name", "path", "base_branch", "install_command", "test_command"]],
     ["dials", "dials.zzzzzz", ["spec_gate_min_tier", "auto_merge_max_tier"]],
     ["models", "models.zzzzzz", ["cheap", "strong"]],
     ["agent_git_identity", "agent_git_identity.zzzzzz", ["name", "email"]],
