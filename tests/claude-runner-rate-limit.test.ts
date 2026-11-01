@@ -66,6 +66,8 @@ describe("ClaudeCodeRunner: usage and rate limits", () => {
     const r = await runnerWith(CAPTURED_429).run(spec());
     expect(r).toMatchObject({ status: "rate_limited", reset_at: "2026-11-01T12:10:00.000Z", output: null });
     expect(r.transcript).toBe(CAPTURED_429);
+    // The usage in the JSON is kept on a rate-limited result too (issue #136).
+    expect(r.usage).toEqual({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0, model: null });
   });
 
   it("a 429 whose text gives no reset time is rate_limited with no reset_at", async () => {
