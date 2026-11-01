@@ -1,6 +1,6 @@
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
 import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../sql/driver.js";
-import { MIGRATIONS } from "./schema.js";
+import { MysqlMigrations, pendingMessage } from "./migrations.js";
 
 export interface MysqlOptions {
   host: string;
@@ -9,10 +9,11 @@ export interface MysqlOptions {
   password: string;
   database: string;
   connectionLimit?: number;
+  /** Where the schema step files are (default: migrations/mysql/ under the code root). Tests point elsewhere. */
+  stepsDir?: string;
 }
 
 const ER_DUP_ENTRY = 1062;
-const ER_NO_SUCH_TABLE = 1146;
 const ER_LOCK_WAIT_TIMEOUT = 1205;
 const ER_LOCK_DEADLOCK = 1213;
 const TX_ATTEMPTS = 5;
@@ -29,8 +30,10 @@ export class MysqlDriver implements SqlDriver {
     forShare: " FOR SHARE",
   };
   private readonly pool: Pool;
+  private readonly steps: { dir?: string };
 
   constructor(opts: MysqlOptions) {
+    this.steps = opts.stepsDir === undefined ? {} : { dir: opts.stepsDir };
     this.pool = mysql.createPool({
       host: opts.host,
       port: opts.port,
@@ -51,32 +54,28 @@ export class MysqlDriver implements SqlDriver {
     return run(this.pool, sql, params);
   }
 
+  /**
+   * A check, not a migration: schema steps run only through `npm run migrate`. Throws while steps are
+   * pending (message names `npm run migrate`), so every caller that starts the factory refuses. Applies
+   * nothing. A database ahead of the code starts (only `npm run migrate` refuses it).
+   */
   async migrate(): Promise<void> {
-    const c = await this.pool.getConnection();
-    try {
-      // DDL commits implicitly, so concurrent migrators serialize on a named lock instead of a transaction.
-      await c.query("SELECT GET_LOCK('software_factory_migrate', 60)");
-      await c.query("CREATE TABLE IF NOT EXISTS schema_migrations (version INT NOT NULL PRIMARY KEY)");
-      const [row] = await all(c, "SELECT MAX(version) AS v FROM schema_migrations");
-      for (let v = Number(row?.v ?? 0) + 1; v <= MIGRATIONS.length; v++) {
-        for (const statement of MIGRATIONS[v - 1]!) await c.query(statement);
-        await c.query("INSERT INTO schema_migrations (version) VALUES (?)", [v]);
-      }
-    } finally {
-      await c.query("SELECT RELEASE_LOCK('software_factory_migrate')").catch(() => undefined);
-      c.release();
-    }
+    const s = await new MysqlMigrations(this.pool, this.steps).status();
+    if (s.state !== null && s.state > s.latest) return;
+    if (s.refusal) throw new Error(`MySQL schema: ${s.refusal}`);
+    if (s.pending.length > 0) throw new Error(pendingMessage(s));
   }
 
-  /** One SELECT on the pool: no named lock, no CREATE TABLE. A missing table means nothing applied yet. */
+  /**
+   * Reads only (no lock, no CREATE TABLE): the recorded step state and the newest step file. Throws the
+   * same message as `migrate()` while steps are pending, so doctor shows it as a FAIL line.
+   */
   async schemaVersion(): Promise<{ applied: number; latest: number }> {
-    try {
-      const [row] = await all(this.pool, "SELECT MAX(version) AS v FROM schema_migrations");
-      return { applied: Number(row?.v ?? 0), latest: MIGRATIONS.length };
-    } catch (err) {
-      if (errno(err) === ER_NO_SUCH_TABLE) return { applied: 0, latest: MIGRATIONS.length };
-      throw err;
-    }
+    const s = await new MysqlMigrations(this.pool, this.steps).status();
+    if (s.state !== null && s.state > s.latest) return { applied: s.state, latest: s.latest };
+    if (s.refusal) throw new Error(`MySQL schema: ${s.refusal}`);
+    if (s.pending.length > 0) throw new Error(pendingMessage(s));
+    return { applied: s.state ?? 0, latest: s.latest };
   }
 
   async transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {

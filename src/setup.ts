@@ -53,7 +53,7 @@ export function checksExitCode(checks: readonly Check[]): number {
 
 /**
  * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
- * Read-only: writes nothing to the store (the MySQL check reads the schema version, it never migrates),
+ * Read-only: writes nothing to the store (the MySQL check reads the schema state, it never migrates),
  * makes no model call, and never puts a secret value in a message itself. Messages may carry error text
  * from MySQL or GitHub, so a surface that shows them to anyone but the operator's terminal must
  * egress-scan them first (the status page does).
@@ -92,8 +92,9 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
       } finally {
         await store.close();
       }
+      // Pending MySQL steps never reach here: schemaVersion() throws "… run `npm run migrate`", which the
+      // catch below reports as a FAIL line (the factory refuses to start until `npm run migrate` ran).
       if (v.applied === v.latest) add(true, `${where} reachable, schema up to date`);
-      // Not a FAIL: the factory migrates the schema when it starts (build()).
       else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (the factory migrates it when it starts)`, true);
       else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
     } catch (err) {
@@ -342,6 +343,7 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   step(7, "Checks");
   const code = await doctor(loaded);
   if (code !== 0) {
+    if (loaded.store.type === "mysql") console.log("\nA new or upgraded MySQL database needs `npm run migrate` once (back it up first).");
     console.log("\nFix the FAIL lines, then run `npm run setup` again (it skips what is already done).");
     return code;
   }
