@@ -28,8 +28,11 @@ function raiseReason(tier: Tier, from: TriageOutput["tier"], why: TierSources): 
 
 const code = (p: string): string => `- \`${p}\``;
 
-/** The triage spec comment a human reads before typing /approve, /reject or /revise. */
-export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}): string {
+/**
+ * The triage spec comment a human reads before typing /approve, /reject or /revise. `footer` replaces the
+ * default last line; the controller passes the command footer for the spec gate (`commandFooter`).
+ */
+export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
   const out = ["## Factory spec", "", opening(spec.problem), ""];
   if (tier > spec.tier) {
     out.push(
@@ -45,6 +48,6 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   if (spec.files_to_change.length > 0) out.push("", "Expected to change:", ...spec.files_to_change.map(code));
   out.push("");
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
-  out.push(FOOTER);
+  out.push(footer);
   return out.join("\n");
 }

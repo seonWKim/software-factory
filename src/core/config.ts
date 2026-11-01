@@ -1,4 +1,15 @@
-import type { Tier } from "./types.js";
+import type { Tier, VerdictSeverity } from "./types.js";
+
+/**
+ * The `stats` key of factory.config.json (design §6 Measurement). Read only by `factory stats`; it changes
+ * no dial. Every weight is required (non-negative number); `min_sample` is an integer ≥ 1, default 10.
+ */
+export interface StatsConfig {
+  /** Feedback weight per `/verdict` severity. */
+  weights: Record<VerdictSeverity, number>;
+  /** A tier with fewer closed items than this shows no rate. */
+  min_sample: number;
+}
 
 /** Runtime config for core code. Built by the composition root; core never reads env or files itself. */
 export interface FactoryConfig {
@@ -35,9 +46,18 @@ export interface FactoryConfig {
    * are deleted by the controller's cleanup. Default 14.
    */
   inbox_retention_days: number;
+  /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
+  workers: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
+  /**
+   * Token budget per tier (design §6). A tier with no entry, or an absent map, has no limit. At the budget,
+   * the next implement or review run is held at a checkpoint for a human. Absent: no limits.
+   */
+  budgets?: Partial<Record<Tier, number>>;
+  /** Finished items a tier needs before budget suggestions come from its history. Absent: 10. */
+  budget_min_sample?: number;
 }
 
 export interface Prompts {

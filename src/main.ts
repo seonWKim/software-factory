@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
+import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
@@ -21,6 +22,8 @@ const USAGE = `factory <command>
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
+  stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
+               --json for one JSON object
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
@@ -85,6 +88,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version })));
       }
       await app.close();
+      return 0;
+    }
+    case "stats": {
+      // Read-only: no build() (it migrates), no transition. Changes no dial.
+      const store = await buildStatsStore(loaded);
+      try {
+        const report = await collectStats(store, loaded.stats);
+        console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatStatsText(report));
+      } finally {
+        await store.close();
+      }
       return 0;
     }
     case "ui": {

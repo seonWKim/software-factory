@@ -31,6 +31,7 @@ export const config: FactoryConfig = {
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
   inbox_retention_days: 14,
+  workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
@@ -57,7 +58,8 @@ export class FakeSource implements PollSource {
   readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
   queue: SourceEvent[] = [];
-  comments: { source: SourceRef; body: string; marker: string }[] = [];
+  /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
+  comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   /** When set, markSeen throws this instead of recording. */
   reactionError: Error | null = null;
@@ -76,9 +78,13 @@ export class FakeSource implements PollSource {
     this.queue = [];
     return { events, next_cursor: JSON.stringify({ n: c.n + 1, last_comment_id: last }) };
   }
-  async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
     if (this.commentError) throw this.commentError;
-    if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+    const existing = this.comments.find((c) => c.marker === marker);
+    if (existing) return { url: existing.url };
+    const url = `${source.link}#issuecomment-${this.comments.length + 1}`;
+    this.comments.push({ source, body, marker, url });
+    return { url };
   }
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     if (this.reactionError) throw this.reactionError;
@@ -201,8 +207,9 @@ export class FakeStreamSource implements StreamSource {
     }
   }
 
-  async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
     if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+    return { url: null };
   }
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     this.reactions.push({ source, comment_id: commentId });

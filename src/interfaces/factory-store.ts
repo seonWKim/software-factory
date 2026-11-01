@@ -1,6 +1,11 @@
+import type { TierHistory } from "../core/budget.js";
 import type {
   Actor,
   BlockedOn,
+  BudgetAnswer,
+  BudgetCheckpoint,
+  BudgetCheckpointId,
+  Tier,
   Handoff,
   Run,
   RunId,
@@ -24,6 +29,7 @@ import type {
   WorkerId,
 } from "../core/types.js";
 import type { SourceEvent } from "./source-adapter.js";
+import type { StatsRecord } from "../core/stats.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -62,10 +68,17 @@ export interface TransitionInput {
   ack_run?: RunId;
   /** Enqueue a run in the same transaction. No-op if its idempotency_key already exists. */
   enqueue?: Omit<NewRun, "work_item_id">;
+  /**
+   * Cancel every `queued` run of this item in the same transaction (waiting on `not_before` or not), so no
+   * worker can claim one afterwards. Running runs are left alone. Cancelled runs are unacknowledged, with no
+   * outcome and no `finished_at`, and go through the controller's ack path like any finished run.
+   */
+  cancel_queued_runs?: boolean;
 }
 
 export type TransitionResult =
-  | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null }
+  /** `cancelled`: the runs `cancel_queued_runs` cancelled (empty without it). */
+  | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null; cancelled: RunId[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   /** ack_run was given but that run is not finished, belongs to another item, or is already acknowledged. */
@@ -90,6 +103,38 @@ export type RecordVerdictResult =
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   /** A verdict from this comment is already stored (checked before the version). Nothing changed. */
   | { ok: false; reason: "duplicate"; verdict: Verdict };
+
+/** What a budget checkpoint records when it opens (design §6). The held run is kept here, not queued. */
+export interface NewBudgetCheckpoint {
+  tier: Tier;
+  tokens_spent: number;
+  budget: number;
+  suggested_budget: number;
+  held_run_kind: RunKind;
+  held_run_key: string;
+  held_run_not_before: Timestamp | null;
+}
+
+/** A transition (the block) plus the checkpoint row, in one transaction. It never enqueues a run. */
+export interface OpenBudgetCheckpointInput extends Omit<TransitionInput, "enqueue"> {
+  checkpoint: NewBudgetCheckpoint;
+}
+
+/** A transition (continue or close) plus the answer on a pending checkpoint, in one transaction. */
+export interface AnswerBudgetCheckpointInput extends TransitionInput {
+  checkpoint_id: BudgetCheckpointId;
+  answer: Exclude<BudgetAnswer, "pending">;
+  /** The budget a continue grants; null for a rejection. */
+  granted_budget: number | null;
+}
+
+export type BudgetCheckpointResult =
+  | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null; checkpoint: BudgetCheckpoint }
+  | Exclude<TransitionResult, { ok: true }>
+  /** openBudgetCheckpoint: the item already has a pending checkpoint. Nothing changed. */
+  | { ok: false; reason: "checkpoint_pending" }
+  /** answerBudgetCheckpoint: no such checkpoint on this item, or it was already answered. Nothing changed. */
+  | { ok: false; reason: "checkpoint_not_pending" };
 
 /** Read-only filter for listWorkItemsWhere. Absent fields do not filter. */
 export interface WorkItemFilter {
@@ -133,9 +178,15 @@ export interface FactoryStore {
   listWorkItems(limit: number): Promise<WorkItem[]>;
   /** Items matching `filter`, most recently updated first. Read-only. */
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
+  /** Number of items matching `filter`, with no limit. Read-only. */
+  countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
   /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
-  /** The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue). */
+  /**
+   * The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue).
+   * A transition that closes the item also sets `outcome` on its checkpoints that have none (completed →
+   * merged, rejected → rejected, failed → failed), in the same transaction.
+   */
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
   /**
@@ -146,6 +197,29 @@ export interface FactoryStore {
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
+  /**
+   * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
+   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * Read-only.
+   */
+  listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
+
+  // Budget checkpoints (design §6)
+
+  /**
+   * The transition (as `transition`, no enqueue) and a new `pending` checkpoint row, in one transaction.
+   * Refused with `checkpoint_pending` while the item has a pending checkpoint.
+   */
+  openBudgetCheckpoint(input: OpenBudgetCheckpointInput): Promise<BudgetCheckpointResult>;
+  /**
+   * The transition (as `transition`, with its optional enqueue) and the answer on checkpoint
+   * `checkpoint_id`, in one transaction. Only a pending checkpoint of this item is answered, once.
+   */
+  answerBudgetCheckpoint(input: AnswerBudgetCheckpointInput): Promise<BudgetCheckpointResult>;
+  /** The item's checkpoints, oldest first. Read-only. */
+  listBudgetCheckpoints(id: WorkItemId): Promise<BudgetCheckpoint[]>;
+  /** CLOSED items of `project` in `tier`, and the token_cost of those that closed `completed`. Read-only. */
+  getTierHistory(project: string, tier: Tier): Promise<TierHistory>;
 
   // Runs
 
@@ -173,6 +247,7 @@ export interface FactoryStore {
   /**
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
+   * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
