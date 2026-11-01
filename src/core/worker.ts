@@ -1,5 +1,6 @@
 import type { FactoryConfig, Prompts } from "./config.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
+import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import {
@@ -54,6 +55,11 @@ export interface WorkerDeps {
   capability?: CapabilitySearch;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
+  /**
+   * Model class per run kind and tier (`model_by`) and the model name per class (`models`), from
+   * factory.config.json (design §4). Absent: the default table, and outcomes record the model name as null.
+   */
+  models?: { table: ModelTable; names?: ModelNames };
 }
 
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
@@ -197,8 +203,12 @@ export class Worker {
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
-      const data = await this.role(run, item, ctx, lease.signal);
-      outcome = { status: "succeeded", summary: `${run.kind} done`, data };
+      // One class for every agent step of the run, the merge-conflict steps of an implement run included.
+      const model = isModelRunKind(run.kind) ? this.modelFor(run.kind, item) : null;
+      // An update run has no agent, so the class it is handed is never used.
+      const data = await this.role(run, item, ctx, lease.signal, model ?? "cheap");
+      // Recorded next to the run's token usage, so cost and failure rate can be compared per class.
+      outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...data, ...this.modelRecord(model) } : data };
     } catch (err) {
       outcome =
         err instanceof RunFailure
@@ -265,29 +275,39 @@ export class Worker {
     }
   }
 
-  private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal): Promise<Record<string, unknown>> {
+  /** The model class of this run kind for this item (src/core/model-choice.ts). */
+  private modelFor(kind: "triage" | "implement" | "review" | "resolve", item: WorkItem): ModelClass {
+    return modelClassFor(this.d.models?.table ?? DEFAULT_MODEL_TABLE, kind, item.tier, item.loop_count);
+  }
+
+  /** `model_class` and `model` (the configured name; null when the worker has no names) for an outcome. */
+  private modelRecord(model: ModelClass): { model_class: ModelClass; model: string | null } {
+    return { model_class: model, model: this.d.models?.names?.[model] ?? null };
+  }
+
+  private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
-    if (run.kind === "resolve") return this.resolve(run, item, ctx, signal);
+    if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.d.config;
     const branch = run.kind === "triage" ? null : branchFor(item, this.d.config.branch_prefix);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch });
     try {
-      if (run.kind === "triage") return await this.triage(run, item, handle, signal);
-      if (run.kind === "implement") return await this.implement(run, item, handle, ctx, signal);
-      return await this.review(run, item, handle, ctx, signal);
+      if (run.kind === "triage") return await this.triage(run, item, handle, signal, model);
+      if (run.kind === "implement") return await this.implement(run, item, handle, ctx, signal, model);
+      return await this.review(run, item, handle, ctx, signal, model);
     } finally {
       await this.d.sandbox.destroy(handle);
     }
   }
 
-  private async triage(run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal) {
+  private async triage(run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass) {
     const result = await this.agent(run, item, handle, signal, {
       system_prompt: this.d.prompts.triage,
       prompt: item.revision_count > 0
         ? await this.withIndex(renderRevision(item), [item.issue_text ?? item.problem, item.spec_feedback ?? ""].join("\n"))
         : await this.withIndex(renderWorkItem(item, { includeSpec: false }), item.problem),
       tools: READ_TOOLS,
-      model_class: "cheap",
+      model_class: model,
       output_schema: TRIAGE_SCHEMA,
     });
     const spec = parseTriage(result.output);
@@ -301,7 +321,7 @@ export class Worker {
    * pre-push gates, handoffs for commits not yet recorded, push and PR. A push or PR failure keeps the commits on
    * a wip branch on the forge before the run fails.
    */
-  private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
+  private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
     const base = this.d.config.repo.base_branch;
     const branch = branchFor(item, this.d.config.branch_prefix);
     const start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
@@ -325,7 +345,7 @@ export class Worker {
           specQuery(item),
         ),
         tools: WRITE_TOOLS,
-        model_class: "strong",
+        model_class: model,
         output_schema: IMPLEMENT_SCHEMA,
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
         writable_paths: [],
@@ -343,7 +363,7 @@ export class Worker {
     }
     // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
     // run has no agent, so a conflict there fails with merge_conflict.
-    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha, resumed !== null);
+    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha, model, resumed !== null);
     const tokens = work.tokens + sync.tokens;
     // The files an earlier sync of these commits conflicted in still pass the scope gate.
     const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
@@ -482,6 +502,7 @@ export class Worker {
     gitDir: string,
     dirs: string,
     trustedBaseSha: string,
+    model: ModelClass,
     /** A resumed run (design §5 Restarts): no agent step, so a conflict fails with merge_conflict at once. */
     noAgent = false,
   ): Promise<{ baseSha: string; merged: boolean; tokens: number; conflicts: string[] }> {
@@ -519,7 +540,7 @@ export class Worker {
     const touched = (await this.git(handle, [
       "log", "--no-merges", `--max-count=${MAX_CONFLICT_COMMITS}`, "--format=%H %s", `${fork}..${baseSha}`, "--", ...conflicts,
     ])).split("\n").filter(Boolean).map((l) => `- ${l.slice(0, 8)} ${l.slice(41)}`);
-    const step = { run, item, handle, signal, gitDir, dirs, baseSha, conflicts, identity };
+    const step = { run, item, handle, signal, gitDir, dirs, baseSha, conflicts, identity, model };
 
     const first = await this.conflictStep(step, "merge", {
       system_prompt: this.d.prompts.implement,
@@ -605,7 +626,7 @@ export class Worker {
   private async conflictStep(
     s: {
       run: Run; item: WorkItem; handle: SandboxHandle; signal: AbortSignal; gitDir: string; dirs: string;
-      baseSha: string; conflicts: string[]; identity: Record<string, string>;
+      baseSha: string; conflicts: string[]; identity: Record<string, string>; model: ModelClass;
     },
     name: "merge" | "resolve",
     spec: Pick<AgentRunSpec, "system_prompt" | "prompt" | "output_schema">,
@@ -615,7 +636,7 @@ export class Worker {
       ...spec,
       ...(name === "resolve" ? { role: "resolve" as const } : {}),
       tools: WRITE_TOOLS,
-      model_class: "strong",
+      model_class: s.model,
       writable_paths: [s.gitDir],
       env_allowlist: s.identity,
     }, name);
@@ -772,7 +793,7 @@ export class Worker {
     throw new RunFailure("scope_violation", `files outside allowed_paths: ${outside.join(", ")}`.slice(0, 500));
   }
 
-  private async review(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
+  private async review(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
     // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
     if (item.head_branch !== null) {
@@ -789,7 +810,7 @@ export class Worker {
         specQuery(item),
       ),
       tools: WRITE_TOOLS,
-      model_class: "strong",
+      model_class: model,
       output_schema: REVIEW_SCHEMA,
       env_allowlist: gitIdentity(this.d.config.agent_git_identity),
     });
@@ -906,7 +927,7 @@ export class Worker {
    * commit afterwards. Only then push through the broker (same branch, same PR, never a force push). Any
    * failure throws: nothing is pushed and the controller re-blocks the item.
    */
-  private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
+  private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
     const system_prompt = this.d.prompts.resolve;
     if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
@@ -953,7 +974,7 @@ export class Worker {
           system_prompt,
           prompt: await this.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
           tools: WRITE_TOOLS,
-          model_class: "strong",
+          model_class: model,
           output_schema: IMPLEMENT_SCHEMA,
           writable_paths: [gitDir],
           env_allowlist: identity,

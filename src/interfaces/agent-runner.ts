@@ -30,7 +30,7 @@ export interface AgentRunSpec {
    * (architecture §5): the run's git folder is inside its workdir, so implement runs need none.
    */
   writable_paths: readonly string[];
-  model_class: "cheap" | "strong";
+  model_class: "cheap" | "standard" | "strong";
   timeout_ms: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;

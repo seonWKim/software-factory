@@ -7,7 +7,7 @@ export interface LLMMessage {
 }
 
 export interface LLMRequest {
-  model_class: "cheap" | "strong";
+  model_class: "cheap" | "standard" | "strong";
   system?: string;
   messages: readonly LLMMessage[];
   max_tokens: number;

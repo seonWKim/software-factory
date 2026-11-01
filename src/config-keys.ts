@@ -25,6 +25,7 @@ export const TOP_LEVEL_KEYS = [
   "auth",
   "plugins",
   "models",
+  "model_by",
   "max_loops",
   "max_attempts",
   "max_restart",
@@ -65,7 +66,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
 export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
 export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof NonNullable<FileConfig["floors"]>[number])[];
-export const MODELS_KEYS = ["cheap", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];
+export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
