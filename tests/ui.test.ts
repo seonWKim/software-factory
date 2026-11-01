@@ -214,11 +214,15 @@ describe("ui: read-only status page", () => {
     for (const host of [`localhost:${port}`, "localhost", `127.0.0.1:${port}`]) {
       expect((await get(port, "/", { host })).status, host).toBe(200);
     }
-    for (const host of ["evil.example", `evil.example:${port}`, `127.0.0.1.evil.example:${port}`, "localhost.evil.example", null]) {
+    for (const host of ["evil.example", `evil.example:${port}`, `127.0.0.1.evil.example:${port}`, "localhost.evil.example"]) {
       const res = await get(port, "/", { host });
       expect(res.status, String(host)).toBe(403);
       expect(res.body).not.toContain("Merge me");
     }
+    // No Host header at all: node:http rejects it with 400 before the handler runs (requireHostHeader).
+    const noHost = await get(port, "/", { host: null });
+    expect(noHost.status).toBe(400);
+    expect(noHost.body).not.toContain("Merge me");
   });
 
   it("rendering every page writes nothing to the store", async () => {
