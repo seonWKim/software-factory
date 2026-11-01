@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { TriageOutput } from "../src/core/outputs.js";
+import { parseTriage, TRIAGE_SCHEMA, type TriageOutput } from "../src/core/outputs.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 
+const IN_SHORT =
+  "AS-IS: a pull request can change any file and nothing stops it.\nTO-BE: CI fails when a pull request changes a file outside its scope.";
+
 const spec: TriageOutput = {
+  in_short: IN_SHORT,
   problem:
     "Pull requests can touch files outside their scope. Nothing checks it today. The worker trusts src/core/worker.ts line 40 blindly.",
   done_criteria: ["A CI job fails when a file is outside the allowed paths.", "The job runs on every pull request."],
@@ -14,7 +18,7 @@ const spec: TriageOutput = {
   tier_reason: "A small CI change.",
 };
 
-const HEADINGS = ["### What changes", "### Done when", "### Not included", "### Files", "### Risk"];
+const HEADINGS = ["### In short (AS-IS → TO-BE)", "### What changes", "### Done when", "### Not included", "### Files", "### Risk"];
 const FOOTER =
   "Reply `/approve` to start implementation, `/reject <reason>` to close, or `/revise <feedback>` to get a new spec.";
 
@@ -23,12 +27,21 @@ function lines(body: string): string[] {
 }
 
 describe("renderSpec", () => {
-  it("opens with the heading and the first two sentences of the problem, no section heading before them", () => {
-    const l = lines(renderSpec(spec, 2));
+  it("opens with the heading, then the In short section, then the in_short text, nothing before them", () => {
+    const body = renderSpec(spec, 2);
+    const l = lines(body);
     expect(l[0]).toBe("## Factory spec");
-    const firstText = l.slice(1).find((x) => x.trim() !== "")!;
-    expect(firstText).toBe("Pull requests can touch files outside their scope. Nothing checks it today.");
-    expect(renderSpec(spec, 2)).not.toContain("line 40");
+    const rest = l.slice(1).filter((x) => x.trim() !== "");
+    expect(rest[0]).toBe("### In short (AS-IS → TO-BE)");
+    expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT}\n`);
+  });
+
+  it("no longer opens with the first sentences of the problem", () => {
+    const body = renderSpec(spec, 2);
+    const firstHeading = lines(body).slice(1).findIndex((x) => x.startsWith("### "));
+    expect(firstHeading).toBeGreaterThanOrEqual(0);
+    expect(lines(body).slice(1, firstHeading + 1).join("\n")).not.toContain("Pull requests can touch files");
+    expect(body.indexOf("Pull requests can touch files")).toBeGreaterThan(body.indexOf("### Not included"));
   });
 
   it("puts the sections in order and the footer last", () => {
@@ -56,15 +69,16 @@ describe("renderSpec", () => {
     expect(renderSpec(spec, 2, { floor: 2, previous: null })).not.toContain("Please check");
   });
 
-  it("shows Please check right after the opening sentences when a floor raised the tier", () => {
+  it("shows Please check after the In short section when a floor raised the tier", () => {
     const body = renderSpec(spec, 4, { floor: 4, previous: null });
     const l = lines(body);
     const check = l.indexOf("### Please check");
-    expect(check).toBeGreaterThan(0);
+    const inShort = l.indexOf("### In short (AS-IS → TO-BE)");
+    expect(l.slice(1).find((x) => x.trim() !== "")).toBe("### In short (AS-IS → TO-BE)");
+    expect(inShort).toBeGreaterThan(0);
+    expect(check).toBeGreaterThan(inShort);
     expect(check).toBeLessThan(l.indexOf("### What changes"));
-    expect(l.slice(1, check).filter((x) => x.trim() !== "")).toEqual([
-      "Pull requests can touch files outside their scope. Nothing checks it today.",
-    ]);
+    expect(l.slice(inShort + 1, check).filter((x) => x.trim() !== "")).toEqual(IN_SHORT.split("\n"));
     expect(body).toContain("- Tier raised from 2 to 4 because a path is under a floor.");
     expect(body).toContain("### Risk\nTier 4: A small CI change.");
     expect(l.at(-1)).toBe(FOOTER);
@@ -76,9 +90,32 @@ describe("renderSpec", () => {
     );
   });
 
-  it("handles a one-sentence problem and an empty files_to_change", () => {
-    const body = renderSpec({ ...spec, problem: "Short problem", files_to_change: [] }, 2);
-    expect(lines(body)[2]).toBe("Short problem");
+  it("keeps the problem in a Problem section after Not included", () => {
+    const body = renderSpec(spec, 2);
+    expect(body).toContain(`### Problem\n${spec.problem}`);
+    expect(lines(body).indexOf("### Problem")).toBeGreaterThan(lines(body).indexOf("### Not included"));
+    expect(lines(body).indexOf("### Problem")).toBeLessThan(lines(body).indexOf("### Files"));
+  });
+
+  it("handles an empty files_to_change", () => {
+    const body = renderSpec({ ...spec, files_to_change: [] }, 2);
+    expect(body).not.toContain("Expected to change:");
     expect(lines(body).at(-1)).toBe(FOOTER);
+  });
+});
+
+describe("triage in_short", () => {
+  it("is a required text field in the schema and the validator", () => {
+    expect(TRIAGE_SCHEMA.required).toContain("in_short");
+    expect(TRIAGE_SCHEMA.properties.in_short).toEqual({ type: "string" });
+    const { in_short: _omit, ...without } = spec;
+    expect(parseTriage(without).ok).toBe(false);
+    expect(parseTriage({ ...spec, in_short: 3 }).ok).toBe(false);
+  });
+
+  it("is kept in the validated output", () => {
+    const r = parseTriage(spec);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.in_short).toBe(IN_SHORT);
   });
 });
