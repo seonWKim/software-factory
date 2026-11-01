@@ -61,8 +61,9 @@ Then on GitHub:
 2. The factory posts a spec on the issue. Reply `/approve`, or `/reject <reason>`.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
+5. If the PR stops merging cleanly and the factory cannot update it (the PR is marked `sf: needs human` with a conflict comment), reply `/resolve [notes]` on the issue or on the PR. An agent resolves the conflict, and the factory pushes only if the changed files stay within the conflicting files and the allowed paths and `repo.install_command` / `repo.test_command` pass. The PR then goes through review again. If the resolve fails, it comments why; you can send `/resolve` again. Anything after `/resolve` (same line or below) is passed to the agent as notes.
 
-Only users with write permission on the repository can approve or retry.
+Only users with write permission on the repository can approve, retry or resolve.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Status labels
