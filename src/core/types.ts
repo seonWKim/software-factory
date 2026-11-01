@@ -54,13 +54,25 @@ export interface WorkItem {
   pr_number: number | null;
   merge_sha: string | null;
   fixes_pr: number | null;
+  /**
+   * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
+   * revision reads this instead. Null on items created before it existed.
+   */
+  issue_text: string | null;
+  /** How many `/revise` commands started a new triage run. Not `loop_count`, which counts review loops. */
+  revision_count: number;
+  /** The text of the latest `/revise <feedback>` or `/reject <reason>` on the spec. Untrusted human text. */
+  spec_feedback: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
 
-/** Fields a transition may change. id, source, title, requester, version and timestamps are store-owned. */
+/**
+ * Fields a transition may change. id, source, title, issue_text, requester, version and timestamps are
+ * store-owned.
+ */
 export type WorkItemPatch = Partial<
-  Omit<WorkItem, "id" | "version" | "source" | "title" | "requester_id" | "created_at" | "updated_at">
+  Omit<WorkItem, "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "created_at" | "updated_at">
 >;
 
 export type Actor =
@@ -161,5 +173,29 @@ export interface Handoff {
   commit_sha: string;
   worked_on: string;
   next_steps: string;
+  at: Timestamp;
+}
+
+export type VerdictId = Brand<string, "VerdictId">;
+export type VerdictKind = "accept" | "changes" | "reject";
+export type VerdictSeverity = "none" | "minor" | "major" | "critical";
+/** Where the `/verdict` comment was written: the item's issue or its PR. */
+export type VerdictTarget = "issue" | "pr";
+
+/**
+ * A human's structured verdict on a work item (`/verdict`, design §4). Linked to the state_changes row
+ * (reason `human_verdict`) that carries the actor; changes no work-item field.
+ */
+export interface Verdict {
+  id: VerdictId;
+  work_item_id: WorkItemId;
+  state_change_id: StateChangeId;
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  /** Null only for `accept` without a reason. */
+  reason: string | null;
+  /** The comment that held the command. Unique: a redelivered comment records nothing. */
+  comment_id: string;
+  target: VerdictTarget;
   at: Timestamp;
 }

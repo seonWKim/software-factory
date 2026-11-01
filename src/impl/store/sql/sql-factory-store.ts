@@ -11,6 +11,8 @@ import type {
   StateChangeDetail,
   StateChangeId,
   Timestamp,
+  Verdict,
+  VerdictId,
   WorkItem,
   WorkItemId,
 } from "../../../core/types.js";
@@ -21,6 +23,8 @@ import type {
   LeaseResult,
   NewRun,
   NewWorkItem,
+  RecordVerdictInput,
+  RecordVerdictResult,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
@@ -34,6 +38,7 @@ import {
   rowToHandoff,
   rowToRun,
   rowToStateChange,
+  rowToVerdict,
   rowToWorkItem,
   workItemValues,
 } from "./rows.js";
@@ -181,6 +186,60 @@ export class SqlFactoryStore implements FactoryStore {
   async listStateChanges(id: WorkItemId): Promise<StateChange[]> {
     const rows = await this.db.all("SELECT * FROM state_changes WHERE work_item_id = ? ORDER BY version", [id]);
     return rows.map(rowToStateChange);
+  }
+
+  async recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult> {
+    const { forUpdate } = this.db.dialect;
+    try {
+      return await this.db.transaction(async (tx): Promise<RecordVerdictResult> => {
+        const current = await this.selectItem(tx, input.id, forUpdate);
+        if (!current) return { ok: false, reason: "not_found" };
+        // Before the version: a redelivered comment is a no-op whatever happened to the item since.
+        const existing = await this.selectVerdictByComment(tx, input.comment_id);
+        if (existing) return { ok: false, reason: "duplicate", verdict: existing };
+        if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+
+        const now = this.now();
+        const version = current.version + 1;
+        const updated = await tx.run("UPDATE work_items SET version = ?, updated_at = ? WHERE id = ? AND version = ?", [
+          version, now, input.id, input.expected_version,
+        ]);
+        if (updated !== 1) return { ok: false, reason: "version_conflict", current };
+
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, "human_verdict", {});
+        const verdict: Verdict = {
+          id: newId("vd") as VerdictId,
+          work_item_id: input.id,
+          state_change_id: state_change.id,
+          verdict: input.verdict,
+          severity: input.severity,
+          reason: input.reason,
+          comment_id: input.comment_id,
+          target: input.target,
+          at: now,
+        };
+        const inserted = await this.insertOnce(
+          tx,
+          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
+            verdict.reason, verdict.comment_id, verdict.target, verdict.at,
+          ],
+        );
+        // A concurrent delivery of the same comment committed first: undo the version bump and state change.
+        if (!inserted) throw new DuplicateVerdict();
+        return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict };
+      });
+    } catch (err) {
+      if (!(err instanceof DuplicateVerdict)) throw err;
+      return { ok: false, reason: "duplicate", verdict: (await this.selectVerdictByComment(this.db, input.comment_id))! };
+    }
+  }
+
+  async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
+    const rows = await this.db.all(`SELECT * FROM verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
+    return rows.map(rowToVerdict);
   }
 
   // Runs
@@ -410,6 +469,11 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToWorkItem(row) : null;
   }
 
+  private async selectVerdictByComment(q: SqlExecutor, commentId: string): Promise<Verdict | null> {
+    const [row] = await q.all("SELECT * FROM verdicts WHERE comment_id = ?", [commentId]);
+    return row ? rowToVerdict(row) : null;
+  }
+
   private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
     const [row] = await q.all(`SELECT * FROM runs WHERE id = ?${lock}`, [id]);
     return row ? rowToRun(row) : null;
@@ -460,6 +524,9 @@ export class SqlFactoryStore implements FactoryStore {
     return change;
   }
 }
+
+/** Thrown inside recordVerdict's transaction to roll it back when the verdict's comment id is already taken. */
+class DuplicateVerdict extends Error {}
 
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";

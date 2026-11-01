@@ -68,6 +68,35 @@ describe("GitHubIssueSource", () => {
     ]);
   });
 
+  it("parses /revise with its feedback, and /reject with and without a reason", async () => {
+    const { client, source } = setup();
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(20, "/revise keep the CLI flag\nand drop the config key", "2026-11-01T00:00:01Z"),
+      comment(21, "/revise", "2026-11-01T00:00:02Z"),
+      comment(22, "/revise   \n", "2026-11-01T00:00:03Z"),
+      comment(23, "/reject", "2026-11-01T00:00:04Z"),
+      comment(24, "/reject duplicate of #3", "2026-11-01T00:00:05Z"),
+      comment(25, "/revised plan below", "2026-11-01T00:00:06Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: alice, feedback: "keep the CLI flag\nand drop the config key" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: alice, feedback: "" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+    ]);
+  });
+
+  it("closes an issue as not planned", async () => {
+    const { client, source } = setup();
+    await source.closeIssue(issueRef(7));
+    expect(client.calls).toEqual([
+      { method: "PATCH", path: "/repos/o/r/issues/7", body: { state: "closed", state_reason: "not_planned" } },
+    ]);
+  });
+
   it("does not deliver a comment again once the cursor's high-water mark passed it", async () => {
     const { client, source } = setup();
     client.responses["/repos/o/r/issues/comments"] = [comment(10, "/approve", "2026-11-01T00:00:01Z")];
@@ -91,6 +120,67 @@ describe("GitHubIssueSource", () => {
     const old = JSON.stringify({ issues: null, comments: "2026-11-01T00:00:00Z", pulls: null });
     const { events } = await source.poll(old);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe("GitHubIssueSource: /verdict", () => {
+  /** Answers GET /issues/N and GET /pulls/N from `issues` and `pulls`; everything else as FakeClient. */
+  class VerdictClient extends FakeClient {
+    issues: Record<number, unknown> = {};
+    pulls: Record<number, unknown> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      const m = /^\/repos\/o\/r\/(issues|pulls)\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return (m[1] === "issues" ? this.issues : this.pulls)[Number(m[2])] as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new VerdictClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    return { client, source };
+  };
+  const approver = { provider: "github", subject: "1", login: "alice" };
+
+  it("emits verdict_submitted with the raw arguments for a comment on an issue", async () => {
+    const { client, source } = make();
+    client.issues[7] = { number: 7 };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(20, "/verdict changes minor rename it\nand split the test", "2026-11-01T00:00:01Z"),
+      comment(21, "/verdict", "2026-11-01T00:00:02Z"),
+      comment(22, "/verdictx accept none", "2026-11-01T00:00:03Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      {
+        kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "20", approver,
+        args: "changes minor rename it\nand split the test",
+      },
+      { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver, args: "" },
+    ]);
+  });
+
+  it("names the PR and its head branch for a comment on a factory PR, and skips other PRs", async () => {
+    const { client, source } = make();
+    client.issues[42] = { number: 42, pull_request: {} };
+    client.issues[43] = { number: 43, pull_request: {} };
+    client.pulls[42] = { number: 42, head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" } };
+    client.pulls[43] = { number: 43, head: { ref: "feature/x", sha: "h" }, base: { ref: "main", sha: "b" } };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(30, "/verdict accept none", "2026-11-01T00:00:01Z", 42),
+      comment(31, "/verdict accept none", "2026-11-01T00:00:02Z", 43),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      {
+        kind: "verdict_submitted", target: { kind: "pr", pr_number: 42, head_branch: "factory/wi_a" },
+        comment_id: "30", approver, args: "accept none",
+      },
+    ]);
+    const gets = client.calls.filter((c) => /^\/repos\/o\/r\/(issues|pulls)\/\d+$/.test(c.path)).map((c) => c.path);
+    expect(gets).toEqual(["/repos/o/r/issues/42", "/repos/o/r/pulls/42", "/repos/o/r/issues/43", "/repos/o/r/pulls/43"]);
   });
 });
 

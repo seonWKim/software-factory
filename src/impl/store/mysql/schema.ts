@@ -107,6 +107,31 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       resume_at  CHAR(24) NOT NULL
     ) ${TABLE}`,
   ],
-  // 5: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  [
+    `CREATE TABLE verdicts (
+      seq              BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
+      id               VARCHAR(64) NOT NULL PRIMARY KEY,
+      work_item_id     VARCHAR(64) NOT NULL,
+      state_change_id  VARCHAR(64) NOT NULL,
+      verdict          VARCHAR(16) NOT NULL,
+      severity         VARCHAR(16) NOT NULL,
+      reason           MEDIUMTEXT,
+      comment_id       VARCHAR(64) NOT NULL,
+      target           VARCHAR(16) NOT NULL,
+      at               CHAR(24) NOT NULL,
+      UNIQUE KEY verdicts_comment (comment_id),
+      KEY verdicts_work_item (work_item_id, at),
+      FOREIGN KEY (work_item_id) REFERENCES work_items (id),
+      FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
+    ) ${TABLE}`,
+  ],
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  [
+    "ALTER TABLE work_items ADD COLUMN issue_text MEDIUMTEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
+    "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
+  ],
+  // 7: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
   ["ALTER TABLE runs ADD COLUMN input MEDIUMTEXT NULL"],
 ];

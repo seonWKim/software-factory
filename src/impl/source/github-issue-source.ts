@@ -1,7 +1,7 @@
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { PollResult, SourceAdapter, SourceEvent } from "../../interfaces/source-adapter.js";
+import type { PollResult, SourceAdapter, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
@@ -151,6 +151,9 @@ export class GitHubIssueSource implements SourceAdapter {
       else if (command.startsWith("/reject")) {
         const reason = [command.slice("/reject".length).trim(), ...rest].join("\n").trim();
         events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
+      } else if (/^\/revise(\s|$)/.test(command)) {
+        const feedback = [command.slice("/revise".length).trim(), ...rest].join("\n").trim();
+        events.push({ kind: "revise_requested", source, comment_id, requester: identity(cm.user), feedback });
       } else if (command === "/retry") {
         events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
       } else if (/^\/resolve(\s|$)/.test(command)) {
@@ -158,6 +161,10 @@ export class GitHubIssueSource implements SourceAdapter {
         const onPr = cm.html_url?.includes("/pull/") ? await this.factoryPull(base, Number(cm.issue_url.split("/").pop())) : null;
         if (cm.html_url?.includes("/pull/") && !onPr) continue;
         events.push({ kind: "resolve_requested", source, comment_id, requester: identity(cm.user), notes, pr: onPr });
+      } else if (command === "/verdict" || /^\/verdict\s/.test(command)) {
+        const args = [command.slice("/verdict".length).trim(), ...rest].join("\n").trim();
+        const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
+        if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: identity(cm.user), args });
       }
     }
 
@@ -241,6 +248,14 @@ export class GitHubIssueSource implements SourceAdapter {
     await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
   }
 
+  /** Closes the issue as "not planned". GitHub accepts the same PATCH on an issue that is already closed. */
+  async closeIssue(source: SourceRef): Promise<void> {
+    await this.client.request("PATCH", `/repos/${this.repo.owner}/${this.repo.name}/issues/${issueNumberFromSourceId(source.id)}`, {
+      state: "closed",
+      state_reason: "not_planned",
+    });
+  }
+
   /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}/issues`;
@@ -272,6 +287,20 @@ export class GitHubIssueSource implements SourceAdapter {
         if (!(err instanceof GitHubError && err.status === 404)) throw err;
       }
     }
+  }
+
+  /**
+   * Where a `/verdict` comment was written. Issue comments and PR conversation comments share one list;
+   * the issue's `pull_request` field tells them apart. A PR names its head branch, so the controller can
+   * map it to the work item; a PR not on a factory branch gives null (not the factory's, ignored).
+   */
+  private async verdictTarget(number: number): Promise<VerdictEventTarget | null> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const issue = await this.client.request<Pick<GhIssue, "pull_request">>("GET", `${base}/issues/${number}`);
+    if (!issue.pull_request) return { kind: "issue", source: this.ref(number) };
+    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${number}`);
+    if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
+    return { kind: "pr", pr_number: number, head_branch: pull.head.ref };
   }
 
   private ref(number: number): SourceRef {
