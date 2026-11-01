@@ -134,6 +134,20 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(report.checks).toEqual(expected.map((c) => ({ status: checkStatus(c), msg: c.msg })));
   });
 
+  it("doctor and the Health panel show each per-project setting's effective value and source layer (design 2026-11-01)", async () => {
+    const { loaded } = await setupDoctor();
+    const { owner, name } = loaded.config.repo;
+    const lines = (await doctorChecks(loaded)).filter((c) => c.msg.startsWith("setting for ")).map(checkLine);
+    expect(lines).toContain(`ok    setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
+    expect(lines).toContain(`ok    setting for ${owner}/${name}: budgets = no limits (built-in)`);
+    expect(lines).toHaveLength(5);
+
+    const { port } = await uiFor(loaded);
+    const health = section((await get(port, "/")).body, "health");
+    expect(health).toContain(`setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
+    expect(health).toContain(`setting for ${owner}/${name}: max_diff_lines = 1500 (defaults)`);
+  });
+
   it("doctor prints one line per check in the same format, and exits 1 only on FAIL", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { loaded } = await setupDoctor();

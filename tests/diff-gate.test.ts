@@ -3,7 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { diffLimits, loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/compose.js";
+import { settingValues, settingsLayers } from "../src/core/settings.js";
+
+/** The global diff limits a config with these top-level keys gives (settingsLayers checks them). */
+function diffLimits(raw: Record<string, unknown>) {
+  const s = settingValues("o/n", settingsLayers(raw, "o/n"));
+  return { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
+}
 import { DIFF_LIMIT_DEFAULTS, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "../src/core/diff-gate.js";
 
 const limits = { max_diff_lines: 1500, max_diff_files: 40 };
@@ -143,7 +150,7 @@ describe("diff limit config keys", () => {
     expect(() => diffLimits({ max_diff_lines: 0 })).toThrow(/max_diff_lines must be a positive integer/);
     expect(() => diffLimits({ max_diff_files: 0 })).toThrow(/max_diff_files must be a positive integer/);
     expect(() => diffLimits({ max_diff_lines: 1.5 })).toThrow(/max_diff_lines/);
-    expect(() => diffLimits({ max_diff_files: "40" as unknown as number })).toThrow(/max_diff_files/);
+    expect(() => diffLimits({ max_diff_files: "40" })).toThrow(/max_diff_files/);
   });
 
   it("factory.config.json sets both, and loadConfig carries them into FactoryConfig", async () => {
@@ -151,6 +158,6 @@ describe("diff limit config keys", () => {
     const file = JSON.parse(readFileSync(`${root}factory.config.json`, "utf8")) as Record<string, unknown>;
     expect(file).toMatchObject({ max_diff_lines: 1500, max_diff_files: 40 });
     const { config } = await loadConfig(root);
-    expect(config).toMatchObject({ max_diff_lines: 1500, max_diff_files: 40 });
+    expect(settingValues("seonWKim/software-factory", config.settings)).toMatchObject({ max_diff_lines: 1500, max_diff_files: 40 });
   });
 });

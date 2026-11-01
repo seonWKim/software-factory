@@ -12,36 +12,44 @@ import {
   tierBudget,
 } from "../src/core/budget.js";
 import { loadConfig } from "../src/compose.js";
+import { settingValues, settingsLayers } from "../src/core/settings.js";
+
+/** The global budgets a config with these top-level keys gives (settingsLayers checks them). */
+function budgetsOf(raw: Record<string, unknown>) {
+  return settingValues("o/n", settingsLayers(raw, "o/n")).budgets;
+}
 
 // Design §6 budgets: the limit check, the suggestion (base rule and history percentile), the checkpoint text.
 
 describe("budget config", () => {
   it("no budgets key means no limits for any tier; budget_min_sample defaults to 10", () => {
-    const c = budgetConfig({});
-    expect(c).toEqual({ budgets: {}, budget_min_sample: 10 });
+    expect(budgetConfig({})).toEqual({ budget_min_sample: 10 });
     expect(DEFAULT_BUDGET_MIN_SAMPLE).toBe(10);
-    for (const t of [1, 2, 3, 4, 5] as const) expect(tierBudget(c.budgets, t)).toBeNull();
+    const budgets = budgetsOf({});
+    expect(budgets).toEqual({});
+    for (const t of [1, 2, 3, 4, 5] as const) expect(tierBudget(budgets, t)).toBeNull();
     expect(tierBudget(undefined, 2)).toBeNull();
   });
 
   it("parses tier keys 1 to 5 with positive integer budgets", () => {
-    const c = budgetConfig({ budgets: { "2": 1_000_000, "5": 3_000_000 }, budget_min_sample: 3 });
-    expect(c).toEqual({ budgets: { 2: 1_000_000, 5: 3_000_000 }, budget_min_sample: 3 });
-    expect(tierBudget(c.budgets, 2)).toBe(1_000_000);
-    expect(tierBudget(c.budgets, 1)).toBeNull();
+    expect(budgetConfig({ budget_min_sample: 3 })).toEqual({ budget_min_sample: 3 });
+    const budgets = budgetsOf({ budgets: { "2": 1_000_000, "5": 3_000_000 } });
+    expect(budgets).toEqual({ 2: 1_000_000, 5: 3_000_000 });
+    expect(tierBudget(budgets, 2)).toBe(1_000_000);
+    expect(tierBudget(budgets, 1)).toBeNull();
   });
 
   it("fails when a key is not tier 1 to 5", () => {
     for (const k of ["0", "6", "1.5", "two", "-1", ""]) {
-      expect(() => budgetConfig({ budgets: { [k]: 100 } })).toThrow(/budgets/);
+      expect(() => budgetsOf({ budgets: { [k]: 100 } })).toThrow(/budgets/);
     }
-    expect(() => budgetConfig({ budgets: [100] })).toThrow(/budgets/);
-    expect(() => budgetConfig({ budgets: null })).toThrow(/budgets/);
+    expect(() => budgetsOf({ budgets: [100] })).toThrow(/budgets/);
+    expect(() => budgetsOf({ budgets: null })).toThrow(/budgets/);
   });
 
   it("fails when a budget is not a positive integer", () => {
     for (const v of [0, -5, 1.5, "100", null, Number.NaN]) {
-      expect(() => budgetConfig({ budgets: { "1": v } })).toThrow(/budgets\.1/);
+      expect(() => budgetsOf({ budgets: { "1": v } })).toThrow(/budgets\.1/);
     }
   });
 
@@ -56,7 +64,7 @@ describe("budget config", () => {
     const file = JSON.parse(readFileSync(`${root}factory.config.json`, "utf8")) as Record<string, unknown>;
     expect(file.budgets).toBeUndefined();
     const { config } = await loadConfig(root);
-    expect(config.budgets).toEqual({});
+    expect(settingValues("seonWKim/software-factory", config.settings).budgets).toEqual({});
     expect(config.budget_min_sample).toBe(10);
   });
 });

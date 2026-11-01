@@ -1,4 +1,5 @@
 import type { FactoryConfig, Prompts } from "./config.js";
+import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import {
@@ -51,6 +52,8 @@ export interface WorkerDeps {
    * prompt is exactly as without it. Finding a doc never changes tools, paths or grants.
    */
   capability?: CapabilitySearch;
+  /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
+  learned?: LearnedSettingsSource;
 }
 
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
@@ -611,9 +614,11 @@ export class Worker {
     } catch (err) {
       throw new RunFailure("git_failed", `git diff --numstat: ${err instanceof Error ? err.message : "unparsable"}`, true);
     }
-    const limits = { max_diff_lines: this.d.config.max_diff_lines, max_diff_files: this.d.config.max_diff_files };
+    // The item's project's gate settings (design 2026-11-01), read only through settingValues.
+    const s = settingValues(item.project, this.d.config.settings, this.d.learned);
+    const limits = { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
     if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
-    const hits = floorHits(stat.paths, this.d.config.floors, item.tier ?? 1);
+    const hits = floorHits(stat.paths, s.floors, item.tier ?? 1);
     return hits.length > 0 ? hits : null;
   }
 

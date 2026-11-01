@@ -1,4 +1,5 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
+import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
 import type { SourceRef, SourceType, UserId } from "../../src/core/types.js";
@@ -7,7 +8,9 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import type {
+  ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource,
+} from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -17,14 +20,14 @@ export const config: FactoryConfig = {
   status_label_prefix: "sf: ",
   branch_prefix: "factory/",
   dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 },
-  floors: [{ prefix: "src/impl/broker/", tier: 4 }],
+  settings: {
+    defaults: { floors: [{ prefix: "src/impl/broker/", tier: 4 }], max_attempts: 3, max_diff_lines: 1500, max_diff_files: 40 },
+    projects: {},
+  },
   max_loops: 3,
-  max_attempts: 3,
   max_restart: 3,
   retry_base_ms: 60_000,
   retry_max_ms: 1_800_000,
-  max_diff_lines: 1500,
-  max_diff_files: 40,
   lease_ms: 60_000,
   heartbeat_ms: 10_000,
   tick_ms: 1000,
@@ -35,6 +38,16 @@ export const config: FactoryConfig = {
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
+
+/** `base`'s settings with `defaults` changed: for tests that need another global gate value. */
+export function settingsWith(changes: Partial<ProjectSettings>, base: FactoryConfig = config): SettingsLayers {
+  return { ...base.settings, defaults: { ...base.settings.defaults, ...changes } };
+}
+
+/** The gate values a test config gives every project (no project overrides in the fakes). */
+export function gates(c: FactoryConfig = config): ProjectSettings {
+  return settingValues("o/r", c.settings);
+}
 
 export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW", resolve: "RESOLVE" };
 
@@ -80,6 +93,8 @@ export class FakeSource implements PollSource {
         if (Number(e.comment_id) <= last) continue;
         last = Number(e.comment_id);
       }
+      // Like GitHub, the source keeps who closed an item and reads it back when it closes the item's PR.
+      if (e.kind === "source_closed") this.closers.set(e.source.id, e.closer);
       events.push(e);
     }
     this.queue = [];
@@ -106,6 +121,29 @@ export class FakeSource implements PollSource {
   async closeIssue(source: SourceRef): Promise<void> {
     if (this.closeError) throw this.closeError;
     this.closed.push(source);
+  }
+  /** Who closed each source item, by source id, as the last delivered source_closed said. */
+  closers = new Map<string, ExternalIdentity | null>();
+  /** PR states; a PR not listed is open. closePr turns an open one `closed`. */
+  prStates = new Map<number, "open" | "closed" | "merged">();
+  /** Comments closePr posted on PRs, at most one per marker. */
+  prComments: { pr_number: number; body: string; marker: string }[] = [];
+  /** Every closePr call, failed ones included, in order. */
+  prCloseCalls: number[] = [];
+  /** When set, closePr posts its comment, then throws this instead of closing the PR. */
+  prCloseError: Error | null = null;
+  /** When set, closePr throws this before posting anything. */
+  prCommentError: Error | null = null;
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    this.prCloseCalls.push(input.pr_number);
+    if ((this.prStates.get(input.pr_number) ?? "open") !== "open") return "not_open";
+    if (this.prCommentError) throw this.prCommentError;
+    if (!this.prComments.some((c) => c.marker === input.marker)) {
+      this.prComments.push({ pr_number: input.pr_number, body: input.body(this.closers.get(input.closed.id) ?? null), marker: input.marker });
+    }
+    if (this.prCloseError) throw this.prCloseError;
+    this.prStates.set(input.pr_number, "closed");
+    return "closed";
   }
   /** Every setStatus call, in order, including ones that threw. */
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
@@ -188,6 +226,12 @@ export class FakeStreamSource implements StreamSource {
   closed: SourceRef[] = [];
   async closeIssue(source: SourceRef): Promise<void> {
     this.closed.push(source);
+  }
+  /** Every closePr call, in order. The PR is taken to be open; the closer is unknown. */
+  closedPrs: { pr_number: number; body: string; marker: string }[] = [];
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    this.closedPrs.push({ pr_number: input.pr_number, body: input.body(null), marker: input.marker });
+    return "closed";
   }
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];

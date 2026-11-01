@@ -13,7 +13,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // Sync before push (design §4, decided 2026-11-01): an implement run merges the freshly fetched
@@ -365,13 +365,13 @@ describe("implement run: sync with base before push", () => {
   it("merge_conflict counts toward max_attempts and the last-attempt comment names the code with its label", async () => {
     const f = await setup({ moveMain: MAIN_EDITS_A, resolve: () => undefined, moveEveryRun: true });
     const item = await f.approveAndImplement();
-    for (let i = 1; i < f.cfg.max_attempts; i++) {
+    for (let i = 1; i < gates(f.cfg).max_attempts; i++) {
       f.clock.advance(f.cfg.retry_max_ms);
       await f.step();
     }
     const runs = await f.implementRuns(item.id);
     expect(runs.map((r) => r.outcome?.status === "failed" && r.outcome.error_code)).toEqual(
-      Array(f.cfg.max_attempts).fill("merge_conflict"),
+      Array(gates(f.cfg).max_attempts).fill("merge_conflict"),
     );
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts" });
     const last = f.source.comments.at(-1)!.body;

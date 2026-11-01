@@ -1,3 +1,4 @@
+import type { SettingsLayers } from "./settings.js";
 import type { Tier, VerdictSeverity } from "./types.js";
 
 /**
@@ -25,21 +26,18 @@ export interface FactoryConfig {
   /** Factory PR branches are `${branch_prefix}${work_item_id}`. The broker pushes nowhere else. */
   branch_prefix: string;
   dials: { spec_gate_min_tier: Tier; auto_merge_max_tier: 0 };
-  /** Human floor directories (design §3): touching a prefix raises the tier to at least `tier`. */
-  floors: { prefix: string; tier: Tier }[];
+  /**
+   * The per-project gate settings in layers: max_attempts, max_diff_lines, max_diff_files, budgets, floors
+   * (design 2026-11-01). Read only through settingsFor / settingValues (src/core/settings.ts), never directly.
+   */
+  settings: SettingsLayers;
   max_loops: number;
-  /** Task failures (bad output, no commits, agent error) of one step before it blocks on a human. */
-  max_attempts: number;
   /** Infra failures (lease loss, timeout, exception) of one step before it blocks on a human. Default 3. */
   max_restart: number;
   /** First automatic retry waits this long; each next one twice as long. Default 60000. */
   retry_base_ms: number;
   /** Cap on a retry wait, and the pause after a rate limit with no reset time. Default 1800000. */
   retry_max_ms: number;
-  /** Pre-push size gate: added plus deleted lines over the whole branch diff. Default 1500. */
-  max_diff_lines: number;
-  /** Pre-push size gate: changed files over the whole branch diff. Default 40. */
-  max_diff_files: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -55,11 +53,6 @@ export interface FactoryConfig {
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
-  /**
-   * Token budget per tier (design §6). A tier with no entry, or an absent map, has no limit. At the budget,
-   * the next implement or review run is held at a checkpoint for a human. Absent: no limits.
-   */
-  budgets?: Partial<Record<Tier, number>>;
   /** Finished items a tier needs before budget suggestions come from its history. Absent: 10. */
   budget_min_sample?: number;
 }
