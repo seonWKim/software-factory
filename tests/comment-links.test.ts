@@ -6,7 +6,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, cleanScanner, config, gates, issueRef, silent, triageSpec } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
@@ -71,7 +71,7 @@ describe("controller: comment links", () => {
   it("stores the failure comment URL in the transition that blocks at max_attempts", async () => {
     const f = await setup();
     const item = await f.intake();
-    for (let i = 0; i < config.max_attempts; i++) await f.finish("triage", failed("agent_failed"));
+    for (let i = 0; i < gates().max_attempts; i++) await f.finish("triage", failed("agent_failed"));
     const url = f.urlOf("run-failed:");
     expect(url).toBeDefined();
     expect(await f.get(item)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts", failure_comment_url: url });
@@ -82,7 +82,7 @@ describe("controller: comment links", () => {
     const f = await setup();
     const item = await f.intake();
     await seed(f, item, { failure_comment_url: "https://github.com/o/r/issues/7#issuecomment-1" });
-    for (let i = 0; i < config.max_attempts; i++) await f.finish("triage", failed("agent_failed", `token ${SECRET} rejected`));
+    for (let i = 0; i < gates().max_attempts; i++) await f.finish("triage", failed("agent_failed", `token ${SECRET} rejected`));
     expect(f.source.comments.filter((c) => c.marker.includes("run-failed"))).toHaveLength(0);
     expect(await f.get(item)).toMatchObject({ blocked_reason: "max_attempts", failure_comment_url: null });
     expect((await f.change(item, "max_attempts"))!.changes).toMatchObject({ failure_comment_url: { to: null } });

@@ -8,8 +8,8 @@ import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { Controller } from "./core/controller.js";
-import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
+import { settingsLayers } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -41,7 +41,8 @@ export interface FileConfig {
   status_label_prefix?: string;
   branch_prefix: string;
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
-  floors: { prefix: string; tier: number }[];
+  /** Human floors (design §3). A per-project setting: may move into `defaults`, and a project may add to it. */
+  floors?: { prefix: string; tier: number }[];
   /** AuthProvider plugin name (docs/plugins.md). */
   auth: string;
   /**
@@ -51,7 +52,8 @@ export interface FileConfig {
   plugins?: Record<string, unknown>;
   models: { cheap: string; strong: string };
   max_loops: number;
-  max_attempts: number;
+  /** Task failures of one step before it blocks on a human. Per-project setting; absent everywhere: 3. */
+  max_attempts?: number;
   /** Infra failures of one step before it blocks on a human. Absent: 3. */
   max_restart?: number;
   /** First automatic retry wait; doubles each retry. Absent: 60000. */
@@ -76,12 +78,22 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
   ui?: { port?: number };
-  /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by budgetConfig. */
+  /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
   budget_min_sample?: unknown;
   /** `factory stats` (design §6): a weight per verdict severity (all required), min_sample (absent: 10). */
   stats?: { weights?: unknown; min_sample?: unknown };
+  /**
+   * The global value of each per-project setting (max_attempts, max_diff_lines, max_diff_files, budgets,
+   * floors). The same key at top level still works; setting it in both places fails (design 2026-11-01).
+   */
+  defaults?: unknown;
+  /**
+   * Overrides per project ID ("owner/name", the configured repo's only). Per-project keys only, and each
+   * may only tighten its gate against the global value. Checked by settingsLayers (src/core/settings.ts).
+   */
+  projects?: unknown;
 }
 
 export { CODE_ROOT_ENV } from "./interfaces/updater.js";
@@ -121,16 +133,17 @@ export async function loadConfig(
   if (file.dials.auto_merge_max_tier !== 0) {
     throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
   }
-  if (!isTier(file.dials.spec_gate_min_tier) || !file.floors.every((f) => isTier(f.tier))) {
+  if (!isTier(file.dials.spec_gate_min_tier)) {
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   uiPort(file.ui);
   const workers = workerCount(file.workers);
   const retry = retryConfig(file);
-  const diff = diffLimits(file);
+  // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
+  const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
   const retention = inboxRetentionDays(file);
-  const budget = budgetConfig(file);
+  const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
   const stats = statsConfig(file.stats);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
@@ -151,14 +164,11 @@ export async function loadConfig(
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
-    floors: file.floors.map((f) => ({ prefix: f.prefix, tier: f.tier as Tier })),
+    settings,
     max_loops: file.max_loops,
-    max_attempts: file.max_attempts,
     max_restart: retry.max_restart,
     retry_base_ms: retry.retry_base_ms,
     retry_max_ms: retry.retry_max_ms,
-    max_diff_lines: diff.max_diff_lines,
-    max_diff_files: diff.max_diff_files,
     lease_ms: file.lease_ms,
     heartbeat_ms: file.heartbeat_ms,
     tick_ms: file.tick_ms,
@@ -181,7 +191,6 @@ export async function loadConfig(
       join(home, ".mylogin.cnf"),
     ],
     agent_git_identity: file.agent_git_identity,
-    budgets: budget.budgets,
     budget_min_sample: budget.budget_min_sample,
   };
   const prompts: Prompts = {
@@ -436,20 +445,6 @@ export function retryConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   if (r.retry_base_ms > r.retry_max_ms) throw new Error("retry_base_ms must not exceed retry_max_ms");
-  return r;
-}
-
-/** The pre-push size limits (design §4) with their defaults. Positive integers, or startup fails. */
-export function diffLimits(
-  file: Pick<FileConfig, "max_diff_lines" | "max_diff_files">,
-): { max_diff_lines: number; max_diff_files: number } {
-  const r = {
-    max_diff_lines: file.max_diff_lines ?? DIFF_LIMIT_DEFAULTS.max_diff_lines,
-    max_diff_files: file.max_diff_files ?? DIFF_LIMIT_DEFAULTS.max_diff_files,
-  };
-  for (const [k, v] of Object.entries(r)) {
-    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
-  }
   return r;
 }
 

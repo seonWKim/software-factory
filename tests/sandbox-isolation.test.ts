@@ -13,7 +13,7 @@ import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
-import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, settingsWith, silent } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Issue #78: a run's working copy must not share the owner's git folder, and the worker's and broker's own git
@@ -358,7 +358,7 @@ describe("the worker's implement run in a real clone", () => {
         commit(wd, "src/big.txt", "x\n".repeat(20), "big");
         git(wd, "update-ref", "refs/remotes/origin/main", "HEAD");
       },
-      { max_diff_lines: 5 },
+      { settings: settingsWith({ max_diff_lines: 5 }) },
     );
     expect(r.run.outcome).toMatchObject({ status: "failed", error_code: "diff_too_large" });
   });

@@ -120,6 +120,42 @@ describe("config keys: unknown keys fail at load", () => {
   });
 });
 
+describe("config keys: defaults and projects", () => {
+  const ID = "seonWKim/software-factory";
+  const PROJECT_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files", "budgets", "floors"];
+
+  it("defaults and projects are valid top-level keys", () => {
+    expect(TOP_LEVEL_KEYS).toContain("defaults");
+    expect(TOP_LEVEL_KEYS).toContain("projects");
+  });
+
+  it("an unknown key inside a project names the project and the key, lists the project keys and suggests", async () => {
+    const err = await loadError({ ...REAL, projects: { [ID]: { max_dif_lines: 10 } } });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toBe(
+      `unknown config key "max_dif_lines" at projects["${ID}"].max_dif_lines; valid project "${ID}" keys: ${PROJECT_KEYS.join(", ")}; did you mean "max_diff_lines"?`,
+    );
+  });
+
+  it("a far-off key inside a project gets no suggestion", async () => {
+    const err = await loadError({ ...REAL, projects: { [ID]: { zebra: 1 } } });
+    expect(err.message).toContain(`projects["${ID}"].zebra`);
+    expect(err.message).not.toContain("did you mean");
+  });
+
+  it("an unknown key inside defaults fails against the project keys", async () => {
+    const err = await loadError({ ...REAL, defaults: { workers: 2 } });
+    expect(err.message).toContain(`unknown config key "workers" at defaults.workers; valid defaults keys: ${PROJECT_KEYS.join(", ")}`);
+  });
+
+  it("unknown keys at top level and inside a project are all reported in one error, before the project ID check", async () => {
+    const err = (await loadError({ ...SQLITE, zebra: 1, projects: { "other/repo": { dials: {} } } })) as ConfigKeyError;
+    expect(err.problems).toHaveLength(2);
+    expect(err.message).toContain('"zebra"');
+    expect(err.message).toContain('projects["other/repo"].dials');
+  });
+});
+
 describe("config keys: suggestions", () => {
   it("edit distance", () => {
     expect(editDistance("hots", "host")).toBe(2);

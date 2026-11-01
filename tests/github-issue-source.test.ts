@@ -232,8 +232,8 @@ describe("GitHubIssueSource: closed issues", () => {
     client.issues[9] = { number: 9, closed_by: null };
     const first = await source.poll(null);
     expect(first.events).toEqual([
-      { kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } },
-      { kind: "source_closed", source: issueRef(9), closer: null },
+      { kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" }, state_reason: null },
+      { kind: "source_closed", source: issueRef(9), closer: null, state_reason: null },
     ]);
     const list = client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!;
     expect(list.path).toContain(`labels=factory`);
@@ -248,7 +248,7 @@ describe("GitHubIssueSource: closed issues", () => {
     client.issues[10] = { number: 10, closed_by: bob };
     const second = await source.poll(first.next_cursor);
     expect(second.events).toEqual([
-      { kind: "source_closed", source: issueRef(10), closer: { provider: "github", subject: "2", login: "bob" } },
+      { kind: "source_closed", source: issueRef(10), closer: { provider: "github", subject: "2", login: "bob" }, state_reason: null },
     ]);
     expect(client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!.path).toContain("since=2026-11-01T00:00:03Z");
     expect(client.calls.some((c) => c.path === "/repos/o/r/issues/9")).toBe(false);
@@ -268,13 +268,99 @@ describe("GitHubIssueSource: closed issues", () => {
     expect(events.map((e) => e.kind).filter((k) => k !== "pr_open")).toEqual(["pr_closed", "source_closed"]);
   });
 
+  it("carries GitHub's close reason: completed and not_planned as they are, anything else as null", async () => {
+    const { client, source } = make();
+    client.closed = [
+      closedIssue(7, "2026-11-01T00:00:01Z"), closedIssue(8, "2026-11-01T00:00:02Z"),
+      closedIssue(9, "2026-11-01T00:00:03Z"), closedIssue(10, "2026-11-01T00:00:04Z"),
+    ];
+    client.issues[7] = { number: 7, closed_by: bob, state_reason: "completed" };
+    client.issues[8] = { number: 8, closed_by: bob, state_reason: "not_planned" };
+    client.issues[9] = { number: 9, closed_by: bob, state_reason: null };
+    client.issues[10] = { number: 10, closed_by: bob, state_reason: "something_new" };
+    const { events } = await source.poll(null);
+    expect(events.map((e) => (e.kind === "source_closed" ? e.state_reason : e.kind))).toEqual(["completed", "not_planned", null, null]);
+  });
+
   it("reads a cursor written before closed issues were polled", async () => {
     const { client, source } = make();
     client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
     client.issues[7] = { number: 7, closed_by: bob };
     const old = JSON.stringify({ issues: null, comments: null, pulls: null });
     const { events } = await source.poll(old);
-    expect(events).toEqual([{ kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } }]);
+    expect(events).toEqual([{ kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" }, state_reason: null }]);
+  });
+});
+
+describe("GitHubIssueSource: closePr", () => {
+  /** Answers GET /pulls/N from `pulls` and GET /issues/N from `issues`; records every call; comments via commentOnce. */
+  class PrClient extends FakeClient {
+    pulls: Record<number, unknown> = {};
+    issues: Record<number, unknown> = {};
+    failClose = false;
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      const m = /^\/repos\/o\/r\/(issues|pulls)\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return (m[1] === "issues" ? this.issues : this.pulls)[Number(m[2])] as T;
+      }
+      if (method === "PATCH" && this.failClose) throw new GitHubError(500, "boom");
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new PrClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    return { client, source };
+  };
+  const body = (closer: { login?: string } | null) => `closed by ${closer?.login ?? "nobody"}`;
+  const input = { pr_number: 42, closed: issueRef(7), marker: "<!-- m -->", body };
+
+  it("comments with the issue's closer, then closes the open PR without merging", async () => {
+    const { client, source } = make();
+    client.pulls[42] = { number: 42, state: "open", merged_at: null };
+    client.issues[7] = { number: 7, closed_by: { id: 2, login: "bob", type: "User" } };
+    expect(await source.closePr(input)).toBe("closed");
+    const writes = client.calls.filter((c) => c.method !== "GET");
+    expect(writes).toEqual([
+      { method: "POST", path: "/repos/o/r/issues/42/comments", body: { body: "closed by bob\n\n<!-- m -->" } },
+      { method: "PATCH", path: "/repos/o/r/pulls/42", body: { state: "closed" } },
+    ]);
+    expect(client.calls.some((c) => c.path.includes("/merge"))).toBe(false);
+  });
+
+  it("with no closer on the issue, the body gets null", async () => {
+    const { client, source } = make();
+    client.pulls[42] = { number: 42, state: "open", merged_at: null };
+    client.issues[7] = { number: 7, closed_by: null };
+    await source.closePr(input);
+    expect(client.calls.find((c) => c.method === "POST")!.body).toEqual({ body: "closed by nobody\n\n<!-- m -->" });
+  });
+
+  it("leaves a merged or closed PR alone: no comment, no close", async () => {
+    for (const pr of [{ state: "closed", merged_at: "2026-11-01T00:00:00Z" }, { state: "closed", merged_at: null }]) {
+      const { client, source } = make();
+      client.pulls[42] = { number: 42, ...pr };
+      client.issues[7] = { number: 7, closed_by: null };
+      expect(await source.closePr(input)).toBe("not_open");
+      expect(client.calls.filter((c) => c.method !== "GET")).toEqual([]);
+    }
+  });
+
+  it("a failed close throws, after the comment; the retry does not post it again", async () => {
+    const { client, source } = make();
+    client.pulls[42] = { number: 42, state: "open", merged_at: null };
+    client.issues[7] = { number: 7, closed_by: null };
+    client.failClose = true;
+    await expect(source.closePr(input)).rejects.toThrow();
+    // The comment is now on the PR; commentOnce finds its marker on the retry.
+    client.responses["/repos/o/r/issues/42/comments"] = [{ body: "closed by nobody\n\n<!-- m -->" }];
+    client.failClose = false;
+    client.calls = [];
+    expect(await source.closePr(input)).toBe("closed");
+    expect(client.calls.filter((c) => c.method !== "GET")).toEqual([
+      { method: "PATCH", path: "/repos/o/r/pulls/42", body: { state: "closed" } },
+    ]);
   });
 });
 

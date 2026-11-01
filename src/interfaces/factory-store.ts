@@ -124,10 +124,17 @@ export interface TransitionInput {
    * outcome and no `finished_at`, and go through the controller's ack path like any finished run.
    */
   cancel_queued_runs?: boolean;
+  /**
+   * Stop every `running` run of this item, of any kind, in the same transaction: status `cancelled`, lease
+   * cleared, no outcome, unacknowledged. The worker holding one gets `lease_lost` on its next heartbeat and
+   * on completeRun (so its outcome is not stored), and the tool broker refuses its calls, so nothing it does
+   * afterwards is pushed. Used when an item closes from its source (design §4).
+   */
+  cancel_running_runs?: boolean;
 }
 
 export type TransitionResult =
-  /** `cancelled`: the runs `cancel_queued_runs` cancelled (empty without it). */
+  /** `cancelled`: the runs `cancel_queued_runs` and `cancel_running_runs` cancelled (empty without them). */
   | { ok: true; item: WorkItem; state_change: StateChange; enqueued: Run | null; cancelled: RunId[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }

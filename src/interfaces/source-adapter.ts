@@ -31,10 +31,12 @@ export type SourceEvent =
   | { kind: "plain_comment"; source: SourceRef; comment_id: string; author: ExternalIdentity; body: string }
   /**
    * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
-   * when the source does not say. May be delivered again (same close, later poll); handling is idempotent.
-   * Delivered after any PR events of the same poll, so a merge that closed the issue is seen first.
+   * when the source does not say. `state_reason` is how it was closed (GitHub's `state_reason`):
+   * `completed`, `not_planned`, or null when the source gives none or one the factory does not know. May
+   * be delivered again (same close, later poll); handling is idempotent. Delivered after any PR events of
+   * the same poll, so a merge that closed the issue is seen first.
    */
-  | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null }
+  | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null; state_reason: SourceCloseReason | null }
   /**
    * `/budget [tokens]` at a budget checkpoint (design §6). `amount` is the raw text after `/budget` on the
    * first line, null when there is none; the controller checks it is a whole number.
@@ -94,6 +96,20 @@ export type SourceEvent =
    * factory merges in it (design §6). A boundary commit may be delivered again; handling is idempotent.
    */
   | { kind: "base_commit"; sha: string; message: string };
+
+/** How a person closed a source item: done, or not going to be done. */
+export type SourceCloseReason = "completed" | "not_planned";
+
+/** What `closePr` needs. */
+export interface ClosePrInput {
+  pr_number: number;
+  /** The source item that was closed; the adapter reads who closed it. */
+  closed: SourceRef;
+  /** The comment is posted at most once per marker, like postComment. */
+  marker: string;
+  /** The comment text, given who closed `closed` (null when the source does not say). */
+  body(closer: ExternalIdentity | null): string;
+}
 
 export type VerdictEventTarget =
   | { kind: "issue"; source: SourceRef }
@@ -175,6 +191,14 @@ interface SourceAdapterBase {
    * when a human rejects the spec. Idempotent: closing a closed item changes nothing. Agents never call this.
    */
   closeIssue(source: SourceRef): Promise<void>;
+  /**
+   * Closes factory PR `pr_number` without merging it, after one comment on it (`input.body`, carrying
+   * `input.marker`). Used when a person closes the source item (design §4). A PR that is already merged or
+   * closed is left alone with no comment: `not_open`. The comment goes first, so a failed close retried
+   * later still finds its comment and does not post another. Throws on a source failure; the caller retries.
+   * Agents never call this. Absent on sources with no PRs.
+   */
+  closePr?(input: ClosePrInput): Promise<"closed" | "not_open">;
 }
 
 /** A source the controller polls on a timer (GitHub issues). */

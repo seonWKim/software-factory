@@ -932,6 +932,49 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.completeRun(running.id, running.lease!.token, { status: "succeeded", summary: "", data: {} })).ok).toBe(true);
     });
 
+    it("a close with cancel_running_runs stops every running run of the item, of any kind, in the same write", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const triage = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "update", idempotency_key: "u" },
+      });
+      const update = (await store.claimRun({ worker_id: w2, kinds: ["update"], lease_ms: LEASE }))!;
+      await store.transition({
+        id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "review", idempotency_key: "r" },
+      });
+      const other = await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "t2" } });
+      const otherRun = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      expect(otherRun.work_item_id).toBe(other.item.id);
+
+      // Losing the version check stops nothing.
+      const lost = await store.transition({
+        id: item.id, expected_version: 2, patch: close, actor: human, reason: "source_closed",
+        cancel_queued_runs: true, cancel_running_runs: true,
+      });
+      expect(lost).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.listRuns(item.id)).map((x) => x.status)).toEqual(["running", "running", "queued"]);
+
+      const r = await store.transition({
+        id: item.id, expected_version: 3, patch: close, actor: human, reason: "source_closed",
+        cancel_queued_runs: true, cancel_running_runs: true,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      const runs = await store.listRuns(item.id);
+      expect(runs.map((x) => x.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
+      expect(runs.every((x) => x.lease === null && x.outcome === null && x.acknowledged_at === null)).toBe(true);
+      expect([...r.cancelled].sort()).toEqual(runs.map((x) => x.id).sort());
+
+      // The stopped runs lose their lease: the next heartbeat fails, and the outcome is not stored.
+      expect(await store.heartbeat(triage.id, triage.lease!.token, LEASE)).toEqual({ ok: false, reason: "lease_lost" });
+      expect(await store.completeRun(update.id, update.lease!.token, { status: "succeeded", summary: "", data: {} }))
+        .toEqual({ ok: false, reason: "lease_lost" });
+      expect((await store.getRun(update.id))).toMatchObject({ status: "cancelled", outcome: null });
+      // Another item's running run is untouched.
+      expect((await store.getRun(otherRun.id))!.status).toBe("running");
+      expect((await store.heartbeat(otherRun.id, otherRun.lease!.token, LEASE)).ok).toBe(true);
+    });
+
     it("the reaper cancels an expired run of a CLOSED item instead of requeueing it", async () => {
       const { store, clock } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
