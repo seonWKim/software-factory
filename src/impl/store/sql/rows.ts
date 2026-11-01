@@ -11,6 +11,11 @@ import type {
   StateChange,
   StateChangeId,
   Timestamp,
+  Verdict,
+  VerdictId,
+  VerdictKind,
+  VerdictSeverity,
+  VerdictTarget,
   WorkItem,
   WorkItemId,
   WorkItemPatch,
@@ -197,6 +202,20 @@ export function rowToHandoff(r: Row): Handoff {
     commit_sha: r.commit_sha as string,
     worked_on: r.worked_on as string,
     next_steps: r.next_steps as string,
+    at: r.at as Timestamp,
+  };
+}
+
+export function rowToVerdict(r: Row): Verdict {
+  return {
+    id: r.id as VerdictId,
+    work_item_id: r.work_item_id as WorkItemId,
+    state_change_id: r.state_change_id as StateChangeId,
+    verdict: r.verdict as VerdictKind,
+    severity: r.severity as VerdictSeverity,
+    reason: (r.reason as string | null) ?? null,
+    comment_id: r.comment_id as string,
+    target: r.target as VerdictTarget,
     at: r.at as Timestamp,
   };
 }
