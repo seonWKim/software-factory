@@ -5,6 +5,8 @@ export interface FactoryConfig {
   /** `test_command`: argv the update run uses to check a merged branch (no shell), e.g. ["npm", "test"]. */
   repo: { owner: string; name: string; path: string; base_branch: string; test_command: string[] };
   intake_label: string;
+  /** Status labels are this prefix plus a fixed suffix, e.g. "sf: needs approval". Default "sf: ". */
+  status_label_prefix: string;
   /** Factory PR branches are `${branch_prefix}${work_item_id}`. The broker pushes nowhere else. */
   branch_prefix: string;
   dials: { spec_gate_min_tier: Tier; auto_merge_max_tier: 0 };

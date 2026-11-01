@@ -162,8 +162,11 @@ What it does: intake. Polls a source for new work items and commands, and posts 
 Plugins:
 
 - `github-issues`: `GitHubIssueSource`. Issues with the intake label on the configured repository, their comments and pull requests, and commits on the base branch (`repo.base_branch`; one extra API call per poll, for revert tracking, design §6).
+  - `setStatus(source, status, pr_number)`: shows one of eight statuses (`triaging`, `needs_approval`, `implementing`, `in_review`, `ready_to_merge`, `needs_human`, `done`, `rejected`) as a label. `pr_number` null labels the issue; non-null labels that PR instead (PRs share the issue labels API), so the controller calls it once for the issue and once for the PR. Each call creates the label if missing (a 422 `already_exists` counts as success), adds it, and removes the other seven fixed names; a 404 on removal counts as success, and no other label is touched, including other labels under the prefix. Idempotent and best effort: the controller logs a failure as a warning and the transition stands. Names, colours and descriptions live in one table in `src/impl/source/github-issue-source.ts`. Uses the existing Issues read/write permission; no new scope.
   - Enable: `"plugins": { "source": "github-issues", ... }`.
-  - Secrets: `GITHUB_TOKEN`. Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`.
+  - Secrets: `GITHUB_TOKEN`. Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
+
+Other sources may implement `setStatus` as a no-op.
 
 Switch back / disable: `"source": "github-issues"`. There is no "off".
 

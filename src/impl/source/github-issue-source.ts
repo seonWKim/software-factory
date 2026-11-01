@@ -1,7 +1,8 @@
+import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { PollResult, SourceAdapter, SourceEvent } from "../../interfaces/source-adapter.js";
-import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
   id: number;
@@ -60,6 +61,38 @@ interface Cursor {
   commit_shas?: string[];
 }
 
+/**
+ * The status labels: name suffix, colour and description. The one place they are defined; setup creates
+ * them, doctor checks them, setStatus creates any that is missing. Names are the configured prefix + suffix.
+ */
+const STATUS_LABELS: Record<WorkStatus, { suffix: string; color: string; description: string }> = {
+  triaging: { suffix: "triaging", color: "c5def5", description: "Factory: triage agent is writing the spec" },
+  needs_approval: { suffix: "needs approval", color: "fbca04", description: "Factory: spec waits for /approve or /reject" },
+  implementing: { suffix: "implementing", color: "1d76db", description: "Factory: implementer agent is working" },
+  in_review: { suffix: "in review", color: "5319e7", description: "Factory: reviewer agent is checking the PR" },
+  ready_to_merge: { suffix: "ready to merge", color: "0e8a16", description: "Factory: PR passed review; waits for a human merge" },
+  needs_human: { suffix: "needs human", color: "d93f0b", description: "Factory: stuck (failed run, loop limit, conflict); see comments" },
+  done: { suffix: "done", color: "cccccc", description: "Factory: PR merged" },
+  rejected: { suffix: "rejected", color: "000000", description: "Factory: closed without a merge" },
+};
+
+export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
+
+export interface StatusLabel {
+  status: WorkStatus;
+  name: string;
+  color: string;
+  description: string;
+}
+
+/** The eight status labels under `prefix`, in WORK_STATUSES order. */
+export function statusLabels(prefix: string): StatusLabel[] {
+  return WORK_STATUSES.map((status) => {
+    const { suffix, color, description } = STATUS_LABELS[status];
+    return { status, name: `${prefix}${suffix}`, color, description };
+  });
+}
+
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
@@ -72,6 +105,7 @@ export class GitHubIssueSource implements SourceAdapter {
     private readonly label: string,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
+    private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {
@@ -195,6 +229,30 @@ export class GitHubIssueSource implements SourceAdapter {
     await this.client.request("POST", path, { content: "eyes" });
   }
 
+  /**
+   * One status label on the issue, or on PR `pr_number` (PRs share the issue labels API): create the label
+   * if missing, add it, then remove the other seven fixed status names. Any other label, including one a
+   * human made under the same prefix, is left alone. Each step is idempotent.
+   */
+  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    const repo = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const n = pr_number ?? issueNumberFromSourceId(source.id);
+    const all = statusLabels(this.statusPrefix);
+    const target = all.find((l) => l.status === status)!;
+    await ensureLabel(this.client, this.repo, target);
+    await this.client.request("POST", `${repo}/issues/${n}/labels`, { labels: [target.name] });
+    const others = new Set(all.filter((l) => l !== target).map((l) => l.name));
+    const current = await this.client.list<{ name: string }>(`${repo}/issues/${n}/labels`, 1);
+    for (const { name } of current) {
+      if (!others.has(name)) continue;
+      try {
+        await this.client.request("DELETE", `${repo}/issues/${n}/labels/${encodeURIComponent(name)}`);
+      } catch (err) {
+        if (!(err instanceof GitHubError && err.status === 404)) throw err;
+      }
+    }
+  }
+
   private ref(number: number): SourceRef {
     return {
       type: "github_issue",
@@ -210,4 +268,26 @@ function identity(u: GhUser): ExternalIdentity {
 
 function max(a: string | null, b: string): string {
   return a === null || b > a ? b : a;
+}
+
+/**
+ * Creates the repository label. Returns "created", or "exists" when GitHub answers 422 already_exists;
+ * any other error is thrown.
+ */
+export async function ensureLabel(
+  client: GitHubClient,
+  repo: RepoRef,
+  label: { name: string; color: string; description: string },
+): Promise<"created" | "exists"> {
+  try {
+    await client.request("POST", `/repos/${repo.owner}/${repo.name}/labels`, {
+      name: label.name,
+      color: label.color,
+      description: label.description,
+    });
+    return "created";
+  } catch (err) {
+    if (err instanceof GitHubError && err.status === 422 && err.message.includes("already_exists")) return "exists";
+    throw err;
+  }
 }

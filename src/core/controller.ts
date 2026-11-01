@@ -4,6 +4,7 @@ import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
 import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBranch } from "./policy.js";
 import { renderSpec } from "./spec-comment.js";
+import { type WorkStatus, statusOf } from "./status-label.js";
 import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -35,6 +36,10 @@ const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
 const MAX_CONFLICT_RETRIES = 5;
+/** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
+const CATCH_UP_LIMIT = 1000;
+/** Patch fields that can change an item's status or where it is shown. */
+const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
 
 /**
  * Control plane: intake, applying run outcomes, the reaper. Deterministic, no LLM: every decision re-reads
@@ -54,6 +59,7 @@ export class Controller {
   constructor(private readonly d: ControllerDeps) {}
 
   async run(signal: AbortSignal): Promise<void> {
+    await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       const now = this.d.clock.now().getTime();
@@ -79,6 +85,18 @@ export class Controller {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
       await this.guard(`run:${run.kind}`, () => this.applyRun(run));
     }
+  }
+
+  /**
+   * Re-applies the status of every open item, so items from before status labels existed, and any label
+   * write that failed or landed out of order, are corrected on start. Each call is idempotent and guarded.
+   */
+  async catchUpStatus(): Promise<void> {
+    const items = await this.d.store.listWorkItems(CATCH_UP_LIMIT);
+    if (items.length >= CATCH_UP_LIMIT) {
+      this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
+    }
+    for (const it of items) if (it.stage !== "CLOSED") await this.showStatus(it);
   }
 
   async tickReaper(): Promise<void> {
@@ -115,7 +133,10 @@ export class Controller {
           { kind: "user", id: principal.user_id },
           { enqueue: { kind: "triage", idempotency_key: `${e.source.type}:${e.source.id}:triage` } },
         );
-        if (created) this.d.log.info("intake", { work_item_id: item.id });
+        if (created) {
+          this.d.log.info("intake", { work_item_id: item.id });
+          await this.setStatus(item.source, "triaging", null);
+        }
         await this.markSeen(e.source, null);
         // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
         await this.linkFixForward(item.id, `${e.title}\n${e.body}`);
@@ -420,6 +441,7 @@ export class Controller {
       const r = await this.d.store.transition({ ...decision, id, expected_version: item.version });
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
+        if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.showStatus(r.item);
         return null;
       }
       if (r.reason !== "version_conflict") {
@@ -450,6 +472,27 @@ export class Controller {
       this.d.log.warn("mark seen failed", {
         source_id: source.id,
         comment_id: commentId,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+    }
+  }
+
+  /** The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. */
+  private async showStatus(it: WorkItem): Promise<void> {
+    const status = statusOf(it);
+    await this.setStatus(it.source, status, null);
+    if (it.pr_number !== null) await this.setStatus(it.source, status, it.pr_number);
+  }
+
+  /** Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. */
+  private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    try {
+      await this.d.source.setStatus(source, status, pr_number);
+    } catch (err) {
+      this.d.log.warn("set status failed", {
+        source_id: source.id,
+        status,
+        pr_number,
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
     }

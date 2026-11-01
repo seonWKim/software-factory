@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { GitHubClient } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { WORK_STATUSES } from "../src/core/status-label.js";
+import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
+import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { issueRef } from "./helpers/fakes.js";
 
@@ -181,5 +182,133 @@ describe("GitHubIssueSource: unmergeable factory PRs", () => {
     expect(gets.filter((p) => /^\/repos\/o\/r\/pulls\/\d+$/.test(p)).sort()).toEqual([
       "/repos/o/r/pulls/1", "/repos/o/r/pulls/2", "/repos/o/r/pulls/3",
     ]);
+  });
+});
+
+describe("GitHubIssueSource: status labels", () => {
+  /** Keeps repo labels and per-issue labels like GitHub does, and answers the labels endpoints from them. */
+  class LabelClient extends GitHubClient {
+    calls: { method: string; path: string; body: unknown }[] = [];
+    repoLabels = new Map<string, { color: string; description: string }>();
+    issueLabels = new Map<number, string[]>();
+
+    constructor() {
+      super({} as SecretStore, "http://unused");
+    }
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      this.calls.push({ method, path, body });
+      const bare = path.split("?")[0]!;
+      if (method === "POST" && bare === "/repos/o/r/labels") {
+        const b = body as { name: string; color: string; description: string };
+        if (this.repoLabels.has(b.name)) {
+          throw new GitHubError(422, `GitHub POST ${path} → 422 {"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`);
+        }
+        this.repoLabels.set(b.name, { color: b.color, description: b.description });
+        return {} as T;
+      }
+      let m = /^\/repos\/o\/r\/issues\/(\d+)\/labels$/.exec(bare);
+      if (m) {
+        const n = Number(m[1]);
+        const have = this.issueLabels.get(n) ?? [];
+        if (method === "POST") {
+          for (const l of (body as { labels: string[] }).labels) if (!have.includes(l)) have.push(l);
+          this.issueLabels.set(n, have);
+          return [] as T;
+        }
+        if (method === "GET") return (path.includes("page=1") ? have.map((name) => ({ name })) : []) as T;
+      }
+      m = /^\/repos\/o\/r\/issues\/(\d+)\/labels\/(.+)$/.exec(bare);
+      if (m && method === "DELETE") {
+        const n = Number(m[1]);
+        const name = decodeURIComponent(m[2]!);
+        const have = this.issueLabels.get(n) ?? [];
+        if (!have.includes(name)) throw new GitHubError(404, `GitHub DELETE ${path} → 404`);
+        this.issueLabels.set(n, have.filter((l) => l !== name));
+        return [] as T;
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    }
+  }
+
+  const make = (prefix?: string) => {
+    const client = new LabelClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", prefix);
+    return { client, source };
+  };
+  const enc = encodeURIComponent;
+
+  it("has one table of eight labels: prefix plus suffix, colour, description", () => {
+    const labels = statusLabels("sf: ");
+    expect(labels.map((l) => l.status)).toEqual([...WORK_STATUSES]);
+    expect(labels.find((l) => l.status === "needs_approval")!.name).toBe("sf: needs approval");
+    for (const l of labels) {
+      expect(l.color).toMatch(/^[0-9a-f]{6}$/);
+      expect(l.description.length).toBeGreaterThan(0);
+      expect(l.description.length).toBeLessThanOrEqual(100);
+    }
+    expect(statusLabels("x/").find((l) => l.status === "done")!.name).toBe("x/done");
+  });
+
+  it("creates the label, adds it, then removes only other fixed-set status labels", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["factory", "sf: triaging", "sf: custom", "bug"]);
+    await source.setStatus(issueRef(7), "needs_approval", null);
+
+    const def = statusLabels("sf: ").find((l) => l.status === "needs_approval")!;
+    expect(client.calls).toEqual([
+      { method: "POST", path: "/repos/o/r/labels", body: { name: "sf: needs approval", color: def.color, description: def.description } },
+      { method: "POST", path: "/repos/o/r/issues/7/labels", body: { labels: ["sf: needs approval"] } },
+      { method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined },
+      { method: "DELETE", path: `/repos/o/r/issues/7/labels/${enc("sf: triaging")}`, body: undefined },
+    ]);
+    expect(client.issueLabels.get(7)).toEqual(["factory", "sf: custom", "bug", "sf: needs approval"]);
+  });
+
+  it("treats an existing label (422 already exists) as created, and changes nothing on a repeat call", async () => {
+    const { client, source } = make();
+    await source.setStatus(issueRef(7), "implementing", null);
+    const after = [...client.issueLabels.get(7)!];
+    const labels = new Map(client.repoLabels);
+    client.calls = [];
+    await source.setStatus(issueRef(7), "implementing", null);
+    expect(client.issueLabels.get(7)).toEqual(after);
+    expect(client.repoLabels).toEqual(labels);
+    expect(client.calls.filter((c) => c.method === "DELETE")).toEqual([]);
+  });
+
+  it("rethrows a 422 that is not 'already exists'", async () => {
+    const { client, source } = make();
+    client.request = async <T>(method: string, path: string): Promise<T> => {
+      throw new GitHubError(422, `GitHub ${method} ${path} → 422 {"message":"Validation Failed","errors":[{"code":"invalid","field":"color"}]}`);
+    };
+    await expect(source.setStatus(issueRef(7), "done", null)).rejects.toThrow(/invalid/);
+  });
+
+  it("counts a 404 on DELETE as success (label already gone)", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["sf: triaging"]);
+    const real = client.request.bind(client);
+    client.request = async <T>(method: string, path: string, body?: unknown): Promise<T> => {
+      if (method === "DELETE") {
+        client.calls.push({ method, path, body });
+        throw new GitHubError(404, "gone");
+      }
+      return real<T>(method, path, body);
+    };
+    await expect(source.setStatus(issueRef(7), "implementing", null)).resolves.toBeUndefined();
+  });
+
+  it("labels the PR, not the issue, when pr_number is given", async () => {
+    const { client, source } = make();
+    await source.setStatus(issueRef(7), "in_review", 42);
+    expect(client.issueLabels.get(42)).toEqual(["sf: in review"]);
+    expect(client.issueLabels.has(7)).toBe(false);
+  });
+
+  it("uses the configured prefix", async () => {
+    const { client, source } = make("factory/");
+    client.issueLabels.set(7, ["sf: triaging"]);
+    await source.setStatus(issueRef(7), "done", null);
+    expect(client.issueLabels.get(7)).toEqual(["sf: triaging", "factory/done"]);
   });
 });

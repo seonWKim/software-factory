@@ -16,6 +16,7 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
+import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import { type BaseContext, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins } from "./plugins.js";
 
@@ -30,6 +31,8 @@ export interface FileConfig {
   /** test_command: argv, default ["npm", "test"]. */
   repo: { owner: string; name: string; path: string; base_branch: string; test_command?: unknown };
   intake_label: string;
+  /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
+  status_label_prefix?: string;
   branch_prefix: string;
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
   floors: { prefix: string; tier: number }[];
@@ -101,6 +104,7 @@ export async function loadConfig(
   const config: FactoryConfig = {
     repo: { ...file.repo, path: resolve(root, file.repo.path), test_command: testCommand(file.repo.test_command) },
     intake_label: file.intake_label,
+    status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
     floors: file.floors.map((f) => ({ prefix: f.prefix, tier: f.tier as Tier })),
