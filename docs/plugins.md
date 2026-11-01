@@ -161,9 +161,9 @@ What it does: intake. Polls a source for new work items and commands, and posts 
 
 Plugins:
 
-- `github-issues`: `GitHubIssueSource`. Issues with the intake label on the configured repository, their comments and pull requests.
+- `github-issues`: `GitHubIssueSource`. Issues with the intake label on the configured repository, their comments and pull requests, and commits on the base branch (`repo.base_branch`; one extra API call per poll, for revert tracking, design §6).
   - Enable: `"plugins": { "source": "github-issues", ... }`.
-  - Secrets: `GITHUB_TOKEN`. Settings: `repo`, `intake_label`, `branch_prefix`, `poll_interval_ms`.
+  - Secrets: `GITHUB_TOKEN`. Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`.
 
 Switch back / disable: `"source": "github-issues"`. There is no "off".
 
