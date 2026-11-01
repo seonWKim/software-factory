@@ -41,7 +41,7 @@ const USAGE = `factory <command>
                (back up first). The other commands refuse to start while steps or owner/name rows remain
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
-  llm-check [--model cheap|strong]
+  llm-check [--model cheap|standard|strong]
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret

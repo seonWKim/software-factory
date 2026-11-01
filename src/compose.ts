@@ -9,6 +9,7 @@ import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings }
 import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
+import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { settingsLayers } from "./core/settings.js";
@@ -53,7 +54,12 @@ export interface FileConfig {
    * `source` may be a list of names, one adapter each (design 2026-11-01).
    */
   plugins?: Record<string, unknown>;
-  models: { cheap: string; strong: string };
+  models: { cheap: string; standard: string; strong: string };
+  /**
+   * Model class per run kind and tier, plus `retry_up` (design §4, 2026-11-02). Absent: DEFAULT_MODEL_BY.
+   * Checked by parseModelBy (src/core/model-choice.ts).
+   */
+  model_by?: unknown;
   max_loops: number;
   /** Task failures of one step before it blocks on a human. Per-project setting; absent everywhere: 3. */
   max_attempts?: number;
@@ -120,6 +126,10 @@ export interface Loaded {
   registry: Registry;
   /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
   stats: StatsConfig;
+  /** The checked `models`: a model name for cheap, standard and strong. */
+  models: ModelNames;
+  /** The checked, expanded `model_by` (the default table when absent). */
+  model_by: ModelTable;
 }
 
 /**
@@ -150,6 +160,8 @@ export async function loadConfig(
   const retention = inboxRetentionDays(file);
   const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
   const stats = statsConfig(file.stats);
+  const models = parseModels(file.models);
+  const model_by = parseModelBy(file.model_by);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -208,7 +220,7 @@ export async function loadConfig(
     throw err;
   });
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats };
+  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats, models, model_by };
 }
 
 /** What startup resolution needs from the GitHub client: one read of the repository. */
@@ -358,6 +370,7 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
   });

@@ -55,7 +55,7 @@ class FakeProvider implements LLMProvider {
   }
 }
 
-async function check(provider: LLMProvider, opts: { clock?: FakeClock; modelClass?: "cheap" | "strong" } = {}) {
+async function check(provider: LLMProvider, opts: { clock?: FakeClock; modelClass?: "cheap" | "standard" | "strong" } = {}) {
   const scanner = new RecordingScanner();
   const printed: string[] = [];
   const result = await runLlmCheck({
@@ -70,11 +70,12 @@ async function check(provider: LLMProvider, opts: { clock?: FakeClock; modelClas
 }
 
 describe("llm-check: arguments", () => {
-  it("defaults to cheap, accepts strong, rejects anything else with one line", () => {
+  it("defaults to cheap, accepts standard and strong, rejects anything else with one line", () => {
     expect(parseLlmCheckArgs([])).toEqual({ model: "cheap" });
     expect(parseLlmCheckArgs(["--model", "cheap"])).toEqual({ model: "cheap" });
+    expect(parseLlmCheckArgs(["--model", "standard"])).toEqual({ model: "standard" });
     expect(parseLlmCheckArgs(["--model", "strong"])).toEqual({ model: "strong" });
-    for (const bad of [["--model", "opus"], ["--model"], ["--fast"]]) {
+    for (const bad of [["--model", "opus"], ["--model", "medium"], ["--model"], ["--fast"]]) {
       const r = parseLlmCheckArgs(bad);
       expect("error" in r).toBe(true);
       if ("error" in r) expect(r.error).not.toContain("\n");
