@@ -19,12 +19,21 @@ export class Withholder {
     if (value === null || value === undefined || value === "") {
       return `<span class="muted">${esc(opts.fallback ?? "unknown")}</span>`;
     }
+    const r = await this.plain(value, opts);
+    return r.withheld ? `<strong>${esc(r.text)}</strong>` : esc(r.text);
+  }
+
+  /**
+   * Unescaped text for `value` (cut to `max` after the scan), or the withheld marker naming the scanner's
+   * rules, with `withheld` saying which. For non-HTML output (JSON); the caller escapes it for HTML.
+   */
+  async plain(value: string, opts: { channel?: EgressChannel; max?: number } = {}): Promise<{ text: string; withheld: boolean }> {
     const result = await this.scanner.scan(opts.channel ?? "log", value);
     if (!result.clean) {
       const rules = [...new Set(result.findings.map((f) => f.rule))].join(", ");
-      return `<strong>${esc(`[withheld: ${rules}]`)}</strong>`;
+      return { text: `[withheld: ${rules}]`, withheld: true };
     }
     const max = opts.max ?? Infinity;
-    return esc(value.length > max ? `${value.slice(0, max)}…` : value);
+    return { text: value.length > max ? `${value.slice(0, max)}…` : value, withheld: false };
   }
 }

@@ -5,6 +5,7 @@ import type { Run, Stage, StateChange, WorkItem, WorkItemId } from "../core/type
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { HealthMonitor } from "./health.js";
 import { between, duration, esc, link, page, table } from "./html.js";
 import { Withholder } from "./withhold.js";
 
@@ -16,6 +17,8 @@ export interface UiDeps {
   lease_ms: number;
   /** The forge's URL for PR `n` of `project` ("owner/name"). */
   prUrl(project: string, n: number): string;
+  /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
+  health: HealthMonitor;
 }
 
 export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
@@ -25,6 +28,8 @@ const LIST_LIMIT = 200;
 export interface IndexQuery {
   stage: Stage | undefined;
   closed: boolean;
+  /** The Health panel's refresh link asked for a fresh run (still at most one a minute). */
+  refresh?: boolean;
 }
 
 /** Tokens a succeeded run reported (outcome data.tokens), the same source the controller adds to token_cost. */
@@ -76,6 +81,7 @@ export async function renderIndex(d: UiDeps, q: IndexQuery): Promise<string> {
   const needs = await needsSection(c);
   const sections = [
     needs.html,
+    await d.health.section(d.scanner, { refresh: q.refresh === true }),
     await runningSection(c),
     await queueSection(c),
     await itemsSection(c, q),

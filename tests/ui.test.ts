@@ -6,6 +6,7 @@ import type { WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
 import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
@@ -13,6 +14,7 @@ import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 const LEASE = 60_000;
 // Built here so no secret-shaped literal sits in the repository.
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
+const HEALTHY = [{ ok: true, msg: "secret file is outside the repository" }];
 
 interface Page {
   status: number;
@@ -88,7 +90,7 @@ async function seeded() {
 
   const scanner = new PatternEgressScanner(async () => []);
   const ui = await startUi(
-    { store, scanner, clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}` },
+    { store, scanner, clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
     0,
   );
   servers.push(ui);
@@ -119,6 +121,7 @@ describe("ui: read-only status page", () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(page.body).not.toContain('<section id="waiting">');
+    expect(page.body.indexOf('<section id="health">')).toBeGreaterThan(order[0]!);
 
     const needs = section(page.body, "needs");
     expect(needs).toContain("<h2>Needs you (2)</h2>");
@@ -206,6 +209,19 @@ describe("ui: read-only status page", () => {
       expect(res.status, method).toBe(405);
       expect(res.headers.allow).toBe("GET, HEAD");
     }
+    for (const method of ["POST", "PUT", "DELETE"]) {
+      const res = await get(port, "/api/health", { method });
+      expect(res.status, method).toBe(405);
+      expect(res.headers.allow).toBe("GET, HEAD");
+    }
+    const apiHead = await get(port, "/api/health", { method: "HEAD" });
+    expect(apiHead.status).toBe(200);
+    expect(apiHead.body).toBe("");
+    for (const host of ["evil.example", `evil.example:${port}`]) {
+      const res = await get(port, "/api/health", { host });
+      expect(res.status, host).toBe(403);
+      expect(res.body).not.toContain("secret file");
+    }
     const head = await get(port, "/", { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(head.body).toBe("");
@@ -234,7 +250,7 @@ describe("ui: read-only status page", () => {
     const snapshot = async () =>
       Promise.all(ids.map(async (id) => ({ item: await store.getWorkItem(id), runs: await store.listRuns(id), sc: await store.listStateChanges(id) })));
     const before = await snapshot();
-    for (const path of ["/", "/?closed=1", "/?stage=READY", ...ids.map((id) => `/items/${id}`), "/nope"]) await get(port, path);
+    for (const path of ["/", "/?closed=1", "/?stage=READY", "/?health=refresh", "/api/health", ...ids.map((id) => `/items/${id}`), "/nope"]) await get(port, path);
     await get(port, "/", { method: "POST" });
     expect(await snapshot()).toEqual(before);
   });
@@ -282,7 +298,7 @@ function needsRows(body: string): string[] {
 
 async function startOn(store: FactoryStore, clock: FakeClock) {
   const ui = await startUi(
-    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}` },
+    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
     0,
   );
   servers.push(ui);
@@ -394,7 +410,7 @@ describe("ui: Needs you", () => {
 
   it("the page has no form, button or input", async () => {
     const { port } = await seededNeeds();
-    for (const path of ["/", "/?closed=1"]) expect((await get(port, path)).body).not.toMatch(/<(form|button|input|select|textarea)\b/i);
+    for (const path of ["/", "/?closed=1", "/?health=refresh"]) expect((await get(port, path)).body).not.toMatch(/<(form|button|input|select|textarea)\b/i);
   });
 
   it("says so when nothing waits, and the title shows 0", async () => {

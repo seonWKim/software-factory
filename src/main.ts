@@ -10,8 +10,9 @@ import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import type { WorkItemId } from "./core/types.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
-import { doctor, setup } from "./setup.js";
+import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
+import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 
@@ -126,6 +127,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           clock: parts.clock,
           lease_ms: loaded.config.lease_ms,
           prUrl: (project, n) => `https://github.com/${project || `${owner}/${name}`}/pull/${n}`,
+          // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
+          health: new HealthMonitor(() => doctorChecks(loaded), parts.clock),
         },
         uiPort(loaded.file.ui),
       );
