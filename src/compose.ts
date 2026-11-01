@@ -19,6 +19,7 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
+import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -84,7 +85,7 @@ export interface FileConfig {
   stats?: { weights?: unknown; min_sample?: unknown };
 }
 
-export { CODE_ROOT_ENV } from "./interfaces/updater.js";
+export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 
 export interface Loaded {
   /** The state root: the main checkout. State dir, worktrees, repo path and the database resolve here. */
@@ -251,7 +252,7 @@ export class Plugins {
 
 export async function build(
   loaded: Loaded,
-  opts: { clock?: Clock; extraScanValues?: string[] } = {},
+  opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number } = {},
 ): Promise<Built> {
   const { config, stateDir, registry, plugins: sel } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -286,6 +287,8 @@ export async function build(
 
   const worker = new WorkerPool({
     id_prefix: `${hostname()}:${process.pid}`,
+    // The supervisor's block for this child (git-worktree updater); unset: 0.
+    index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
     store,
     sandbox,
     runner: await p.runner(sandbox, secrets),
@@ -312,6 +315,12 @@ export function workerCount(value: unknown): number {
     throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
   }
   return value;
+}
+
+/** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
+export function workerIndexBase(value: string | undefined): number {
+  if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
+  return Number.parseInt(value.trim(), 10);
 }
 
 export const DEFAULT_UI_PORT = 4310;

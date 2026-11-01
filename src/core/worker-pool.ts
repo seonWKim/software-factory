@@ -5,6 +5,12 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index"> {
   /** `<host>:<pid>`. Worker n's id is `<id_prefix>:<n>`. The number of workers is `config.workers`. */
   id_prefix: string;
+  /**
+   * The first worker index (SF_WORKER_INDEX_BASE from the supervisor; absent: 0). Workers are numbered
+   * base … base + workers - 1, so two processes alive at once on one host (an old version draining beside the
+   * new one) never hand the same SF_WORKER_INDEX to two runs.
+   */
+  index_base?: number;
 }
 
 /**
@@ -18,12 +24,12 @@ export class WorkerPool {
   readonly workers: readonly Worker[];
 
   constructor(private readonly d: WorkerPoolDeps) {
-    const { id_prefix, ...shared } = d;
+    const { id_prefix, index_base = 0, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
-    this.workers = Array.from(
-      { length: d.config.workers },
-      (_, index) => new Worker({ ...shared, id: `${id_prefix}:${index}` as WorkerId, index, awake }),
-    );
+    this.workers = Array.from({ length: d.config.workers }, (_, i) => {
+      const index = index_base + i;
+      return new Worker({ ...shared, id: `${id_prefix}:${index}` as WorkerId, index, awake });
+    });
   }
 
   /** Runs every loop until `signal` aborts; resolves after the last in-flight run is done. */
