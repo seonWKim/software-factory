@@ -13,6 +13,7 @@ import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { startUi } from "./ui/server.js";
+import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 
 const USAGE = `factory <command>
 
@@ -32,6 +33,7 @@ const USAGE = `factory <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
@@ -152,6 +154,19 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "golden":
       return golden(loaded, args[0], args.slice(1));
+    case "issue": {
+      const action = parseIssueArgs(args);
+      if (!action) {
+        console.error(ISSUE_USAGE);
+        return 1;
+      }
+      const p = new Plugins(loaded);
+      const secrets = await p.secrets();
+      const client = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
+      const { owner, name } = loaded.config.repo;
+      console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
+      return 0;
+    }
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));
