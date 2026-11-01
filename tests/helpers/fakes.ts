@@ -361,9 +361,13 @@ export class FakeRunner implements AgentRunner {
   }
 }
 
-/** Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). */
-export async function waitFor(cond: () => boolean | Promise<boolean>, what = "condition", tries = 200): Promise<void> {
-  for (let i = 0; i < tries; i++) {
+/**
+ * Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). Gives up
+ * after at least `tries` yields and `ms` of real time, so a slow machine (CI) gets the same chance as a fast one.
+ */
+export async function waitFor(cond: () => boolean | Promise<boolean>, what = "condition", tries = 200, ms = 5_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (let i = 0; i < tries || Date.now() < deadline; i++) {
     if (await cond()) return;
     await new Promise((r) => setImmediate(r));
   }
