@@ -27,11 +27,16 @@ import { IMPLEMENT_KINDS, allowedPathsOverlap } from "../../../core/policy.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
+  AppendInboxResult,
   AnswerBudgetCheckpointInput,
   BudgetCheckpointResult,
   ClaimInput,
   FactoryStore,
+  InboxRow,
   LeaseResult,
+  ListenerLease,
+  ListenerLeaseResult,
+  NewInboxEvent,
   NewRun,
   NewWorkItem,
   OpenBudgetCheckpointInput,
@@ -41,7 +46,8 @@ import type {
   TransitionResult,
   WorkItemFilter,
 } from "../../../interfaces/factory-store.js";
-import type { SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
+import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import {
   WORK_ITEM_COLUMNS,
   diffPatch,
@@ -578,7 +584,98 @@ export class SqlFactoryStore implements FactoryStore {
     );
   }
 
+  // Stream intake
+
+  async appendInbox(input: NewInboxEvent): Promise<AppendInboxResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<AppendInboxResult> => {
+      // FOR UPDATE on the lease row: a takeover (token + 1) waits for this append to commit, and appends of
+      // one source type commit one at a time, so their seqs commit in order and a cursor never skips one.
+      const [held] = await tx.all(
+        `SELECT token FROM listener_leases WHERE source_type = ? AND token = ?${forUpdate}`,
+        [input.source_type, input.lease_token],
+      );
+      if (!held) return { ok: false, reason: "lease_lost" };
+      const existing = await this.selectInbox(tx, input.source_type, input.dedupe_key);
+      if (existing) return { ok: true, row: existing, duplicate: true };
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO source_inbox (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)",
+        [input.source_type, input.dedupe_key, JSON.stringify(input.event), this.now()],
+      );
+      const row = (await this.selectInbox(tx, input.source_type, input.dedupe_key))!;
+      return { ok: true, row, duplicate: !inserted };
+    });
+  }
+
+  async listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]> {
+    const rows = await this.db.all("SELECT * FROM source_inbox WHERE source_type = ? AND seq > ? ORDER BY seq LIMIT ?", [
+      source_type, after_seq, limit,
+    ]);
+    return rows.map(rowToInbox);
+  }
+
+  async pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number> {
+    return this.db.transaction((tx) =>
+      tx.run("DELETE FROM source_inbox WHERE source_type = ? AND seq <= ? AND received_at < ?", [
+        source_type, through_seq, this.after(-older_than_ms),
+      ]),
+    );
+  }
+
+  async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
+    return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
+      const expires_at = this.after(lease_ms);
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)",
+        [source_type, owner, expires_at],
+      );
+      if (created) return { ok: true, lease: { source_type, owner, token: 1, expires_at } };
+      // Conditional: only an expired (or released) lease can be taken, and taking it bumps the token.
+      const taken = await tx.run(
+        "UPDATE listener_leases SET owner = ?, token = token + 1, expires_at = ? WHERE source_type = ? AND expires_at <= ?",
+        [owner, expires_at, source_type, this.now()],
+      );
+      const lease = await this.selectListenerLease(tx, source_type);
+      return taken === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "held", holder: lease };
+    });
+  }
+
+  async renewListenerLease(source_type: SourceType, token: number, lease_ms: number): Promise<ListenerLeaseResult> {
+    return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
+      const renewed = await tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [
+        this.after(lease_ms), source_type, token,
+      ]);
+      const lease = await this.selectListenerLease(tx, source_type);
+      return renewed === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "lease_lost", holder: lease };
+    });
+  }
+
+  async releaseListenerLease(source_type: SourceType, token: number): Promise<void> {
+    await this.db.transaction((tx) =>
+      tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [this.now(), source_type, token]),
+    );
+  }
+
   // Internals
+
+  private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
+    const [row] = await q.all("SELECT * FROM source_inbox WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
+    return row ? rowToInbox(row) : null;
+  }
+
+  private async selectListenerLease(q: SqlExecutor, source_type: SourceType): Promise<ListenerLease | null> {
+    const [row] = await q.all("SELECT * FROM listener_leases WHERE source_type = ?", [source_type]);
+    return row
+      ? {
+          source_type: row.source_type as SourceType,
+          owner: row.owner as string,
+          token: Number(row.token),
+          expires_at: row.expires_at as Timestamp,
+        }
+      : null;
+  }
 
   /** False if a unique key says the row is already there. */
   private async insertOnce(tx: SqlExecutor, sql: string, params: (string | number | null)[]): Promise<boolean> {
@@ -697,6 +794,16 @@ const OUTCOME: Partial<Record<CloseReason, BudgetOutcome>> = { completed: "merge
 
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";
+
+function rowToInbox(row: Row): InboxRow {
+  return {
+    seq: Number(row.seq),
+    source_type: row.source_type as SourceType,
+    dedupe_key: row.dedupe_key as string,
+    event: JSON.parse(row.event as string) as SourceEvent,
+    received_at: row.received_at as Timestamp,
+  };
+}
 
 /** The WHERE clause (with leading space, or empty) for a WorkItemFilter. */
 function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params: SqlValue[] } {

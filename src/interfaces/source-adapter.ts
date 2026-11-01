@@ -2,7 +2,7 @@ import type { WorkStatus } from "../core/status-label.js";
 import type { SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
-// Intake surface. First impl: GitHub issues on this repo (poll). Webhooks and Slack later.
+// Intake surface. Two kinds of source: polled (GitHub issues) and streamed (pushed events, e.g. Slack).
 
 /**
  * Command events carry `comment_id`, the id of the comment that held the command, so the controller can
@@ -64,14 +64,22 @@ export interface PollResult {
   next_cursor: string;
 }
 
-export interface SourceAdapter {
+/**
+ * One event a stream source delivered. The listener saves it to the store inbox and, only after that write
+ * commits, calls `ack()`. An event that is never acked must be delivered again by the source (e.g. Slack
+ * Socket Mode redelivers unacked envelopes), so a crash between delivery and the write loses nothing.
+ */
+export interface PushedEvent {
+  event: SourceEvent;
+  /** Unique within the source: the same delivery (or a redelivery of it) always carries the same key. */
+  dedupe_key: string;
+  /** Tells the source the event is stored. Called at most once, and only after the inbox write committed. */
+  ack(): Promise<void>;
+}
+
+/** What every source offers, whichever way its events arrive. */
+interface SourceAdapterBase {
   readonly type: SourceType;
-  /**
-   * Never delivers the same command comment twice across polls that advanced the cursor: an implementation
-   * keeps whatever it needs (e.g. a comment-id high-water mark) in the cursor. Edits to an already
-   * delivered comment are not delivered again.
-   */
-  poll(cursor: string | null): Promise<PollResult>;
   /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
    * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the
@@ -98,3 +106,33 @@ export interface SourceAdapter {
    */
   closeIssue(source: SourceRef): Promise<void>;
 }
+
+/** A source the controller polls on a timer (GitHub issues). */
+export interface PollSource extends SourceAdapterBase {
+  readonly intake: "poll";
+  /**
+   * Never delivers the same command comment twice across polls that advanced the cursor: an implementation
+   * keeps whatever it needs (e.g. a comment-id high-water mark) in the cursor. Edits to an already
+   * delivered comment are not delivered again.
+   */
+  poll(cursor: string | null): Promise<PollResult>;
+}
+
+/**
+ * A source that pushes events as they happen (e.g. Slack Socket Mode). Only the replica holding the
+ * source's listener lease subscribes (docs/architecture.md, Intake). The controller reads the events back
+ * from the store inbox, never from the stream.
+ */
+export interface StreamSource extends SourceAdapterBase {
+  readonly intake: "stream";
+  /**
+   * Opens one connection and yields its events until the connection ends (the iterable completes) or fails
+   * (it throws). Must stop and complete once `signal` aborts. The listener reconnects by calling it again;
+   * events delivered but not acked on a dead connection must come back on a later one.
+   */
+  subscribe(signal: AbortSignal): AsyncIterable<PushedEvent>;
+}
+
+/** A source is either polled or streamed; `intake` says which. */
+export type SourceAdapter = PollSource | StreamSource;
+

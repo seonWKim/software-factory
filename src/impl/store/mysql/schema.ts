@@ -168,4 +168,24 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     ) ${TABLE}`,
     "CREATE INDEX work_items_tier ON work_items (project, tier, stage)",
   ],
+  // 10: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
+  // InnoDB keeps the AUTO_INCREMENT counter across restarts (MySQL 8), so a seq is never reused after cleanup.
+  // One listener lease row per source type.
+  [
+    `CREATE TABLE source_inbox (
+      seq          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      source_type  VARCHAR(32) NOT NULL,
+      dedupe_key   VARCHAR(255) NOT NULL,
+      event        MEDIUMTEXT NOT NULL,
+      received_at  CHAR(24) NOT NULL,
+      UNIQUE KEY source_inbox_dedupe (source_type, dedupe_key),
+      KEY source_inbox_seq (source_type, seq)
+    ) ${TABLE}`,
+    `CREATE TABLE listener_leases (
+      source_type  VARCHAR(32) NOT NULL PRIMARY KEY,
+      owner        VARCHAR(255) NOT NULL,
+      token        BIGINT NOT NULL,
+      expires_at   CHAR(24) NOT NULL
+    ) ${TABLE}`,
+  ],
 ];
