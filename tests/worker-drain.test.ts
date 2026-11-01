@@ -82,9 +82,11 @@ describe("dev child: drain over IPC", () => {
   it("acknowledges only after the worker's in-flight run completed; the controller runs until then", async () => {
     const { worker, release, started, completeRun, claimRun } = await setup();
     let controllerStopped = false;
+    const finalPass: boolean[] = [];
     const controller = {
       run: (signal: AbortSignal) =>
         new Promise<void>((r) => signal.addEventListener("abort", () => ((controllerStopped = true), r()), { once: true })),
+      tickRuns: async () => void finalPass.push(controllerStopped && completeRun.mock.calls.length === 1),
     };
     const c = channel();
     const stop = new AbortController();
@@ -102,6 +104,8 @@ describe("dev child: drain over IPC", () => {
     expect(await child).toBe("drained");
     expect(completeRun).toHaveBeenCalledTimes(1);
     expect(controllerStopped).toBe(true);
+    // One more pass over finished runs after the loop stopped, so the last run's outcome is handled here.
+    expect(finalPass).toEqual([true]);
     expect(c.acks).toHaveLength(1);
     expect(claimRun.mock.calls.length).toBe(claims);
   });
@@ -109,7 +113,7 @@ describe("dev child: drain over IPC", () => {
   it("the hard stop (SIGTERM) stops both loops and sends no drain acknowledgement", async () => {
     const { worker } = await setup();
     const signals: AbortSignal[] = [];
-    const controller = { run: async (s: AbortSignal) => void signals.push(s) };
+    const controller = { run: async (s: AbortSignal) => void signals.push(s), tickRuns: async () => {} };
     const c = channel();
     const stop = new AbortController();
     stop.abort();

@@ -285,8 +285,10 @@ export interface FactoryStore {
   // Runs
 
   /**
-   * Pull-based claim: oldest queued run of the given kinds whose `not_before` has passed → running,
-   * attempt + 1, new lease with token + 1. Returns null while a claim pause (pauseClaims) is in effect.
+   * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first by kind
+   * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
+   * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
+   * skipped, never blocking the runs after it. Returns null while a claim pause (pauseClaims) is in effect.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**

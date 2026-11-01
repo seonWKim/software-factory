@@ -10,6 +10,7 @@ import {
   type ChildLauncher,
   type CommandRunner,
   SUPERVISED_ENV,
+  type SupervisorStatus,
   type Updater,
 } from "../../interfaces/updater.js";
 
@@ -50,6 +51,8 @@ export interface GitWorktreeOptions {
   /** A draining child gets this plus DRAIN_MARGIN_MS before it is hard-stopped. */
   runTimeoutMs: number;
   childArgs?: readonly string[];
+  /** Where to write the SupervisorStatus for the status page; none: not written. */
+  statusFile?: string;
 }
 
 const tail = (s: string, n = TAIL) => (s.length > n ? s.slice(-n) : s);
@@ -72,6 +75,12 @@ export class GitWorktreeUpdater implements Updater {
   private mainTriedFor: string | null = null;
   private closed = false;
   private readonly abort = new AbortController();
+  /** The revision the current child was started from. */
+  private runningRev: string | null = null;
+  /** The last status written: a repeat of the same state keeps its `since`. */
+  private lastStatus: SupervisorStatus | null = null;
+  /** The crash loop in progress: its error and when it began. */
+  private crash: { error: string | null; since: string } | null = null;
 
   constructor(private readonly o: GitWorktreeOptions) {}
 
@@ -117,7 +126,7 @@ export class GitWorktreeUpdater implements Updater {
     this.closed = true;
     this.abort.abort();
     const child = this.child;
-    if (!child) return;
+    if (!child) return void (await this.report("stopped", null));
     this.stopping.add(child);
     child.kill("SIGTERM");
     if (!(await this.waitExit(child))) {
@@ -129,6 +138,7 @@ export class GitWorktreeUpdater implements Updater {
       await child.exited;
     }
     if (this.child === child) this.child = null;
+    await this.report("stopped", null);
   }
 
   /** Moves the runtime copy from its HEAD to `target`, building and restarting only for code changes. */
@@ -154,14 +164,18 @@ export class GitWorktreeUpdater implements Updater {
       return;
     }
     log.info("code change: building the new revision beside the running child", { rev: target, pid: this.child.pid });
+    await this.report("building", target);
     if (!(await this.prepare(target, files.includes("package-lock.json")))) {
       this.failedRev = target;
+      await this.report("build_failed", target);
       await this.removeStaging().catch(() => undefined);
       return;
     }
     if (this.closed) return;
+    await this.report("draining", target);
     await this.drain();
     if (this.closed) return;
+    await this.report("restarting", target);
     await this.fastForwardRuntime(target);
     await this.swapIn();
     // ensureChild() (next in poll) builds if the swap did not leave a build of `target`, then restarts.
@@ -199,6 +213,32 @@ export class GitWorktreeUpdater implements Updater {
     await this.git(repoPath, ["worktree", "prune"]);
   }
 
+  /** Writes the status file (atomically: a temp file, then rename). A failure is logged, never thrown. */
+  private async report(state: SupervisorStatus["state"], target: string | null, error: string | null = null): Promise<void> {
+    const file = this.o.statusFile;
+    if (!file) return;
+    const last = this.lastStatus;
+    const now = this.o.clock.now().toISOString();
+    // A crash loop (crash, restart, the same crash) keeps the first crash's time; any other state ends it.
+    if (state === "crashed") this.crash = this.crash?.error === error ? this.crash : { error, since: now };
+    else if (state !== "running") this.crash = null;
+    const status: SupervisorStatus = {
+      state,
+      rev: this.runningRev,
+      target_rev: target,
+      child_pid: state === "stopped" || state === "crashed" ? null : (this.child?.pid ?? null),
+      since: state === "crashed" ? this.crash!.since : last && last.state === state ? last.since : now,
+      error,
+    };
+    this.lastStatus = status;
+    try {
+      await writeFile(`${file}.tmp`, `${JSON.stringify(status)}\n`);
+      await rename(`${file}.tmp`, file);
+    } catch (err) {
+      this.o.log.warn("could not write the supervisor status", { error: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
+    }
+  }
+
   /** Starts the child from the runtime copy, building it first if needed. Never starts a tree that did not build. */
   private async ensureChild(): Promise<void> {
     const { runtimeDir } = this.o;
@@ -213,6 +253,7 @@ export class GitWorktreeUpdater implements Updater {
     }
     if (this.closed) return;
     this.launch(head);
+    await this.report("running", null);
   }
 
   private launch(rev: string): void {
@@ -224,9 +265,13 @@ export class GitWorktreeUpdater implements Updater {
       env: { [CODE_ROOT_ENV]: runtimeDir, [SUPERVISED_ENV]: "1" },
     });
     this.child = child;
+    this.runningRev = rev;
     log.info("child started", { pid: child.pid, rev });
     void child.exited.then((code) => {
-      if (this.child === child) this.child = null;
+      if (this.child === child) {
+        this.child = null;
+        if (!this.closed && !this.stopping.has(child)) void this.report("crashed", null, child.lastError ?? `exit code ${code}`);
+      }
       if (!this.stopping.has(child)) log.warn("child exited unexpectedly; restarting on the next poll", { pid: child.pid, exit_code: code });
     });
   }
