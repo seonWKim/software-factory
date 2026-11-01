@@ -63,6 +63,42 @@ const INDEX_SIZE = 8;
 /** Characters of the agent's output kept on a failed outcome, for the last-attempt comment. */
 const TAIL_CHARS = 2000;
 
+/**
+ * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
+ * config, above the run's `.git/config`, which the agent can write: no hooks, no fsmonitor, no signing program.
+ * Replace refs and grafts the agent wrote cannot change what the gates see.
+ */
+export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
+  GIT_CONFIG_COUNT: "4",
+  GIT_CONFIG_KEY_0: "core.hooksPath",
+  GIT_CONFIG_VALUE_0: "/dev/null",
+  GIT_CONFIG_KEY_1: "core.fsmonitor",
+  GIT_CONFIG_VALUE_1: "false",
+  GIT_CONFIG_KEY_2: "commit.gpgSign",
+  GIT_CONFIG_VALUE_2: "false",
+  GIT_CONFIG_KEY_3: "tag.gpgSign",
+  GIT_CONFIG_VALUE_3: "false",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_GRAFT_FILE: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+};
+
+const TRUSTED_GIT_KEYS = new Set([
+  "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
+  "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
+  "remote.origin.url", "remote.origin.fetch", "user.name", "user.email",
+]);
+
+/**
+ * The keys in a run's `.git/config` (`git config --name-only --list -z` output) that are not plain data a sandbox
+ * or git itself writes there. Anything else may make git run a program (filters, textconv, fsmonitor, ssh,
+ * credential helpers, includes, URL rewrites), so trusted git calls never read it (design §5).
+ */
+export function untrustedGitConfig(names: string): string[] {
+  const keys = names.split("\0").filter(Boolean);
+  return [...new Set(keys.filter((k) => !TRUSTED_GIT_KEYS.has(k) && !/^branch\.[^\n]+\.(remote|merge)$/.test(k)))];
+}
+
 class RunFailure extends Error {
   constructor(
     readonly code: string,
@@ -219,9 +255,8 @@ export class Worker {
   private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
     const base = this.d.config.repo.base_branch;
     const start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-    // Resolved before the agent runs: its writable git dir includes refs, so it could move origin/<base>.
-    const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
-    const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+    const baseSha = await this.trustedBase(handle);
+    const dirs = await this.gitDirs(handle);
     const previous = await this.previousContext(item);
     const notes = await this.approverNotes(item);
 
@@ -234,11 +269,13 @@ export class Worker {
       harness_tools: WRITE_TOOLS,
       model_class: "strong",
       output_schema: IMPLEMENT_SCHEMA,
-      writable_paths: [gitDir],
+      // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
+      writable_paths: [],
       env_allowlist: gitIdentity(this.d.config.agent_git_identity),
     });
     const out = parseImplement(result.output);
     if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+    await this.distrustAgentGit(handle, dirs);
 
     const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
     if (commits.length === 0) {
@@ -463,9 +500,10 @@ export class Worker {
     try {
       // The sandbox starts a missing branch from base; a resolve must only ever touch the PR's own branch.
       await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
-      // Resolved before the agent runs: its writable git dir includes refs, so it could move origin/<base>.
-      const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
+      const baseSha = await this.trustedBase(handle);
+      // The run's own git folder, inside its workdir: the clone has no other.
       const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+      const dirs = await this.gitDirs(handle);
       const index = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "sf-resolve-index"])).trim();
 
       const merge = await this.gitRaw(
@@ -497,6 +535,7 @@ export class Worker {
         const out = parseImplement(result.output);
         if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
         tokens = tokensOf(result);
+        await this.distrustAgentGit(handle, dirs);
 
         const after = await this.snapshot(handle, index);
         const changed = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, after]);
@@ -686,8 +725,41 @@ export class Worker {
     return r.stdout;
   }
 
+  /** Every worker git call in a run folder: the trusted env ranks above whatever the run's .git/config says. */
   private gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
-    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, GIT_TERMINAL_PROMPT: "0" } });
+    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
+  }
+
+  /**
+   * The base commit the gates diff against: the factory repo's origin/<base>, as the sandbox resolved it before
+   * any agent ran. A sandbox that does not report it: origin/<base> in the run folder, still before the agent.
+   */
+  private async trustedBase(handle: SandboxHandle): Promise<string> {
+    if (handle.base_sha) return handle.base_sha;
+    const base = this.d.config.repo.base_branch;
+    return (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
+  }
+
+  /** The run folder's git dir and common dir, as real paths. Taken before the agent, compared after. */
+  private async gitDirs(handle: SandboxHandle): Promise<string> {
+    return (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])).trim();
+  }
+
+  /**
+   * After an agent ran in the run folder, before any other worker or broker git call there. The git folder must
+   * still be the one the sandbox made (not swapped for a link or a `gitdir:` file pointing elsewhere), and every
+   * config key the agent added that is not plain data is removed, so no trusted call runs a program it named.
+   */
+  private async distrustAgentGit(handle: SandboxHandle, before: string): Promise<void> {
+    const after = await this.gitDirs(handle);
+    if (after !== before) throw new RunFailure("untrusted_git_dir", "the run's git folder changed while the agent ran");
+    const file = `${after.split("\n")[0]}/config`;
+    const list = () => this.git(handle, ["config", "--file", file, "--name-only", "--list", "-z"]);
+    for (const key of untrustedGitConfig(await list())) {
+      await this.git(handle, ["config", "--file", file, "--unset-all", key]);
+    }
+    const left = untrustedGitConfig(await list());
+    if (left.length > 0) throw new RunFailure("untrusted_git_config", `git config keys left: ${left.join(", ")}`.slice(0, 500));
   }
 }
 

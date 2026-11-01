@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { secretName } from "../../interfaces/secret-store.js";
 import { definePlugin } from "../../plugin-api.js";
 import { GitHubToolBroker } from "./github-tool-broker.js";
@@ -16,5 +17,6 @@ export default definePlugin({
       clock: c.clock,
       repo: c.repo,
       branchPrefix: c.loaded.config.branch_prefix,
+      repoPath: resolve(c.loaded.root, c.loaded.config.repo.path),
     }),
 });

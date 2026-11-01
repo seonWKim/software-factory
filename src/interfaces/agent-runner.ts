@@ -19,7 +19,10 @@ export interface AgentRunSpec {
   env_allowlist: Readonly<Record<string, string>>;
   /** Paths the harness must deny for file and shell tools (G4) and at OS level (G3). */
   deny_paths: readonly string[];
-  /** Paths outside the workdir the agent's shell may write to (e.g. the repo's .git for worktree commits). */
+  /**
+   * Paths outside the workdir the agent's shell may write to. Never the owner's checkout or its `.git`
+   * (architecture §5): the run's git folder is inside its workdir, so implement runs need none.
+   */
   writable_paths: readonly string[];
   model_class: "cheap" | "strong";
   timeout_ms: number;
