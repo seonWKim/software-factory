@@ -417,6 +417,7 @@ describe("shell metacharacters in file names", () => {
 describe("sandbox failures", () => {
   const throwing: Sandbox = {
     create: () => Promise.reject(new Error("no")),
+    updateBase: () => Promise.reject(new Error("no")),
     exec: () => Promise.reject(new Error("sandbox is gone")),
     copyIn: () => Promise.reject(new Error("no")),
     copyOut: () => Promise.reject(new Error("no")),
