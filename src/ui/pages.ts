@@ -1,6 +1,7 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
+import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import type { Run, RunKind, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -151,6 +152,8 @@ interface ListRow extends FilterRow {
   /** The full title as shown, for the title attribute; null when withheld or untitled. */
   titlePlain: string | null;
   runStatus: "queued" | "running" | null;
+  /** Merge conflicts resolved automatically and those that needed a person, from the item's history. */
+  conflicts: ConflictCounts;
 }
 
 /** Every listed item, ranked (closed items too when the filters may show them). */
@@ -161,10 +164,11 @@ async function listRows(c: Ctx, f: Filters): Promise<ListRow[]> {
   for (const r of await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT)) if (!active.has(r.work_item_id)) active.set(r.work_item_id, r);
   for (const r of await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)) active.set(r.work_item_id, r); // running wins
 
-  const inputs: (PriorityInput & { item: WorkItem })[] = [];
+  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts })[] = [];
   for (const it of items) {
     const run = active.get(it.id);
     const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
+    const changes = await c.d.store.listStateChanges(it.id);
     inputs.push({
       item: it,
       stage: it.stage,
@@ -172,10 +176,11 @@ async function listRows(c: Ctx, f: Filters): Promise<ListRow[]> {
       blocked_reason: it.blocked_reason,
       close_reason: it.close_reason,
       tier: it.tier,
-      since: blocked && it.stage !== "CLOSED" ? await waitingSince(c, it) : it.updated_at,
+      since: blocked && it.stage !== "CLOSED" ? waitingSince(it, changes) : it.updated_at,
       run: run && (run.status === "queued" || run.status === "running") ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at } : null,
       dependents: 0,
       waiting_on: 0,
+      conflicts: conflictCounts(await c.d.store.listRuns(it.id), changes),
     });
   }
 
@@ -196,6 +201,7 @@ async function listRows(c: Ctx, f: Filters): Promise<ListRow[]> {
       titleHtml: t.html,
       titlePlain: t.plain,
       runStatus: r.input.run?.status ?? null,
+      conflicts: r.input.conflicts,
     });
   }
   return out;
@@ -262,6 +268,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
         next,
         c.prLink(it),
         c.ago(r.input.since),
+        conflictsCell(r.conflicts),
       ],
     });
   }
@@ -271,8 +278,13 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
   const body =
     out.length === 0
       ? empty
-      : table(["state", "number", "title", "stage", "tier", "next step", "PR", "waiting"], out);
+      : table(["state", "number", "title", "stage", "tier", "next step", "PR", "waiting", "conflicts"], out);
   return `<section id="items"><h2>Work items (${esc(rows.length)})</h2>${body}</section>`;
+}
+
+/** The conflicts cell: both counts, or empty when the item never had a merge conflict. */
+function conflictsCell(n: ConflictCounts): string {
+  return n.automatic === 0 && n.person === 0 ? "" : esc(`${n.automatic} automatic · ${n.person} needed a person`);
 }
 
 /** What a waiting item's row says: the reason in plain words, where to act, and the command to type. */
@@ -294,8 +306,7 @@ const PLAIN_REASONS: Record<string, string> = {
  * When the item started waiting: the latest state change that set its blocked_on or blocked_reason
  * (created_at if none did).
  */
-async function waitingSince(c: Ctx, it: WorkItem): Promise<string> {
-  const changes = await c.d.store.listStateChanges(it.id);
+function waitingSince(it: WorkItem, changes: readonly StateChange[]): string {
   const set = changes.filter((sc) => sc.changes.blocked_on !== undefined || sc.changes.blocked_reason !== undefined).at(-1);
   return set?.at ?? it.created_at;
 }
@@ -397,6 +408,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   if (!item) return null;
   const changes = await d.store.listStateChanges(id);
   const runs = await d.store.listRuns(id);
+  const conflicts = conflictCounts(runs, changes);
 
   const facts: [string, string][] = [
     ["id", esc(item.id)],
@@ -406,6 +418,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     ["tier", item.tier === null ? "" : esc(item.tier)],
     ["loops / restarts", `${esc(item.loop_count)} / ${esc(item.restart_count)}`],
     ["tokens", esc(item.token_cost)],
+    ["merge conflicts", esc(`${conflicts.automatic} resolved automatically, ${conflicts.person} needed a person`)],
     ["PR", c.prLink(item)],
     ["created / updated", `${esc(item.created_at)} / ${esc(item.updated_at)}`],
   ];
