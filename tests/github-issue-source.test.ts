@@ -312,7 +312,7 @@ describe("GitHubIssueSource: closePr", () => {
     const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     return { client, source };
   };
-  const body = (closer: { login: string } | null) => `closed by ${closer ? closer.login : "nobody"}`;
+  const body = (closer: { login?: string } | null) => `closed by ${closer?.login ?? "nobody"}`;
   const input = { pr_number: 42, closed: issueRef(7), marker: "<!-- m -->", body };
 
   it("comments with the issue's closer, then closes the open PR without merging", async () => {

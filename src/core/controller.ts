@@ -29,7 +29,7 @@ import {
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunId, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, CloseReason, Run, RunId, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -114,6 +114,11 @@ const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", 
  * `blocked_on: upstream` and this reason until both are done (design §4, gate commands).
  */
 const SOURCE_CLOSE_PENDING = "source_close_pending";
+/**
+ * An item closed from its source whose open PR still needs its comment and its close: `CLOSED` with
+ * `blocked_on: upstream` and this reason until both are done (design §4, source closed).
+ */
+const PR_CLOSE_PENDING = "pr_close_pending";
 /** blocked_reason (with `blocked_on: ci`) of a reviewed PR whose checks have not finished (design §5 CI gate). */
 const CHECKS_PENDING = "checks_pending";
 /** Items waiting on checks looked at per tick. */
@@ -250,13 +255,15 @@ export class Controller {
 
   /**
    * Finishes rejects whose comment or close did not happen (the factory stopped, or the source failed):
-   * every rejected item still marked `source_close_pending` gets them now. Safe to repeat: the comment
-   * carries a marker and is posted once; closing a closed issue changes nothing.
+   * every rejected item still marked `source_close_pending` gets them now. Likewise every item closed from
+   * its source still marked `pr_close_pending` gets its PR comment and PR close. Safe to repeat: comments
+   * carry a marker and are posted once; closing a closed issue or PR changes nothing.
    */
   async tickSourceCloses(): Promise<void> {
     const pending = await this.d.store.listWorkItemsWhere({ stage: "CLOSED", blocked_on: "upstream", limit: CLOSE_BATCH });
     for (const it of pending) {
       if (closePending(it)) await this.guard("source close", () => this.finishReject(it.id));
+      if (prClosePending(it)) await this.guard("pr close", () => this.finishPrClose(it.id));
     }
   }
 
@@ -543,29 +550,79 @@ export class Controller {
   }
 
   /**
-   * The source issue was closed (design §4): the item closes as `wont_do` and its queued runs are cancelled in
-   * the same transition. Store first: an item already CLOSED (by /reject, a merge, or an earlier delivery of
-   * this close) is left alone, so a repeat or the factory's own close writes nothing. No login is checked and
-   * nothing is posted. A run already running finishes; applyRun ignores its result because the item is closed.
+   * The source issue was closed (design §4). The item closes as `completed` when the source says it was
+   * closed as completed, else as `wont_do`; in the same transition its queued runs are cancelled and its
+   * running runs are stopped (their next heartbeat, completion and tool calls get lease_lost, so nothing is
+   * pushed and no outcome is stored). Store first: an item already CLOSED (by /reject, a merge, or an
+   * earlier delivery of this close) is left alone, so a repeat or the factory's own close writes nothing. No
+   * login is checked. An item with a PR is marked `pr_close_pending` in the same transition; the PR is then
+   * closed with a comment (finishPrClose), retried on later ticks if that fails.
    */
   private async closeFromSource(e: SourceClosedEvent): Promise<void> {
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
-    if (!item || item.stage === "CLOSED") return;
-    const closer = e.closer ? await this.d.auth.resolve(e.closer) : null;
-    if (!closer) {
-      this.d.log.warn("source closed by an unknown user; recorded as the system actor", { work_item_id: item.id, source_id: e.source.id });
-    }
-    const actor: Actor = closer ? { kind: "user", id: closer.user_id } : INTAKE;
-    await this.decide(item.id, (it) =>
-      it.stage === "CLOSED"
-        ? null
-        : {
-            patch: { stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null },
-            actor,
-            reason: "source_closed",
-            cancel_queued_runs: true,
+    if (!item) return;
+    if (item.stage !== "CLOSED") {
+      const closer = e.closer ? await this.d.auth.resolve(e.closer) : null;
+      if (!closer) {
+        this.d.log.warn("source closed by an unknown user; recorded as the system actor", { work_item_id: item.id, source_id: e.source.id });
+      }
+      const actor: Actor = closer ? { kind: "user", id: closer.user_id } : INTAKE;
+      const close_reason: CloseReason = e.state_reason === "completed" ? "completed" : "wont_do";
+      await this.decide(item.id, (it) => {
+        if (it.stage === "CLOSED") return null;
+        const closesPr = it.pr_number !== null && this.prAdapter(it.source)?.closePr !== undefined;
+        return {
+          patch: {
+            stage: "CLOSED",
+            close_reason,
+            blocked_on: closesPr ? "upstream" : "none",
+            blocked_reason: closesPr ? PR_CLOSE_PENDING : null,
           },
+          actor,
+          reason: "source_closed",
+          cancel_queued_runs: true,
+          cancel_running_runs: true,
+        };
+      });
+    }
+    await this.finishPrClose(item.id);
+  }
+
+  /**
+   * The rest of a source close for an item with a PR: one comment on the PR naming who closed the issue,
+   * then the PR closed without a merge, then the pending mark cleared. A PR already merged or closed is left
+   * alone. A failure is logged and the item stays pending, so tickSourceCloses tries again.
+   */
+  private async finishPrClose(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || !prClosePending(it) || it.pr_number === null) return;
+    const adapter = this.prAdapter(it.source);
+    if (!adapter?.closePr) return;
+    try {
+      const r = await adapter.closePr({
+        pr_number: it.pr_number,
+        closed: it.source,
+        marker: `<!-- factory:pr-closed:${it.id} -->`,
+        body: (closer) =>
+          closer?.login ? `Closed because the issue was closed by @${closer.login}.` : "Closed because the issue was closed.",
+      });
+      this.d.log.info("pr closed after source close", { work_item_id: it.id, pr_number: it.pr_number, result: r });
+    } catch (err) {
+      this.d.log.warn("closing the PR after the source closed failed; retried on a later tick", {
+        work_item_id: it.id,
+        pr_number: it.pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return;
+    }
+    await this.decide(id, (cur) =>
+      prClosePending(cur) ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "pr_closed_for_source" } : null,
     );
+  }
+
+  /** The adapter PRs go through: the GitHub one, else the item's own source (as setStatus does). */
+  private prAdapter(source: SourceRef): SourceAdapter | null {
+    return this.byType.get(PR_SOURCE_TYPE) ?? this.byType.get(source.type) ?? null;
   }
 
   /**
@@ -1529,6 +1586,10 @@ function awaitingSpec(it: WorkItem): boolean {
 }
 
 /** A rejected item whose reject comment or source close may not have happened yet. */
+function prClosePending(it: WorkItem): boolean {
+  return it.stage === "CLOSED" && it.blocked_on === "upstream" && it.blocked_reason === PR_CLOSE_PENDING;
+}
+
 function closePending(it: WorkItem): boolean {
   return it.stage === "CLOSED" && it.blocked_on === "upstream" && it.blocked_reason === SOURCE_CLOSE_PENDING;
 }
