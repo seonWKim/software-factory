@@ -1332,7 +1332,7 @@ const FAILURES: Record<string, string> = {
   out_of_scope: "the resolve run changed files that are neither conflicting nor under the allowed paths",
   tests_failed: "the install or test command failed on the resolved branch",
   unresolved_conflicts: "conflicts were left unresolved",
-  merge_incomplete: "the result does not contain the base branch (the merge was not completed)",
+  head_moved: "the install or test command moved HEAD off the commit the gates checked",
   prompt_missing: "prompts/resolve.md is missing",
   push_failed: "the push was rejected",
   rate_limited: "the model provider's usage or rate limit was hit",

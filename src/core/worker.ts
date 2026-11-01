@@ -55,6 +55,16 @@ export interface WorkerDeps {
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 
+/** Git hooks off for every command the worker runs after an agent step (merge, commit, checkout). */
+const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
+/** The subcommand of a git argv, past any leading `-c key=value` pairs, for error messages. */
+const gitVerb = (args: readonly string[]): string => {
+  let i = 0;
+  while (args[i] === "-c") i += 2;
+  return args[i] ?? "";
+};
+
 const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
@@ -64,8 +74,6 @@ const INDEX_SIZE = 8;
 const TAIL_CHARS = 2000;
 /** Base commits listed per conflict prompt. */
 const MAX_CONFLICT_COMMITS = 30;
-/** Git hooks off for the worker's own merge and commit after an agent step. */
-const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
 /**
  * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
@@ -640,11 +648,14 @@ export class Worker {
 
   /**
    * The resolve run (design §5 Merge conflict), started by a human's `/resolve`. In the PR branch's sandbox:
-   * merge origin/<base> with --no-commit and leave the conflicts; snapshot the tree; let the agent resolve;
-   * then, before any push, the worker's own gates: nothing left unmerged, the scope gate (every file changed
-   * since the snapshot, tracked or untracked, is a conflicting file or under allowed_paths), the merge commit
-   * contains the base, and the install and test commands pass. Only then push through the broker (same branch,
-   * same PR, never a force push). Any failure throws: nothing is pushed and the controller re-blocks the item.
+   * merge origin/<base> with --no-commit and leave the conflicts; snapshot the merged tree; let the agent resolve;
+   * snapshot again. The worker never trusts the agent's index, refs or commits: the post-agent snapshot is the
+   * tree that is pushed. Gates before any push: the scope gate (every path that differs between the two
+   * snapshots, tracked, untracked or tracked-but-ignored, is a conflicting file or under allowed_paths), no
+   * conflict markers in that tree, then the worker commits that exact tree itself as a merge of the branch tip
+   * and the base, checks it out clean, and runs the install and test commands on it. HEAD must still be that
+   * commit afterwards. Only then push through the broker (same branch, same PR, never a force push). Any
+   * failure throws: nothing is pushed and the controller re-blocks the item.
    */
   private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
@@ -664,6 +675,8 @@ export class Worker {
       // The run's own git folder, inside its workdir: the clone has no other.
       const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
       const dirs = await this.gitDirs(handle);
+      const tipSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])).trim();
+      const realIndex = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).trim();
       const index = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "sf-resolve-index"])).trim();
 
       const merge = await this.gitRaw(
@@ -674,6 +687,11 @@ export class Worker {
       const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
       if (merge.exit_code !== 0 && conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
 
+      // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
+      const cp = await this.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: this.d.toolEnv });
+      if (cp.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${cp.stderr.trim()}`, true);
+      const before = await this.snapshot(handle, index);
+      let tree = before;
       let tokens = 0;
       if (conflicts.length > 0) {
         const files: ConflictFile[] = [];
@@ -681,7 +699,6 @@ export class Worker {
           const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
           files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
         }
-        const before = await this.snapshot(handle, index);
         const notes = run.input?.notes ?? "";
         const result = await this.agent(run, item, handle, signal, {
           system_prompt,
@@ -697,58 +714,65 @@ export class Worker {
         tokens = tokensOf(result);
         await this.distrustAgentGit(handle, dirs);
 
-        const after = await this.snapshot(handle, index);
-        const changed = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, after]);
+        // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
+        await this.gitWith(handle, ["read-tree", before], { GIT_INDEX_FILE: index });
+        tree = await this.snapshot(handle, index);
+        const changed = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, tree]);
         const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
         if (outside.length > 0) {
           throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
         }
-        const markers = await this.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", after, "--", ...conflicts]);
+        const markers = await this.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", tree, "--", ...conflicts]);
         if (markers.exit_code === 0) throw new RunFailure("unresolved_conflicts", `conflict markers left in: ${markers.stdout.trim()}`.slice(0, 500));
       }
 
-      await this.commitResolution(handle, identity);
-      const contains = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
-      if (contains.exit_code === 1) throw new RunFailure("merge_incomplete", `HEAD does not contain ${baseRef} (${baseSha.slice(0, 8)})`);
-      if (contains.exit_code !== 0) throw new RunFailure("git_failed", `git merge-base: ${contains.stderr.trim()}`, true);
-
+      const head = await this.commitResolution(handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
       for (const cmd of [repo.install_command, repo.test_command]) await this.gate(handle, cmd, signal);
+      // The gate commands run repo code: they must not have moved HEAD off the commit they checked.
+      const now = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+      if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
 
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
-      const head_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-      return { result: "pushed", conflicts, head_sha, base_sha: baseSha, tokens };
+      return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, tokens };
     } finally {
       await this.d.sandbox.destroy(handle);
     }
   }
 
   /**
-   * The working tree as a tree object (tracked and untracked, .gitignore respected), written through a separate
-   * index file so the merge's own index, with its conflict stages, is untouched.
+   * The working tree as a tree object, staged through the worker's own index file (seeded by the caller) so
+   * the merge's index, with its conflict stages, is untouched. `add -A` updates every path the seed tracks,
+   * including ones .gitignore matches, and adds untracked files that are not ignored. Hooks are off.
    */
   private async snapshot(handle: SandboxHandle, index: string): Promise<string> {
     const env = { GIT_INDEX_FILE: index };
-    await this.gitEnv(handle, ["read-tree", "--empty"], env);
-    await this.gitEnv(handle, ["add", "-A"], env);
-    return (await this.gitEnv(handle, ["write-tree"], env)).trim();
+    await this.gitWith(handle, [...NO_HOOKS, "add", "-A"], env);
+    return (await this.gitWith(handle, ["write-tree"], env)).trim();
   }
 
   /**
-   * Stages the tree the gates checked and commits it: the open merge (MERGE_HEAD) with its message, or staged
-   * leftovers. A path still unmerged after `add -A` (git could not stage it) fails `unresolved_conflicts`.
+   * Commits exactly the checked `tree` as the merge of the branch tip and the base (commit-tree: no index, no
+   * hooks, none of the agent's commits), puts the branch on it and makes the working tree match it, so the
+   * gate commands test what is pushed. If the base was already in the branch and nothing changed, the tip is kept.
    */
-  private async commitResolution(handle: SandboxHandle, identity: Record<string, string>): Promise<void> {
-    await this.git(handle, ["add", "-A"]);
-    const unmerged = (await this.git(handle, ["ls-files", "--unmerged", "-z"])).trim();
-    if (unmerged) throw new RunFailure("unresolved_conflicts", "files are still unmerged after the agent ran");
-    const merging = await this.gitRaw(handle, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
-    if (merging.exit_code === 0) {
-      await this.gitEnv(handle, ["commit", "--no-edit"], identity);
-      return;
-    }
-    const staged = await this.gitRaw(handle, ["diff", "--cached", "--quiet"]);
-    if (staged.exit_code === 1) await this.gitEnv(handle, ["commit", "-m", "Resolve merge conflicts"], identity);
+  private async commitResolution(
+    handle: SandboxHandle,
+    c: { tree: string; tipSha: string; baseSha: string; branch: string; message: string },
+    identity: Record<string, string>,
+  ): Promise<string> {
+    const already = await this.gitRaw(handle, ["merge-base", "--is-ancestor", c.baseSha, c.tipSha]);
+    const tipTree = already.exit_code === 0 ? (await this.git(handle, ["rev-parse", `${c.tipSha}^{tree}`])).trim() : null;
+    const head =
+      tipTree === c.tree
+        ? c.tipSha
+        : (await this.gitWith(handle, ["commit-tree", c.tree, "-p", c.tipSha, "-p", c.baseSha, "-m", c.message], identity)).trim();
+    await this.git(handle, [...NO_HOOKS, "merge", "--quit"]);
+    // A fresh real index first: the agent's skip-worktree or assume-unchanged bits would make checkout refuse or lie.
+    await this.git(handle, ["read-tree", head]);
+    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", c.branch, head]);
+    await this.git(handle, [...NO_HOOKS, "clean", "-ffdxq"]);
+    return head;
   }
 
   /** One gate command (install or test) in the sandbox with the worker's tool env. Non-zero: `tests_failed`. */
@@ -881,14 +905,7 @@ export class Worker {
 
   private async gitWith(handle: SandboxHandle, args: string[], env: Record<string, string> = {}): Promise<string> {
     const r = await this.gitRaw(handle, args, env);
-    const verb = args.find((a, i) => !a.startsWith("-") && args[i - 1] !== "-c") ?? args[0];
-    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${verb}: ${r.stderr.trim()}`, true);
-    return r.stdout;
-  }
-
-  private async gitEnv(handle: SandboxHandle, args: string[], env: Record<string, string>): Promise<string> {
-    const r = await this.gitRaw(handle, args, env);
-    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${args[0]}: ${r.stderr.trim()}`, true);
+    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${gitVerb(args)}: ${r.stderr.trim()}`, true);
     return r.stdout;
   }
 
