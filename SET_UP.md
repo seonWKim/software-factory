@@ -129,6 +129,32 @@ Items whose allowed paths overlap still wait for each other, so their PRs do not
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
 
+### Per-project settings
+
+Five settings are gates that can differ per project: `max_attempts`, `max_diff_lines`, `max_diff_files`, `budgets` and `floors`. Put the global values either at top level (as the checked-in config does) or in `defaults`, not both: the same key in both places stops startup. Then tighten them for one project under `projects`, keyed by the configured repo's `owner/name`:
+
+```json
+{
+  "repo": { "owner": "acme", "name": "shop", "path": ".", "base_branch": "main" },
+  "defaults": {
+    "max_attempts": 3,
+    "max_diff_lines": 1500,
+    "max_diff_files": 40,
+    "budgets": { "2": 2000000 },
+    "floors": [{ "prefix": "prompts/", "tier": 3 }]
+  },
+  "projects": {
+    "acme/shop": {
+      "max_diff_lines": 800,
+      "budgets": { "2": 1000000 },
+      "floors": [{ "prefix": "prompts/", "tier": 4 }, { "prefix": "migrations/", "tier": 3 }]
+    }
+  }
+}
+```
+
+(The other keys of `factory.config.json` are left out of the example.) A project can only tighten: a number or budget above the global value, a global budget tier left out, or a global floor left out or lowered stops startup with an error naming the project and the key. A project block takes no other keys; `repo`, `dials`, `plugins` and the rest stay global. A project ID other than the configured repo's stops startup too. `npm run factory -- doctor` and the status page's Health panel list each setting's effective value and where it came from: `project`, `defaults` (top level or `defaults`), `built-in`, or `learned` (nothing writes learned values yet).
+
 ### CI and branch protection
 
 `.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. Job `test-mysql`: starts a `mysql:8` service and runs `npm test` with `SF_TEST_MYSQL_URL` set, so the MySQL store tests run too. No secret is needed.
