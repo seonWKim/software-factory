@@ -1,4 +1,5 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
+import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
 import type { SourceRef, SourceType, UserId } from "../../src/core/types.js";
@@ -17,14 +18,14 @@ export const config: FactoryConfig = {
   status_label_prefix: "sf: ",
   branch_prefix: "factory/",
   dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 },
-  floors: [{ prefix: "src/impl/broker/", tier: 4 }],
+  settings: {
+    defaults: { floors: [{ prefix: "src/impl/broker/", tier: 4 }], max_attempts: 3, max_diff_lines: 1500, max_diff_files: 40 },
+    projects: {},
+  },
   max_loops: 3,
-  max_attempts: 3,
   max_restart: 3,
   retry_base_ms: 60_000,
   retry_max_ms: 1_800_000,
-  max_diff_lines: 1500,
-  max_diff_files: 40,
   lease_ms: 60_000,
   heartbeat_ms: 10_000,
   tick_ms: 1000,
@@ -35,6 +36,16 @@ export const config: FactoryConfig = {
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
+
+/** `base`'s settings with `defaults` changed: for tests that need another global gate value. */
+export function settingsWith(changes: Partial<ProjectSettings>, base: FactoryConfig = config): SettingsLayers {
+  return { ...base.settings, defaults: { ...base.settings.defaults, ...changes } };
+}
+
+/** The gate values a test config gives every project (no project overrides in the fakes). */
+export function gates(c: FactoryConfig = config): ProjectSettings {
+  return settingValues("o/r", c.settings);
+}
 
 export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW", resolve: "RESOLVE" };
 

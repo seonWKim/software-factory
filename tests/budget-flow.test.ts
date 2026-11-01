@@ -11,7 +11,7 @@ import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config as baseConfig, issueRef, mallory, prompts, recordingLog, triageSpec,
+  alice, cleanScanner, config as baseConfig, gates, issueRef, mallory, prompts, recordingLog, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 
 // Design §6: per-tier token budgets. At the budget the next implement or review run is held at a checkpoint.
@@ -38,7 +38,7 @@ async function factory(opts: {
   const config: FactoryConfig = {
     ...baseConfig,
     dials: { spec_gate_min_tier: opts.specGate ? 1 : 3, auto_merge_max_tier: 0 },
-    ...(opts.budgets ? { budgets: opts.budgets } : {}),
+    ...(opts.budgets ? { settings: settingsWith({ budgets: opts.budgets }) } : {}),
     ...(opts.min_sample ? { budget_min_sample: opts.min_sample } : {}),
     ...opts.config,
   };
@@ -198,7 +198,7 @@ describe("the checkpoint", () => {
 
   it("no budgets in the config means no limits for any tier", async () => {
     const f = await factory({ implement: () => used(10_000_000, done) });
-    expect(f.config.budgets).toBeUndefined();
+    expect(gates(f.config).budgets).toEqual({});
     const it0 = await f.submit();
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(await f.store.listBudgetCheckpoints(it0.id)).toEqual([]);
@@ -328,7 +328,7 @@ describe("/budget", () => {
     }
     expect(await f.item(it0)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts" });
     const runs = (await f.store.listRuns(it0.id)).length;
-    const withBudget = f.controllerFor({ ...f.config, budgets: { 2: 1000 } });
+    const withBudget = f.controllerFor({ ...f.config, settings: settingsWith({ budgets: { 2: 1000 } }, f.config) });
     await f.say((comment_id) => ({ kind: "retry_requested", source: f.src, comment_id, requester: alice }), withBudget);
     expect(await f.item(it0)).toMatchObject({ blocked_on: "budget", blocked_reason: "budget_checkpoint", restart_count: 1 });
     expect(await f.store.listRuns(it0.id)).toHaveLength(runs);

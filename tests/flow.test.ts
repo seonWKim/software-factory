@@ -16,7 +16,7 @@ import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec, waitFor,
+  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
 async function factory(
@@ -309,7 +309,7 @@ describe("one issue to one merged PR", () => {
     await f.step();
     let item = (await f.store.getWorkItemBySource("github_issue", "o/r#14"))!;
     expect(item).toMatchObject({ stage: "NEW", blocked_on: "human", blocked_reason: "max_attempts" });
-    expect(runner.specs).toHaveLength(config.max_attempts);
+    expect(runner.specs).toHaveLength(gates().max_attempts);
 
     fail = false;
     f.source.queue.push({ kind: "retry_requested", source: issueRef(14), comment_id: "105", requester: alice });
@@ -971,7 +971,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
   });
 
   // The floor list changed after triage: the worker's floors now cover .github/workflows/ at tier 3.
-  const raised: FactoryConfig = { ...config, floors: [...config.floors, { prefix: ".github/workflows/", tier: 3 }] };
+  const raised: FactoryConfig = { ...config, settings: settingsWith({ floors: [...gates().floors, { prefix: ".github/workflows/", tier: 3 }] }) };
 
   it("floor block → /retry refused → /approve by a non-writer refused → /approve raises the tier, reruns, pushes and opens the PR", async () => {
     const f = await implemented(64, (f) => {
@@ -1080,7 +1080,7 @@ describe("/revise after a failed implement run", () => {
     await f.step();
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
     await f.step();
-    for (let i = 1; i < config.max_attempts && how === "failed"; i++) {
+    for (let i = 1; i < gates().max_attempts && how === "failed"; i++) {
       f.clock.advance(config.retry_max_ms);
       await f.step();
     }
@@ -1191,7 +1191,7 @@ describe("/revise after a failed implement run", () => {
     const src = issueRef(88);
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await f.step();
-    for (let i = 1; i < config.max_attempts; i++) {
+    for (let i = 1; i < gates().max_attempts; i++) {
       f.clock.advance(config.retry_max_ms);
       await f.step();
     }
@@ -1741,7 +1741,7 @@ describe("approval notes, unknown commands, /help and footers", () => {
   });
 
   it("the prompts use the latest approval that has a note: a floor approval's note replaces the spec's, a bare one keeps it", async () => {
-    const raised: FactoryConfig = { ...config, floors: [...config.floors, { prefix: ".github/workflows/", tier: 3 }] };
+    const raised: FactoryConfig = { ...config, settings: settingsWith({ floors: [...gates().floors, { prefix: ".github/workflows/", tier: 3 }] }) };
     const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: implementOk, review: review("pass", 3) });
     const f = await factory(runner, [], silent, { workerConfig: raised });
     f.sandbox.changedFiles = [".github/workflows/scope.yml"];
