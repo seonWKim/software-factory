@@ -23,7 +23,7 @@ import type {
   WorkItem,
   WorkItemId,
 } from "../../../core/types.js";
-import { IMPLEMENT_KINDS, allowedPathsOverlap } from "../../../core/policy.js";
+import { IMPLEMENT_KINDS } from "../../../core/policy.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
@@ -364,8 +364,8 @@ export class SqlFactoryStore implements FactoryStore {
     const { seq, forUpdate } = this.db.dialect;
     const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
-      // The lock row first: claimers run the overlap check below one at a time, so two of them can never both
-      // see "nothing overlapping is running" and claim overlapping runs. Only a claim moves a run to 'running',
+      // The lock row first: claimers run the same-item check below one at a time, so two of them can never both
+      // see "nothing of this item is running" and claim two runs of one item. Only a claim moves a run to 'running',
       // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
       // serializes; the select is a no-op.)
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
@@ -374,29 +374,25 @@ export class SqlFactoryStore implements FactoryStore {
       const [pause] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
       if (pause && (pause.resume_at as string) > now) return null;
 
-      // Implement-type runs in progress, with their items' allowed_paths (architecture §4, overlap rule).
-      const busy = (
-        await tx.all(
-          `SELECT r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
-           WHERE r.status = 'running' AND r.kind IN (${writeKinds})`,
-          [...IMPLEMENT_KINDS],
-        )
-      ).map((r) => ({ item: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+      // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
+      // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
+      const busy = new Set(
+        (
+          await tx.all(`SELECT work_item_id FROM runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
+        ).map((r) => r.work_item_id as string),
+      );
 
       // Queued runs in FIFO order. not_before: a retry waits out its backoff, whichever worker looks.
       const queued = await tx.all(
-        `SELECT r.id, r.kind, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+        `SELECT r.id, r.kind, r.work_item_id FROM runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(input.kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?)
          ORDER BY r.created_at, r.${seq}`,
         [...input.kinds, now],
       );
       for (const next of queued) {
-        // An implement-type run waits while an overlapping one runs; it stays queued. Triage and review never wait.
-        if ((IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string)) {
-          const paths = parseList(next.allowed_paths);
-          if (busy.some((b) => b.item === next.work_item_id || allowedPathsOverlap(b.paths, paths))) continue;
-        }
+        // An implement-type run waits while its own item has one running; it stays queued. Triage and review never wait.
+        if ((IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string) && busy.has(next.work_item_id as string)) continue;
         const id = next.id as RunId;
         const claimed = await tx.run(
           `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,

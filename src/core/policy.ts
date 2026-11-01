@@ -88,26 +88,9 @@ export function isCovered(path: string, allowed: readonly string[]): boolean {
 
 /**
  * Run kinds that change an item's branch: implement (a first build and every review fix) and update.
- * Only these are held back by the overlap rule; triage and review runs are never skipped.
+ * An item never has two of these running at once (they push to the same branch); triage and review are never held back.
  */
 export const IMPLEMENT_KINDS: readonly RunKind[] = ["implement", "update"];
-
-/**
- * Two allowed paths overlap when they are equal, or when one ends in `/` and the other starts with it.
- * The same rule as `isCovered`, applied both ways.
- */
-export function pathsOverlap(a: string, b: string): boolean {
-  return a === b || (a.endsWith("/") && b.startsWith(a)) || (b.endsWith("/") && a.startsWith(b));
-}
-
-/**
- * Whether two items' allowed_paths overlap (any pair does). Two items that overlap must not have
- * implement-type runs in progress at once, or their PRs would conflict (architecture §4). The store also
- * treats an item as overlapping with itself, whatever its paths.
- */
-export function allowedPathsOverlap(a: readonly string[], b: readonly string[]): boolean {
-  return a.some((p) => b.some((q) => pathsOverlap(p, q)));
-}
 
 /**
  * Scope gate (design §4): given the NUL-separated output of
