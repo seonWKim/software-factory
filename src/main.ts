@@ -6,7 +6,7 @@ import { runCanary } from "./canary.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import type { WorkItemId } from "./core/types.js";
-import type { SecretName } from "./interfaces/secret-store.js";
+import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { startUi } from "./ui/server.js";
@@ -104,9 +104,9 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "setup": {
       const rotate: SecretName[] = [];
-      if (args.includes("--rotate-github")) rotate.push("GITHUB_TOKEN");
-      if (args.includes("--rotate-claude")) rotate.push("CLAUDE_CODE_OAUTH_TOKEN");
-      if (args.includes("--rotate-mysql")) rotate.push("MYSQL_PASSWORD");
+      if (args.includes("--rotate-github")) rotate.push(secretName("GITHUB_TOKEN"));
+      if (args.includes("--rotate-claude")) rotate.push(secretName("CLAUDE_CODE_OAUTH_TOKEN"));
+      if (args.includes("--rotate-mysql")) rotate.push(secretName("MYSQL_PASSWORD"));
       return setup(loaded, { rotate });
     }
     case "doctor":
