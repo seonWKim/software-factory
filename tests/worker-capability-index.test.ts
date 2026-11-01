@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { WRITE_TOOLS, Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -116,7 +116,7 @@ describe("worker: capability index in the agent prompt", () => {
     const without = await flow();
     const withIndex = await flow(new FakeSearch(RESULTS));
     const perms = (s: AgentRunSpec) => ({
-      harness_tools: s.harness_tools,
+      tools: s.tools.map((t) => t.name),
       tool_grants: s.tool_grants,
       deny_paths: s.deny_paths,
       writable_paths: s.writable_paths,
@@ -127,7 +127,13 @@ describe("worker: capability index in the agent prompt", () => {
     expect(withIndex.map(perms)).toEqual(without.map(perms));
     const read = ["Read", "Glob", "Grep"];
     const write = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
-    expect(withIndex.map((s) => s.harness_tools)).toEqual([read, write, write]);
+    expect(withIndex.map((s) => s.tools.map((t) => t.name))).toEqual([read, write, write]);
+    // The triage (read role) spec carries no tool the shared module marks write or exec.
+    expect(withIndex[0]!.role).toBe("triage");
+    expect(withIndex[0]!.tools.filter((t) => t.capability !== "read")).toEqual([]);
+    // The implement spec carries the write set.
+    const implement = withIndex.find((s) => s.role === "implement")!;
+    expect(implement.tools).toEqual(WRITE_TOOLS);
     for (const s of withIndex) expect(s.deny_paths).toEqual(config.deny_paths);
   });
 });
