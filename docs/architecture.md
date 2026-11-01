@@ -273,6 +273,8 @@ graph LR
 
 **Secret file location:** `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env`, never inside the repository (setup: `docs/setup.md`). With `NoOpSandbox` the agent runs as the host user, so G3 relies on Claude Code's OS-level sandbox denying that directory (below). A container sandbox later makes G3 hard independently of the harness.
 
+**Runners without a built-in harness (2026-11-01):** a runner that has no harness of its own (for example one that calls a model API directly) does not rebuild G4. It gets the guards from the shared tools in `src/core/tools`: it builds the run's policy with `guardPolicy` from the `AgentRunSpec` (`deny_paths`, `writable_paths`, `env_allowlist`, the workdir) and runs every file tool call through `ToolSpec.run`, never reading a file itself. A refused path comes back to the model as a tool result (`{ok:false, error}`), not as an exception, and the denied file's contents never reach the output or the transcript. `tests/scripted-runner.test.ts` proves this with a test-only runner driven by a scripted fake LLM. Bash is not path-checked by those tools, so such a runner still needs an OS-level sandbox for G3.
+
 **The agent harness's own credential** (the token `claude -p` needs to call the model) is the one secret the agent process must hold. It is passed to the harness only, scrubbed from the environment of the harness's tool subprocesses, and covered by G5.
 
 ### Harness controls for `ClaudeCodeRunner` (Claude Code docs, checked 2026-10-31)
