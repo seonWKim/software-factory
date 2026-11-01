@@ -131,9 +131,14 @@ export function unknownConfigKeys(raw: unknown): string[] {
   if (isObject(store) && typeof store.type === "string" && Object.hasOwn(STORE_KEYS, store.type)) {
     check(store, "store", `store (type "${store.type}")`, STORE_KEYS[store.type]!);
   }
+  // Each floors entry, wherever floors may be set: top level, `defaults`, a project block.
+  const checkFloorEntries = (block: unknown, path: string) => {
+    if (!isObject(block) || !Array.isArray(block.floors)) return;
+    block.floors.forEach((f, i) => check(f, `${path}floors[${i}]`, "floors entry", FLOOR_KEYS));
+  };
   check(raw.repo, "repo", "repo", REPO_KEYS);
   check(raw.dials, "dials", "dials", DIALS_KEYS);
-  if (Array.isArray(raw.floors)) raw.floors.forEach((f, i) => check(f, `floors[${i}]`, "floors entry", FLOOR_KEYS));
+  checkFloorEntries(raw, "");
   check(raw.models, "models", "models", MODELS_KEYS);
   check(raw.agent_git_identity, "agent_git_identity", "agent_git_identity", AGENT_GIT_IDENTITY_KEYS);
   check(raw.ui, "ui", "ui", UI_KEYS);
@@ -142,16 +147,12 @@ export function unknownConfigKeys(raw: unknown): string[] {
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
   check(raw.defaults, "defaults", "defaults", PROJECT_SETTING_KEYS);
-  if (isObject(raw.defaults) && Array.isArray(raw.defaults.floors)) {
-    raw.defaults.floors.forEach((f, i) => check(f, `defaults.floors[${i}]`, "floors entry", FLOOR_KEYS));
-  }
+  checkFloorEntries(raw.defaults, "defaults.");
   if (isObject(raw.projects)) {
     for (const [id, block] of Object.entries(raw.projects)) {
       const at = `projects[${JSON.stringify(id)}]`;
       check(block, at, `project ${JSON.stringify(id)}`, PROJECT_SETTING_KEYS);
-      if (isObject(block) && Array.isArray(block.floors)) {
-        block.floors.forEach((f, i) => check(f, `${at}.floors[${i}]`, "floors entry", FLOOR_KEYS));
-      }
+      checkFloorEntries(block, `${at}.`);
     }
   }
   return problems;
