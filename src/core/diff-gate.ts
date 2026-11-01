@@ -1,4 +1,4 @@
-import type { FactoryConfig } from "./config.js";
+import type { Floor, ProjectSettings } from "./settings.js";
 import type { Tier } from "./types.js";
 
 // Pre-push diff gates (design §4): size limit and floor check on the files a branch really changes.
@@ -49,7 +49,7 @@ export function diffStat(numstatZ: string): DiffStat {
   return { lines, files, paths: [...paths].sort() };
 }
 
-export type DiffLimits = Pick<FactoryConfig, "max_diff_lines" | "max_diff_files">;
+export type DiffLimits = Pick<ProjectSettings, "max_diff_lines" | "max_diff_files">;
 
 /** Whether the diff is over either limit. Exactly at a limit passes. */
 export function overSizeLimit(stat: Pick<DiffStat, "lines" | "files">, limits: DiffLimits): boolean {
@@ -75,7 +75,7 @@ export interface FloorHit {
  * path. Empty means the floors allow the push. A path is under a floor when it starts with the prefix
  * (so a file prefix like `factory.config.json` matches that file).
  */
-export function floorHits(paths: readonly string[], floors: FactoryConfig["floors"], itemTier: Tier): FloorHit[] {
+export function floorHits(paths: readonly string[], floors: readonly Floor[], itemTier: Tier): FloorHit[] {
   const hits: FloorHit[] = [];
   for (const path of [...new Set(paths)].sort()) {
     let need: Tier | null = null;

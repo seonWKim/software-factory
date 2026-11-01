@@ -2,7 +2,9 @@ import { parseComment } from "../../core/commands.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { PollResult, PollSource, PrChecks, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
+import type {
+  ClosePrInput, PollResult, PollSource, PrChecks, SourceCloseReason, SourceEvent, VerdictEventTarget,
+} from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
@@ -21,6 +23,8 @@ interface GhIssue {
 interface GhIssueFull extends GhIssue {
   /** Only on the single-issue endpoint. Null when GitHub does not know who closed it. */
   closed_by: GhUser | null;
+  /** completed, not_planned, reopened, duplicate, ... ; null when GitHub has none. */
+  state_reason?: string | null;
 }
 interface GhComment {
   id: number;
@@ -325,8 +329,13 @@ export class GitHubIssueSource implements PollSource {
       }
       if (i.pull_request) continue;
       // The list endpoint omits closed_by; the single-issue endpoint has it.
-      const full = await this.client.request<Pick<GhIssueFull, "closed_by">>("GET", `${base}/issues/${i.number}`);
-      events.push({ kind: "source_closed", source: this.ref(i.number), closer: full.closed_by ? identity(full.closed_by) : null });
+      const full = await this.client.request<Pick<GhIssueFull, "closed_by" | "state_reason">>("GET", `${base}/issues/${i.number}`);
+      events.push({
+        kind: "source_closed",
+        source: this.ref(i.number),
+        closer: full.closed_by ? identity(full.closed_by) : null,
+        state_reason: closeReason(full.state_reason),
+      });
     }
     return events;
   }
@@ -342,6 +351,25 @@ export class GitHubIssueSource implements PollSource {
       state: "closed",
       state_reason: "not_planned",
     });
+  }
+
+  /**
+   * Reads the PR; if it is still open, posts the comment (once per marker) naming who closed the issue, then
+   * closes the PR (state closed, never a merge). A merged or closed PR is left alone.
+   */
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const pull = await this.client.request<{ state: string }>("GET", `${base}/pulls/${input.pr_number}`);
+    if (pull.state !== "open") return "not_open";
+    let closer: ExternalIdentity | null = null;
+    if (input.closed.type === "github_issue") {
+      const issue = await this.client.request<Pick<GhIssueFull, "closed_by">>(
+        "GET", `${base}/issues/${issueNumberFromSourceId(input.closed.id)}`);
+      closer = issue.closed_by ? identity(issue.closed_by) : null;
+    }
+    await this.client.commentOnce(this.repo, input.pr_number, input.body(closer), input.marker);
+    await this.client.request("PATCH", `${base}/pulls/${input.pr_number}`, { state: "closed" });
+    return "closed";
   }
 
   /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */
@@ -435,6 +463,11 @@ export class GitHubIssueSource implements PollSource {
 
 function identity(u: GhUser): ExternalIdentity {
   return { provider: "github", subject: String(u.id), login: u.login };
+}
+
+/** GitHub's issue state_reason, as far as the factory reads it. */
+function closeReason(r: string | null | undefined): SourceCloseReason | null {
+  return r === "completed" || r === "not_planned" ? r : null;
 }
 
 function max(a: string | null, b: string): string {

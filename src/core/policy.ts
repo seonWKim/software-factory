@@ -1,10 +1,11 @@
 import type { FactoryConfig } from "./config.js";
+import type { Floor } from "./settings.js";
 import type { RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
 /** Highest floor tier among the floors the allowed paths touch (either path contains the other). */
-export function floorTier(paths: readonly string[], floors: FactoryConfig["floors"]): Tier | null {
+export function floorTier(paths: readonly string[], floors: readonly Floor[]): Tier | null {
   let tier: Tier | null = null;
   for (const f of floors) {
     const hit = paths.some((p) => p.startsWith(f.prefix) || f.prefix.startsWith(p.replace(/\*+$/, "")));

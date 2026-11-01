@@ -13,30 +13,16 @@ export const BUDGET_PERCENTILE = 90;
 export type Budgets = Partial<Record<Tier, number>>;
 
 /**
- * `budgets` (tier → tokens) and `budget_min_sample` from factory.config.json. Absent budgets: no limits.
- * Keys must be tiers 1–5, budgets positive integers, the min sample an integer ≥ 1; otherwise startup fails.
+ * `budget_min_sample` from factory.config.json: an integer ≥ 1 (absent: 10), otherwise startup fails. It is
+ * global, not per project. `budgets` is a per-project setting: parsed and checked by settingsLayers
+ * (src/core/settings.ts) and read only through settingsFor.
  */
-export function budgetConfig(file: { budgets?: unknown; budget_min_sample?: unknown }): {
-  budgets: Budgets;
-  budget_min_sample: number;
-} {
-  const budgets: Budgets = {};
-  if (file.budgets !== undefined) {
-    const b = file.budgets;
-    if (typeof b !== "object" || b === null || Array.isArray(b)) {
-      throw new Error("budgets must be an object of tier (1–5) to tokens");
-    }
-    for (const [k, v] of Object.entries(b)) {
-      if (!/^[1-5]$/.test(k)) throw new Error(`budgets key "${k}" must be a tier from 1 to 5`);
-      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) throw new Error(`budgets.${k} must be a positive integer`);
-      budgets[Number(k) as Tier] = v;
-    }
-  }
+export function budgetConfig(file: { budget_min_sample?: unknown }): { budget_min_sample: number } {
   const min = file.budget_min_sample === undefined ? DEFAULT_BUDGET_MIN_SAMPLE : file.budget_min_sample;
   if (typeof min !== "number" || !Number.isSafeInteger(min) || min < 1) {
     throw new Error("budget_min_sample must be an integer of at least 1");
   }
-  return { budgets, budget_min_sample: min };
+  return { budget_min_sample: min };
 }
 
 /** The configured budget of `tier`, or null when it has none (no limit). */

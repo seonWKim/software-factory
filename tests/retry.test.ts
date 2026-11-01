@@ -11,7 +11,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, config as baseConfig, issueRef, prompts, recordingLog, triageSpec,
+  alice, config as baseConfig, gates, issueRef, prompts, recordingLog, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 
 // Design §5 Restarts: automatic retry with backoff, the rate-limit pause, infra vs task budgets.
@@ -90,7 +90,7 @@ describe("automatic retry", () => {
   });
 
   it("the next attempt is not claimed 1 ms before failure + retry_base_ms × 2^(attempt−1), by either worker, and is claimed at it", async () => {
-    const f = await factory({ triage: failed, config: { max_attempts: 5 } });
+    const f = await factory({ triage: failed, config: { settings: settingsWith({ max_attempts: 5 }) } });
     const it0 = await f.submit();
     for (let attempt = 1; attempt <= 3; attempt++) {
       // Claimed (by w1, then by w2) exactly at the earliest start.
@@ -108,7 +108,7 @@ describe("automatic retry", () => {
   });
 
   it("the wait never exceeds retry_max_ms", async () => {
-    const f = await factory({ triage: failed, config: { max_attempts: 40 } });
+    const f = await factory({ triage: failed, config: { settings: settingsWith({ max_attempts: 40 }) } });
     const it0 = await f.submit();
     for (let i = 0; i < 12; i++) {
       await f.step();
@@ -188,14 +188,14 @@ describe("infra vs task failures", () => {
       f.clock.advance(MAX);
     }
     expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts", restart_count: 0 });
-    expect(await f.runs(it0, "implement")).toHaveLength(f.config.max_attempts);
+    expect(await f.runs(it0, "implement")).toHaveLength(gates(f.config).max_attempts);
     const changes = (await f.store.listStateChanges(it0.id)).map((c) => c.reason);
     expect(changes.filter((r) => r === "run_retry_scheduled")).toHaveLength(2);
     expect(changes.at(-1)).toBe("max_attempts");
   });
 
   it("infra failures stop at max_restart with blocked_reason max_restart", async () => {
-    const f = await factory({ review: () => ({ status: "timed_out" }), config: { max_attempts: 10, max_restart: 2 } });
+    const f = await factory({ review: () => ({ status: "timed_out" }), config: { settings: settingsWith({ max_attempts: 10 }), max_restart: 2 } });
     const it0 = await f.submit();
     for (let i = 0; i < 5; i++) {
       await f.step();
@@ -242,7 +242,7 @@ describe("rate limits", () => {
   it("are not attempts and do not add to restart_count; the retry starts at the reset time", async () => {
     let limits = 5;
     const reset = () => iso(f.clock.now().getTime() + 10 * 60_000);
-    const f = await factory({ triage: () => (limits-- > 0 ? rateLimited(reset()) : undefined) as Outcome, config: { max_attempts: 1 } });
+    const f = await factory({ triage: () => (limits-- > 0 ? rateLimited(reset()) : undefined) as Outcome, config: { settings: settingsWith({ max_attempts: 1 }) } });
     const it0 = await f.submit();
     for (let i = 0; i < 5; i++) {
       await f.step();
