@@ -201,7 +201,10 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
     const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-    const cancelled = input.cancel_queued_runs ? await this.cancelQueuedRuns(tx, input.id, now) : [];
+    const cancelled = [
+      ...(input.cancel_queued_runs ? await this.cancelRuns(tx, input.id, "queued", now) : []),
+      ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
+    ];
     const item = (await this.selectItem(tx, input.id))!;
     // Closing the item settles its checkpoints that have no outcome yet (design §6).
     const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
@@ -723,18 +726,22 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /**
-   * Cancels the item's queued runs. Each update is conditional on `queued`, so a run a concurrent claim
-   * took first stays running and is not reported.
+   * Cancels the item's runs in `status` and clears their leases. Each update is conditional on that status,
+   * so a run that moved on concurrently (a queued run a claim took first, a running run that just completed)
+   * is left as it is and not reported. The lease token is kept: status alone fences a stopped run's heartbeat,
+   * completion and tool calls.
    */
-  private async cancelQueuedRuns(tx: SqlExecutor, workItemId: WorkItemId, now: Timestamp): Promise<RunId[]> {
-    const rows = await tx.all(`SELECT id FROM runs WHERE work_item_id = ? AND status = 'queued'${this.db.dialect.forUpdate}`, [
-      workItemId,
+  private async cancelRuns(
+    tx: SqlExecutor, workItemId: WorkItemId, status: "queued" | "running", now: Timestamp,
+  ): Promise<RunId[]> {
+    const rows = await tx.all(`SELECT id FROM runs WHERE work_item_id = ? AND status = ?${this.db.dialect.forUpdate}`, [
+      workItemId, status,
     ]);
     const cancelled: RunId[] = [];
     for (const r of rows) {
       const n = await tx.run(
-        "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'queued'",
-        [now, r.id as string],
+        "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
+        [now, r.id as string, status],
       );
       if (n === 1) cancelled.push(r.id as RunId);
     }
