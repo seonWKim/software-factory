@@ -12,6 +12,13 @@ import type {
   ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource,
 } from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
+import { Controller } from "../../src/core/controller.js";
+import { Worker } from "../../src/core/worker.js";
+import type { Run, WorkItem, WorkerId } from "../../src/core/types.js";
+import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
+import { FakeClock } from "../../src/impl/clock/fake-clock.js";
+import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
+import { newStore } from "./store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
 export const config: FactoryConfig = {
@@ -376,6 +383,10 @@ export class FakeSandbox implements Sandbox {
   exits: Record<string, number> = {};
   /** What `git rev-parse HEAD` prints. A resolve run's checkout makes it its commit-tree result. */
   head = "base\n";
+  /** Commits `git rev-parse --verify --end-of-options <ref>^{commit}` resolves, by ref (e.g. a wip branch). */
+  refs: Record<string, string> = {};
+  /** Git argv prefixes (joined by spaces) that exit 1 with a `fatal:` stderr, e.g. "fetch" for a failed base fetch. */
+  failGit: string[] = [];
   private trees = 0;
 
   async updateBase(): Promise<string> {
@@ -396,7 +407,10 @@ export class FakeSandbox implements Sandbox {
     }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
+    if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: `fatal: ${args.split(" ")[0]} failed` };
     if (args === "rev-parse HEAD") return out(this.head);
+    const ref = args.match(/^rev-parse --verify --end-of-options (.+)\^\{commit\}$/)?.[1];
+    if (ref !== undefined && ref in this.refs) return out(`${this.refs[ref]}\n`);
     if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
     if (args.startsWith("rev-parse --verify") || args === "rev-parse origin/main") return out("basesha\n");
@@ -469,12 +483,23 @@ export function recordingLog(): Logger & { lines: { level: string; msg: string; 
 }
 
 export class FakeBroker implements ToolBroker {
+  /** Every call that acts on the forge (push, PR, comment), in order. The read-only preflight is in `preflights`. */
   calls: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  /** Every read-only `github.preflight` call, in order. */
+  preflights: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  /**
+   * Scripted results per tool name, used in order before the default. A function gets the call's args, so a
+   * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
+   */
+  responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
   listTools(): ToolDescriptor[] {
     return [];
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    this.calls.push({ ctx, name, args });
+    (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
+    const next = this.responses[name]?.shift();
+    const scripted = typeof next === "function" ? next(args) : next;
+    if (scripted) return scripted;
     if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
@@ -519,3 +544,51 @@ export const triageSpec = {
   tier: 2,
   tier_reason: "CI config",
 };
+
+/**
+ * The whole loop on fakes: a controller and two workers sharing one store, sandbox, broker and runner. Specs are
+ * auto-approved (spec_gate_min_tier 3, triageSpec is tier 2), so implement and review follow triage at once.
+ */
+export async function pipeline(opts: {
+  implement?: (spec: AgentRunSpec) => Partial<AgentRunResult>;
+  config?: Partial<FactoryConfig>;
+  scanner?: EgressScanner;
+} = {}) {
+  const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const source = new FakeSource();
+  const sandbox = new FakeSandbox();
+  const broker = new FakeBroker();
+  const runner = new FakeRunner({
+    triage: () => ({ output: triageSpec }),
+    implement: opts.implement ?? (() => ({ output: { summary: "the summary", next_steps: "the next steps" } })),
+    review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" } }),
+  });
+  const log = recordingLog();
+  const scanner = opts.scanner ?? cleanScanner;
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
+  const worker = (id: string) =>
+    new Worker({
+      id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
+      clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+    });
+  const w1 = worker("w1");
+  const w2 = worker("w2");
+  let n = 0;
+  const submit = async () => {
+    n++;
+    source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "t", body: "b" });
+    await controller.tickIntake();
+    return (await store.getWorkItemBySource("github_issue", issueRef(n).id))!;
+  };
+  /** Workers take what they may claim now; the controller applies every outcome. */
+  const step = async () => {
+    while ((await w1.tick()) || (await w2.tick())) await controller.tickRuns();
+    await controller.tickRuns();
+  };
+  const item = async (it: WorkItem) => (await store.getWorkItem(it.id))!;
+  const runs = async (it: WorkItem, kind?: Run["kind"]) => (await store.listRuns(it.id)).filter((r) => !kind || r.kind === kind);
+  const agentCalls = (role: AgentRunSpec["role"]) => runner.specs.filter((s) => s.role === role).length;
+  return { config: cfg, clock, store, source, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
+}
