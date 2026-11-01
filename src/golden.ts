@@ -6,8 +6,9 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { FactoryConfig, Prompts } from "./core/config.js";
+import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/model-choice.js";
+import type { ProjectRef } from "./core/project.js";
 import { REVIEW_SCHEMA, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { toolsNamed } from "./core/worker.js";
@@ -61,7 +62,7 @@ const REVERT_REASONS = new Set(["reverted", "fixed_forward"]);
 
 /**
  * The PR's record, through the store APIs: `getWorkItemByPr` and `listStateChanges` (the merge/close rows
- * and the revert/fix-forward rows). Null when PR `pr` in `project` is not a factory PR. Read-only.
+ * and the revert/fix-forward rows). Null when PR `pr` in `project` (a project key) is not a factory PR. Read-only.
  */
 export async function readPrRecord(
   store: Pick<FactoryStore, "getWorkItemByPr" | "listStateChanges">,
@@ -161,8 +162,8 @@ export function parseAddArgs(args: readonly string[]): AddOptions {
 
 export interface AddDeps {
   store: Pick<FactoryStore, "getWorkItemByPr" | "listStateChanges">;
-  /** `owner/name`, as the controller stores it on work items. */
-  project: string;
+  /** The configured repo, resolved at startup: lookups use its key, messages its label (design 2026-11-01). */
+  project: ProjectRef;
   /** Read-only. GitHubClient.pullDiff bound to the configured repo. */
   github: { pullDiff(pr: number): Promise<string> };
   scanner: EgressScanner;
@@ -193,8 +194,8 @@ export async function addCase(deps: AddDeps, opts: AddOptions): Promise<{ dir: s
   const dir = join(deps.casesDir, id);
   if ((await exists(dir)) && !opts.force) throw new GoldenError(`golden/cases/${id} already exists; pass --force to replace it`);
 
-  const found = await readPrRecord(deps.store, deps.project, pr);
-  if (!found) throw new GoldenError(`PR #${pr} has no factory work item in ${deps.project}`);
+  const found = await readPrRecord(deps.store, deps.project.key, pr);
+  if (!found) throw new GoldenError(`PR #${pr} has no factory work item in ${deps.project.label}`);
   const { item, record } = found;
   const expect = decideExpect(record.outcome, requested);
 
@@ -278,7 +279,7 @@ export interface GoldenRunDeps {
   runner: AgentRunner;
   scanner: EgressScanner;
   clock: Clock;
-  config: Pick<FactoryConfig, "repo" | "deny_paths" | "run_timeout_ms" | "agent_git_identity">;
+  config: Pick<LoadedConfig, "repo" | "deny_paths" | "run_timeout_ms" | "agent_git_identity">;
   /** prompts/review.md: the worker's review system prompt. */
   reviewPrompt: string;
   /** `model_by` from config: the replay uses the review run's class. Absent: the default table. */
@@ -298,7 +299,7 @@ export interface GoldenPlugins {
 /** Builds golden run's parts through the configured plugins: no store, no broker, no GitHub client. */
 export async function buildGoldenRunDeps(
   p: GoldenPlugins,
-  loaded: { root: string; stateDir: string; config: FactoryConfig; prompts: Prompts; model_by?: ModelTable },
+  loaded: { root: string; stateDir: string; config: LoadedConfig; prompts: Prompts; model_by?: ModelTable },
 ): Promise<GoldenRunDeps> {
   const clock = await p.clock();
   const secrets = await p.secrets();

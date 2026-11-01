@@ -33,6 +33,7 @@ import { newStore } from "./helpers/store.js";
 import {
   FakeAuth,
   FakeBroker,
+  PROJECT as PROJECT_REF,
   FakeGitHubDiff,
   FakeRunner,
   FakeSandbox,
@@ -48,7 +49,7 @@ import {
 } from "./helpers/fakes.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
-const PROJECT = "o/r";
+const PROJECT = PROJECT_REF.key;
 const SYSTEM: Actor = { kind: "system", id: "system:test" };
 const HUMAN: Actor = { kind: "user", id: "github:1" as UserId };
 const TOKEN = `ghp_${"A".repeat(36)}`;
@@ -115,7 +116,7 @@ async function addDeps(store: FactoryStore, diff = DIFF) {
   const github = new FakeGitHubDiff({ 7: diff, 8: diff, 9: diff });
   const scanner = new RecordingScanner();
   const casesDir = join(tmp, "golden", "cases");
-  return { store, project: PROJECT, github, scanner, casesDir };
+  return { store, project: PROJECT_REF, github, scanner, casesDir };
 }
 
 describe("golden add", () => {

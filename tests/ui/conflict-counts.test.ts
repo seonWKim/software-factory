@@ -20,7 +20,7 @@ function deps(store: FactoryStore, clock: FakeClock): UiDeps {
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: LEASE,
-    prUrl: (project, n) => `https://github.com/${project}/pull/${n}`,
+    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], clock),
   };
 }

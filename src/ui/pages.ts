@@ -1,6 +1,8 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
+import { readProjectLabel } from "../core/project-labels.js";
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -24,8 +26,11 @@ export interface UiDeps {
   clock: Clock;
   /** Running runs whose last heartbeat is older than this are highlighted. */
   lease_ms: number;
-  /** The forge's URL for PR `n` of `project` ("owner/name"). */
-  prUrl(project: string, n: number): string;
+  /**
+   * The forge's URL for PR `n` of the project labelled `label` ("github.com/owner/name", the stored label;
+   * design 2026-11-01). Never given a project key.
+   */
+  prUrl(label: string, n: number): string;
   /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
@@ -56,6 +61,7 @@ class Ctx {
   readonly w: Withholder;
   readonly now: Date;
   private readonly items = new Map<WorkItemId, Promise<WorkItem | null>>();
+  private readonly labels = new Map<string, Promise<string>>();
 
   constructor(readonly d: UiDeps) {
     this.w = new Withholder(d.scanner);
@@ -75,8 +81,24 @@ class Ctx {
     return `<a href="/items/${esc(encodeURIComponent(item.id))}">${label}</a>`;
   }
 
-  prLink(item: WorkItem): string {
-    return item.pr_number === null ? "" : link(this.d.prUrl(item.project, item.pr_number), `PR #${item.pr_number}`);
+  /** The project's stored label (one store read per project per page). Never the key: unknown → a fixed text. */
+  label(key: string): Promise<string> {
+    let p = this.labels.get(key);
+    if (!p) this.labels.set(key, (p = readProjectLabel(this.d.store, key)));
+    return p;
+  }
+
+  /** The forge URL of the item's PR, or null when it has none or its project has no stored label yet. */
+  async prUrl(item: WorkItem): Promise<string | null> {
+    if (item.pr_number === null) return null;
+    const label = await this.label(item.project);
+    return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, item.pr_number);
+  }
+
+  async prLink(item: WorkItem): Promise<string> {
+    if (item.pr_number === null) return "";
+    const url = await this.prUrl(item);
+    return url === null ? esc(`PR #${item.pr_number}`) : link(url, `PR #${item.pr_number}`);
   }
 
   ago(ts: string | null): string {
@@ -108,8 +130,17 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     await queueSection(c),
   ];
   const body =
-    `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` + sections.join("");
+    `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` +
+    (await projectsLine(c, rows)) +
+    sections.join("");
   return page(`(${waiting}) software-factory status`, body, self);
+}
+
+/** The projects of the listed items, by label (design 2026-11-01): never a raw project key. */
+async function projectsLine(c: Ctx, rows: readonly ListRow[]): Promise<string> {
+  const labels = [...new Set(await Promise.all([...new Set(rows.map((r) => r.item.project))].map((k) => c.label(k))))].sort();
+  if (labels.length === 0) return "";
+  return `<p id="projects">${labels.length === 1 ? "Project" : "Projects"}: ${labels.map((l) => esc(l)).join(", ")}</p>`;
 }
 
 const short = (rev: string | null) => (rev ? rev.slice(0, 7) : "unknown");
@@ -277,7 +308,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
         esc(it.stage),
         it.tier === null ? "" : esc(it.tier),
         next,
-        c.prLink(it),
+        await c.prLink(it),
         c.ago(r.input.since),
         conflictsCell(r.conflicts),
       ],
@@ -330,7 +361,8 @@ async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
     return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
   }
   if (reason === "merge_pending") {
-    const pr = it.pr_number === null ? issue : { url: c.d.prUrl(it.project, it.pr_number), label: `PR #${it.pr_number}` };
+    const url = await c.prUrl(it);
+    const pr = url === null ? issue : { url, label: `PR #${it.pr_number}` };
     return { reason: "ready to merge", ...pr, command: "merge the PR" };
   }
   const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" ? await latestErrorCode(c, it) : null);
@@ -469,6 +501,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
 
   const facts: [string, string][] = [
     ["id", esc(item.id)],
+    ["project", esc(await c.label(item.project))],
     ["source", link(item.source.link, item.source.id)],
     ["stage", esc(item.stage) + (item.close_reason ? ` (${esc(item.close_reason)})` : "")],
     ["blocked", await c.blocked(item)],
@@ -476,7 +509,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     ["loops / restarts", `${esc(item.loop_count)} / ${esc(item.restart_count)}`],
     ["tokens", esc(item.token_cost)],
     ["merge conflicts", esc(`${conflicts.automatic} resolved automatically, ${conflicts.person} needed a person`)],
-    ["PR", c.prLink(item)],
+    ["PR", await c.prLink(item)],
     ["created / updated", `${esc(item.created_at)} / ${esc(item.updated_at)}`],
   ];
   const title = item.title ? await c.w.text(item.title) : esc(item.source.id);

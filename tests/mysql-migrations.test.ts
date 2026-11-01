@@ -42,12 +42,14 @@ describe("SQLite behaves as before", () => {
     expect(v.applied).toBe(v.latest);
   });
 
-  it("npm run migrate on a SQLite config exits non-zero: SQLite has no scripts", async () => {
+  it("npm run migrate on a SQLite config runs no schema scripts, only the project-key data step", async () => {
     const app = await compiledApp();
     const work = workDir({ type: "sqlite" });
     const r = app.run(work, ["migrate"], {});
-    expect(r.status).not.toBe(0);
     expect(r.stdout).toContain(SQLITE_MIGRATE_MESSAGE);
+    // An empty database has no owner/name rows, so GitHub is never asked (this work dir has no credentials).
+    expect(r.stdout).toContain("project keys: nothing to rewrite");
+    expect(r.status).toBe(0);
   }, 120_000);
 });
 
@@ -205,13 +207,15 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
   });
 
   it("a store on an up-to-date database starts", async () => {
+    // The shipped steps, not an empty folder: startup reads tables later steps add (unreviewed_merges, 0012).
     const db = await newEmptyMysqlDatabase();
-    const dir = steps({});
-    await new MysqlMigrations(await db.connect(), { dir }).apply(() => undefined);
-    const store = new SqlFactoryStore(new MysqlDriver({ ...db.options, stepsDir: dir }), new FakeClock());
+    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
     db.onCleanup(() => store.close());
     await store.migrate();
-    expect(await store.schemaVersion()).toEqual({ applied: BASELINE_STATE, latest: BASELINE_STATE });
+    const v = await store.schemaVersion();
+    expect(v.applied).toBe(v.latest);
+    expect(v.latest).toBeGreaterThan(BASELINE_STATE);
   });
 
   describe("the commands, end to end on the built code", () => {
@@ -233,7 +237,7 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
         expect(r.stdout + r.stderr, args.join(" ")).toContain("npm run migrate");
       }
       const doctor = app.run(work, ["doctor"], env.vars);
-      expect(doctor.stdout).toMatch(/^FAIL {2}MySQL .*: 1 schema step pending \(state none, latest 11\): run `npm run migrate`$/m);
+      expect(doctor.stdout).toMatch(/^FAIL {2}MySQL .*: \d+ schema steps? pending \(state none, latest \d+\): run `npm run migrate`$/m);
       expect(await snapshot(c, true)).toEqual(before);
 
       // npm run migrate itself, then the same commands get past the check (status prints and exits 0).
@@ -241,7 +245,9 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
       const migrated = app.run(work, ["migrate"], env.vars);
       expect(migrated.status).toBe(0);
       expect(migrated.stdout).toContain(BACKUP_REMINDER);
-      expect(await state(c)).toBe(BASELINE_STATE);
+      const after = await new MysqlMigrations(c).status();
+      expect(after.state).toBe(after.latest);
+      expect(after.latest).toBeGreaterThan(BASELINE_STATE);
       expect(app.run(work, ["migrate", "--status"], env.vars).stdout).toContain("pending: none (up to date)");
       // Past the schema check now: whatever status needs next, it no longer asks for npm run migrate.
       const status = app.run(work, ["status"], env.vars);
@@ -327,14 +333,17 @@ interface App {
 
 let built: App | undefined;
 
-/** src/ compiled to a throwaway root (its migrations/mysql is empty: latest state 11), run as `node dist/main.js`. */
+/**
+ * src/ compiled to a throwaway root with the repo's migrations/mysql (.sql steps), run as `node dist/main.js`.
+ * The shipped steps, not an empty folder: startup reads tables later steps add (unreviewed_merges, 0012).
+ */
 async function compiledApp(): Promise<App> {
   if (built) return built;
   const root = mkdtempSync(join(tmpdir(), "sf-app-"));
   execFileSync(join(REPO, "node_modules", ".bin", "tsc"), ["-p", join(REPO, "tsconfig.json"), "--outDir", join(root, "dist")], { stdio: "pipe" });
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
-  mkdirSync(join(root, "migrations", "mysql"), { recursive: true });
+  cpSync(join(REPO, "migrations", "mysql"), join(root, "migrations", "mysql"), { recursive: true });
   built = {
     run: (cwd, args, env) => {
       const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", join(root, "dist", "main.js"), ...args], {

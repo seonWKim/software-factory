@@ -46,7 +46,7 @@ import {
   selectedSources,
   withPlugin,
 } from "../src/plugins.js";
-import { FakeSlackPollSource, fakeSlackPollRegistry } from "./helpers/fakes.js";
+import { FakeSlackPollSource, fakeSlackPollRegistry, fakeRepoLookup } from "./helpers/fakes.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -302,7 +302,7 @@ describe("plugin registry: unknown names fail at startup", () => {
   it("build() refuses a bad selection too", async () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
     const bad = { ...loaded, plugins: { ...loaded.plugins, sandbox: "docker" } };
-    await expect(build(bad, { clock: new FakeClock() })).rejects.toThrow(/unknown Sandbox plugin "docker".*available: noop/);
+    await expect(build(bad, { clock: new FakeClock(), repoLookup: fakeRepoLookup })).rejects.toThrow(/unknown Sandbox plugin "docker".*available: noop/);
   });
 
   it("unknown keys in the plugins object fail, and store/auth point to their own keys", async () => {
@@ -424,7 +424,7 @@ describe("plugin registry: guards can be switched", () => {
       plugins: { ...(REAL.plugins as object), secrets: "test-secrets", egress: "test-egress", broker: "test-broker" },
     });
     const loaded = await loadConfig(dir, { registry });
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect(made.secrets).toBeInstanceOf(TestSecrets);
       expect(built.secrets).toBe(made.secrets);
@@ -461,7 +461,7 @@ describe("plugin registry: existing config keys keep working", () => {
   it("store type sqlite gives SqlFactoryStore over SqliteDriver", async () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
     expect(loaded.store).toEqual({ type: "sqlite" });
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect(built.store).toBeInstanceOf(SqlFactoryStore);
       expect((built.store as unknown as { db: unknown }).db).toBeInstanceOf(SqliteDriver);
@@ -484,7 +484,7 @@ describe("plugin registry: existing config keys keep working", () => {
 
   it("top-level auth none gives NoAuthProvider", async () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect((built.controller as unknown as { d: { auth: unknown } }).d.auth).toBeInstanceOf(NoAuthProvider);
     } finally {
@@ -573,7 +573,7 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
       store: { type: "sqlite" },
       plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues", "fake-slack-poll"] },
     });
-    const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock() });
+    const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       const sources = (built.controller as unknown as { sources: readonly unknown[] }).sources;
       expect(sources).toHaveLength(2);
@@ -593,7 +593,7 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
       store: { type: "sqlite" },
       plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues", "fake-slack-poll", "fake-slack-poll-2"] },
     });
-    await expect(build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock() })).rejects.toThrow(/plugins\.source.*slack_thread/);
+    await expect(build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup })).rejects.toThrow(/plugins\.source.*slack_thread/);
   });
 });
 
@@ -604,7 +604,7 @@ describe("plugin registry: KeepAwake startup check", () => {
   it("build() rejects caffeinate when no caffeinate executable is on PATH, naming the key and the none alternative", async () => {
     const loaded = await loadConfig(caffeinateConfig());
     vi.stubEnv("PATH", mkdtempSync(join(tmpdir(), "sf-empty-bin-")));
-    const err = await build(loaded, { clock: new FakeClock() }).then(
+    const err = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup }).then(
       async (b) => {
         await b.close();
         return null;
@@ -619,7 +619,7 @@ describe("plugin registry: KeepAwake startup check", () => {
   it("build() wires caffeinate when the executable is on PATH", async () => {
     const loaded = await loadConfig(caffeinateConfig());
     vi.stubEnv("PATH", pathWithFakeCaffeinate());
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect((built.worker as unknown as { d: WorkerDeps }).d.awake).toBeInstanceOf(CaffeinateKeepAwake);
     } finally {
@@ -630,7 +630,7 @@ describe("plugin registry: KeepAwake startup check", () => {
   it("build() wires none without looking for caffeinate", async () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), awake: "none" } }));
     vi.stubEnv("PATH", mkdtempSync(join(tmpdir(), "sf-empty-bin-")));
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect((built.worker as unknown as { d: WorkerDeps }).d.awake).toBeInstanceOf(NoKeepAwake);
     } finally {
@@ -645,7 +645,7 @@ describe("plugin registry: CapabilitySearch wiring", () => {
     const dir = root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(plugins as object), awake: "none" } });
     mkdirSync(join(dir, "docs"));
     writeFileSync(join(dir, "docs", "guide.md"), "# Guide\n\nHow the zebra works.\n");
-    const built = await build(await loadConfig(dir), { clock: new FakeClock() });
+    const built = await build(await loadConfig(dir), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       return (built.worker as unknown as { d: WorkerDeps }).d.capability;
     } finally {

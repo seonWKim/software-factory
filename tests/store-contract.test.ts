@@ -3,7 +3,7 @@ import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
-import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
+import { BACKENDS, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
 
@@ -106,14 +106,14 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);
       await store.createWorkItem(issue(2), system);
-      expect(await store.getWorkItemByPr("o/r", 34)).toBeNull();
-      expect(await store.getWorkItemByMergeSha("o/r", "m1")).toBeNull();
+      expect(await store.getWorkItemByPr(PROJECT_KEY, 34)).toBeNull();
+      expect(await store.getWorkItemByMergeSha(PROJECT_KEY, "m1")).toBeNull();
       await store.transition({ id: item.id, expected_version: 1, patch: { pr_number: 34, merge_sha: "m1" }, actor: system, reason: "x" });
-      expect((await store.getWorkItemByPr("o/r", 34))!.id).toBe(item.id);
-      expect((await store.getWorkItemByMergeSha("o/r", "m1"))!.id).toBe(item.id);
-      expect(await store.getWorkItemByPr("other/repo", 34)).toBeNull();
-      expect(await store.getWorkItemByMergeSha("other/repo", "m1")).toBeNull();
-      expect(await store.getWorkItemByPr("o/r", 35)).toBeNull();
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 34))!.id).toBe(item.id);
+      expect((await store.getWorkItemByMergeSha(PROJECT_KEY, "m1"))!.id).toBe(item.id);
+      expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, 34)).toBeNull();
+      expect(await store.getWorkItemByMergeSha(OTHER_PROJECT_KEY, "m1")).toBeNull();
+      expect(await store.getWorkItemByPr(PROJECT_KEY, 35)).toBeNull();
     });
   });
 
@@ -646,7 +646,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       const [sc] = await store.listStateChanges(it.id);
       expect(sc).toMatchObject({ reason: "pr_adopted", actor: human, version: 1 });
       expect(sc!.changes).toMatchObject({ stage: { from: null, to: "REVIEW" }, pr_number: { from: null, to: 5 } });
-      expect((await store.getWorkItemByPr("o/r", 5))!.id).toBe(it.id);
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 5))!.id).toBe(it.id);
     });
 
     it("transitions keep origin, head_branch and last_head_sha", async () => {
@@ -694,16 +694,16 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
 
     it("recordUnreviewedMerge is idempotent on (project, pr_number); listUnreviewedMerges is newest first", async () => {
       const { store, clock } = await make();
-      const a = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 7, merge_sha: "m7", merger_id: "github:1" as UserId });
+      const a = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: "github:1" as UserId });
       clock.advance(1000);
-      const again = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 7, merge_sha: "other", merger_id: null });
-      const b = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 8, merge_sha: "m8", merger_id: null });
-      const c = await store.recordUnreviewedMerge({ project: "x/y", pr_number: 7, merge_sha: "m7b", merger_id: null });
+      const again = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "other", merger_id: null });
+      const b = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 8, merge_sha: "m8", merger_id: null });
+      const c = await store.recordUnreviewedMerge({ project: OTHER_PROJECT_KEY, pr_number: 7, merge_sha: "m7b", merger_id: null });
       expect([a.created, again.created, b.created, c.created]).toEqual([true, false, true, true]);
       expect(again.merge).toEqual(a.merge);
-      expect(a.merge).toMatchObject({ project: "o/r", pr_number: 7, merge_sha: "m7", merger_id: "github:1" });
+      expect(a.merge).toMatchObject({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: "github:1" });
       const rows = await store.listUnreviewedMerges(10);
-      expect(rows.map((r) => [r.project, r.pr_number])).toEqual([["x/y", 7], ["o/r", 8], ["o/r", 7]]);
+      expect(rows.map((r) => [r.project, r.pr_number])).toEqual([[OTHER_PROJECT_KEY, 7], [PROJECT_KEY, 8], [PROJECT_KEY, 7]]);
       expect(await store.listUnreviewedMerges(1)).toHaveLength(1);
     });
   });
@@ -848,7 +848,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
 
     it("tier history: finished (CLOSED) items of the project and tier, and token_cost of the merged ones", async () => {
       const { store } = await make();
-      const close = async (n: number, tier: 1 | 2, close_reason: "completed" | "rejected" | null, token_cost: number, project = "o/r") => {
+      const close = async (n: number, tier: 1 | 2, close_reason: "completed" | "rejected" | null, token_cost: number, project = PROJECT_KEY) => {
         const { item } = await store.createWorkItem({ ...issue(n), project }, system);
         await store.transition({
           id: item.id, expected_version: 1, actor: system, reason: "x",
@@ -860,11 +860,11 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       await close(3, 2, "rejected", 900);
       await close(4, 2, null, 5_000);
       await close(5, 1, "completed", 7_000);
-      await close(6, 2, "completed", 8_000, "other/repo");
-      const h = await store.getTierHistory("o/r", 2);
+      await close(6, 2, "completed", 8_000, OTHER_PROJECT_KEY);
+      const h = await store.getTierHistory(PROJECT_KEY, 2);
       expect(h.finished).toBe(3);
       expect([...h.merged_token_costs].sort((a, b) => a - b)).toEqual([100, 300]);
-      expect(await store.getTierHistory("o/r", 4)).toEqual({ finished: 0, merged_token_costs: [] });
+      expect(await store.getTierHistory(PROJECT_KEY, 4)).toEqual({ finished: 0, merged_token_costs: [] });
     });
   });
 

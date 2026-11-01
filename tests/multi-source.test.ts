@@ -24,7 +24,7 @@ import {
   slackRef,
   triageSpec,
 } from "./helpers/fakes.js";
-import { newStore, w1 } from "./helpers/store.js";
+import { newStore, w1, PROJECT_KEY } from "./helpers/store.js";
 
 /** Slack identities: FakeAuth allows subject "1" only, whatever the provider. */
 const slackAlice: ExternalIdentity = { provider: "slack", subject: "1" };
@@ -143,7 +143,7 @@ describe("multi-source controller: per-item routing", () => {
     const only = new FakeStreamSource();
     const c = new Controller({ store, sources: [only], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem(
-      { source: slackRef(5), title: "t", requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] },
+      { source: slackRef(5), title: "t", requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
       { kind: "system", id: "system:test" },
     );
     await store.transition({ id: item.id, expected_version: item.version, patch: { pr_number: 9 }, actor: { kind: "system", id: "system:test" }, reason: "test" });

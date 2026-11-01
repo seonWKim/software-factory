@@ -6,7 +6,7 @@ import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
-import { newStore, system } from "./helpers/store.js";
+import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
 
 describe("parseVerdict", () => {
   it("reads the verdict, the severity and the reason (following lines included)", () => {
@@ -66,7 +66,7 @@ type F = Awaited<ReturnType<typeof setup>>;
 /** Issue #7 as a work item; with `pr`, in REVIEW waiting for a merge of PR #42. */
 async function item(f: F, pr = true): Promise<WorkItem> {
   const { item } = await f.store.createWorkItem(
-    { source: issueRef(7), requester_id: "github:1" as WorkItem["requester_id"], project: "o/r", problem: "p", resources: [] },
+    { source: issueRef(7), requester_id: "github:1" as WorkItem["requester_id"], project: PROJECT_KEY, problem: "p", resources: [] },
     system,
   );
   if (!pr) return item;
