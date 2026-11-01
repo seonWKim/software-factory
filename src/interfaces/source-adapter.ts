@@ -13,6 +13,19 @@ export type SourceEvent =
   | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity }
   | { kind: "spec_rejected"; source: SourceRef; comment_id: string; approver: ExternalIdentity; reason: string }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /**
+   * `/resolve [notes]` (design §5 Merge conflict). `notes`: the rest of the comment, trimmed; untrusted text.
+   * On a factory PR's conversation, `pr` names that PR and `source` is the PR itself, so the 👀 and any reply
+   * go there; the controller finds the work item by the head branch. On an issue, `pr` is null.
+   */
+  | {
+      kind: "resolve_requested";
+      source: SourceRef;
+      comment_id: string;
+      requester: ExternalIdentity;
+      notes: string;
+      pr: { pr_number: number; head_branch: string } | null;
+    }
   /** PR events name the head branch; the controller maps it back to a work item. */
   | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null }
   | { kind: "pr_closed"; pr_number: number; head_branch: string }

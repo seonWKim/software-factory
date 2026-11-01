@@ -20,6 +20,8 @@ interface GhIssue {
 interface GhComment {
   id: number;
   issue_url: string;
+  /** `.../pull/<n>#issuecomment-<id>` for a comment on a PR's conversation, `.../issues/<n>#...` on an issue. */
+  html_url?: string;
   body: string;
   user: GhUser;
   updated_at: string;
@@ -151,6 +153,11 @@ export class GitHubIssueSource implements SourceAdapter {
         events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
       } else if (command === "/retry") {
         events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
+      } else if (/^\/resolve(\s|$)/.test(command)) {
+        const notes = [command.slice("/resolve".length).trim(), ...rest].join("\n").trim();
+        const onPr = cm.html_url?.includes("/pull/") ? await this.factoryPull(base, Number(cm.issue_url.split("/").pop())) : null;
+        if (cm.html_url?.includes("/pull/") && !onPr) continue;
+        events.push({ kind: "resolve_requested", source, comment_id, requester: identity(cm.user), notes, pr: onPr });
       }
     }
 
@@ -214,6 +221,20 @@ export class GitHubIssueSource implements SourceAdapter {
     }
 
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /**
+   * The PR's number and head branch if it is a factory PR; null for another PR or one that is gone (404), so
+   * a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
+   */
+  private async factoryPull(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
+    try {
+      const p = await this.client.request<Pick<GhPull, "number" | "head">>("GET", `${base}/pulls/${n}`);
+      return p.head.ref.startsWith(this.branchPrefix) ? { pr_number: p.number, head_branch: p.head.ref } : null;
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
