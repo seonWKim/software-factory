@@ -10,13 +10,16 @@ import type {
   StateChange,
   StateChangeDetail,
   StateChangeId,
+  Tier,
   Timestamp,
   Verdict,
   VerdictId,
+  VerdictSeverity,
   WorkItem,
   WorkItemId,
 } from "../../../core/types.js";
 import { IMPLEMENT_KINDS, allowedPathsOverlap } from "../../../core/policy.js";
+import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
   ClaimInput,
@@ -241,6 +244,34 @@ export class SqlFactoryStore implements FactoryStore {
   async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
     const rows = await this.db.all(`SELECT * FROM verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
+  }
+
+  async listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]> {
+    const { seq } = this.db.dialect;
+    // Three plain reads, no transaction: a read-only command takes no write lock (SQLite) and no row lock.
+    const items = await this.db.all(`SELECT id, tier, stage, token_cost FROM work_items ORDER BY created_at, ${seq}`);
+    const records = new Map<string, StatsRecord>();
+    for (const r of items) {
+      records.set(r.id as string, {
+        id: r.id as WorkItemId,
+        tier: r.tier === null ? null : (Number(r.tier) as Tier),
+        stage: r.stage as Stage,
+        token_cost: Number(r.token_cost),
+        reasons: [],
+        severities: [],
+      });
+    }
+    if (reasons.length > 0) {
+      const changes = await this.db.all(
+        `SELECT work_item_id, reason FROM state_changes WHERE reason IN (${placeholders(reasons.length)})
+         ORDER BY work_item_id, version`,
+        [...reasons],
+      );
+      for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
+    }
+    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    return [...records.values()];
   }
 
   // Runs
