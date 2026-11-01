@@ -59,6 +59,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
+  inbox_retention_days?: number;
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
@@ -106,6 +108,7 @@ export async function loadConfig(
   uiPort(file.ui);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
+  const retention = inboxRetentionDays(file);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -133,6 +136,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    inbox_retention_days: retention,
     deny_paths: [
       dirname(secretsFile),
       join(stateDir, "db"),
@@ -227,6 +231,8 @@ export async function build(
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
+    // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
+    replica_id: `${hostname()}:${process.pid}`,
   });
 
   const worker = new Worker({
@@ -344,6 +350,16 @@ export function diffLimits(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+export const DEFAULT_INBOX_RETENTION_DAYS = 14;
+
+/** `inbox_retention_days`: absent means 14, otherwise a positive integer or startup fails. */
+export function inboxRetentionDays(file: Pick<FileConfig, "inbox_retention_days">): number {
+  const v = file.inbox_retention_days;
+  if (v === undefined) return DEFAULT_INBOX_RETENTION_DAYS;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("inbox_retention_days must be a positive integer");
+  return v;
 }
 
 function isTier(n: number): n is Tier {

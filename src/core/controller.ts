@@ -1,4 +1,5 @@
 import type { FactoryConfig } from "./config.js";
+import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
@@ -22,7 +23,7 @@ import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../i
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
-import type { SourceAdapter, SourceEvent } from "../interfaces/source-adapter.js";
+import type { PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
   store: FactoryStore;
@@ -33,6 +34,11 @@ export interface ControllerDeps {
   log: Logger;
   /** G5: the last-attempt comment carries run output, so it is scanned before it is posted. */
   scanner: EgressScanner;
+  /**
+   * This replica's id, the owner of a stream source's listener lease while it holds it. Absent: a random
+   * id per Controller. Unused for poll sources.
+   */
+  replica_id?: string;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -60,6 +66,14 @@ const DIFF_TOO_LARGE = "diff_too_large";
 const CATCH_UP_LIMIT = 1000;
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
+/** Inbox rows a stream intake step reads at most per tick. */
+const INBOX_BATCH = 100;
+const DAY_MS = 86_400_000;
+
+/** The cursor a stream source's inbox is read through (one per source type, shared by every replica). */
+export function inboxCursorName(type: SourceAdapter["type"]): string {
+  return `inbox:${type}`;
+}
 
 /**
  * Control plane: intake, applying run outcomes, the reaper. Deterministic, no LLM: every decision re-reads
@@ -79,26 +93,76 @@ export class Controller {
   constructor(private readonly d: ControllerDeps) {}
 
   async run(signal: AbortSignal): Promise<void> {
+    const source = this.d.source;
+    // Stream source: this process also runs a listener; the store lease lets only one replica's subscribe.
+    const listening = source.intake === "stream" ? this.listener(source).run(signal) : Promise.resolve();
     await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       const now = this.d.clock.now().getTime();
-      if (now - lastPoll >= this.d.config.poll_interval_ms) {
-        lastPoll = now;
-        await this.guard("intake", () => this.tickIntake());
-      }
+      const due = now - lastPoll >= this.d.config.poll_interval_ms;
+      if (due) lastPoll = now;
+      // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
+      if (due || source.intake === "stream") await this.guard("intake", () => this.tickIntake());
+      if (due && source.intake === "stream") await this.guard("inbox cleanup", () => this.cleanupInbox());
       await this.guard("runs", () => this.tickRuns());
       await this.guard("reaper", () => this.tickReaper());
       await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
     }
+    await listening;
+  }
+
+  /** The listener for a stream source, owned by this replica. */
+  listener(source: StreamSource): Listener {
+    return new Listener({
+      store: this.d.store,
+      source,
+      clock: this.d.clock,
+      config: this.d.config,
+      log: this.d.log,
+      owner: this.d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`,
+    });
   }
 
   async tickIntake(): Promise<void> {
-    const name = `intake:${this.d.source.type}`;
+    const source = this.d.source;
+    if (source.intake === "stream") return this.tickInbox(source);
+    return this.tickPoll(source);
+  }
+
+  private async tickPoll(source: PollSource): Promise<void> {
+    const name = `intake:${source.type}`;
     const cursor = await this.d.store.getCursor(name);
-    const { events, next_cursor } = await this.d.source.poll(cursor);
+    const { events, next_cursor } = await source.poll(cursor);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
+  }
+
+  /**
+   * Stream intake, controller side: the inbox rows after the cursor, each handled like a polled event, then
+   * the cursor moves to the last one. Any replica may run it; handling is idempotent and the cursor moves
+   * only from the value read, so two replicas at once at worst handle a row twice.
+   */
+  private async tickInbox(source: StreamSource): Promise<void> {
+    const name = inboxCursorName(source.type);
+    const cursor = await this.d.store.getCursor(name);
+    const rows = await this.d.store.listInboxAfter(source.type, inboxSeq(cursor), INBOX_BATCH);
+    if (rows.length === 0) return;
+    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handleEvent(row.event));
+    await this.d.store.advanceCursor(name, cursor, String(rows.at(-1)!.seq));
+  }
+
+  /**
+   * Deletes inbox rows older than inbox_retention_days that the cursor has passed. A source with no cursor
+   * yet keeps every row.
+   */
+  async cleanupInbox(): Promise<void> {
+    const source = this.d.source;
+    if (source.intake !== "stream") return;
+    const cursor = await this.d.store.getCursor(inboxCursorName(source.type));
+    if (cursor === null) return;
+    const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.d.config.inbox_retention_days * DAY_MS);
+    if (deleted > 0) this.d.log.info("inbox cleanup", { source_type: source.type, deleted });
   }
 
   async tickRuns(): Promise<void> {
@@ -831,6 +895,14 @@ function parseFloorHits(v: unknown): { path: string; tier: number }[] {
       typeof h === "object" && h !== null && typeof h.path === "string" && Number.isInteger(h.tier) && h.tier >= 1 && h.tier <= 5,
   );
   return hits.length === v.length ? hits : [];
+}
+
+/** The seq an inbox cursor holds; no cursor means before the first row. */
+function inboxSeq(cursor: string | null): number {
+  if (cursor === null) return 0;
+  const n = Number(cursor);
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error(`inbox cursor is not a sequence number: ${cursor.slice(0, 40)}`);
+  return n;
 }
 
 function iso(ms: number): Timestamp {

@@ -30,6 +30,11 @@ export interface FactoryConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /**
+   * Stream intake: inbox rows older than this many days, and already behind their source's inbox cursor,
+   * are deleted by the controller's cleanup. Default 14.
+   */
+  inbox_retention_days: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
