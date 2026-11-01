@@ -18,7 +18,7 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
-import type { SecretStore } from "./interfaces/secret-store.js";
+import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
@@ -103,12 +103,37 @@ export interface InterfaceEntry<K extends PluginKind> {
   /** Guards can be switched but never disabled (architecture §5). */
   guard: boolean;
   plugins: Readonly<Record<string, PluginFactory<K>>>;
+  /**
+   * The secret names each plugin reads, one per plugin name (an empty list for none). The SecretStore
+   * loads and scans exactly the union of the selected plugins' names (declaredSecretNames).
+   */
+  secrets: Readonly<Record<string, readonly SecretDeclaration[]>>;
+}
+
+/** One secret a plugin reads from the SecretStore, with one line on what it is for. */
+export interface SecretDeclaration {
+  name: SecretName;
+  purpose: string;
+  /**
+   * Declarations with the same `oneOf` label are alternatives: one present value is enough (for
+   * example the model credential, an OAuth token or an API key). Absent: the secret is required.
+   */
+  oneOf?: string;
 }
 
 export type Registry = { readonly [K in PluginKind]: InterfaceEntry<K> };
 
 /** One plugin name per interface, as selected by config. */
 export type Selection = { [K in PluginKind]: string };
+
+const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
+const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
+
+/** The model credential for the Claude Code CLI: the subscription token, or an API key instead. */
+const MODEL_CREDENTIAL: readonly SecretDeclaration[] = [
+  { name: secretName("CLAUDE_CODE_OAUTH_TOKEN"), purpose: "Claude subscription token for the claude CLI (claude setup-token)", oneOf: "model credential" },
+  { name: secretName("ANTHROPIC_API_KEY"), purpose: "Anthropic API key for the claude CLI, used when there is no OAuth token", oneOf: "model credential" },
+];
 
 const dirs = (c: BaseContext) => ({
   claudeConfigDir: join(c.loaded.stateDir, "agents", "claude-config"),
@@ -125,11 +150,15 @@ export const REGISTRY: Registry = {
       mysql: async (c) => {
         const s = c.loaded.store;
         if (s.type !== "mysql") throw new Error('store plugin "mysql" needs a store block with type "mysql"');
-        const password = await c.secrets.get("MYSQL_PASSWORD");
+        const password = await c.secrets.get(MYSQL_PASSWORD);
         if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
         const driver = new MysqlDriver({ host: s.host, port: s.port, database: s.database, user: s.user, password: password.reveal() });
         return new SqlFactoryStore(driver, c.clock);
       },
+    },
+    secrets: {
+      sqlite: [],
+      mysql: [{ name: MYSQL_PASSWORD, purpose: "password of the factory's own MySQL user (npm run setup generates it)" }],
     },
   },
   sandbox: {
@@ -137,6 +166,7 @@ export const REGISTRY: Registry = {
     configKey: "plugins.sandbox",
     guard: false,
     plugins: { noop: (c) => new NoOpSandbox(resolve(c.loaded.root, c.loaded.file.worktrees_dir)) },
+    secrets: { noop: [] },
   },
   runner: {
     interface: "AgentRunner",
@@ -145,6 +175,7 @@ export const REGISTRY: Registry = {
     plugins: {
       "claude-code": (c) => new ClaudeCodeRunner({ sandbox: c.sandbox, secrets: c.secrets, ...dirs(c), models: c.loaded.file.models }),
     },
+    secrets: { "claude-code": MODEL_CREDENTIAL },
   },
   llm: {
     interface: "LLMProvider",
@@ -159,6 +190,7 @@ export const REGISTRY: Registry = {
           models: c.loaded.file.models,
         }),
     },
+    secrets: { "claude-cli": MODEL_CREDENTIAL },
   },
   auth: {
     interface: "AuthProvider",
@@ -168,18 +200,27 @@ export const REGISTRY: Registry = {
       github: (c) => new GitHubAuthProvider(c.github, c.repo),
       none: () => new NoAuthProvider(),
     },
+    secrets: {
+      github: [{ name: GITHUB_TOKEN, purpose: "reads a user's permission on the repository (shared GitHub client)" }],
+      none: [],
+    },
   },
   secrets: {
     interface: "SecretStore",
     configKey: "plugins.secrets",
     guard: true,
-    plugins: { "env-file": (c) => new EnvFileSecretStore(c.loaded.secretsFile, c.extraScanValues) },
+    plugins: {
+      "env-file": (c) =>
+        new EnvFileSecretStore(c.loaded.secretsFile, declaredSecretNames(c.loaded.registry, c.loaded.plugins), c.extraScanValues),
+    },
+    secrets: { "env-file": [] },
   },
   egress: {
     interface: "EgressScanner",
     configKey: "plugins.egress",
     guard: true,
     plugins: { pattern: (c) => new PatternEgressScanner(() => c.secrets.valuesForScan()) },
+    secrets: { pattern: [] },
   },
   broker: {
     interface: "ToolBroker",
@@ -197,12 +238,14 @@ export const REGISTRY: Registry = {
           branchPrefix: c.loaded.config.branch_prefix,
         }),
     },
+    secrets: { github: [{ name: GITHUB_TOKEN, purpose: "pushes factory branches, opens pull requests and comments" }] },
   },
   storage: {
     interface: "SharedStorage",
     configKey: "plugins.storage",
     guard: false,
     plugins: { fs: (c) => new FsSharedStorage(join(c.loaded.stateDir, "storage")) },
+    secrets: { fs: [] },
   },
   source: {
     interface: "SourceAdapter",
@@ -215,6 +258,7 @@ export const REGISTRY: Registry = {
           c.loaded.config.status_label_prefix,
         ),
     },
+    secrets: { "github-issues": [{ name: GITHUB_TOKEN, purpose: "reads issues, comments and commits; posts comments and status labels" }] },
   },
   capability: {
     interface: "CapabilitySearch",
@@ -224,12 +268,14 @@ export const REGISTRY: Registry = {
       "list-all": (c) => new ListAllCapabilitySearch(c.capabilities),
       bm25: (c) => new Bm25CapabilitySearch(c.loaded.codeRoot),
     },
+    secrets: { "list-all": [], bm25: [] },
   },
   clock: {
     interface: "Clock",
     configKey: "plugins.clock",
     guard: false,
     plugins: { system: () => new SystemClock() },
+    secrets: { system: [] },
   },
   updater: {
     interface: "Updater",
@@ -251,6 +297,7 @@ export const REGISTRY: Registry = {
           runTimeoutMs: c.loaded.config.run_timeout_ms,
         }),
     },
+    secrets: { none: [], "git-worktree": [] },
   },
   awake: {
     interface: "KeepAwake",
@@ -270,6 +317,7 @@ export const REGISTRY: Registry = {
       },
       none: () => new NoKeepAwake(),
     },
+    secrets: { caffeinate: [], none: [] },
   },
 };
 
@@ -369,14 +417,42 @@ export async function createPlugin<K extends PluginKind>(
   return factory(ctx);
 }
 
-/** A copy of `registry` with one more plugin. For tests and in-repo additions; there is no external loading. */
+/**
+ * A copy of `registry` with one more plugin, and the secrets it declares (none if left out). For tests and
+ * in-repo additions; there is no external loading.
+ */
 export function withPlugin<K extends PluginKind>(
   registry: Registry,
   kind: K,
   name: string,
   factory: PluginFactory<K>,
+  secrets: readonly SecretDeclaration[] = [],
 ): Registry {
   const entry = registry[kind] as InterfaceEntry<K>;
   if (entry.guard && DISABLING.has(name)) throw new Error(`"${name}" cannot name a ${entry.interface} plugin: it means disabled`);
-  return { ...registry, [kind]: { ...entry, plugins: { ...entry.plugins, [name]: factory } } };
+  return {
+    ...registry,
+    [kind]: { ...entry, plugins: { ...entry.plugins, [name]: factory }, secrets: { ...entry.secrets, [name]: secrets } },
+  };
+}
+
+/**
+ * Every secret the selected plugins declare, one entry per name (in interface order; purposes of a
+ * name declared by several plugins are joined with "; "). What setup and doctor list.
+ */
+export function declaredSecrets(registry: Registry, selection: Selection): SecretDeclaration[] {
+  const byName = new Map<SecretName, SecretDeclaration>();
+  for (const kind of PLUGIN_KINDS) {
+    for (const d of registry[kind].secrets[selection[kind]] ?? []) {
+      const seen = byName.get(d.name);
+      if (!seen) byName.set(d.name, { ...d });
+      else if (!seen.purpose.includes(d.purpose)) seen.purpose = `${seen.purpose}; ${d.purpose}`;
+    }
+  }
+  return [...byName.values()];
+}
+
+/** The secret set: the union of the names the selected plugins declare. The SecretStore loads and scans these. */
+export function declaredSecretNames(registry: Registry, selection: Selection): ReadonlySet<SecretName> {
+  return new Set(declaredSecrets(registry, selection).map((d) => d.name));
 }

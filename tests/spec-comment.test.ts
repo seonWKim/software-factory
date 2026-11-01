@@ -15,7 +15,8 @@ const spec: TriageOutput = {
 };
 
 const HEADINGS = ["### What changes", "### Done when", "### Not included", "### Files", "### Risk"];
-const FOOTER = "Reply `/approve` to start implementation, or `/reject` with a reason to close.";
+const FOOTER =
+  "Reply `/approve` to start implementation, `/reject <reason>` to close, or `/revise <feedback>` to get a new spec.";
 
 function lines(body: string): string[] {
   return body.split("\n");

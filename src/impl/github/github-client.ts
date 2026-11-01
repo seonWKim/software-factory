@@ -1,4 +1,6 @@
-import type { SecretStore } from "../../interfaces/secret-store.js";
+import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+
+const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 
 export interface RepoRef {
   owner: string;
@@ -45,7 +47,7 @@ export class GitHubClient {
   }
 
   private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
-    const token = await this.secrets.get("GITHUB_TOKEN");
+    const token = await this.secrets.get(GITHUB_TOKEN);
     if (!token) throw new Error("GITHUB_TOKEN missing from the secret file (SET_UP.md)");
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,

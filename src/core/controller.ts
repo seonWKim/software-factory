@@ -50,7 +50,7 @@ type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 type Hold = Omit<TransitionInput, "id" | "expected_version" | "enqueue"> & { checkpoint: NewBudgetCheckpoint };
 /** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
 type Refusal = { refuse: string };
-type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" | "budget_continue" }>;
+type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" | "budget_continue" }>;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
@@ -58,6 +58,7 @@ type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
   spec_rejected: "/reject",
+  revise_requested: "/revise",
   retry_requested: "/retry",
   budget_continue: "/budget",
 };
@@ -76,6 +77,13 @@ const DIFF_TOO_LARGE = "diff_too_large";
 const CATCH_UP_LIMIT = 1000;
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
+/**
+ * A rejected item whose source still needs the reject comment and the close: `CLOSED` with
+ * `blocked_on: upstream` and this reason until both are done (design §4, gate commands).
+ */
+const SOURCE_CLOSE_PENDING = "source_close_pending";
+/** Rejected items finished per intake tick. */
+const CLOSE_BATCH = 50;
 
 /**
  * Control plane: intake, applying run outcomes, the reaper. Deterministic, no LLM: every decision re-reads
@@ -115,6 +123,19 @@ export class Controller {
     const { events, next_cursor } = await this.d.source.poll(cursor);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
+    await this.guard("source closes", () => this.tickSourceCloses());
+  }
+
+  /**
+   * Finishes rejects whose comment or close did not happen (the factory stopped, or the source failed):
+   * every rejected item still marked `source_close_pending` gets them now. Safe to repeat: the comment
+   * carries a marker and is posted once; closing a closed issue changes nothing.
+   */
+  async tickSourceCloses(): Promise<void> {
+    const pending = await this.d.store.listWorkItemsWhere({ stage: "CLOSED", blocked_on: "upstream", limit: CLOSE_BATCH });
+    for (const it of pending) {
+      if (closePending(it)) await this.guard("source close", () => this.finishReject(it.id));
+    }
   }
 
   async tickRuns(): Promise<void> {
@@ -184,6 +205,7 @@ export class Controller {
         return this.recordReverts(e);
       case "spec_approved":
       case "spec_rejected":
+      case "revise_requested":
       case "retry_requested":
       case "budget_continue":
         return this.handleCommand(e);
@@ -237,11 +259,23 @@ export class Controller {
   private async handleCommand(e: CommandEvent): Promise<void> {
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
-    const principal = await this.authorize(e.kind === "retry_requested" ? e.requester : e.approver, "approve_spec", item.id);
+    const who = e.kind === "retry_requested" || e.kind === "revise_requested" ? e.requester : e.approver;
+    const principal = await this.authorize(who, "approve_spec", item.id);
     const refusal = "refuse" in principal
       ? principal.refuse
       : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id });
     await this.markSeen(e.source, e.comment_id);
+    if (e.kind === "spec_rejected" && refusal === null) {
+      // Best effort here; tickSourceCloses retries whatever did not happen.
+      try {
+        await this.finishReject(item.id);
+      } catch (err) {
+        this.d.log.warn("reject comment or close failed; retried on the next tick", {
+          work_item_id: item.id,
+          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        });
+      }
+    }
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     await this.d.source.postComment(
@@ -268,7 +302,7 @@ export class Controller {
       if (e.kind === "budget_continue") {
         return it.stage === "CLOSED" ? "the work item is closed" : "the work item is not at a budget checkpoint";
       }
-      return this.decide(id, async (x) => command(e, x, actor, await this.floorTierNeeded(x)));
+      return this.decide(id, async (x) => this.command(e, x, actor, await this.floorTierNeeded(x)));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -396,6 +430,86 @@ export class Controller {
     }
     this.d.log.warn("verdict gave up after conflicts", { work_item_id: id });
     return null;
+  }
+
+  /**
+   * The transition a command asks for, or why the item's current state cannot take it. Async only because
+   * a `/revise` past the limit posts its comment before the transition (keyed, so a conflict re-run posts once).
+   */
+  private async command(e: ItemCommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Promise<Decision | Refusal> {
+    if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
+    if (it.blocked_reason === BUDGET_CHECKPOINT) {
+      return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
+    }
+    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
+    if (e.kind === "retry_requested") return retry(it, actor);
+    if (!awaitingSpec(it)) return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
+    switch (e.kind) {
+      case "spec_rejected":
+        // Recorded first; the comment and the close follow (finishReject), and survive a stop in between.
+        return {
+          patch: {
+            stage: "CLOSED",
+            close_reason: "rejected",
+            blocked_on: "upstream",
+            blocked_reason: SOURCE_CLOSE_PENDING,
+            spec_feedback: e.reason.trim() || null,
+          },
+          actor,
+          reason: "spec_rejected",
+        };
+      case "revise_requested": {
+        const feedback = e.feedback.trim();
+        if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+        const limit = this.d.config.max_loops;
+        if (it.blocked_reason === "max_revisions") {
+          return { refuse: `the spec reached the revision limit (\`max_loops\` = ${limit}); reply \`/approve\` or \`/reject <reason>\`` };
+        }
+        if (it.revision_count >= limit) {
+          await this.comment(it, `max-revisions:${it.id}`, [
+            `The spec was revised ${it.revision_count} times (limit \`max_loops\` = ${limit}), so the factory started no new triage run (\`max_revisions\`).`,
+            "",
+            "Reply `/approve` to implement the spec above, or `/reject <reason>` to close.",
+          ].join("\n"));
+          return { patch: { blocked_on: "human", blocked_reason: "max_revisions" }, actor, reason: "max_revisions" };
+        }
+        const n = it.revision_count + 1;
+        return {
+          patch: { stage: "NEW", blocked_on: "none", blocked_reason: null, revision_count: n, spec_feedback: feedback },
+          actor,
+          reason: "spec_revision_requested",
+          // Differs from the intake key and from every earlier revision's key.
+          enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
+        };
+      }
+      case "spec_approved":
+        return {
+          patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+          actor,
+          reason: "spec_approved",
+          enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
+        };
+    }
+  }
+
+  /**
+   * The rest of a reject: one comment quoting the reason, then the source issue closed as not planned,
+   * then the pending mark cleared. Each step is idempotent, so a repeat after a stop does no harm.
+   */
+  private async finishReject(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || !closePending(it)) return;
+    const reason = it.spec_feedback?.trim() ?? "";
+    const body = reason
+      ? ["The spec was rejected, so the factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
+      : "The spec was rejected with no reason given, so the factory closed this issue as not planned.";
+    await this.comment(it, `rejected:${it.id}`, body);
+    await this.d.source.closeIssue(it.source);
+    await this.decide(id, (cur) =>
+      closePending(cur)
+        ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "source_closed" }
+        : null,
+    );
   }
 
   /**
@@ -878,45 +992,37 @@ export class Controller {
   }
 }
 
-/** The transition a command asks for, or why the item's current state cannot take it. */
-function command(e: ItemCommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Decision | Refusal {
-  if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
-  if (it.blocked_reason === BUDGET_CHECKPOINT) {
-    return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
-  }
-  if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
-  if (e.kind === "retry_requested") {
-    const kind = failedRunKind(it);
-    if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
-    const next = { ...it, restart_count: it.restart_count + 1 };
-    // A retried update goes back to waiting for the merge, which is the state an update run expects.
-    const unblocked = kind === "update"
-      ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
-      : { blocked_on: "none" as const, blocked_reason: null };
-    // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
-    return {
-      patch: { ...unblocked, restart_count: next.restart_count },
-      actor,
-      reason: "retry_requested",
-      enqueue: { kind, idempotency_key: runKey(next, kind) },
-    };
-  }
-  if (it.stage !== "READY" || it.blocked_reason !== "spec_pending") {
-    return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
-  }
-  if (e.kind === "spec_rejected") {
-    return {
-      patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
-      actor,
-      reason: "spec_rejected",
-    };
-  }
+/** A human `/retry`: the failed run again, or why there is none. */
+function retry(it: WorkItem, actor: Actor): Decision | Refusal {
+  const kind = failedRunKind(it);
+  if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
+  const next = { ...it, restart_count: it.restart_count + 1 };
+  // A retried update goes back to waiting for the merge, which is the state an update run expects.
+  const unblocked = kind === "update"
+    ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
+    : { blocked_on: "none" as const, blocked_reason: null };
+  // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
   return {
-    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+    patch: { ...unblocked, restart_count: next.restart_count },
     actor,
-    reason: "spec_approved",
-    enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
+    reason: "retry_requested",
+    enqueue: { kind, idempotency_key: runKey(next, kind) },
   };
+}
+
+/** A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. */
+function awaitingSpec(it: WorkItem): boolean {
+  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
+}
+
+/** A rejected item whose reject comment or source close may not have happened yet. */
+function closePending(it: WorkItem): boolean {
+  return it.stage === "CLOSED" && it.blocked_on === "upstream" && it.blocked_reason === SOURCE_CLOSE_PENDING;
+}
+
+/** Markdown block quote of `text`, line by line. */
+function quote(text: string): string {
+  return text.split(/\r?\n/).map((l) => (l.trim() ? `> ${l}` : ">")).join("\n");
 }
 
 /**
@@ -927,6 +1033,9 @@ function command(e: ItemCommandEvent, it: WorkItem, actor: Actor, floorNeed: num
 function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
     return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
+  }
+  if (e.kind === "revise_requested") {
+    return { refuse: "the item is blocked by the floor check (`floor_tier`), not waiting on a spec; reply `/approve` to raise its tier or `/reject <reason>` to close" };
   }
   if (e.kind === "spec_rejected") {
     return {

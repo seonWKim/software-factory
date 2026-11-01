@@ -126,7 +126,13 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
     ) ${TABLE}`,
   ],
-  // 6: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  [
+    "ALTER TABLE work_items ADD COLUMN issue_text MEDIUMTEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
+    "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
+  ],
+  // 7: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
   [
     `CREATE TABLE budget_checkpoints (
       seq                  BIGINT NOT NULL AUTO_INCREMENT UNIQUE,

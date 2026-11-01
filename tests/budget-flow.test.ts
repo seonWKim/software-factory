@@ -335,14 +335,15 @@ describe("/budget", () => {
     expect((await f.store.listBudgetCheckpoints(it0.id))[0]).toMatchObject({ held_run_key: `${it0.id}:implement:l0:r1` });
   });
 
-  it("/approve and /retry at a checkpoint are refused with how to answer", async () => {
+  it("/approve, /retry and /revise at a checkpoint are refused with how to answer", async () => {
     const f = await factory({ budgets: { 2: 1000 }, implement: () => used(900, done) });
     const it0 = await f.submit();
     const before = await f.item(it0);
     await f.say((comment_id) => ({ kind: "spec_approved", source: f.src, comment_id, approver: alice }));
     await f.say((comment_id) => ({ kind: "retry_requested", source: f.src, comment_id, requester: alice }));
+    await f.say((comment_id) => ({ kind: "revise_requested", source: f.src, comment_id, requester: alice, feedback: "smaller" }));
     expect(await f.item(it0)).toEqual(before);
-    expect(f.refusals()).toHaveLength(2);
+    expect(f.refusals()).toHaveLength(3);
     for (const c of f.refusals()) expect(c.body).toContain("at a budget checkpoint");
   });
 });

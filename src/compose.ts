@@ -13,6 +13,7 @@ import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { GitHubClient } from "./impl/github/github-client.js";
@@ -201,6 +202,9 @@ export class Plugins {
   }
   store(secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
     return createPlugin(this.loaded.registry, "store", this.loaded.plugins.store, { ...this.base, secrets, clock });
+  }
+  llm(secrets: SecretStore): Promise<LLMProvider> {
+    return createPlugin(this.loaded.registry, "llm", this.loaded.plugins.llm, { ...this.base, secrets });
   }
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);

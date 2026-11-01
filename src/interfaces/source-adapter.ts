@@ -11,7 +11,10 @@ import type { ExternalIdentity } from "./auth-provider.js";
 export type SourceEvent =
   | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
   | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity }
+  /** `reason` is the text after `/reject`, possibly empty. */
   | { kind: "spec_rejected"; source: SourceRef; comment_id: string; approver: ExternalIdentity; reason: string }
+  /** `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that). */
+  | { kind: "revise_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; feedback: string }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
   /**
    * `/budget [tokens]` at a budget checkpoint (design §6). `amount` is the raw text after `/budget` on the
@@ -74,4 +77,9 @@ export interface SourceAdapter {
    * do nothing.
    */
   setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void>;
+  /**
+   * Closes the item on the source as "not planned" (GitHub: the issue, `state_reason: not_planned`). Used
+   * when a human rejects the spec. Idempotent: closing a closed item changes nothing. Agents never call this.
+   */
+  closeIssue(source: SourceRef): Promise<void>;
 }
