@@ -910,14 +910,79 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     it("triage and review runs are never held back, and do not hold back an implement", async () => {
       const { store } = await make();
       const a = await item(store, 1, ["src/"], ["implement", "review", "triage"]);
-      expect((await claim(store))?.kind).toBe("implement");
+      // Kind rank: review, then triage, then the implement that was queued before both.
       expect([(await claim(store))?.kind, (await claim(store))?.kind]).toEqual(["review", "triage"]);
+      expect((await claim(store))?.kind).toBe("implement");
 
       const other = await make();
       await item(other.store, 2, ["src/"], ["review", "implement"]);
       expect((await claim(other.store))?.kind).toBe("review");
       expect((await claim(other.store))?.kind).toBe("implement");
       expect(a).toBeTruthy();
+    });
+  });
+
+  describe("claim order: kind rank, then created_at, then insertion order", () => {
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+    const claim = (store: FactoryStore, worker_id = w1) => store.claimRun({ worker_id, kinds: ALL_KINDS, lease_ms: LEASE });
+    const enqueue = (store: FactoryStore, n: number, kind: RunKind, not_before?: string) =>
+      store.createWorkItem(issue(n), system, { enqueue: { kind, idempotency_key: `${n}:${kind}`, not_before: not_before as never } });
+
+    it("a queued review and a queued triage, created after an older implement, are claimed before it", async () => {
+      const { store, clock } = await make();
+      await enqueue(store, 1, "implement");
+      clock.advance(1_000);
+      await enqueue(store, 2, "triage");
+      clock.advance(1_000);
+      await enqueue(store, 3, "review");
+      expect([(await claim(store))?.kind, (await claim(store))?.kind, (await claim(store))?.kind]).toEqual([
+        "review", "triage", "implement",
+      ]);
+    });
+
+    it("ranks review, triage, update, implement, resolve, whatever their age", async () => {
+      const { store, clock } = await make();
+      for (const [n, kind] of (["resolve", "implement", "update", "triage", "review"] as RunKind[]).entries()) {
+        await enqueue(store, n + 1, kind);
+        clock.advance(1_000);
+      }
+      const order: (RunKind | undefined)[] = [];
+      for (let i = 0; i < 5; i++) order.push((await claim(store))?.kind);
+      expect(order).toEqual(["review", "triage", "update", "implement", "resolve"]);
+    });
+
+    it("within one kind, the oldest queued run is claimed first; equal created_at breaks on insertion order", async () => {
+      const { store, clock } = await make();
+      await enqueue(store, 1, "implement");
+      await enqueue(store, 2, "implement"); // same created_at as #1
+      clock.advance(1_000);
+      await enqueue(store, 3, "implement");
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) ids.push((await claim(store))!.idempotency_key);
+      expect(ids).toEqual(["1:implement", "2:implement", "3:implement"]);
+    });
+
+    it("a held implement-type run does not block a later run of any kind behind it", async () => {
+      const { store, clock } = await make();
+      // Held by its item's running branch writer: item 1 has update running and implement queued.
+      const { item: a } = await enqueue(store, 1, "update");
+      expect((await claim(store))?.kind).toBe("update");
+      await store.transition({
+        id: a.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "implement", idempotency_key: "1:implement" },
+      });
+      // Held by not_before: an update that may not start yet.
+      await enqueue(store, 2, "update", new Date(clock.now().getTime() + 60_000).toISOString());
+      clock.advance(1_000);
+      for (const [n, kind] of (["implement", "resolve", "triage", "review", "update"] as RunKind[]).entries()) {
+        await enqueue(store, n + 10, kind);
+      }
+      const order: (string | undefined)[] = [];
+      for (let i = 0; i < 5; i++) order.push((await claim(store))?.idempotency_key);
+      expect(order).toEqual(["13:review", "12:triage", "14:update", "10:implement", "11:resolve"]);
+      expect(await claim(store)).toBeNull();
+      const held = (await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key).sort();
+      expect(held).toEqual(["1:implement", "2:update"]);
     });
   });
 
