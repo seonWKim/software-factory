@@ -9,7 +9,8 @@ export interface TierSources {
   previous?: Tier | null;
 }
 
-const FOOTER = "Reply `/approve` to start implementation, or `/reject` with a reason to close.";
+const FOOTER =
+  "Reply `/approve` to start implementation, `/reject <reason>` to close, or `/revise <feedback>` to get a new spec.";
 
 /** The first one or two sentences of the problem, as the plain opening of the comment. */
 function opening(problem: string): string {
@@ -27,7 +28,7 @@ function raiseReason(tier: Tier, from: TriageOutput["tier"], why: TierSources): 
 
 const code = (p: string): string => `- \`${p}\``;
 
-/** The triage spec comment a human reads before typing /approve or /reject. */
+/** The triage spec comment a human reads before typing /approve, /reject or /revise. */
 export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}): string {
   const out = ["## Factory spec", "", opening(spec.problem), ""];
   if (tier > spec.tier) {
