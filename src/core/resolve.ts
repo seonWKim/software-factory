@@ -1,5 +1,5 @@
-import { isCovered } from "./policy.js";
-import type { WorkItem } from "./types.js";
+import { parseAutoResolveKey, scopeViolations } from "./policy.js";
+import type { Run, StateChange, WorkItem } from "./types.js";
 
 // Pure parts of the resolve run (design §5 Merge conflict): conflict hunks, the prompt, the scope gate.
 
@@ -89,7 +89,7 @@ export function renderResolvePrompt(
 }
 
 /**
- * The resolve run's hard scope gate: of the files the run changed (NUL-separated `git diff --name-only -z`
+ * The resolve run's hard scope gate (the same rule the implement run's scope gate uses after a conflicted sync): of the files the run changed (NUL-separated `git diff --name-only -z`
  * between the pre-agent and post-agent snapshots), those that are neither a conflicting file nor covered by
  * allowed_paths. Sorted, without duplicates. Empty means the change may be pushed.
  */
@@ -98,7 +98,43 @@ export function resolveScopeViolations(
   conflicts: readonly string[],
   allowed: readonly string[],
 ): string[] {
-  const changed = new Set(changedZ.split("\0").filter((p) => p.length > 0));
-  const conflicting = new Set(conflicts);
-  return [...changed].filter((p) => !conflicting.has(p) && !isCovered(p, allowed)).sort();
+  return scopeViolations(changedZ, allowed, conflicts);
+}
+
+/** blocked_reason of a PR whose conflict waits for a person (design §5 Merge conflict). */
+export const MERGE_CONFLICT_PENDING = "merge_conflict_pending";
+
+export interface ConflictCounts {
+  /** Conflicts the factory merged and pushed with no person: an automatic resolve, or an implement run's sync. */
+  automatic: number;
+  /** Times the item reached `merge_conflict_pending`. */
+  person: number;
+}
+
+/**
+ * The two merge-conflict counts of one item, derived from its history (no stored counter). Automatic: each
+ * succeeded automatic resolve run (key from `autoResolveKey`) that pushed a merge with conflicts, and each
+ * succeeded implement run that pushed (has a PR) after resolving conflicts in its sync step. Person: each
+ * state change that set blocked_reason to `merge_conflict_pending`.
+ */
+export function conflictCounts(
+  runs: readonly Pick<Run, "kind" | "idempotency_key" | "outcome">[],
+  changes: readonly Pick<StateChange, "changes">[],
+): ConflictCounts {
+  const resolvedConflicts = (data: Record<string, unknown>) => Array.isArray(data.conflicts) && data.conflicts.length > 0;
+  let automatic = 0;
+  for (const r of runs) {
+    if (r.outcome?.status !== "succeeded") continue;
+    const data = r.outcome.data;
+    if (!resolvedConflicts(data)) continue;
+    if (r.kind === "resolve" && data.result === "pushed" && parseAutoResolveKey(r.idempotency_key)) automatic++;
+    if (r.kind === "implement" && typeof data.pr_number === "number") automatic++;
+  }
+  const person = changes.filter((c) => c.changes.blocked_reason?.to === MERGE_CONFLICT_PENDING).length;
+  return { automatic, person };
+}
+
+/** The counts in one sentence, for PR comments and the dashboard. */
+export function conflictCountsLine(c: ConflictCounts): string {
+  return `Merge conflicts on this item so far: ${c.automatic} resolved automatically, ${c.person} needed a person.`;
 }
