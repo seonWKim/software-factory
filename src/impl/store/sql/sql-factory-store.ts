@@ -1,5 +1,10 @@
+import type { TierHistory } from "../../../core/budget.js";
 import type {
   Actor,
+  BudgetCheckpoint,
+  BudgetCheckpointId,
+  BudgetOutcome,
+  CloseReason,
   Handoff,
   Run,
   RunId,
@@ -10,31 +15,45 @@ import type {
   StateChange,
   StateChangeDetail,
   StateChangeId,
+  Tier,
   Timestamp,
   Verdict,
   VerdictId,
+  VerdictSeverity,
   WorkItem,
   WorkItemId,
 } from "../../../core/types.js";
+import { IMPLEMENT_KINDS, allowedPathsOverlap } from "../../../core/policy.js";
+import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
+  AppendInboxResult,
+  AnswerBudgetCheckpointInput,
+  BudgetCheckpointResult,
   ClaimInput,
   FactoryStore,
+  InboxRow,
   LeaseResult,
+  ListenerLease,
+  ListenerLeaseResult,
+  NewInboxEvent,
   NewRun,
   NewWorkItem,
+  OpenBudgetCheckpointInput,
   RecordVerdictInput,
   RecordVerdictResult,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
 } from "../../../interfaces/factory-store.js";
-import type { SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
+import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import {
   WORK_ITEM_COLUMNS,
   diffPatch,
   newId,
   newWorkItem,
+  rowToBudgetCheckpoint,
   rowToHandoff,
   rowToRun,
   rowToStateChange,
@@ -121,24 +140,18 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]> {
-    const where: string[] = [];
-    const params: SqlValue[] = [];
-    if (filter.stage !== undefined) {
-      where.push("stage = ?");
-      params.push(filter.stage);
-    } else if (filter.exclude_closed) {
-      where.push("stage <> 'CLOSED'");
-    }
-    if (filter.blocked_on !== undefined) {
-      where.push("blocked_on = ?");
-      params.push(filter.blocked_on);
-    }
+    const { where, params } = whereOf(filter);
     const rows = await this.db.all(
-      `SELECT * FROM work_items${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
-       ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
+      `SELECT * FROM work_items${where} ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
       [...params, filter.limit],
     );
     return rows.map(rowToWorkItem);
+  }
+
+  async countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number> {
+    const { where, params } = whereOf(filter);
+    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM work_items${where}`, params);
+    return Number(row?.n ?? 0);
   }
 
   async countWorkItemsByStage(): Promise<Record<Stage, number>> {
@@ -149,38 +162,48 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async transition(input: TransitionInput): Promise<TransitionResult> {
+    return this.db.transaction((tx) => this.applyTransition(tx, input));
+  }
+
+  /** transition() inside a caller's transaction. A refusal returns before anything is written. */
+  private async applyTransition(tx: SqlExecutor, input: TransitionInput): Promise<TransitionResult> {
     const { forUpdate } = this.db.dialect;
-    return this.db.transaction(async (tx) => {
-      const current = await this.selectItem(tx, input.id, forUpdate);
-      if (!current) return { ok: false, reason: "not_found" };
-      if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+    const current = await this.selectItem(tx, input.id, forUpdate);
+    if (!current) return { ok: false, reason: "not_found" };
+    if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
 
-      if (input.ack_run !== undefined) {
-        const run = await this.selectRun(tx, input.ack_run, forUpdate);
-        const finished = run && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
-        if (!run || run.work_item_id !== input.id || !finished || run.acknowledged_at !== null) {
-          return { ok: false, reason: "run_not_ackable" };
-        }
+    if (input.ack_run !== undefined) {
+      const run = await this.selectRun(tx, input.ack_run, forUpdate);
+      const finished = run && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
+      if (!run || run.work_item_id !== input.id || !finished || run.acknowledged_at !== null) {
+        return { ok: false, reason: "run_not_ackable" };
       }
+    }
 
-      const { changes, sets, values } = diffPatch(current, input.patch);
-      const now = this.now();
-      const version = current.version + 1;
-      const updated = await tx.run(
-        `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
-        [...values, version, now, input.id, input.expected_version],
-      );
-      if (updated !== 1) return { ok: false, reason: "version_conflict", current };
+    const { changes, sets, values } = diffPatch(current, input.patch);
+    const now = this.now();
+    const version = current.version + 1;
+    const updated = await tx.run(
+      `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
+      [...values, version, now, input.id, input.expected_version],
+    );
+    if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-      const state_change = await this.insertStateChange(
-        tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
-      );
-      if (input.ack_run !== undefined) {
-        await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
-      }
-      const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-      return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, enqueued };
-    });
+    const state_change = await this.insertStateChange(
+      tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
+    );
+    if (input.ack_run !== undefined) {
+      await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
+    }
+    const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
+    const cancelled = input.cancel_queued_runs ? await this.cancelQueuedRuns(tx, input.id, now) : [];
+    const item = (await this.selectItem(tx, input.id))!;
+    // Closing the item settles its checkpoints that have no outcome yet (design §6).
+    const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
+    if (current.stage !== "CLOSED" && item.stage === "CLOSED" && outcome) {
+      await tx.run("UPDATE budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
+    }
+    return { ok: true, item, state_change, enqueued, cancelled };
   }
 
   async listStateChanges(id: WorkItemId): Promise<StateChange[]> {
@@ -242,33 +265,148 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToVerdict);
   }
 
+  // Budget checkpoints
+
+  async openBudgetCheckpoint(input: OpenBudgetCheckpointInput): Promise<BudgetCheckpointResult> {
+    const { checkpoint, ...transition } = input;
+    return this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
+      const [pending] = await tx.all("SELECT id FROM budget_checkpoints WHERE work_item_id = ? AND answer = 'pending'", [input.id]);
+      if (pending) return { ok: false, reason: "checkpoint_pending" };
+      const r = await this.applyTransition(tx, transition);
+      if (!r.ok) return r;
+      const id = newId("bc") as BudgetCheckpointId;
+      await tx.run(
+        `INSERT INTO budget_checkpoints (id, work_item_id, tier, tokens_spent, budget, suggested_budget, answer, granted_budget,
+           held_run_kind, held_run_key, held_run_not_before, outcome, created_at, answered_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?, NULL)`,
+        [
+          id, input.id, checkpoint.tier, checkpoint.tokens_spent, checkpoint.budget, checkpoint.suggested_budget,
+          checkpoint.held_run_kind, checkpoint.held_run_key, checkpoint.held_run_not_before, this.now(),
+        ],
+      );
+      return { ...r, checkpoint: (await this.selectCheckpoint(tx, id))! };
+    });
+  }
+
+  async answerBudgetCheckpoint(input: AnswerBudgetCheckpointInput): Promise<BudgetCheckpointResult> {
+    const { checkpoint_id, answer, granted_budget, ...transition } = input;
+    try {
+      return await this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
+        const cp = await this.selectCheckpoint(tx, checkpoint_id, this.db.dialect.forUpdate);
+        if (!cp || cp.work_item_id !== input.id || cp.answer !== "pending") return { ok: false, reason: "checkpoint_not_pending" };
+        const r = await this.applyTransition(tx, transition);
+        if (!r.ok) return r;
+        const answered = await tx.run(
+          "UPDATE budget_checkpoints SET answer = ?, granted_budget = ?, answered_at = ? WHERE id = ? AND answer = 'pending'",
+          [answer, granted_budget, this.now(), checkpoint_id],
+        );
+        // A concurrent answer committed first: undo this transition.
+        if (answered !== 1) throw new CheckpointAnswered();
+        return { ...r, checkpoint: (await this.selectCheckpoint(tx, checkpoint_id))! };
+      });
+    } catch (err) {
+      if (!(err instanceof CheckpointAnswered)) throw err;
+      return { ok: false, reason: "checkpoint_not_pending" };
+    }
+  }
+
+  async listBudgetCheckpoints(id: WorkItemId): Promise<BudgetCheckpoint[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM budget_checkpoints WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
+      [id],
+    );
+    return rows.map(rowToBudgetCheckpoint);
+  }
+
+  async getTierHistory(project: string, tier: Tier): Promise<TierHistory> {
+    const rows = await this.db.all(
+      "SELECT close_reason, token_cost FROM work_items WHERE project = ? AND tier = ? AND stage = 'CLOSED'",
+      [project, tier],
+    );
+    return {
+      finished: rows.length,
+      merged_token_costs: rows.filter((r) => r.close_reason === "completed").map((r) => Number(r.token_cost)),
+    };
+  }
+
+  async listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]> {
+    const { seq } = this.db.dialect;
+    // Three plain reads, no transaction: a read-only command takes no write lock (SQLite) and no row lock.
+    const items = await this.db.all(`SELECT id, tier, stage, token_cost FROM work_items ORDER BY created_at, ${seq}`);
+    const records = new Map<string, StatsRecord>();
+    for (const r of items) {
+      records.set(r.id as string, {
+        id: r.id as WorkItemId,
+        tier: r.tier === null ? null : (Number(r.tier) as Tier),
+        stage: r.stage as Stage,
+        token_cost: Number(r.token_cost),
+        reasons: [],
+        severities: [],
+      });
+    }
+    if (reasons.length > 0) {
+      const changes = await this.db.all(
+        `SELECT work_item_id, reason FROM state_changes WHERE reason IN (${placeholders(reasons.length)})
+         ORDER BY work_item_id, version`,
+        [...reasons],
+      );
+      for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
+    }
+    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    return [...records.values()];
+  }
+
   // Runs
 
   async claimRun(input: ClaimInput): Promise<Run | null> {
     if (input.kinds.length === 0) return null;
-    const { seq, forUpdateSkipLocked } = this.db.dialect;
+    const { seq, forUpdate } = this.db.dialect;
+    const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
+      // The lock row first: claimers run the overlap check below one at a time, so two of them can never both
+      // see "nothing overlapping is running" and claim overlapping runs. Only a claim moves a run to 'running',
+      // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
+      // serializes; the select is a no-op.)
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica (design §5 Restarts).
       const [pause] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
       if (pause && (pause.resume_at as string) > now) return null;
-      // SKIP LOCKED: concurrent workers each take a different candidate instead of queueing on one.
-      // not_before: a retry waits out its backoff, whichever worker looks.
-      const [next] = await tx.all(
-        `SELECT id FROM runs WHERE status = 'queued' AND kind IN (${placeholders(input.kinds.length)})
-           AND (not_before IS NULL OR not_before <= ?)
-         ORDER BY created_at, ${seq} LIMIT 1${forUpdateSkipLocked}`,
+
+      // Implement-type runs in progress, with their items' allowed_paths (architecture §4, overlap rule).
+      const busy = (
+        await tx.all(
+          `SELECT r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+           WHERE r.status = 'running' AND r.kind IN (${writeKinds})`,
+          [...IMPLEMENT_KINDS],
+        )
+      ).map((r) => ({ item: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+
+      // Queued runs in FIFO order. not_before: a retry waits out its backoff, whichever worker looks.
+      const queued = await tx.all(
+        `SELECT r.id, r.kind, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+         WHERE r.status = 'queued' AND r.kind IN (${placeholders(input.kinds.length)})
+           AND (r.not_before IS NULL OR r.not_before <= ?)
+         ORDER BY r.created_at, r.${seq}`,
         [...input.kinds, now],
       );
-      if (!next) return null;
-      const id = next.id as RunId;
-      const claimed = await tx.run(
-        `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
-           lease_expires_at = ?, started_at = ?, updated_at = ?
-         WHERE id = ? AND status = 'queued'`,
-        [input.worker_id, this.after(input.lease_ms), now, now, id],
-      );
-      return claimed === 1 ? this.selectRun(tx, id) : null;
+      for (const next of queued) {
+        // An implement-type run waits while an overlapping one runs; it stays queued. Triage and review never wait.
+        if ((IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string)) {
+          const paths = parseList(next.allowed_paths);
+          if (busy.some((b) => b.item === next.work_item_id || allowedPathsOverlap(b.paths, paths))) continue;
+        }
+        const id = next.id as RunId;
+        const claimed = await tx.run(
+          `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
+             lease_expires_at = ?, started_at = ?, updated_at = ?
+           WHERE id = ? AND status = 'queued'`,
+          [input.worker_id, this.after(input.lease_ms), now, now, id],
+        );
+        if (claimed === 1) return this.selectRun(tx, id);
+      }
+      return null;
     });
   }
 
@@ -335,7 +473,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, attempt FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -345,7 +483,15 @@ export class SqlFactoryStore implements FactoryStore {
         infra: true,
       };
       for (const run of expired) {
-        if (Number(run.attempt) >= max_attempts) {
+        const item = await this.selectItem(tx, run.work_item_id as WorkItemId);
+        if (item?.stage === "CLOSED") {
+          // A closed item never runs again: its expired run is cancelled, not requeued.
+          await tx.run(
+            `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+             WHERE id = ? AND status = 'running'`,
+            [now, run.id as string],
+          );
+        } else if (Number(run.attempt) >= max_attempts) {
           await tx.run(
             `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
@@ -438,7 +584,98 @@ export class SqlFactoryStore implements FactoryStore {
     );
   }
 
+  // Stream intake
+
+  async appendInbox(input: NewInboxEvent): Promise<AppendInboxResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<AppendInboxResult> => {
+      // FOR UPDATE on the lease row: a takeover (token + 1) waits for this append to commit, and appends of
+      // one source type commit one at a time, so their seqs commit in order and a cursor never skips one.
+      const [held] = await tx.all(
+        `SELECT token FROM listener_leases WHERE source_type = ? AND token = ?${forUpdate}`,
+        [input.source_type, input.lease_token],
+      );
+      if (!held) return { ok: false, reason: "lease_lost" };
+      const existing = await this.selectInbox(tx, input.source_type, input.dedupe_key);
+      if (existing) return { ok: true, row: existing, duplicate: true };
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO source_inbox (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)",
+        [input.source_type, input.dedupe_key, JSON.stringify(input.event), this.now()],
+      );
+      const row = (await this.selectInbox(tx, input.source_type, input.dedupe_key))!;
+      return { ok: true, row, duplicate: !inserted };
+    });
+  }
+
+  async listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]> {
+    const rows = await this.db.all("SELECT * FROM source_inbox WHERE source_type = ? AND seq > ? ORDER BY seq LIMIT ?", [
+      source_type, after_seq, limit,
+    ]);
+    return rows.map(rowToInbox);
+  }
+
+  async pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number> {
+    return this.db.transaction((tx) =>
+      tx.run("DELETE FROM source_inbox WHERE source_type = ? AND seq <= ? AND received_at < ?", [
+        source_type, through_seq, this.after(-older_than_ms),
+      ]),
+    );
+  }
+
+  async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
+    return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
+      const expires_at = this.after(lease_ms);
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)",
+        [source_type, owner, expires_at],
+      );
+      if (created) return { ok: true, lease: { source_type, owner, token: 1, expires_at } };
+      // Conditional: only an expired (or released) lease can be taken, and taking it bumps the token.
+      const taken = await tx.run(
+        "UPDATE listener_leases SET owner = ?, token = token + 1, expires_at = ? WHERE source_type = ? AND expires_at <= ?",
+        [owner, expires_at, source_type, this.now()],
+      );
+      const lease = await this.selectListenerLease(tx, source_type);
+      return taken === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "held", holder: lease };
+    });
+  }
+
+  async renewListenerLease(source_type: SourceType, token: number, lease_ms: number): Promise<ListenerLeaseResult> {
+    return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
+      const renewed = await tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [
+        this.after(lease_ms), source_type, token,
+      ]);
+      const lease = await this.selectListenerLease(tx, source_type);
+      return renewed === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "lease_lost", holder: lease };
+    });
+  }
+
+  async releaseListenerLease(source_type: SourceType, token: number): Promise<void> {
+    await this.db.transaction((tx) =>
+      tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [this.now(), source_type, token]),
+    );
+  }
+
   // Internals
+
+  private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
+    const [row] = await q.all("SELECT * FROM source_inbox WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
+    return row ? rowToInbox(row) : null;
+  }
+
+  private async selectListenerLease(q: SqlExecutor, source_type: SourceType): Promise<ListenerLease | null> {
+    const [row] = await q.all("SELECT * FROM listener_leases WHERE source_type = ?", [source_type]);
+    return row
+      ? {
+          source_type: row.source_type as SourceType,
+          owner: row.owner as string,
+          token: Number(row.token),
+          expires_at: row.expires_at as Timestamp,
+        }
+      : null;
+  }
 
   /** False if a unique key says the row is already there. */
   private async insertOnce(tx: SqlExecutor, sql: string, params: (string | number | null)[]): Promise<boolean> {
@@ -474,9 +711,33 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToVerdict(row) : null;
   }
 
+  private async selectCheckpoint(q: SqlExecutor, id: BudgetCheckpointId, lock = ""): Promise<BudgetCheckpoint | null> {
+    const [row] = await q.all(`SELECT * FROM budget_checkpoints WHERE id = ?${lock}`, [id]);
+    return row ? rowToBudgetCheckpoint(row) : null;
+  }
+
   private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
     const [row] = await q.all(`SELECT * FROM runs WHERE id = ?${lock}`, [id]);
     return row ? rowToRun(row) : null;
+  }
+
+  /**
+   * Cancels the item's queued runs. Each update is conditional on `queued`, so a run a concurrent claim
+   * took first stays running and is not reported.
+   */
+  private async cancelQueuedRuns(tx: SqlExecutor, workItemId: WorkItemId, now: Timestamp): Promise<RunId[]> {
+    const rows = await tx.all(`SELECT id FROM runs WHERE work_item_id = ? AND status = 'queued'${this.db.dialect.forUpdate}`, [
+      workItemId,
+    ]);
+    const cancelled: RunId[] = [];
+    for (const r of rows) {
+      const n = await tx.run(
+        "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'queued'",
+        [now, r.id as string],
+      );
+      if (n === 1) cancelled.push(r.id as RunId);
+    }
+    return cancelled;
   }
 
   /** Returns the new run, or null if the idempotency key already existed. */
@@ -528,8 +789,49 @@ export class SqlFactoryStore implements FactoryStore {
 /** Thrown inside recordVerdict's transaction to roll it back when the verdict's comment id is already taken. */
 class DuplicateVerdict extends Error {}
 
+/** Thrown inside answerBudgetCheckpoint's transaction to roll it back when another answer won. */
+class CheckpointAnswered extends Error {}
+
+/** A closed item's checkpoint outcome, by close_reason. Other close reasons leave it null. */
+const OUTCOME: Partial<Record<CloseReason, BudgetOutcome>> = { completed: "merged", rejected: "rejected", failed: "failed" };
+
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";
+
+function rowToInbox(row: Row): InboxRow {
+  return {
+    seq: Number(row.seq),
+    source_type: row.source_type as SourceType,
+    dedupe_key: row.dedupe_key as string,
+    event: JSON.parse(row.event as string) as SourceEvent,
+    received_at: row.received_at as Timestamp,
+  };
+}
+
+/** The WHERE clause (with leading space, or empty) for a WorkItemFilter. */
+function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params: SqlValue[] } {
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  if (filter.stage !== undefined) {
+    where.push("stage = ?");
+    params.push(filter.stage);
+  } else if (filter.exclude_closed) {
+    where.push("stage <> 'CLOSED'");
+  }
+  if (filter.blocked_on !== undefined) {
+    where.push("blocked_on = ?");
+    params.push(filter.blocked_on);
+  }
+  return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
+}
+
+/** The one row in `claim_locks`: every claim takes it first (migration 7). */
+const CLAIM_LOCK = "claim";
+
+/** A JSON string array column (allowed_paths). */
+function parseList(value: unknown): string[] {
+  return typeof value === "string" ? (JSON.parse(value) as string[]) : [];
+}
 
 function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");

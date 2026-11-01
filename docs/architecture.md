@@ -194,7 +194,7 @@ Scale workers for throughput. Scale controllers for availability.
 | Controllers and workers are stateless. All state is in `FactoryStore` (plus commits on GitHub) | Any replica can die or be added at any time |
 | Every state transition is a conditional update: `UPDATE ... WHERE id = ? AND version = ?` | Two replicas acting on the same item: one wins, the other gets 0 rows and moves on |
 | Leases carry a fencing token that increases on every claim; every write by a worker checks it | A worker that paused past its lease (GC, laptop sleep) can't overwrite the run's new owner |
-| Work is pulled, not pushed: workers claim runs with `SELECT ... FOR UPDATE SKIP LOCKED` + a lease | Adding a worker adds capacity with no coordinator; a dead worker's lease expires and the run is reclaimed |
+| Work is pulled, not pushed: workers claim runs in one transaction under the `claim_locks` row (overlap rule below) + a lease | Adding a worker adds capacity with no coordinator; a dead worker's lease expires and the run is reclaimed |
 | Intake is idempotent: unique key on `(source_type, source_id)` | Several controllers polling, or a webhook delivered twice, create one work item |
 | Periodic loops (reaper, post-merge, dial) are idempotent or take a short leader lease in the store | Running them on N replicas does no harm |
 | A worker's worktree is disposable. The branch on GitHub plus handoff rows are the truth | A run resumes on any node, not only the one that started it |
@@ -202,7 +202,40 @@ Scale workers for throughput. Scale controllers for availability.
 | Webhooks are verified, acknowledged fast, and written to the store before any work | Retries from GitHub are safe; slow processing never times out a webhook |
 | SQLite is local-only. More than one node requires the MySQL `FactoryStore` | SQLite has one writer on one machine; `store` in `factory.config.json` makes the swap a config change |
 
-**Scaling knobs:** workers per node (`max_concurrent_runs`), number of worker nodes, warm sandbox pool size, controller replicas, LLM concurrency cap.
+**Workers per process.** `workers` in `factory.config.json` (an integer of 1 or more, default 1; any other value fails at startup) is how many worker loops one `factory dev` or `factory worker` process runs (`WorkerPool`, `src/core/worker-pool.ts`). Each loop claims through the store on its own, has its own id `<host>:<pid>:<n>` (the lease owner) and gets a fresh worktree per run. The loops share one `KeepAwake`, counted: held when the first run starts, released when the last one ends. A drain stops every loop from claiming; the drain is acknowledged only after every in-flight run is done. Each loop's index n reaches the agent and the update run's test command as `SF_WORKER_INDEX`, so parallel runs on one host can choose their own ports or test database. The index is unique only within one process.
+
+**Overlap rule.** Implement-type runs (`implement`, which also covers a review fix, and `update`) change an item's branch. Two of them for items whose `allowed_paths` overlap would produce PRs that conflict, so they never run at the same time. Two paths overlap when they are equal, or when one ends in `/` and the other starts with it (`pathsOverlap` in `src/core/policy.ts`, the same rule as `isCovered`, applied both ways); an item always overlaps with itself. The claim checks this inside its store transaction: it takes the one row in `claim_locks` first (`FOR UPDATE` on MySQL; SQLite's `BEGIN IMMEDIATE` already serializes), reads the running implement-type runs with their items' paths, then walks the queued runs oldest first and claims the first eligible one, skipping an implement-type run that overlaps a running one. A skipped run stays queued, holds up nothing behind it, and is claimed once the overlapping run finishes. Triage and review runs are never skipped. Because only a claim moves a run to `running` and every claim holds the lock row, two claimers on any number of processes or hosts can never both pass the check for overlapping items. The cost is that claims are serialized, which is cheap next to an agent run.
+
+**Scaling knobs:** workers per process (`workers`), number of worker processes and nodes, warm sandbox pool size, controller replicas, LLM concurrency cap.
+
+
+### Intake: poll and push
+
+A source's `intake` says how its events arrive (`SourceAdapter` is a union, `src/interfaces/source-adapter.ts`). Both paths end in the same `Controller.handleEvent`, so an event is handled the same way whichever path brought it.
+
+```mermaid
+graph LR
+  subgraph POLL["intake: poll (GitHub issues)"]
+    P1["controller tick, every poll_interval_ms"] -->|"poll(cursor)"| P2["events"]
+  end
+  subgraph PUSH["intake: stream (e.g. Slack Socket Mode)"]
+    S1["listener (lease holder only)"] -->|"subscribe()"| S2["PushedEvent"]
+    S2 -->|"1. appendInbox (fenced by lease token)"| IN[("source_inbox")]
+    S2 -.->|"2. ack() after commit"| S1
+    IN -->|"listInboxAfter(cursor), every tick, any replica"| S3["events"]
+  end
+  P2 --> H["handleEvent"]
+  S3 --> H
+  H --> ST[("work items, state_changes")]
+```
+
+- **Poll.** Unchanged: the controller calls `poll(cursor)` every `poll_interval_ms` and moves the cursor `intake:<source type>` with `advanceCursor`.
+- **Push: the inbox.** Each pushed event is written to the store table `source_inbox` (seq, source type, `dedupe_key`, the event as JSON, received time) **before** it is acknowledged to the source. `ack()` runs only after that write commits; a duplicate `dedupe_key` (unique per source type) is a no-op and is acked too; a failed write is not acked, so the source redelivers it. Every controller replica reads the inbox rows after the cursor `inbox:<source type>` (every tick, since it is a store read), handles each through `handleEvent`, and moves the cursor with `advanceCursor`. A crash at any point loses nothing: before the commit the source still holds the event, after it the inbox does. Handling is idempotent, so two replicas reading the same rows at once is safe.
+- **Push: the listener lease.** A source should have one connection, not one per replica. The table `listener_leases` (one row per source type: owner, token, expiry) decides who connects; every change to it is a conditional update. Each replica's controller runs a listener (`src/core/listener.ts`) that tries to take the lease every `heartbeat_ms`; only the holder subscribes, and it renews every `heartbeat_ms` for `lease_ms`. Each take bumps the token, and the inbox write checks the token in the same transaction, so a listener that lost the lease cannot write. If the holder dies (stops renewing past expiry), another replica takes the lease and connects; a holder that cannot renew for `lease_ms` closes its own connection. The two can overlap briefly (the takeover and the self-close fall due at the same time, and a sleeping host notices late); that is harmless, because the old holder's inbox writes are refused and its unacked events are redelivered to the new one. On shutdown the holder releases the lease so another replica takes over at once.
+- **Ordering.** Appends of one source type lock its lease row, so they commit one at a time in seq order and a reader never moves its cursor past a row that commits later. Seqs are never reused (SQLite `AUTOINCREMENT`, InnoDB's persisted counter).
+- **Reconnects.** When the stream ends or fails, the listener reconnects with exponential backoff (1 s doubling to 60 s; it starts over after a connection that stored an event). It logs once per state change (lease taken, waiting, connected, disconnected, lease lost), not once per retry.
+- **Retention.** On the poll interval, the controller deletes inbox rows that are older than `inbox_retention_days` (default 14) **and** at or below the source's inbox cursor. A source with no cursor keeps every row.
+- Out of scope so far: webhook HTTP endpoints (they would write to the same inbox) and any real stream plugin (Slack).
 
 ## 5. Secret isolation
 

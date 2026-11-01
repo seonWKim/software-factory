@@ -2,7 +2,7 @@ import type { WorkStatus } from "../core/status-label.js";
 import type { SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
-// Intake surface. First impl: GitHub issues on this repo (poll). Webhooks and Slack later.
+// Intake surface. Two kinds of source: polled (GitHub issues) and streamed (pushed events, e.g. Slack).
 
 /**
  * Command events carry `comment_id`, the id of the comment that held the command, so the controller can
@@ -10,12 +10,31 @@ import type { ExternalIdentity } from "./auth-provider.js";
  */
 export type SourceEvent =
   | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
-  | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity }
+  /**
+   * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
+   * empty; untrusted. The controller caps and egress-scans it before storing it. Absent means no note.
+   */
+  | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity; note?: string }
   /** `reason` is the text after `/reject`, possibly empty. */
   | { kind: "spec_rejected"; source: SourceRef; comment_id: string; approver: ExternalIdentity; reason: string }
   /** `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that). */
   | { kind: "revise_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; feedback: string }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /** `/help`: the controller replies once with every command, marking the ones that apply now. */
+  | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /** A command word the factory does not know, as typed (letters only, without the `/`). */
+  | { kind: "unknown_command"; source: SourceRef; comment_id: string; requester: ExternalIdentity; command: string }
+  /**
+   * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
+   * when the source does not say. May be delivered again (same close, later poll); handling is idempotent.
+   * Delivered after any PR events of the same poll, so a merge that closed the issue is seen first.
+   */
+  | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null }
+  /**
+   * `/budget [tokens]` at a budget checkpoint (design §6). `amount` is the raw text after `/budget` on the
+   * first line, null when there is none; the controller checks it is a whole number.
+   */
+  | { kind: "budget_continue"; source: SourceRef; comment_id: string; approver: ExternalIdentity; amount: string | null }
   /**
    * `/resolve [notes]` (design §5 Merge conflict). `notes`: the rest of the comment, trimmed; untrusted text.
    * On a factory PR's conversation, `pr` names that PR and `source` is the PR itself, so the 👀 and any reply
@@ -58,19 +77,28 @@ export interface PollResult {
   next_cursor: string;
 }
 
-export interface SourceAdapter {
+/**
+ * One event a stream source delivered. The listener saves it to the store inbox and, only after that write
+ * commits, calls `ack()`. An event that is never acked must be delivered again by the source (e.g. Slack
+ * Socket Mode redelivers unacked envelopes), so a crash between delivery and the write loses nothing.
+ */
+export interface PushedEvent {
+  event: SourceEvent;
+  /** Unique within the source: the same delivery (or a redelivery of it) always carries the same key. */
+  dedupe_key: string;
+  /** Tells the source the event is stored. Called at most once, and only after the inbox write committed. */
+  ack(): Promise<void>;
+}
+
+/** What every source offers, whichever way its events arrive. */
+interface SourceAdapterBase {
   readonly type: SourceType;
   /**
-   * Never delivers the same command comment twice across polls that advanced the cursor: an implementation
-   * keeps whatever it needs (e.g. a comment-id high-water mark) in the cursor. Edits to an already
-   * delivered comment are not delivered again.
-   */
-  poll(cursor: string | null): Promise<PollResult>;
-  /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
-   * is posted at most once. Agents never call this.
+   * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the
+   * marker already exists (null if the source has no link for it). Agents never call this.
    */
-  postComment(source: SourceRef, body: string, marker: string): Promise<void>;
+  postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }>;
   /**
    * Marks an event as seen (GitHub: a 👀 reaction). `commentId` null means the item itself (the issue).
    * Idempotent. Failures are the caller's to log; they must not block a transition.
@@ -91,3 +119,33 @@ export interface SourceAdapter {
    */
   closeIssue(source: SourceRef): Promise<void>;
 }
+
+/** A source the controller polls on a timer (GitHub issues). */
+export interface PollSource extends SourceAdapterBase {
+  readonly intake: "poll";
+  /**
+   * Never delivers the same command comment twice across polls that advanced the cursor: an implementation
+   * keeps whatever it needs (e.g. a comment-id high-water mark) in the cursor. Edits to an already
+   * delivered comment are not delivered again.
+   */
+  poll(cursor: string | null): Promise<PollResult>;
+}
+
+/**
+ * A source that pushes events as they happen (e.g. Slack Socket Mode). Only the replica holding the
+ * source's listener lease subscribes (docs/architecture.md, Intake). The controller reads the events back
+ * from the store inbox, never from the stream.
+ */
+export interface StreamSource extends SourceAdapterBase {
+  readonly intake: "stream";
+  /**
+   * Opens one connection and yields its events until the connection ends (the iterable completes) or fails
+   * (it throws). Must stop and complete once `signal` aborts. The listener reconnects by calling it again;
+   * events delivered but not acked on a dead connection must come back on a later one.
+   */
+  subscribe(signal: AbortSignal): AsyncIterable<PushedEvent>;
+}
+
+/** A source is either polled or streamed; `intake` says which. */
+export type SourceAdapter = PollSource | StreamSource;
+

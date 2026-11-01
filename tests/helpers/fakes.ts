@@ -7,7 +7,8 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, SourceAdapter, SourceEvent } from "../../src/interfaces/source-adapter.js";
+import type { PollResult, PollSource, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
 export const config: FactoryConfig = {
@@ -29,6 +30,8 @@ export const config: FactoryConfig = {
   tick_ms: 1000,
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
+  inbox_retention_days: 14,
+  workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
@@ -51,10 +54,12 @@ export function issueRef(n: number): SourceRef {
  * Keeps the SourceAdapter replay contract like GitHubIssueSource does: the cursor holds a comment-id
  * high-water mark, and a command event at or below it is not delivered again. Records every markSeen call.
  */
-export class FakeSource implements SourceAdapter {
+export class FakeSource implements PollSource {
   readonly type = "github_issue" as const;
+  readonly intake = "poll" as const;
   queue: SourceEvent[] = [];
-  comments: { source: SourceRef; body: string; marker: string }[] = [];
+  /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
+  comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   /** When set, markSeen throws this instead of recording. */
   reactionError: Error | null = null;
@@ -73,9 +78,13 @@ export class FakeSource implements SourceAdapter {
     this.queue = [];
     return { events, next_cursor: JSON.stringify({ n: c.n + 1, last_comment_id: last }) };
   }
-  async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
     if (this.commentError) throw this.commentError;
-    if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+    const existing = this.comments.find((c) => c.marker === marker);
+    if (existing) return { url: existing.url };
+    const url = `${source.link}#issuecomment-${this.comments.length + 1}`;
+    this.comments.push({ source, body, marker, url });
+    return { url };
   }
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     if (this.reactionError) throw this.reactionError;
@@ -114,6 +123,111 @@ export class FakeSource implements SourceAdapter {
     const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
     return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
   }
+}
+
+/**
+ * Test-only stream source, plugin name `fake-stream` (docs/plugins.md). Behaves like Slack Socket Mode as
+ * the listener sees it: every connection delivers each pushed event that is not acked yet, so an event
+ * delivered on a connection that died before its ack comes back on the next one. Never in REGISTRY; tests
+ * get it through `fakeStreamRegistry()`.
+ */
+export class FakeStreamSource implements StreamSource {
+  readonly type = "slack_thread" as const;
+  readonly intake = "stream" as const;
+  /** Pushed and not acked yet, oldest first. Two pushes with one key are two deliveries (a redelivery). */
+  pending: { event: SourceEvent; dedupe_key: string }[] = [];
+  /** Dedupe keys in ack order. */
+  acks: string[] = [];
+  /** subscribe() calls, failed ones included. */
+  subscribes = 0;
+  /** Connections open right now. */
+  open = 0;
+  /** When set, every subscribe fails at once with this error until it is cleared. */
+  connectError: Error | null = null;
+  /** Runs inside ack(), before the ack is recorded: lets a test look at the store at that moment. */
+  onAck: ((dedupe_key: string) => void | Promise<void>) | null = null;
+  comments: { source: SourceRef; body: string; marker: string }[] = [];
+  /** Every closeIssue call, in order. */
+  closed: SourceRef[] = [];
+  async closeIssue(source: SourceRef): Promise<void> {
+    this.closed.push(source);
+  }
+  reactions: { source: SourceRef; comment_id: string | null }[] = [];
+  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
+  private wake: (() => void)[] = [];
+  private connection: { ended: boolean; error: Error | null } | null = null;
+
+  push(event: SourceEvent, dedupe_key: string): void {
+    this.pending.push({ event, dedupe_key });
+    this.notify();
+  }
+
+  /** Ends the open connection: it completes, or fails with `error`. */
+  disconnect(error: Error | null = null): void {
+    if (this.connection) Object.assign(this.connection, { ended: true, error });
+    this.notify();
+  }
+
+  async *subscribe(signal: AbortSignal): AsyncGenerator<PushedEvent> {
+    this.subscribes++;
+    if (this.connectError) throw this.connectError;
+    const conn = { ended: false, error: null as Error | null };
+    this.connection = conn;
+    this.open++;
+    const sent = new Set<object>();
+    try {
+      while (!signal.aborted && !conn.ended) {
+        const d = this.pending.find((p) => !sent.has(p));
+        if (!d) {
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              signal.removeEventListener("abort", done);
+              resolve();
+            };
+            this.wake.push(done);
+            signal.addEventListener("abort", done, { once: true });
+          });
+          continue;
+        }
+        sent.add(d);
+        yield {
+          event: d.event,
+          dedupe_key: d.dedupe_key,
+          ack: async () => {
+            await this.onAck?.(d.dedupe_key);
+            this.acks.push(d.dedupe_key);
+            this.pending = this.pending.filter((p) => p !== d);
+          },
+        };
+      }
+      if (conn.error) throw conn.error;
+    } finally {
+      this.open--;
+      if (this.connection === conn) this.connection = null;
+    }
+  }
+
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+    return { url: null };
+  }
+  async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    this.reactions.push({ source, comment_id: commentId });
+  }
+  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    this.statusCalls.push({ source, status, pr_number });
+  }
+
+  private notify(): void {
+    const wake = this.wake;
+    this.wake = [];
+    for (const w of wake) w();
+  }
+}
+
+/** REGISTRY plus the test-only `fake-stream` source. The only place fake-stream is wired. */
+export function fakeStreamRegistry(base: Registry = REGISTRY, make: () => FakeStreamSource = () => new FakeStreamSource()): Registry {
+  return withPlugin(base, "source", "fake-stream", make);
 }
 
 export function labelTarget(source: SourceRef, pr_number: number | null): string {

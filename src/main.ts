@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
+import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { configFailLines } from "./config-keys.js";
+import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
@@ -21,6 +23,8 @@ const USAGE = `factory <command>
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
+  stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
+               --json for one JSON object
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
@@ -54,7 +58,19 @@ function stopOnSignals(): AbortSignal {
 
 async function main(cmd: string | undefined, args: string[]): Promise<number> {
   // The supervisor sets the code root (its runtime copy) for its child; state stays in the cwd (main checkout).
-  const loaded = await loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  if (cmd === "doctor") {
+    // A config that does not load is a doctor finding: one FAIL line per problem, no stack, exit 1.
+    let loaded: Loaded;
+    try {
+      loaded = await load();
+    } catch (err) {
+      for (const line of configFailLines(err)) console.log(line);
+      return 1;
+    }
+    return doctor(loaded, { llm: args.includes("--llm") });
+  }
+  const loaded = await load();
   switch (cmd) {
     case "dev": {
       if (process.env[SUPERVISED_ENV] === "1" && process.send) {
@@ -87,6 +103,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       await app.close();
       return 0;
     }
+    case "stats": {
+      // Read-only: no build() (it migrates), no transition. Changes no dial.
+      const store = await buildStatsStore(loaded);
+      try {
+        const report = await collectStats(store, loaded.stats);
+        console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatStatsText(report));
+      } finally {
+        await store.close();
+      }
+      return 0;
+    }
     case "ui": {
       const parts = await buildUiParts(loaded);
       const { owner, name } = loaded.config.repo;
@@ -114,8 +141,6 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       if (args.includes("--rotate-mysql")) rotate.push(secretName("MYSQL_PASSWORD"));
       return setup(loaded, { rotate });
     }
-    case "doctor":
-      return doctor(loaded, { llm: args.includes("--llm") });
     case "llm-check": {
       const parsed = parseLlmCheckArgs(args);
       if ("error" in parsed) {

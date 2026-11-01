@@ -8,6 +8,7 @@
 
 import { join, resolve } from "node:path";
 import type { Loaded } from "./compose.js";
+import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
@@ -358,7 +359,7 @@ const DISABLING = new Set<unknown>([undefined, null, false, "", "none"]);
 export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown): string {
   const entry = registry[kind];
   const names = Object.keys(entry.plugins);
-  const available = `available: ${names.join(", ")}`;
+  const available = `available: ${names.join(", ")}${typeof value === "string" ? suggestion(value, names) : ""}`;
   if (typeof value === "string" && Object.hasOwn(entry.plugins, value)) return value;
   if (entry.guard && (DISABLING.has(value) || typeof value !== "string")) {
     throw new Error(
@@ -387,12 +388,14 @@ export function selectPlugins(
       throw new Error("plugins must be an object mapping interface to plugin name (see docs/plugins.md)");
     }
     const given = raw.plugins as Record<string, unknown>;
+    const problems: string[] = [];
     for (const key of Object.keys(given)) {
       if (!(PLUGINS_KEYS as string[]).includes(key)) {
         const hint = key === "store" || key === "auth" ? `; ${key} is selected by the top-level "${key}" key` : "";
-        throw new Error(`unknown plugins key "${key}"${hint}; known keys: ${PLUGINS_KEYS.join(", ")}`);
+        problems.push(`unknown plugins key "${key}"${hint}; known keys: ${PLUGINS_KEYS.join(", ")}${suggestion(key, PLUGINS_KEYS)}`);
       }
     }
+    if (problems.length > 0) throw new ConfigKeyError(problems);
     chosen = {};
     for (const key of PLUGINS_KEYS) {
       chosen[key] = Object.hasOwn(given, key) ? given[key] : registry[key].guard ? undefined : defaults[key];

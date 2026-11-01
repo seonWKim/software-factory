@@ -59,7 +59,7 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" } },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" }, note: "" },
       {
         kind: "spec_rejected", source: issueRef(7), comment_id: "11",
         approver: { provider: "github", subject: "1", login: "alice" }, reason: "too big\nsplit it",
@@ -78,6 +78,7 @@ describe("GitHubIssueSource", () => {
       comment(23, "/reject", "2026-11-01T00:00:04Z"),
       comment(24, "/reject duplicate of #3", "2026-11-01T00:00:05Z"),
       comment(25, "/revised plan below", "2026-11-01T00:00:06Z"),
+      comment(26, "/rejectfoo", "2026-11-01T00:00:07Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
@@ -86,6 +87,36 @@ describe("GitHubIssueSource", () => {
       { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
       { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
       { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+      // A longer word is not the command: it is an unknown one.
+      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: alice, command: "revised" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: alice, command: "rejectfoo" },
+    ]);
+  });
+
+  it("emits one approval with its note, an unknown command for a typo, a help event, and nothing for other text", async () => {
+    const { client, source } = setup();
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(40, "/approve", "2026-11-01T00:00:01Z"),
+      comment(41, "/approve keep the flag", "2026-11-01T00:00:02Z"),
+      comment(42, "/approve  first line\nsecond line\n", "2026-11-01T00:00:03Z"),
+      comment(43, "/Approve\n\n  note below  ", "2026-11-01T00:00:04Z"),
+      comment(44, "/aprove", "2026-11-01T00:00:05Z"),
+      comment(45, "/help", "2026-11-01T00:00:06Z"),
+      comment(46, "thanks!", "2026-11-01T00:00:07Z"),
+      comment(47, "/", "2026-11-01T00:00:08Z"),
+      comment(48, "/ approve", "2026-11-01T00:00:09Z"),
+      comment(49, "/retry please", "2026-11-01T00:00:10Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: alice, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: alice, note: "keep the flag" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: alice, note: "first line\nsecond line" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: alice, note: "note below" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: alice, command: "aprove" },
+      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: alice },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice },
     ]);
   });
 
@@ -114,12 +145,112 @@ describe("GitHubIssueSource", () => {
     expect(JSON.parse(second.next_cursor)).toMatchObject({ comments: "2026-11-01T00:00:06Z", last_comment_id: 14 });
   });
 
+  it("parses /budget and its argument from the first line into budget_continue", async () => {
+    const { client, source } = setup();
+    const approver = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(30, "/budget", "2026-11-01T00:00:01Z"),
+      comment(31, "/budget 9000000\nmore room please", "2026-11-01T00:00:02Z"),
+      comment(32, "  /budget   1.5  ", "2026-11-01T00:00:03Z"),
+      comment(33, "/budgetx 5", "2026-11-01T00:00:04Z"),
+      comment(34, "please /budget 5", "2026-11-01T00:00:05Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver, amount: null },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver, amount: "9000000" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver, amount: "1.5" },
+      // Not /budget: an unknown command word gets a reply (design §4).
+      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: approver, command: "budgetx" },
+    ]);
+  });
+
   it("reads a cursor written before the high-water mark existed", async () => {
     const { client, source } = setup();
     client.responses["/repos/o/r/issues/comments"] = [comment(10, "/approve", "2026-11-01T00:00:01Z")];
     const old = JSON.stringify({ issues: null, comments: "2026-11-01T00:00:00Z", pulls: null });
     const { events } = await source.poll(old);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe("GitHubIssueSource: closed issues", () => {
+  /** Answers the closed-issue list from `closed`, single-issue GETs from `issues`; everything else as FakeClient. */
+  class ClosedClient extends FakeClient {
+    closed: unknown[] = [];
+    issues: Record<number, unknown> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      if (method === "GET" && path.startsWith("/repos/o/r/issues?state=closed")) {
+        this.calls.push({ method, path, body });
+        return (path.includes("page=1") ? this.closed : []) as T;
+      }
+      const m = /^\/repos\/o\/r\/issues\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return this.issues[Number(m[1])] as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new ClosedClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    return { client, source };
+  };
+  const closedIssue = (number: number, updated_at: string, pr = false) => ({
+    number, title: "t", body: null, user, updated_at, ...(pr ? { pull_request: {} } : {}),
+  });
+  const bob = { id: 2, login: "bob", type: "User" };
+
+  it("emits source_closed with the closer for closed factory issues, skips pull requests, and advances its cursor", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z"), closedIssue(8, "2026-11-01T00:00:02Z", true), closedIssue(9, "2026-11-01T00:00:03Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    client.issues[9] = { number: 9, closed_by: null };
+    const first = await source.poll(null);
+    expect(first.events).toEqual([
+      { kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } },
+      { kind: "source_closed", source: issueRef(9), closer: null },
+    ]);
+    const list = client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!;
+    expect(list.path).toContain(`labels=factory`);
+    expect(list.path).not.toContain("since=");
+    // The pull request's closer is never looked up.
+    expect(client.calls.some((c) => c.path === "/repos/o/r/issues/8")).toBe(false);
+    expect(JSON.parse(first.next_cursor)).toMatchObject({ closed: "2026-11-01T00:00:03Z" });
+
+    // `since` is inclusive: #9 comes back unchanged and is not delivered again; #10 is new.
+    client.calls = [];
+    client.closed = [closedIssue(9, "2026-11-01T00:00:03Z"), closedIssue(10, "2026-11-01T00:00:04Z")];
+    client.issues[10] = { number: 10, closed_by: bob };
+    const second = await source.poll(first.next_cursor);
+    expect(second.events).toEqual([
+      { kind: "source_closed", source: issueRef(10), closer: { provider: "github", subject: "2", login: "bob" } },
+    ]);
+    expect(client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!.path).toContain("since=2026-11-01T00:00:03Z");
+    expect(client.calls.some((c) => c.path === "/repos/o/r/issues/9")).toBe(false);
+    expect(JSON.parse(second.next_cursor)).toMatchObject({ closed: "2026-11-01T00:00:04Z" });
+  });
+
+  it("delivers closes after pull request events, so a merge that closes its issue is seen first", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    client.responses["/repos/o/r/pulls"] = [{
+      number: 42, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:01Z",
+      head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" },
+    }];
+    const { events } = await source.poll(null);
+    expect(events.map((e) => e.kind)).toEqual(["pr_closed", "source_closed"]);
+  });
+
+  it("reads a cursor written before closed issues were polled", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    const old = JSON.stringify({ issues: null, comments: null, pulls: null });
+    const { events } = await source.poll(old);
+    expect(events).toEqual([{ kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } }]);
   });
 });
 
@@ -150,7 +281,7 @@ describe("GitHubIssueSource: /verdict", () => {
     client.responses["/repos/o/r/issues/comments"] = [
       comment(20, "/verdict changes minor rename it\nand split the test", "2026-11-01T00:00:01Z"),
       comment(21, "/verdict", "2026-11-01T00:00:02Z"),
-      comment(22, "/verdictx accept none", "2026-11-01T00:00:03Z"),
+      comment(22, "/verdict/x accept none", "2026-11-01T00:00:03Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
@@ -312,6 +443,7 @@ describe("GitHubIssueSource: /resolve", () => {
         kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: alice,
         notes: "keep main's API\n\n  and the new flag", pr: null,
       },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: alice, command: "resolver" },
     ]);
   });
 

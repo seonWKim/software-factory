@@ -115,17 +115,20 @@ describe("ui: read-only status page", () => {
     expect(page.body).toContain('<meta http-equiv="refresh" content="5">');
     expect(page.body).not.toMatch(/<script/i);
 
-    const order = ["waiting", "running", "queue", "items", "totals"].map((id) => page.body.indexOf(`<section id="${id}">`));
+    const order = ["needs", "running", "queue", "items", "totals"].map((id) => page.body.indexOf(`<section id="${id}">`));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(page.body).not.toContain('<section id="waiting">');
 
-    const waiting = section(page.body, "waiting");
-    expect(waiting).toContain("spec_pending");
-    expect(waiting).toContain("merge_pending");
-    expect(waiting).toContain(`href="https://github.com/o/r/issues/1"`);
-    expect(waiting).toContain(`href="https://github.com/o/r/pull/42"`);
-    expect(waiting).toContain("Merge me");
-    expect(waiting).not.toContain("Running item");
+    const needs = section(page.body, "needs");
+    expect(needs).toContain("<h2>Needs you (2)</h2>");
+    expect(page.body).toMatch(/<title>[^<]*\(2\)[^<]*<\/title>/);
+    expect(needs).toContain("spec ready");
+    expect(needs).toContain("ready to merge");
+    expect(needs).toContain(`href="https://github.com/o/r/issues/1"`);
+    expect(needs).toContain(`href="https://github.com/o/r/pull/42"`);
+    expect(needs).toContain("Merge me");
+    expect(needs).not.toContain("Running item");
 
     const running = section(page.body, "running");
     expect(running).toContain("Running item");
@@ -267,5 +270,151 @@ describe("ui: config and intake", () => {
     await store.heartbeat(claimed.id, claimed.lease!.token, LEASE);
     clock.advance(1_000);
     expect(section((await get(port, "/")).body, "running")).not.toContain('class="stale"');
+  });
+});
+
+const HOUR = 60 * 60 * 1000;
+
+/** The rows (<tr>…</tr>) of the Needs you table, header excluded. */
+function needsRows(body: string): string[] {
+  return section(body, "needs").split("<tr>").slice(2).map((r) => r.slice(0, r.indexOf("</tr>")));
+}
+
+async function startOn(store: FactoryStore, clock: FakeClock) {
+  const ui = await startUi(
+    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}` },
+    0,
+  );
+  servers.push(ui);
+  return ui.port;
+}
+
+/** One waiting item per reason, blocked an hour apart; item 1 is updated last but waited longest. */
+async function seededNeeds() {
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const mk = async (n: number, title: string, p: Parameters<FactoryStore["transition"]>[0]["patch"]) =>
+    patch(store, await setTitle(store, n, title), p);
+  const fail = async (item: WorkItem, key: string, error_code: string) => {
+    const cur = (await store.getWorkItem(item.id))!;
+    await store.transition({ id: item.id, expected_version: cur.version, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: key } });
+    const r = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    await store.completeRun(r.id, r.lease!.token, { status: "failed", error_code, detail: "", infra: false });
+  };
+
+  const spec = await mk(1, "Spec item", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", spec_comment_url: "https://github.com/o/r/issues/1#issuecomment-11" });
+  clock.advance(HOUR);
+  await mk(2, "Merge item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+  clock.advance(HOUR);
+  await mk(3, "Failed item", { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", failure_comment_url: "https://github.com/o/r/issues/3#issuecomment-33" });
+  clock.advance(HOUR);
+  const maxed = await mk(4, "Maxed item", { stage: "RUNNING" });
+  await fail(maxed, "m:1", "agent_timed_out");
+  await fail(maxed, "m:2", "agent_failed");
+  await patch(store, maxed, { blocked_on: "human", blocked_reason: "max_attempts" });
+  clock.advance(HOUR);
+  await mk(5, "Loops item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", pr_number: 50 });
+  clock.advance(HOUR);
+  const conflict = await mk(6, "Conflict item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 60 });
+  clock.advance(HOUR);
+  await patch(store, conflict, { blocked_reason: "merge_conflict_pending" });
+  clock.advance(HOUR / 2);
+  await mk(7, "Unknown item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_revisions" });
+  clock.advance(HOUR / 2);
+  await mk(8, "Old spec", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+  await mk(9, "Closed item", { stage: "CLOSED", close_reason: "rejected", blocked_on: "human", blocked_reason: "spec_pending" });
+  clock.advance(HOUR / 4);
+  const restarted = await mk(10, "Restarted item", { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_restart" });
+  await fail(restarted, "r:1", "lease_expired");
+  clock.advance(HOUR * 3 / 4);
+  await patch(store, spec, { token_cost: 5 }); // newest update, but not a change to what it waits on
+  clock.advance(2 * HOUR);
+  return { store, port: await startOn(store, clock) };
+}
+
+describe("ui: Needs you", () => {
+  it("one row per waiting item, oldest wait first, with number, title, wait, reason, link and command", async () => {
+    const { port } = await seededNeeds();
+    const page = await get(port, "/");
+    const needs = section(page.body, "needs");
+    expect(needs).toContain("<h2>Needs you (9)</h2>");
+    expect(page.body).toMatch(/<title>[^<]*\(9\)[^<]*<\/title>/);
+    expect(needs).not.toContain("Closed item");
+
+    const rows = needsRows(page.body);
+    const titles = ["Spec item", "Merge item", "Failed item", "Maxed item", "Loops item", "Conflict item", "Unknown item", "Old spec", "Restarted item"];
+    expect(rows).toHaveLength(titles.length);
+    rows.forEach((r, i) => expect(r, titles[i]).toContain(titles[i]));
+
+    const [spec, merge, failed, maxed, loops, conflict, unknown, oldSpec, restarted] = rows as [string, string, string, string, string, string, string, string, string];
+    // Issue number and how long it has waited (from the change that set its current block, not updated_at).
+    expect(spec).toContain("<td>#1</td>");
+    expect(spec).toContain("<td>10h 00m</td>");
+    expect(merge).toContain("<td>9h 00m</td>");
+    expect(failed).toContain("<td>8h 00m</td>");
+    expect(maxed).toContain("<td>7h 00m</td>");
+    expect(conflict).toContain("<td>#6</td>");
+    expect(conflict).toContain("<td>4h 00m</td>");
+    expect(unknown).toContain("<td>3h 30m</td>");
+
+    expect(spec).toContain("spec ready");
+    expect(spec).toContain(`href="https://github.com/o/r/issues/1#issuecomment-11"`);
+    expect(spec).toContain("/approve or /reject &lt;reason&gt;");
+
+    expect(merge).toContain("ready to merge");
+    expect(merge).toContain(`href="https://github.com/o/r/pull/42"`);
+    expect(merge).toContain("merge the PR");
+
+    expect(failed).toContain("failed: diff_too_large");
+    expect(failed).toContain(`href="https://github.com/o/r/issues/3#issuecomment-33"`);
+    expect(failed).toContain("/retry");
+
+    // max_attempts / max_restart: the code of the latest failed run; no stored link falls back to the issue.
+    expect(maxed).toContain("failed: agent_failed");
+    expect(maxed).not.toContain("agent_timed_out");
+    expect(maxed).toContain(`href="https://github.com/o/r/issues/4"`);
+    expect(maxed).toContain("/retry");
+    expect(restarted).toContain("<td>2h 45m</td>");
+    expect(restarted).toContain("failed: lease_expired");
+    expect(restarted).toContain("/retry");
+
+    expect(loops).toContain("review found bugs too many times");
+    expect(conflict).toContain("merge conflict");
+    expect(unknown).toContain("max revisions");
+    for (const [r, n] of [[loops, 5], [conflict, 6], [unknown, 7]] as const) {
+      expect(r).toContain(`href="https://github.com/o/r/issues/${n}"`);
+      expect(r).not.toContain("/pull/");
+      for (const cmd of ["/retry", "/approve", "merge the PR"]) expect(r).not.toContain(cmd);
+    }
+
+    expect(oldSpec).toContain("spec ready");
+    expect(oldSpec).toContain(`href="https://github.com/o/r/issues/8"`);
+    expect(oldSpec).not.toContain("issuecomment");
+  });
+
+  it("the page has no form, button or input", async () => {
+    const { port } = await seededNeeds();
+    for (const path of ["/", "/?closed=1"]) expect((await get(port, path)).body).not.toMatch(/<(form|button|input|select|textarea)\b/i);
+  });
+
+  it("says so when nothing waits, and the title shows 0", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const page = await get(await startOn(store, clock), "/");
+    expect(section(page.body, "needs")).toContain("<h2>Needs you (0)</h2>");
+    expect(page.body).toMatch(/<title>[^<]*\(0\)[^<]*<\/title>/);
+  });
+
+  it("N counts every waiting item past the 200-row list limit", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    for (let n = 1; n <= 205; n++) {
+      const { item } = await store.createWorkItem(issue(n), system);
+      await store.transition({ id: item.id, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: n }, actor: system, reason: "x" });
+    }
+    const page = await get(await startOn(store, clock), "/");
+    expect(section(page.body, "needs")).toContain("<h2>Needs you (205)</h2>");
+    expect(page.body).toMatch(/<title>[^<]*\(205\)[^<]*<\/title>/);
+    expect(needsRows(page.body)).toHaveLength(200);
   });
 });
