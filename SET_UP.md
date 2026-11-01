@@ -139,7 +139,28 @@ Unknown config keys are rejected at load: a typo in `factory.config.json` (for e
 
 ### Status page
 
-`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). Open it to see what needs you: the "Needs you (N)" list at the top has one row per item waiting for a human, oldest first, with a link to the exact comment or PR and the command to type there. Below it the page shows what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
+`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). The top is one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Below it the page shows what runs now and the queue; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+
+The list's order:
+1. Ready to merge
+2. Needs approval
+3. Needs you for another reason (failed, merge conflict, too many loops, budget)
+4. Stuck (a run past its lease, or nothing moves the item)
+5. Running
+6. Queued
+7. Waiting on another issue (empty until dependencies are tracked)
+8. Closed (hidden unless asked for)
+
+Within a level: items that unblock more others first, then the longest wait, then the higher tier.
+
+Filters (in the URL, so a filtered view can be bookmarked; each option shows how many items it would show):
+- `state`: `needs` (the first three levels) or one level
+- `stage`: `NEW`, `READY`, `RUNNING`, `REVIEW`, `CLOSED`
+- `tier`: `1` to `5`
+- `kind`: the run kind in a failure reason, else the kind of the queued or running run (`triage`, `implement`, `review`, `update`)
+- `unblocks=1`: only items others wait on
+- `closed=1`: show closed items too
+- `q`: search the issue number (`#12` or `12`) and the title as shown
 
 Slack (optional, for real-time threads): [`docs/slack-setup.md`](docs/slack-setup.md), mostly `scripts/slack-app.sh create|tokens|check`.
 
