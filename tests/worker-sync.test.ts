@@ -308,6 +308,41 @@ describe("implement run: sync with base before push", () => {
     expect(f.broker.comments()[0]!.body).toContain("Nothing was pushed");
   });
 
+  it("a resolution left unstaged (markers staged, clean file in the working tree) fails with merge_conflict and pushes nothing", async () => {
+    const f = await setup({
+      moveMain: MAIN_EDITS_A,
+      resolve: (wd) => {
+        git(wd, "add", "--", "src/a.txt"); // stages the file with its conflict markers
+        write(wd, "src/a.txt", "a merged\n"); // fixed in the working tree only
+      },
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+    if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("not staged");
+    expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false); // tests never ran on an unstaged tree
+    expect(f.broker.names()).not.toContain("github.push_branch");
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(await f.store.listHandoffs(item.id)).toEqual([]);
+    expect(f.broker.comments()[0]!.body).toContain("Nothing was pushed");
+  });
+
+  it("an agent that commits the markers itself and fixes only the working tree fails with merge_conflict", async () => {
+    const f = await setup({
+      moveMain: MAIN_EDITS_A,
+      resolve: (wd) => {
+        git(wd, "add", "--", "src/a.txt");
+        git(wd, "-c", "user.name=a", "-c", "user.email=a@example.com", "commit", "--quiet", "--no-edit");
+        write(wd, "src/a.txt", "a merged\n");
+      },
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+    expect(f.broker.names()).not.toContain("github.push_branch");
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+  });
+
   it("merge_conflict counts toward max_attempts and the last-attempt comment names the code with its label", async () => {
     const f = await setup({ moveMain: MAIN_EDITS_A, resolve: () => undefined, moveEveryRun: true });
     const item = await f.approveAndImplement();

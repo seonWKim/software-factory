@@ -284,7 +284,7 @@ export class Worker {
    * Sync before push (design §4, decided 2026-11-01): fetches origin/<base> after the implementer exited and
    * merges that commit into the branch with a merge commit (never a rebase, never a force push). A conflict
    * gets one agent step in the same run to resolve the files; the worker, not the agent, then decides: no
-   * unmerged paths and a passing test command, or the run fails with `merge_conflict` (nothing pushed, an
+   * unmerged paths, a working tree that matches what will be committed, and a passing test command, or the run fails with `merge_conflict` (nothing pushed, an
    * issue comment). Returns the merged-in base SHA, the one every pre-push check diffs against.
    * Git hooks are off for the merge and the commit: the agent's writable git dir could have planted one.
    */
@@ -349,6 +349,13 @@ export class Worker {
       const has = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
       if (has.exit_code !== 0) return fail("the merge was aborted during the resolution step");
     }
+    // The tests run on the working tree but the commit takes the index (or the agent already committed): both
+    // must match the working tree for tracked files, or the push could carry content the tests never saw.
+    const unstaged = await this.differs(handle, ["diff", "--quiet"]);
+    const uncommitted = pending.exit_code !== 0 && (await this.differs(handle, ["diff", "--cached", "--quiet"]));
+    if (unstaged || uncommitted) {
+      return fail(`the resolution left changes ${unstaged ? "not staged" : "not committed"}, so the tests would not see what is pushed`);
+    }
 
     const cmd = repo.test_command;
     const tests = await this.d.sandbox
@@ -395,6 +402,14 @@ export class Worker {
     throw new RunFailure("merge_conflict", `${why}; conflicting files: ${conflicts.join(", ")}`.slice(0, 500), false, {
       output_tail: tail(transcript),
     });
+  }
+
+  /** `git diff --quiet ...`: true when it reports a difference (exit 1), throws on any other failure. */
+  private async differs(handle: SandboxHandle, args: string[]): Promise<boolean> {
+    const r = await this.gitRaw(handle, args);
+    if (r.exit_code === 0) return false;
+    if (r.exit_code === 1) return true;
+    throw new RunFailure("git_failed", `git ${args.join(" ")}: ${r.stderr.trim()}`, true);
   }
 
   private async unmerged(handle: SandboxHandle): Promise<string[]> {
