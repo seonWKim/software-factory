@@ -4,7 +4,9 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
+import type { FactoryConfig, LoadedConfig, Prompts, StatsConfig } from "./core/config.js";
+import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
+import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -21,7 +23,7 @@ import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
-import { GitHubClient } from "./impl/github/github-client.js";
+import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
@@ -97,8 +99,9 @@ export interface FileConfig {
    */
   defaults?: unknown;
   /**
-   * Overrides per project ID ("owner/name", the configured repo's only). Per-project keys only, and each
-   * may only tighten its gate against the global value. Checked by settingsLayers (src/core/settings.ts).
+   * Overrides per project ID ("owner/name", the configured repo's only; re-keyed to its project key at startup).
+   * Per-project keys only, and each may only tighten its gate against the global value. Checked by
+   * settingsLayers (src/core/settings.ts).
    */
   projects?: unknown;
 }
@@ -111,7 +114,8 @@ export interface Loaded {
   /** Where factory.config.json and prompts/ were read: the runtime copy under the updater, else `root`. */
   codeRoot: string;
   file: FileConfig;
-  config: FactoryConfig;
+  /** Not yet resolved to a project key: build() resolves the configured repo through GitHub (resolveProject). */
+  config: LoadedConfig;
   prompts: Prompts;
   secretsFile: string;
   stateDir: string;
@@ -166,7 +170,7 @@ export async function loadConfig(
 
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
-  const config: FactoryConfig = {
+  const config: LoadedConfig = {
     repo: {
       ...file.repo,
       path: resolve(root, file.repo.path),
@@ -219,11 +223,41 @@ export async function loadConfig(
   return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats, models, model_by };
 }
 
+/** What startup resolution needs from the GitHub client: one read of the repository. */
+export interface RepoLookup {
+  repoIdentity(repo: RepoRef): Promise<RepoIdentity>;
+}
+
+/**
+ * The configured repo as a project (design 2026-11-01): its key from GitHub's node ID, its label from the path
+ * GitHub reports now (a renamed repo gets its new path). Throws a message naming the configured repo and the
+ * reason when GitHub cannot resolve it; the process then exits with that message instead of writing anything.
+ */
+export async function resolveProject(github: RepoLookup, repo: RepoRef): Promise<ProjectRef> {
+  try {
+    const id = await github.repoIdentity(repo);
+    return { key: githubProjectKey(id.host, id.node_id), label: projectLabel(id.host, id.owner, id.name) };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `cannot resolve the configured repo ${repo.owner}/${repo.name} (factory.config.json repo.owner / repo.name) to its GitHub repository ID: ${reason}`,
+    );
+  }
+}
+
+/** The loaded config with the resolved project, and the per-project settings re-keyed from `owner/name` to its key. */
+export function resolvedConfig(config: LoadedConfig, project: ProjectRef): FactoryConfig {
+  const ownerName = `${config.repo.owner}/${config.repo.name}`;
+  return { ...config, project, settings: { ...config.settings, projects: rekeyProjectSettings(config.settings.projects, ownerName, project.key) } };
+}
+
 export interface Built {
   loaded: Loaded;
   clock: Clock;
   store: FactoryStore;
   secrets: SecretStore;
+  /** The configured repo, resolved at startup. */
+  project: ProjectRef;
   controller: Controller;
   /** `config.workers` worker loops; `run(signal)` runs them all. */
   worker: WorkerPool;
@@ -273,9 +307,9 @@ export class Plugins {
 
 export async function build(
   loaded: Loaded,
-  opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number } = {},
+  opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number; repoLookup?: RepoLookup } = {},
 ): Promise<Built> {
-  const { config, stateDir, registry, plugins: sel } = loaded;
+  const { stateDir, registry, plugins: sel } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded, opts);
   const base = p.base;
@@ -292,16 +326,31 @@ export async function build(
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
   for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github }));
+  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github });
+  // Suggests a command for a plain-language comment; never changes state (design §4).
+  const llm = await p.llm(secrets);
+  const runner = await p.runner(sandbox, secrets);
+  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const storage = await createPlugin(registry, "storage", sel.storage, base);
+  const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
+  // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
+  const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
+
+  // Startup resolution (design 2026-11-01), after every plugin check so a bad selection is reported first: the
+  // project key every write uses, and the label refreshed from GitHub (a renamed repo shows its new path).
+  const project = await resolveProject(opts.repoLookup ?? github, base.repo);
+  await saveProjectLabel(store, project);
+  const config = resolvedConfig(loaded.config, project);
+
   const controller = new Controller({
     store,
     sources,
-    auth: await createPlugin(registry, "auth", sel.auth, { ...base, github }),
+    auth,
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
-    // Suggests a command for a plain-language comment; never changes state (design §4).
-    llm: await p.llm(secrets),
+    llm,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
   });
@@ -312,22 +361,21 @@ export async function build(
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
     store,
     sandbox,
-    runner: await p.runner(sandbox, secrets),
-    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock }),
+    runner,
+    broker,
     scanner,
-    storage: await createPlugin(registry, "storage", sel.storage, base),
+    storage,
     clock,
     config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
     models: { table: loaded.model_by, names: loaded.models },
-    awake: await createPlugin(registry, "awake", sel.awake, { ...base, clock }),
-    // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
-    capability: await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] }),
+    awake,
+    capability,
   });
 
-  return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+  return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, uiPort } from "./compose.js";
+import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, resolveProject, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
@@ -18,6 +18,9 @@ import { readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
+import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
+import { type ResolveRepo, runProjectKeyStep } from "./impl/store/project-keys.js";
+import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
 const USAGE = `factory <command>
 
@@ -32,9 +35,10 @@ const USAGE = `factory <command>
                --json for one JSON object
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
-               MySQL schema steps (migrations/mysql/): --status lists the state and pending steps,
-               --dry-run prints what would run, no flag applies them (back up first). The other
-               commands refuse to start on MySQL while steps are pending. SQLite has no steps
+               MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
+               github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
+               --dry-run prints what would run and each row it would change, no flag applies them
+               (back up first). The other commands refuse to start while steps or owner/name rows remain
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
   llm-check [--model cheap|standard|strong]
@@ -126,14 +130,14 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "ui": {
       const parts = await buildUiParts(loaded);
-      const { owner, name } = loaded.config.repo;
       const ui = await startUi(
         {
           store: parts.store,
           scanner: parts.scanner,
           clock: parts.clock,
           lease_ms: loaded.config.lease_ms,
-          prUrl: (project, n) => `https://github.com/${project || `${owner}/${name}`}/pull/${n}`,
+          // `label` is the stored project label (github.com/owner/name), never the key.
+          prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           health: new HealthMonitor(() => doctorChecks(loaded), parts.clock),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
@@ -154,10 +158,27 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         console.log(mode.error);
         return 1;
       }
+      const print = (line: string) => console.log(line);
+      // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
+      const resolveRepo = async (): Promise<ResolveRepo> => {
+        const p = new Plugins(loaded);
+        const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
+        return (ownerName) => {
+          const [owner = "", name = ""] = ownerName.split("/");
+          return resolveProject(github, { owner, name });
+        };
+      };
       const db = loaded.store;
       if (db.type !== "mysql") {
-        console.log(SQLITE_MIGRATE_MESSAGE);
-        return 1;
+        print(SQLITE_MIGRATE_MESSAGE);
+        await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+        const driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+        try {
+          await driver.migrate();
+          return await runProjectKeyStep(driver, resolveRepo, mode, print);
+        } finally {
+          await driver.close();
+        }
       }
       const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
       if (!password) {
@@ -165,7 +186,22 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         return 1;
       }
       const { host, port, database, user } = db;
-      return migrateCommand({ host, port, database, user, password: password.reveal() }, mode, (line) => console.log(line));
+      const options = { host, port, database, user, password: password.reveal() };
+      const code = await migrateCommand(options, mode, print);
+      if (code !== 0) return code;
+      // After the schema steps: the data step needs the tables they create.
+      const driver = new MysqlDriver(options);
+      try {
+        // Throws while schema steps are pending (only after --status or --dry-run, which apply none).
+        const ready = await driver.schemaVersion().then(() => true, () => false);
+        if (!ready) {
+          print("project keys: listed once the pending schema steps have run (npm run migrate, then --dry-run again)");
+          return 0;
+        }
+        return await runProjectKeyStep(driver, resolveRepo, mode, print);
+      } finally {
+        await driver.close();
+      }
     }
     case "setup": {
       const rotate: SecretName[] = [];
@@ -224,7 +260,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
       const r = await addCase(
         {
           store,
-          project: `${owner}/${name}`,
+          project: await resolveProject(github, { owner, name }),
           github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
           scanner: await p.scanner(secrets),
           casesDir: join(loaded.root, "golden", "cases"),

@@ -14,7 +14,8 @@ import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { saveProjectLabel } from "../src/core/project-labels.js";
+import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -95,8 +96,9 @@ async function seeded() {
   clock.advance(LEASE + 5_000);
 
   const scanner = new PatternEgressScanner(async () => []);
+  await saveProjectLabel(store, PROJECT); // as build() does at startup
   const ui = await startUi(
-    { store, scanner, clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
+    { store, scanner, clock, lease_ms: LEASE, prUrl: (label, n) => `https://${label}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
     0,
   );
   servers.push(ui);
@@ -324,8 +326,9 @@ function rows(body: string): string[][] {
 }
 
 async function startOn(store: FactoryStore, clock: FakeClock, factoryStatus?: () => Promise<FactoryStatus | null>) {
+  await saveProjectLabel(store, PROJECT); // as build() does at startup
   const ui = await startUi(
-    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock), ...(factoryStatus ? { factoryStatus } : {}) },
+    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (label, n) => `https://${label}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock), ...(factoryStatus ? { factoryStatus } : {}) },
     0,
   );
   servers.push(ui);

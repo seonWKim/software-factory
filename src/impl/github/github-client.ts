@@ -5,6 +5,22 @@ export interface RepoRef {
   name: string;
 }
 
+/** A repository as GitHub knows it now: its permanent node ID and its current path (after any rename or move). */
+export interface RepoIdentity {
+  /** GitHub's global node ID, e.g. "R_kgDOabc123". Never changes with a rename or a transfer. */
+  node_id: string;
+  owner: string;
+  name: string;
+  /** The web host the repository lives on: "github.com", or a GitHub Enterprise Server host. */
+  host: string;
+}
+
+/** The web host for an API base URL: api.github.com → github.com; GHES (https://<host>/api/v3) → <host>. */
+export function webHost(baseUrl: string): string {
+  const u = new URL(baseUrl);
+  return u.host === "api.github.com" ? "github.com" : u.host;
+}
+
 export class GitHubError extends Error {
   constructor(
     readonly status: number,
@@ -35,6 +51,19 @@ export class GitHubClient {
     const res = await this.send("GET", `/repos/${repo.owner}/${repo.name}`);
     const header = res.headers.get("github-authentication-token-expiration");
     return header ? new Date(header.replace(" UTC", "Z").replace(" ", "T")) : null;
+  }
+
+  /**
+   * The repository's node ID and current `owner/name`. GitHub redirects a renamed or moved repository's old
+   * path to the new one, and fetch follows the redirect, so this returns the path as it is now. Read-only.
+   */
+  async repoIdentity(repo: RepoRef): Promise<RepoIdentity> {
+    const r = await this.request<{ node_id?: unknown; full_name?: unknown }>("GET", `/repos/${repo.owner}/${repo.name}`);
+    const full = typeof r?.full_name === "string" ? r.full_name.split("/") : [];
+    if (typeof r?.node_id !== "string" || r.node_id === "" || full.length !== 2 || !full[0] || !full[1]) {
+      throw new Error(`GitHub GET /repos/${repo.owner}/${repo.name} returned no node_id and full_name`);
+    }
+    return { node_id: r.node_id, owner: full[0], name: full[1], host: webHost(this.baseUrl) };
   }
 
   /** A PR's unified diff (base...head, as GitHub shows it). Read-only: one GET, nothing written. */

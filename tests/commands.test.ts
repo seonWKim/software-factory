@@ -8,7 +8,7 @@ import { Controller } from "../src/core/controller.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
 describe("parseComment", () => {
   const cmd = (name: CommandName, text = "") => ({ kind: "command", name, text });
@@ -167,7 +167,7 @@ describe("footers match what the controller accepts", () => {
     const actor = { kind: "system" as const, id: "test" };
     /** A new work item on issue `n`, put in `phase`, with or without a PR. */
     const itemIn = async (phase: CommandPhase, pr: number | null, n: number) => {
-      const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] }, actor);
+      const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
       const setup = {
         id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
         patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },

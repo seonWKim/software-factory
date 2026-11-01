@@ -28,6 +28,7 @@ import type {
   ClaimPauseName,
 } from "../../../core/types.js";
 import { IMPLEMENT_KINDS } from "../../../core/policy.js";
+import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
@@ -56,6 +57,7 @@ import type {
 } from "../../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
+import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import {
   WORK_ITEM_COLUMNS,
   diffPatch,
@@ -82,8 +84,15 @@ export class SqlFactoryStore implements FactoryStore {
     private readonly clock: Clock,
   ) {}
 
-  migrate(): Promise<void> {
-    return this.db.migrate();
+  /**
+   * The schema (SQLite builds it; MySQL refuses while steps are pending), then the project-key check: the store
+   * refuses to open while any project column still holds `owner/name` (design 2026-11-01), so a new controller
+   * never runs on unmigrated rows. `npm run migrate` rewrites them.
+   */
+  async migrate(): Promise<void> {
+    await this.db.migrate();
+    const legacy = await countLegacyProjectRows(this.db);
+    if (legacy > 0) throw new Error(legacyRowsMessage(legacy));
   }
 
   schemaVersion(): Promise<SchemaVersion> {
@@ -101,6 +110,8 @@ export class SqlFactoryStore implements FactoryStore {
     actor: Actor,
     opts?: { enqueue?: Omit<NewRun, "work_item_id"> },
   ): Promise<{ item: WorkItem; created: boolean }> {
+    // A project column holds only project keys (design 2026-11-01), never `owner/name`.
+    assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
       const existing = await this.selectItemBySource(tx, input.source.type, input.source.id);
       if (existing) return { item: existing, created: false };
@@ -621,6 +632,7 @@ export class SqlFactoryStore implements FactoryStore {
   // Unreviewed merges
 
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
+    assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
       const created = await this.insertOnce(
         tx,

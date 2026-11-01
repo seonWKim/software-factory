@@ -8,7 +8,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { newStore } from "./helpers/store.js";
+import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, gates, issueRef, mallory, prompts, recordingLog, settingsWith, triageSpec,
@@ -382,7 +382,7 @@ describe("outcome and history", () => {
     // Three finished tier-2 items: two merged (250000, 1234567), one rejected (ignored by the percentile).
     for (const [n, close_reason, token_cost] of [[101, "completed", 250_000], [102, "completed", 1_234_567], [103, "rejected", 9_000_000]] as const) {
       const { item } = await f.store.createWorkItem(
-        { source: issueRef(n), requester_id: "github:1" as UserId, project: "o/r", problem: "p", resources: [] }, sys,
+        { source: issueRef(n), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, sys,
       );
       await f.store.transition({ id: item.id, expected_version: 1, actor: sys, reason: "x", patch: { tier: 2, token_cost, stage: "CLOSED", close_reason } });
     }
@@ -405,7 +405,7 @@ describe("outcome and history", () => {
     const f = await factory({ budgets: { 2: 1000 }, min_sample: 1, implement: () => used(900, done) });
     const sys = { kind: "system" as const, id: "system:test" };
     const { item } = await f.store.createWorkItem(
-      { source: issueRef(201), requester_id: "github:1" as UserId, project: "o/r", problem: "p", resources: [] }, sys,
+      { source: issueRef(201), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, sys,
     );
     // One merged item at 1 token: p90 rounded up is 100000, above the first budget (1000), so it stands.
     await f.store.transition({ id: item.id, expected_version: 1, actor: sys, reason: "x", patch: { tier: 2, token_cost: 1, stage: "CLOSED", close_reason: "completed" } });

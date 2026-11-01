@@ -13,7 +13,7 @@ import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec,
 } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
 // Pull requests the factory did not open (design 2026-11-01): adoption, `factory: skip`, a person's pushes
 // recorded as `manual` runs, and merges with no item recorded as unreviewed merges.
@@ -166,7 +166,7 @@ describe("factory: skip", () => {
     expect(await f.store.listWorkItems(10)).toEqual([]);
     const rows = await f.store.listUnreviewedMerges(10);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ project: "o/r", pr_number: 51, merge_sha: "m51", merger_id: "github:1" });
+    expect(rows[0]).toMatchObject({ project: PROJECT_KEY, pr_number: 51, merge_sha: "m51", merger_id: "github:1" });
   });
 
   it("added by a user without write permission is ignored, and the PR is adopted", async () => {

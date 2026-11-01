@@ -1,3 +1,4 @@
+import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
 import type { Tier, VerdictSeverity } from "./types.js";
 
@@ -12,8 +13,20 @@ export interface StatsConfig {
   min_sample: number;
 }
 
-/** Runtime config for core code. Built by the composition root; core never reads env or files itself. */
-export interface FactoryConfig {
+/**
+ * Runtime config for core code. Built by the composition root; core never reads env or files itself.
+ * `project` is the configured repo resolved through the forge at startup (design 2026-11-01): every write
+ * and lookup uses its key, every comment and log line its label.
+ */
+export interface FactoryConfig extends LoadedConfig {
+  project: ProjectRef;
+}
+
+/**
+ * The config as loaded from factory.config.json, before startup resolves the configured repo to its project
+ * key. `settings.projects` is still keyed by `owner/name` here; the composition root re-keys it.
+ */
+export interface LoadedConfig {
   /**
    * `install_command` and `test_command`: argv (no shell) of the gate commands. The update run runs the test
    * command on a merged branch; the resolve run runs install, then test, before any push. Defaults

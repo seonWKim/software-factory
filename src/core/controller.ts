@@ -215,6 +215,8 @@ export class Controller {
   }
 
   async run(signal: AbortSignal): Promise<void> {
+    // The label, never the key: log lines and comments name a project by its readable path.
+    this.d.log.info("controller started", { project: this.d.config.project.label });
     const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
     // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
     const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
@@ -1130,7 +1132,13 @@ export class Controller {
     return (await this.d.store.listStateChanges(id)).some((c) => c.reason === reason && c.detail?.[key] === value);
   }
 
+  /** The configured repo's project key (design 2026-11-01): what every write and lookup uses. Never shown. */
   private project(): string {
+    return this.d.config.project.key;
+  }
+
+  /** The configured repo's `owner/name`, only to build PR source ids (`owner/name#N`, unchanged by project keys). */
+  private repoPath(): string {
     return `${this.d.config.repo.owner}/${this.d.config.repo.name}`;
   }
 
@@ -1568,7 +1576,7 @@ export class Controller {
       return;
     }
     const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
-    await this.post({ type: PR_SOURCE_TYPE, id: `${this.project()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+    await this.post({ type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
   }
 
   /**

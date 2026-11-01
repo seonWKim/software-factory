@@ -13,7 +13,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { newStore } from "./helpers/store.js";
+import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
@@ -559,7 +559,7 @@ describe("one issue to one merged PR", () => {
     const f = await factory(runner);
     const problem = `${"A very long first line of the spec that goes on and on past the eighty character cut".repeat(2)}\nsecond`;
     const { item } = await f.store.createWorkItem(
-      { source: issueRef(16), requester_id: "github:1" as UserId, project: "o/r", problem: "old", resources: [] },
+      { source: issueRef(16), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "old", resources: [] },
       { kind: "system", id: "test" },
     );
     expect(item.title).toBeNull();
@@ -1561,7 +1561,7 @@ describe("/resolve with real git (NoOpSandbox)", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { item: created } = await store.createWorkItem(
-      { source: issueRef(90), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] },
+      { source: issueRef(90), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
       { kind: "system", id: "test" },
     );
     const moved = await store.transition({
