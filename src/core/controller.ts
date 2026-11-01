@@ -16,7 +16,7 @@ import {
 } from "./policy.js";
 import { renderSpec } from "./spec-comment.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -50,6 +50,10 @@ const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
 const MAX_CONFLICT_RETRIES = 5;
+/** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
+const FLOOR_TIER = "floor_tier";
+/** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
+const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
 const CATCH_UP_LIMIT = 1000;
 /** Patch fields that can change an item's status or where it is shown. */
@@ -215,7 +219,8 @@ export class Controller {
     const principal = await this.authorize(e.kind === "retry_requested" ? e.requester : e.approver, "approve_spec", item.id);
     const refusal = "refuse" in principal
       ? principal.refuse
-      : await this.decide(item.id, (it) => command(e, it, { kind: "user", id: principal.user_id }));
+      : await this.decide(item.id, async (it) =>
+          command(e, it, { kind: "user", id: principal.user_id }, await this.floorTierNeeded(it)));
     await this.markSeen(e.source, e.comment_id);
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
@@ -224,6 +229,14 @@ export class Controller {
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
+  private async floorTierNeeded(it: WorkItem): Promise<number | null> {
+    if (it.blocked_reason !== FLOOR_TIER) return null;
+    const row = (await this.d.store.listStateChanges(it.id)).filter((c) => c.reason === "floor_blocked").at(-1);
+    const tier = row?.detail?.required_tier;
+    return typeof tier === "number" ? tier : null;
   }
 
   /**
@@ -296,6 +309,7 @@ export class Controller {
       if (!run.outcome || run.outcome.status !== "succeeded") {
         if (!this.expects(it, run.kind)) return ack("run_ignored");
         const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+        if (run.kind === "implement" && code === DIFF_TOO_LARGE) return this.diffTooLarge(it, run);
         if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
         await this.comment(it, `run-failed:${run.id}`,
           `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.`);
@@ -344,6 +358,7 @@ export class Controller {
           };
         }
         case "implement": {
+          if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
           const pr = Number(data.pr_number);
           return {
             patch: { stage: "REVIEW", pr_number: pr, token_cost: tokens },
@@ -457,6 +472,57 @@ export class Controller {
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
       enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore },
+    };
+  }
+
+  /**
+   * The pre-push size gate failed (design §4): no automatic retry, since the same spec would likely overreach
+   * again. Blocks on a human with the usual run_failed reason, so `/retry` reruns the implement.
+   */
+  private async diffTooLarge(it: WorkItem, run: Run): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail : "";
+    const { max_diff_lines, max_diff_files } = this.d.config;
+    await this.comment(it, `run-failed:${run.id}`, [
+      "## Factory size check: push blocked",
+      "",
+      `The implement run's diff is too large to review, so nothing was pushed: ${detail}.`,
+      "",
+      `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
+      "",
+      "Split the work item, or comment `/retry` to run the implementer again; it must make a smaller change.",
+    ].join("\n"));
+    return {
+      patch: { blocked_on: "human", blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: DIFF_TOO_LARGE },
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * The pre-push floor check found changed files under a floor above the item's tier (design §4). Nothing was
+   * pushed. The item stays RUNNING, blocked on a human; `/approve` raises the tier and runs implement again.
+   */
+  private async floorBlock(it: WorkItem, run: Run, data: Record<string, unknown>, tokens: number): Promise<Decision> {
+    const hits = parseFloorHits(data.floor_paths);
+    const need = hits.reduce((m, h) => Math.max(m, h.tier), 0);
+    if (hits.length === 0 || data.required_tier !== need) return this.retryOrBlock(it, run, "task", "invalid_output");
+    await this.comment(it, `floor:${run.id}`, [
+      "## Factory floor check: push blocked",
+      "",
+      `This item is tier ${it.tier ?? 1}, but the implementer changed files under a floor that needs a higher tier, so nothing was pushed:`,
+      "",
+      ...hits.map((h) => `- \`${h.path}\` needs tier ${h.tier}`),
+      "",
+      `Reply \`/approve\` to raise the item to tier ${need} and run the implementer again, or \`/reject <reason>\` to close it.`,
+    ].join("\n"));
+    return {
+      patch: { token_cost: tokens, blocked_on: "human", blocked_reason: FLOOR_TIER },
+      actor: SYSTEM,
+      reason: "floor_blocked",
+      detail: { run_id: run.id, item_tier: it.tier, required_tier: need, paths: hits.map((h) => h.path).join(",").slice(0, 1000) },
+      ack_run: run.id,
     };
   }
 
@@ -587,8 +653,9 @@ export class Controller {
 }
 
 /** The transition a command asks for, or why the item's current state cannot take it. */
-function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusal {
+function command(e: CommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Decision | Refusal {
   if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
+  if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
   if (e.kind === "retry_requested") {
     const kind = failedRunKind(it);
     if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
@@ -623,6 +690,33 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusa
   };
 }
 
+/**
+ * A command on a floor_tier block (design §4). `/approve` raises the tier to the one the floor needs (never
+ * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
+ * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
+ */
+function floorCommand(e: CommandEvent, it: WorkItem, actor: Actor, need: number | null): Decision | Refusal {
+  if (e.kind === "retry_requested") {
+    return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
+  }
+  if (e.kind === "spec_rejected") {
+    return {
+      patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+      actor,
+      reason: "floor_rejected",
+    };
+  }
+  if (it.stage !== "RUNNING" || need === null) return { refuse: "the floor block has no recorded tier to approve" };
+  const next = { ...it, tier: effectiveTier(it.tier, need as Tier), restart_count: it.restart_count + 1 };
+  return {
+    patch: { tier: next.tier, restart_count: next.restart_count, blocked_on: "none", blocked_reason: null },
+    actor,
+    reason: "floor_tier_approved",
+    detail: { previous_tier: it.tier, tier: next.tier },
+    enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+  };
+}
+
 /** The kind of run a human `/retry` would restart, or undefined if the item is not blocked by a failed run. */
 function failedRunKind(it: WorkItem): RunKind | undefined {
   const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
@@ -638,6 +732,7 @@ const FAILURES: Record<string, string> = {
   invalid_output: "the agent's answer did not have the expected shape",
   no_commits: "the implementer made no commits",
   scope_violation: "the branch changed files outside the allowed paths",
+  diff_too_large: "the branch diff is over max_diff_lines or max_diff_files",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",
@@ -657,6 +752,15 @@ function fenced(text: string): string {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;
+}
+
+function parseFloorHits(v: unknown): { path: string; tier: number }[] {
+  if (!Array.isArray(v)) return [];
+  const hits = v.filter(
+    (h): h is { path: string; tier: number } =>
+      typeof h === "object" && h !== null && typeof h.path === "string" && Number.isInteger(h.tier) && h.tier >= 1 && h.tier <= 5,
+  );
+  return hits.length === v.length ? hits : [];
 }
 
 function iso(ms: number): Timestamp {
