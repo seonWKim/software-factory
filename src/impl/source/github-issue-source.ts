@@ -36,8 +36,23 @@ interface GhPull {
   merged_at: string | null;
   merge_commit_sha: string | null;
   updated_at: string;
-  head: { ref: string; sha: string };
+  /** `repo` is null when the head repository was deleted (a fork that is gone). */
+  head: { ref: string; sha: string; repo?: { full_name: string } | null };
   base: { ref: string; sha: string };
+  draft?: boolean;
+  title?: string;
+  body?: string | null;
+  user?: GhUser | null;
+  labels?: { name: string }[];
+}
+interface GhPullFile {
+  filename: string;
+  previous_filename?: string;
+}
+interface GhTimelineEvent {
+  event: string;
+  label?: { name: string };
+  actor?: GhUser | null;
 }
 interface GhPullFull extends GhPull {
   /** null while GitHub is still computing it. */
@@ -228,11 +243,12 @@ export class GitHubIssueSource implements PollSource {
     }
 
     // Pulls have no `since`: read newest-updated first and stop at the cursor.
+    // Every PR, not only factory ones (design 2026-11-01): a merge with no work item is an unreviewed merge.
     const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, c.pulls ? 5 : 1);
     for (const p of pulls) {
       if (c.pulls && p.updated_at < c.pulls) break;
       next.pulls = max(next.pulls, p.updated_at);
-      if (!p.head.ref.startsWith(this.branchPrefix)) continue;
+      const fork = this.isFork(p) ? { fork: true as const } : {};
       if (p.merged_at && p.merge_commit_sha) {
         // The list endpoint omits merged_by; the single-PR endpoint has it.
         const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${base}/pulls/${p.number}`);
@@ -242,17 +258,34 @@ export class GitHubIssueSource implements PollSource {
           head_branch: p.head.ref,
           merge_sha: p.merge_commit_sha,
           merger: full.merged_by ? identity(full.merged_by) : null,
+          ...fork,
         });
       } else {
-        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref });
+        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref, ...fork });
       }
     }
 
-    // Open factory PRs that cannot merge into their base. Not cursored: reported on every poll while it lasts,
-    // and the controller keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
+    // Open PRs. Not cursored: reported on every poll while open. pr_open for every factory PR and every other
+    // non-draft PR against the base from this repository (design 2026-11-01); the controller reads more about a
+    // PR only when it does not know it yet. Then factory PRs that cannot merge into their base: the controller
+    // keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
     const open = await this.client.list<GhPull>(`${base}/pulls?state=open&sort=updated&direction=desc`);
     for (const p of open) {
-      if (!p.head.ref.startsWith(this.branchPrefix)) continue;
+      const factory = p.head.ref.startsWith(this.branchPrefix);
+      if (p.base.ref === this.baseBranch && !this.isFork(p) && (factory || !p.draft)) {
+        events.push({
+          kind: "pr_open",
+          source: this.prRef(p.number),
+          pr_number: p.number,
+          head_branch: p.head.ref,
+          head_sha: p.head.sha,
+          title: p.title ?? "",
+          body: p.body ?? "",
+          author: p.user ? identity(p.user) : null,
+          labels: (p.labels ?? []).map((l) => l.name),
+        });
+      }
+      if (!factory) continue;
       const full = await this.client.request<GhPullFull>("GET", `${base}/pulls/${p.number}`);
       if (full.mergeable !== false) continue;
       events.push({
@@ -302,6 +335,37 @@ export class GitHubIssueSource implements PollSource {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
     }
+  }
+
+  /** A head in another repository, or in one that was deleted. A list without `repo` (older fixtures) counts as ours. */
+  private isFork(p: GhPull): boolean {
+    if (p.head.repo === undefined) return false;
+    return p.head.repo === null || p.head.repo.full_name.toLowerCase() !== `${this.repo.owner}/${this.repo.name}`.toLowerCase();
+  }
+
+  /** Every path the PR changes, both sides of a rename. GitHub lists at most 3000 files per PR. */
+  async prFiles(pr_number: number): Promise<string[]> {
+    const files = await this.client.list<GhPullFile>(`/repos/${this.repo.owner}/${this.repo.name}/pulls/${pr_number}/files`, 30);
+    const paths = new Set<string>();
+    for (const f of files) {
+      paths.add(f.filename);
+      if (f.previous_filename) paths.add(f.previous_filename);
+    }
+    return [...paths];
+  }
+
+  /** The actor of the latest `labeled` event for `label` in the issue or PR timeline; null when none. */
+  async labelAddedBy(number: number, label: string): Promise<ExternalIdentity | null> {
+    const events = await this.client.list<GhTimelineEvent>(`/repos/${this.repo.owner}/${this.repo.name}/issues/${number}/timeline`, 10);
+    const added = events.filter((e) => e.event === "labeled" && e.label?.name === label).at(-1);
+    return added?.actor ? identity(added.actor) : null;
+  }
+
+  /** The account linked to the commit's author, or null (an email GitHub does not know). */
+  async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
+    const c = await this.client.request<{ author: GhUser | null }>(
+      "GET", `/repos/${this.repo.owner}/${this.repo.name}/commits/${encodeURIComponent(sha)}`);
+    return c.author ? identity(c.author) : null;
   }
 
   /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */
@@ -422,6 +486,15 @@ export class GitHubIssueSource implements PollSource {
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${number}`);
     if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
     return { kind: "pr", pr_number: number, head_branch: pull.head.ref };
+  }
+
+  /** A pull request as a source: same id space as issues (comments and labels share the issues API), its own link. */
+  private prRef(number: number): SourceRef {
+    return {
+      type: "github_issue",
+      id: `${this.repo.owner}/${this.repo.name}#${number}`,
+      link: `https://github.com/${this.repo.owner}/${this.repo.name}/pull/${number}`,
+    };
   }
 
   private ref(number: number): SourceRef {

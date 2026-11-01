@@ -58,9 +58,32 @@ export type SourceEvent =
    * included); the controller parses it. A PR target names the head branch, which maps to the work item.
    */
   | { kind: "verdict_submitted"; target: VerdictEventTarget; comment_id: string; approver: ExternalIdentity; args: string }
-  /** PR events name the head branch; the controller maps it back to a work item. */
-  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null }
-  | { kind: "pr_closed"; pr_number: number; head_branch: string }
+  /**
+   * PR events name the head branch; the controller maps a factory branch back to a work item, and any other PR
+   * to its adopted item by number. Every merged or closed PR is reported, not only factory ones (design
+   * 2026-11-01), so a merge with no item is recorded as an unreviewed merge. `fork`: present and true when the
+   * head is in another repository; such a PR is never a factory or adopted PR.
+   */
+  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; fork?: true }
+  | { kind: "pr_closed"; pr_number: number; head_branch: string; fork?: true }
+  /**
+   * An open PR against the base branch, from this repository (no forks), delivered on every poll while it is
+   * open (design 2026-11-01): every factory-branch PR, and every other PR that is not a draft. `source` is the
+   * PR itself (its comments and status label go there). The controller adopts a PR it does not know, and
+   * compares `head_sha` with the head it recorded for one it does. `title`, `body` and `author` are
+   * untrusted; `author` is null when the forge does not name one.
+   */
+  | {
+      kind: "pr_open";
+      source: SourceRef;
+      pr_number: number;
+      head_branch: string;
+      head_sha: string;
+      title: string;
+      body: string;
+      author: ExternalIdentity | null;
+      labels: string[];
+    }
   /**
    * An open factory PR the forge reports as not mergeable into its base (GitHub: `mergeable === false`).
    * Delivered on every poll while it stays so; the shas let the controller key one update per (head, base).
@@ -112,6 +135,21 @@ interface SourceAdapterBase {
    * PRs: the controller then treats the checks as passed.
    */
   prChecks?(pr_number: number): Promise<PrChecks>;
+  /**
+   * The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only.
+   * Absent on sources with no PRs.
+   */
+  prFiles?(pr_number: number): Promise<string[]>;
+  /**
+   * Who last added label `label` to PR or issue `number` (GitHub: the issue timeline), or null when nobody
+   * did or the forge does not say. Read-only.
+   */
+  labelAddedBy?(number: number, label: string): Promise<ExternalIdentity | null>;
+  /**
+   * The forge account that authored commit `sha`, or null when it is not linked to one. The forge does not
+   * name who pushed a commit; its author is the closest record (design 2026-11-01). Read-only.
+   */
+  commitAuthor?(sha: string): Promise<ExternalIdentity | null>;
   /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
    * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the
