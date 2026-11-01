@@ -8,6 +8,7 @@ import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js"
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SystemClock } from "../src/impl/clock/system-clock.js";
@@ -55,7 +56,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   broker: { github: GitHubToolBroker },
   storage: { fs: FsSharedStorage },
   source: { "github-issues": GitHubIssueSource },
-  capability: { "list-all": ListAllCapabilitySearch },
+  capability: { "list-all": ListAllCapabilitySearch, bm25: Bm25CapabilitySearch },
   clock: { system: SystemClock },
   updater: { none: NoneUpdater, "git-worktree": GitWorktreeUpdater },
   awake: { caffeinate: CaffeinateKeepAwake, none: NoKeepAwake },
@@ -202,7 +203,7 @@ describe("plugin registry: every registered name", () => {
         count++;
       }
     }
-    expect(count).toBe(18); // SqliteDriver and MysqlDriver sit under the two store plugins; updater and awake add two each
+    expect(count).toBe(19); // SqliteDriver and MysqlDriver sit under the two store plugins; updater and awake add two each; capability adds bm25
     await (ctx.store as FactoryStore).close();
   });
 });
@@ -420,6 +421,35 @@ describe("plugin registry: KeepAwake startup check", () => {
   });
 });
 
+describe("plugin registry: CapabilitySearch wiring", () => {
+  const capabilityOf = async (capability?: string) => {
+    const plugins = capability ? { ...(REAL.plugins as object), capability } : REAL.plugins;
+    const dir = root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(plugins as object), awake: "none" } });
+    mkdirSync(join(dir, "docs"));
+    writeFileSync(join(dir, "docs", "guide.md"), "# Guide\n\nHow the zebra works.\n");
+    const built = await build(await loadConfig(dir), { clock: new FakeClock() });
+    try {
+      return (built.worker as unknown as { d: WorkerDeps }).d.capability;
+    } finally {
+      await built.close();
+    }
+  };
+
+  it("the checked-in config still selects list-all, and build() passes it to the worker", async () => {
+    expect((REAL.plugins as Record<string, unknown>).capability).toBe("list-all");
+    const c = await capabilityOf();
+    expect(c).toBeInstanceOf(ListAllCapabilitySearch);
+    expect(await c!.search("zebra", 8)).toEqual([]);
+  });
+
+  it('"capability": "bm25" gives Bm25CapabilitySearch over the code root\'s docs; switching back gives list-all', async () => {
+    const c = await capabilityOf("bm25");
+    expect(c).toBeInstanceOf(Bm25CapabilitySearch);
+    expect((await c!.search("zebra", 8)).map((x) => x.id)).toEqual(["docs/guide.md"]);
+    expect(await capabilityOf("list-all")).toBeInstanceOf(ListAllCapabilitySearch);
+  });
+});
+
 describe("plugin registry: only src/plugins.ts constructs implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
     const classes = Object.values(EXPECTED)
@@ -457,6 +487,15 @@ describe("docs/plugins.md", () => {
     expect(s).toMatch(/macOS/);
     expect(s).toMatch(/PATH/);
     expect(s).toMatch(/lid/);
+  });
+
+  it("CapabilitySearch says what bm25 indexes, the snippet cap, the index size, rebuilds, switching, Read and permission", () => {
+    const s = section("CapabilitySearch")!;
+    for (const text of ["`docs/`", "`skills/`", "200", "8", "mtime", "plugins.capability", '"capability": "bm25"', '"capability": "list-all"', "Read"]) {
+      expect(s, text).toContain(text);
+    }
+    expect(s).toMatch(/not permission/);
+    expect(s).toMatch(/Not wired in yet/);
   });
 
   it("covers 14 interfaces", () => {

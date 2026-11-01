@@ -27,6 +27,7 @@ import { CaffeinateKeepAwake, requireExecutable, spawnLauncher } from "./impl/aw
 import { NoKeepAwake } from "./impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "./impl/auth/github-auth-provider.js";
 import { GitHubToolBroker } from "./impl/broker/github-tool-broker.js";
+import { Bm25CapabilitySearch } from "./impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "./impl/capability/list-all-capability-search.js";
 import { SystemClock } from "./impl/clock/system-clock.js";
 import { PatternEgressScanner } from "./impl/egress/pattern-egress-scanner.js";
@@ -215,7 +216,10 @@ export const REGISTRY: Registry = {
     interface: "CapabilitySearch",
     configKey: "plugins.capability",
     guard: false,
-    plugins: { "list-all": (c) => new ListAllCapabilitySearch(c.capabilities) },
+    plugins: {
+      "list-all": (c) => new ListAllCapabilitySearch(c.capabilities),
+      bm25: (c) => new Bm25CapabilitySearch(c.loaded.codeRoot),
+    },
   },
   clock: {
     interface: "Clock",

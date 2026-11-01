@@ -1,8 +1,10 @@
-// design §7. Finding a capability is not permission to use it. First impl: list everything.
+// design §7. Finding a capability is not permission to use it. Impls: list everything, BM25 over docs.
 
 export interface Capability {
+  /** For `doc` and `skill`: the repo-relative path an agent can Read for the full text. */
   id: string;
-  kind: "skill" | "tool" | "mcp";
+  /** `doc`: a markdown doc; `skill`: a file under `skills/`. */
+  kind: "skill" | "doc" | "tool" | "mcp";
   name: string;
   summary: string;
 }
