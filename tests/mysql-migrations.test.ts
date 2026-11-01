@@ -42,12 +42,14 @@ describe("SQLite behaves as before", () => {
     expect(v.applied).toBe(v.latest);
   });
 
-  it("npm run migrate on a SQLite config exits non-zero: SQLite has no scripts", async () => {
+  it("npm run migrate on a SQLite config runs no schema scripts, only the project-key data step", async () => {
     const app = await compiledApp();
     const work = workDir({ type: "sqlite" });
     const r = app.run(work, ["migrate"], {});
-    expect(r.status).not.toBe(0);
     expect(r.stdout).toContain(SQLITE_MIGRATE_MESSAGE);
+    // An empty database has no owner/name rows, so GitHub is never asked (this work dir has no credentials).
+    expect(r.stdout).toContain("project keys: nothing to rewrite");
+    expect(r.status).toBe(0);
   }, 120_000);
 });
 

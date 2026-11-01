@@ -7,7 +7,7 @@ import { type MigrationStatus, MysqlMigrations, type Queryable } from "./migrati
 export type MigrateMode = "apply" | "status" | "dry-run";
 
 export const SQLITE_MIGRATE_MESSAGE =
-  "SQLite has no migration scripts: it builds the latest schema when the factory opens it. `npm run migrate` is for MySQL only.";
+  "SQLite has no schema scripts: it builds the latest schema when the factory opens it. `npm run migrate` runs only the data steps (project keys) on SQLite.";
 
 export const BACKUP_REMINDER =
   "Back up the database before migrating (e.g. mysqldump --single-transaction <database> > backup.sql). Steps are not reversible.";
