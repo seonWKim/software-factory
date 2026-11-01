@@ -24,7 +24,7 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
-import { type BaseContext, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins } from "./plugins.js";
+import { type BaseContext, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins, selectedSources } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -44,7 +44,10 @@ export interface FileConfig {
   floors: { prefix: string; tier: number }[];
   /** AuthProvider plugin name (docs/plugins.md). */
   auth: string;
-  /** Plugin name per interface (docs/plugins.md). Absent: today's defaults. Guards can never be disabled. */
+  /**
+   * Plugin name per interface (docs/plugins.md). Absent: today's defaults. Guards can never be disabled.
+   * `source` may be a list of names, one adapter each (design 2026-11-01).
+   */
   plugins?: Record<string, unknown>;
   models: { cheap: string; strong: string };
   max_loops: number;
@@ -264,9 +267,12 @@ export async function build(
   const github = new GitHubClient(credentials);
   const sandbox = await p.sandbox();
 
+  // One adapter per listed source; the controller routes each item to the one of its source type.
+  const sources = [];
+  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github }));
   const controller = new Controller({
     store,
-    source: await createPlugin(registry, "source", sel.source, { ...base, github }),
+    sources,
     auth: await createPlugin(registry, "auth", sel.auth, { ...base, github }),
     clock,
     config,

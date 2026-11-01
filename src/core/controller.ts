@@ -29,7 +29,7 @@ import {
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -40,7 +40,14 @@ import type { PollSource, SourceAdapter, SourceEvent, StreamSource } from "../in
 
 export interface ControllerDeps {
   store: FactoryStore;
-  source: SourceAdapter;
+  /**
+   * The configured sources (`plugins.source`), at most one per source type (design 2026-11-01). Each item's
+   * comments, mark-seen, status and close go to the adapter of its own source type; status on a PR goes to
+   * the `github_issue` adapter. Give `sources`, or `source` for exactly one.
+   */
+  sources?: readonly SourceAdapter[];
+  /** One source: the same as `sources: [source]`. */
+  source?: SourceAdapter;
   auth: AuthProvider;
   clock: Clock;
   config: FactoryConfig;
@@ -113,6 +120,34 @@ const CLOSE_BATCH = 50;
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
 
+/** PRs live on GitHub: status on a PR goes to the adapter of this type, whatever the item's source. */
+const PR_SOURCE_TYPE: SourceType = "github_issue";
+
+/**
+ * The sources a controller runs (design 2026-11-01): at least one, no two of one type, and when there are
+ * several, one of type github_issue, the only source of PR merge, close and unmergeable events. Errors name
+ * `plugins.source`, the config key that lists them.
+ */
+function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
+  if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
+  const sources = d.sources ?? (d.source ? [d.source] : []);
+  if (sources.length === 0) throw new Error("plugins.source selects no SourceAdapter: list at least one source");
+  const seen = new Set<SourceType>();
+  for (const s of sources) {
+    if (seen.has(s.type)) {
+      throw new Error(`plugins.source lists two sources of type "${s.type}"; each source type can be listed once`);
+    }
+    seen.add(s.type);
+  }
+  if (sources.length > 1 && !seen.has(PR_SOURCE_TYPE)) {
+    throw new Error(
+      `plugins.source lists ${sources.length} sources but none of type "${PR_SOURCE_TYPE}": PR merge, close and ` +
+        "unmergeable events come only from it, so factory PRs would never close their items",
+    );
+  }
+  return sources;
+}
+
 /** The cursor a stream source's inbox is read through (one per source type, shared by every replica). */
 export function inboxCursorName(type: SourceAdapter["type"]): string {
   return `inbox:${type}`;
@@ -132,13 +167,19 @@ export class Controller {
    */
   private lastReaperTick: number | null = null;
   private reaperGraceUntil = -Infinity;
+  /** The configured sources, in config order. Fixed at construction; the same on every replica. */
+  private readonly sources: readonly SourceAdapter[];
+  private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
 
-  constructor(private readonly d: ControllerDeps) {}
+  constructor(private readonly d: ControllerDeps) {
+    this.sources = checkSources(d);
+    this.byType = new Map(this.sources.map((s) => [s.type, s]));
+  }
 
   async run(signal: AbortSignal): Promise<void> {
-    const source = this.d.source;
-    // Stream source: this process also runs a listener; the store lease lets only one replica's subscribe.
-    const listening = source.intake === "stream" ? this.listener(source).run(signal) : Promise.resolve();
+    const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
+    // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
+    const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
     await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
@@ -146,8 +187,8 @@ export class Controller {
       const due = now - lastPoll >= this.d.config.poll_interval_ms;
       if (due) lastPoll = now;
       // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
-      if (due || source.intake === "stream") await this.guard("intake", () => this.tickIntake());
-      if (due && source.intake === "stream") await this.guard("inbox cleanup", () => this.cleanupInbox());
+      if (due || streams.length > 0) await this.guard("intake", () => this.intake(due));
+      if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
       await this.guard("runs", () => this.tickRuns());
       await this.guard("reaper", () => this.tickReaper());
       await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
@@ -167,19 +208,35 @@ export class Controller {
     });
   }
 
+  /** One intake step of every source: each poll source is polled, each stream source's inbox is read. */
   async tickIntake(): Promise<void> {
-    const source = this.d.source;
-    if (source.intake === "stream") return this.tickInbox(source);
-    return this.tickPoll(source);
+    await this.intake(true);
   }
 
+  /**
+   * Each source's step runs on its own guard, so one source failing (a poll that throws, a bad cursor) never
+   * stops the others in the same tick. Poll sources run only when `pollDue`. Unfinished rejects are retried
+   * once per tick that polled.
+   */
+  private async intake(pollDue: boolean): Promise<void> {
+    let polled = false;
+    for (const s of this.sources) {
+      if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
+      else if (pollDue) {
+        polled = true;
+        await this.guard(`intake:${s.type}`, () => this.tickPoll(s));
+      }
+    }
+    if (polled) await this.guard("source closes", () => this.tickSourceCloses());
+  }
+
+  /** One poll of one source, through its own cursor `intake:<type>`. */
   private async tickPoll(source: PollSource): Promise<void> {
     const name = `intake:${source.type}`;
     const cursor = await this.d.store.getCursor(name);
     const { events, next_cursor } = await source.poll(cursor);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
-    await this.guard("source closes", () => this.tickSourceCloses());
   }
 
   /**
@@ -213,8 +270,12 @@ export class Controller {
    * yet keeps every row.
    */
   async cleanupInbox(): Promise<void> {
-    const source = this.d.source;
-    if (source.intake !== "stream") return;
+    for (const s of this.sources) {
+      if (s.intake === "stream") await this.guard(`inbox cleanup:${s.type}`, () => this.cleanupInboxOf(s));
+    }
+  }
+
+  private async cleanupInboxOf(source: StreamSource): Promise<void> {
     const cursor = await this.d.store.getCursor(inboxCursorName(source.type));
     if (cursor === null) return;
     const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.d.config.inbox_retention_days * DAY_MS);
@@ -379,7 +440,7 @@ export class Controller {
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve sent on the PR is answered on the PR; every other command on the item's own issue.
-    await this.d.source.postComment(
+    await this.post(
       e.kind === "resolve_requested" ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -526,7 +587,7 @@ export class Controller {
     await this.markSeen(e.source, e.comment_id);
     const state = commandState(item);
     const help = e.kind === "help_requested";
-    await this.d.source.postComment(
+    await this.post(
       item.source,
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
@@ -572,7 +633,7 @@ export class Controller {
       }
     }
     this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
-    await this.d.source.postComment(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await this.post(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -603,7 +664,7 @@ export class Controller {
     // A refused comment that was stored before (e.g. a since-revoked permission) is not answered either.
     if ((await this.d.store.listVerdicts(item.id)).some((v) => v.comment_id === e.comment_id)) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
-    await this.d.source.postComment(
+    await this.post(
       item.source,
       `\`/verdict\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -768,12 +829,15 @@ export class Controller {
   private async finishReject(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !closePending(it)) return;
+    // No adapter for the item's source: it stays pending (its state is kept) until one is configured.
+    const source = this.adapterFor(it.source, "closeIssue");
+    if (!source) return;
     const reason = it.spec_feedback?.trim() ?? "";
     const body = reason
       ? ["The spec was rejected, so the factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
       : "The spec was rejected with no reason given, so the factory closed this issue as not planned.";
     await this.comment(it, `rejected:${it.id}`, body);
-    await this.d.source.closeIssue(it.source);
+    await source.closeIssue(it.source);
     await this.decide(id, (cur) =>
       closePending(cur)
         ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "source_closed" }
@@ -1272,7 +1336,7 @@ export class Controller {
   /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
   private async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     try {
-      await this.d.source.markSeen(source, commentId);
+      await this.adapterFor(source, "markSeen")?.markSeen(source, commentId);
     } catch (err) {
       this.d.log.warn("mark seen failed", {
         source_id: source.id,
@@ -1289,10 +1353,17 @@ export class Controller {
     if (it.pr_number !== null) await this.setStatus(it.source, status, it.pr_number);
   }
 
-  /** Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. */
+  /**
+   * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
+   * itself is labelled through its own source; a PR through the GitHub adapter, where PRs live. With no
+   * GitHub adapter (one non-GitHub source alone), the PR call goes to the item's own source, as it always did.
+   */
   private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     try {
-      await this.d.source.setStatus(source, status, pr_number);
+      const adapter = pr_number === null
+        ? this.adapterFor(source, "setStatus")
+        : (this.byType.get(PR_SOURCE_TYPE) ?? this.adapterFor(source, "setStatus"));
+      await adapter?.setStatus(source, status, pr_number);
     } catch (err) {
       this.d.log.warn("set status failed", {
         source_id: source.id,
@@ -1305,7 +1376,24 @@ export class Controller {
 
   /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
   private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
-    return (await this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`)).url;
+    return (await this.post(it.source, body, `<!-- factory:${key} -->`))?.url ?? null;
+  }
+
+  /** postComment through the adapter of `source`'s type; null (and a warning) when none is configured. */
+  private async post(source: SourceRef, body: string, marker: string): Promise<{ url: string | null } | null> {
+    const adapter = this.adapterFor(source, "postComment");
+    return adapter ? adapter.postComment(source, body, marker) : null;
+  }
+
+  /**
+   * The adapter for `source`'s type. None configured (the source was removed from `plugins.source`): a
+   * warning and null, so the call is skipped and the item keeps its state.
+   */
+  private adapterFor(source: SourceRef, call: string): SourceAdapter | null {
+    const adapter = this.byType.get(source.type);
+    if (adapter) return adapter;
+    this.d.log.warn("no source adapter for the item's source type; skipped", { source_type: source.type, source_id: source.id, call });
+    return null;
   }
 
   private async guard(what: string, fn: () => Promise<void>): Promise<void> {
