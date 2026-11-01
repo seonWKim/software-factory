@@ -6,7 +6,8 @@ import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import type { GitHubClient, RepoRef } from "../github/github-client.js";
+import { FORGE_AUTH, PREFLIGHT_FAILED } from "../../core/policy.js";
+import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
 /**
@@ -50,6 +51,16 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
+    name: "github.preflight",
+    description:
+      "Read-only check before an implement run's agent starts: the credentials may push to the repository, and the PR API answers for the branch.",
+    input_schema: {
+      type: "object",
+      required: ["branch", "base_ref"],
+      properties: { branch: { type: "string" }, base_ref: { type: "string" } },
+    },
+  },
+  {
     name: "github.comment",
     description: "Comment on an issue or PR at most once per marker.",
     input_schema: {
@@ -70,6 +81,10 @@ interface PrArgs {
   base_ref: string;
   title: string;
   body: string;
+}
+interface PreflightArgs {
+  branch: string;
+  base_ref: string;
 }
 interface CommentArgs {
   number: number;
@@ -107,6 +122,8 @@ export class GitHubToolBroker implements ToolBroker {
         return this.push(args as PushArgs);
       case "github.open_pr":
         return this.openPr(args as PrArgs);
+      case "github.preflight":
+        return this.preflight(args as PreflightArgs);
       case "github.comment":
         return this.comment(args as CommentArgs);
       default:
@@ -186,7 +203,10 @@ export class GitHubToolBroker implements ToolBroker {
       ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "push", "--quiet", "--no-verify", url, `HEAD:refs/heads/${a.branch}`],
       { SF_GIT_TOKEN: token.reveal() },
     );
-    if (r.exit_code !== 0) return { ok: false, error_code: "push_failed", message: r.stderr.trim().slice(0, 500) };
+    if (r.exit_code !== 0) {
+      // A refused credential is not a rejected push: forge_auth pauses implement-type claims (design §5 Restarts).
+      return { ok: false, error_code: forgeAuthRefused(r.stderr) ? FORGE_AUTH : "push_failed", message: r.stderr.trim().slice(0, 500) };
+    }
     const head = await git(["rev-parse", "HEAD"]);
     return { ok: true, content: { sha: head.stdout.trim() } };
   }
@@ -199,19 +219,62 @@ export class GitHubToolBroker implements ToolBroker {
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
 
     const { owner, name } = this.deps.repo;
-    const open = await this.deps.client.request<{ number: number; html_url: string }[]>(
-      "GET",
-      `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`,
+    try {
+      const open = await this.deps.client.request<{ number: number; html_url: string }[]>(
+        "GET",
+        `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`,
+      );
+      const pr =
+        open[0] ??
+        (await this.deps.client.request<{ number: number; html_url: string }>("POST", `/repos/${owner}/${name}/pulls`, {
+          head: a.branch,
+          base: a.base_ref,
+          title: a.title,
+          body: a.body,
+        }));
+      return { ok: true, content: { number: pr.number, url: pr.html_url } };
+    } catch (err) {
+      // A 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.
+      if (refusedStatus(err)) return { ok: false, error_code: FORGE_AUTH, message: `open_pr: GitHub refused the credentials (${refusedStatus(err)})` };
+      throw err;
+    }
+  }
+
+  /**
+   * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (push
+   * permission) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
+   * or 403 is `forge_auth`; anything else `preflight_failed`. The message starts with the failed check's name and
+   * carries the status only: no response body, no header, no credential.
+   */
+  private async preflight(a: PreflightArgs): Promise<ToolResult> {
+    if (!a.branch.startsWith(this.deps.branchPrefix)) {
+      return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
+    }
+    const { owner, name } = this.deps.repo;
+    const check = async <T>(what: "push_access" | "pr_api", path: string): Promise<{ value: T } | ToolResult> => {
+      try {
+        return { value: await this.deps.client.request<T>("GET", path) };
+      } catch (err) {
+        const status = refusedStatus(err);
+        if (status) return { ok: false, error_code: FORGE_AUTH, message: `${what}: GitHub refused the credentials (${status})` };
+        const why = err instanceof GitHubError ? `GitHub answered ${err.status}` : "GitHub could not be reached";
+        return { ok: false, error_code: PREFLIGHT_FAILED, message: `${what}: ${why}` };
+      }
+    };
+    const repo = await check<{ permissions?: { push?: boolean } }>("push_access", `/repos/${owner}/${name}`);
+    if (!("value" in repo)) return repo;
+    // A user token reports its permissions; an app installation token's answer may not have them, and then the
+    // push itself is the check (its 401/403 still pauses).
+    const push = repo.value?.permissions?.push;
+    if (push === false) {
+      return { ok: false, error_code: PREFLIGHT_FAILED, message: `push_access: the credentials cannot push to ${owner}/${name}` };
+    }
+    const prs = await check<unknown[]>(
+      "pr_api",
+      `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}&per_page=1`,
     );
-    const pr =
-      open[0] ??
-      (await this.deps.client.request<{ number: number; html_url: string }>("POST", `/repos/${owner}/${name}/pulls`, {
-        head: a.branch,
-        base: a.base_ref,
-        title: a.title,
-        body: a.body,
-      }));
-    return { ok: true, content: { number: pr.number, url: pr.html_url } };
+    if (!("value" in prs)) return prs;
+    return { ok: true, content: { push: push ?? null, open_prs: Array.isArray(prs.value) ? prs.value.length : 0 } };
   }
 
   private async comment(a: CommentArgs): Promise<ToolResult> {
@@ -220,4 +283,22 @@ export class GitHubToolBroker implements ToolBroker {
     const r = await this.deps.client.commentOnce(this.deps.repo, a.number, a.body, a.marker);
     return { ok: true, content: r };
   }
+}
+
+/** The status of a GitHub 401 or 403, else null. */
+function refusedStatus(err: unknown): 401 | 403 | null {
+  return err instanceof GitHubError && (err.status === 401 || err.status === 403) ? err.status : null;
+}
+
+/**
+ * Whether git's push stderr says the forge refused the credentials (HTTP 401/403, a denied permission, failed
+ * authentication), as opposed to a rejected push (non-fast-forward, a hook, a protected branch).
+ */
+export function forgeAuthRefused(stderr: string): boolean {
+  return (
+    /The requested URL returned error: (401|403)\b/.test(stderr) ||
+    /Authentication failed for/.test(stderr) ||
+    /Permission to \S+ denied/.test(stderr) ||
+    /Invalid username or (password|token)/.test(stderr)
+  );
 }
