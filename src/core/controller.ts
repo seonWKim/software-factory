@@ -1327,6 +1327,8 @@ const FAILURES: Record<string, string> = {
   no_commits: "the implementer made no commits",
   scope_violation: "the branch changed files outside the allowed paths",
   diff_too_large: "the branch diff is over max_diff_lines or max_diff_files",
+  merge_conflict: "the branch conflicts with the base branch and the conflict could not be resolved; nothing was pushed",
+  untrusted_base: "the base fetched before pushing does not contain the base the run started from; nothing was pushed",
   out_of_scope: "the resolve run changed files that are neither conflicting nor under the allowed paths",
   tests_failed: "the install or test command failed on the resolved branch",
   unresolved_conflicts: "conflicts were left unresolved",

@@ -280,6 +280,9 @@ export class FakeSandbox implements Sandbox {
   head = "base\n";
   private trees = 0;
 
+  async updateBase(): Promise<string> {
+    return "basesha";
+  }
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     this.created.push(spec);
     return { id: `sbx${this.created.length}`, workdir: `/wt/${this.created.length}` };

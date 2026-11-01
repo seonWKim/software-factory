@@ -46,6 +46,12 @@ export interface ExecResult {
 
 export interface Sandbox {
   create(spec: SandboxSpec): Promise<SandboxHandle>;
+  /**
+   * Trusted, as in create: fetches origin in the factory repo and returns its `origin/<base_ref>` commit. A run
+   * that needs a newer base (sync before push) copies it from the factory repo, never from the clone's own
+   * remote, whose config the agent could have changed.
+   */
+  updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string>;
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult>;
   copyIn(handle: SandboxHandle, hostPath: string, sandboxPath: string): Promise<void>;
   copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void>;

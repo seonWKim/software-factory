@@ -99,6 +99,11 @@ export class NoOpSandbox implements Sandbox {
     return dir;
   }
 
+  async updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string> {
+    await this.git(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
+    return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
+  }
+
   private async git(cwd: string, args: string[], check = true): Promise<ExecResult> {
     const r = await runProcess(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
     if (check && r.exit_code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim()}`);
