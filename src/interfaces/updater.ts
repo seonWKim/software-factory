@@ -1,5 +1,6 @@
 // Keeps the running factory on the latest base-branch commit (design: "Self-update"). The supervisor of
-// `dev` drives it; `none` runs in place, `git-worktree` runs a built runtime copy of origin/<base_branch>.
+// `dev` drives it; `none` runs in place, `git-worktree` runs each built version of origin/<base_branch> from its
+// own folder, starting the new version before the old one drains (start-then-drain).
 
 import type { ExecResult } from "./sandbox.js";
 
@@ -8,6 +9,12 @@ import type { ExecResult } from "./sandbox.js";
  * prompts/. Explicit, never inferred. Unset: code and state share one root (today's behaviour).
  */
 export const CODE_ROOT_ENV = "SOFTWARE_FACTORY_CODE_ROOT";
+/**
+ * Set by the supervisor for its child: the first worker index of the child's block. The child's worker pool
+ * numbers its workers from it, so two children alive at once (old draining, new claiming) never share an index.
+ * Unset: 0.
+ */
+export const WORKER_INDEX_BASE_ENV = "SF_WORKER_INDEX_BASE";
 /** Set to "1" by the supervisor for its child, so `dev` runs controller + worker instead of supervising. */
 export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
 /** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
@@ -59,14 +66,16 @@ export interface Updater {
   /** Fetches the base branch. Returns the new commit to move to, or null if there is nothing to do. */
   check(): Promise<string | null>;
   /**
-   * One supervision step: check for a new base commit, build it beside the running child, and only if the
-   * build succeeded drain the child, move the runtime copy forward and restart. Restarts a crashed child
-   * from the last tree that built.
+   * One supervision step: check for a new base commit, build it in its own folder while the running child
+   * keeps claiming, and only if the build succeeded start the new child at once and ask the older ones to
+   * drain. Never waits for an old child to exit. Restarts a crashed child from the last folder that built.
    */
   poll(): Promise<void>;
-  /** PID of the running child, or null. */
+  /** PID of the newest (claiming) child, or null. */
   childPid(): number | null;
-  /** Stops the child (SIGTERM, then SIGKILL after the drain timeout) and stops supervising. */
+  /** PIDs of every live child: the claiming one and any still draining. Absent: at most childPid(). */
+  childPids?(): number[];
+  /** Stops every live child (SIGTERM, then SIGKILL after the drain timeout), waits for all, stops supervising. */
   shutdown(): Promise<void>;
 }
 
@@ -75,16 +84,19 @@ export interface Updater {
  * can say why no new runs start (a drain) and when new code and settings take effect.
  */
 export interface SupervisorStatus {
-  /** running: the child claims work. building: a new revision builds beside it. draining: the child takes no
-   * new runs and finishes its in-flight ones. restarting: the new revision is starting. build_failed: the
-   * running child stays on `rev`. crashed: the child exited without being asked to (it is restarted every
-   * poll); `error` says why. stopped: no child. */
+  /** running: the child claims work (older children may still be draining, see `draining_pids`). building: a
+   * new revision builds in its own folder while the child keeps claiming. build_failed: the running child stays
+   * on `rev`. crashed: the child exited without being asked to (it is restarted every poll); `error` says why.
+   * stopped: no child. draining and restarting are no longer written by git-worktree (start-then-drain) but stay
+   * valid values for readers of older files. */
   state: "running" | "building" | "draining" | "restarting" | "build_failed" | "crashed" | "stopped";
   /** The revision the child runs (null before the first start). */
   rev: string | null;
   /** The revision being built or started, when there is one. */
   target_rev: string | null;
   child_pid: number | null;
+  /** Older children asked to drain that have not exited yet: they finish their in-flight runs, claim nothing. */
+  draining_pids?: number[];
   /** ISO time this state began. A repeat of the same state keeps it. */
   since: string;
   /** crashed: the child's error, or its exit code when it sent none. */
