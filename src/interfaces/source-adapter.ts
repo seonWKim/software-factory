@@ -10,12 +10,20 @@ import type { ExternalIdentity } from "./auth-provider.js";
  */
 export type SourceEvent =
   | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
-  | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity }
+  /**
+   * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
+   * empty; untrusted. The controller caps and egress-scans it before storing it. Absent means no note.
+   */
+  | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity; note?: string }
   /** `reason` is the text after `/reject`, possibly empty. */
   | { kind: "spec_rejected"; source: SourceRef; comment_id: string; approver: ExternalIdentity; reason: string }
   /** `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that). */
   | { kind: "revise_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; feedback: string }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /** `/help`: the controller replies once with every command, marking the ones that apply now. */
+  | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /** A command word the factory does not know, as typed (letters only, without the `/`). */
+  | { kind: "unknown_command"; source: SourceRef; comment_id: string; requester: ExternalIdentity; command: string }
   /**
    * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
    * when the source does not say. May be delivered again (same close, later poll); handling is idempotent.

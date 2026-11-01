@@ -119,4 +119,12 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE work_items ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE work_items ADD COLUMN spec_feedback TEXT;
   `,
+  // 7: parallel workers (architecture §4). One lock row the claim takes first, so two claimers never both pass
+  // the overlap check. SQLite's BEGIN IMMEDIATE already serializes claims; the row keeps both schemas alike.
+  `
+  CREATE TABLE claim_locks (
+    name  TEXT PRIMARY KEY
+  );
+  INSERT INTO claim_locks (name) VALUES ('claim');
+  `,
 ];

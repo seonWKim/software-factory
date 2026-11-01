@@ -23,6 +23,7 @@ import type {
   WorkItemPatch,
   WorkerId,
 } from "../core/types.js";
+import type { StatsRecord } from "../core/stats.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -152,6 +153,12 @@ export interface FactoryStore {
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
+  /**
+   * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
+   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * Read-only.
+   */
+  listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
 
   // Runs
 

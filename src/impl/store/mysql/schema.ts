@@ -132,4 +132,12 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
     "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
   ],
+  // 7: parallel workers (architecture §4). One lock row the claim takes first (FOR UPDATE), so two claimers
+  // never both pass the overlap check for overlapping items.
+  [
+    `CREATE TABLE claim_locks (
+      name  VARCHAR(64) NOT NULL PRIMARY KEY
+    ) ${TABLE}`,
+    "INSERT INTO claim_locks (name) VALUES ('claim')",
+  ],
 ];

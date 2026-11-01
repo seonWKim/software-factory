@@ -59,7 +59,7 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" } },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" }, note: "" },
       {
         kind: "spec_rejected", source: issueRef(7), comment_id: "11",
         approver: { provider: "github", subject: "1", login: "alice" }, reason: "too big\nsplit it",
@@ -78,6 +78,7 @@ describe("GitHubIssueSource", () => {
       comment(23, "/reject", "2026-11-01T00:00:04Z"),
       comment(24, "/reject duplicate of #3", "2026-11-01T00:00:05Z"),
       comment(25, "/revised plan below", "2026-11-01T00:00:06Z"),
+      comment(26, "/rejectfoo", "2026-11-01T00:00:07Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
@@ -86,6 +87,36 @@ describe("GitHubIssueSource", () => {
       { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
       { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
       { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+      // A longer word is not the command: it is an unknown one.
+      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: alice, command: "revised" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: alice, command: "rejectfoo" },
+    ]);
+  });
+
+  it("emits one approval with its note, an unknown command for a typo, a help event, and nothing for other text", async () => {
+    const { client, source } = setup();
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(40, "/approve", "2026-11-01T00:00:01Z"),
+      comment(41, "/approve keep the flag", "2026-11-01T00:00:02Z"),
+      comment(42, "/approve  first line\nsecond line\n", "2026-11-01T00:00:03Z"),
+      comment(43, "/Approve\n\n  note below  ", "2026-11-01T00:00:04Z"),
+      comment(44, "/aprove", "2026-11-01T00:00:05Z"),
+      comment(45, "/help", "2026-11-01T00:00:06Z"),
+      comment(46, "thanks!", "2026-11-01T00:00:07Z"),
+      comment(47, "/", "2026-11-01T00:00:08Z"),
+      comment(48, "/ approve", "2026-11-01T00:00:09Z"),
+      comment(49, "/retry please", "2026-11-01T00:00:10Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: alice, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: alice, note: "keep the flag" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: alice, note: "first line\nsecond line" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: alice, note: "note below" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: alice, command: "aprove" },
+      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: alice },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice },
     ]);
   });
 
@@ -230,7 +261,7 @@ describe("GitHubIssueSource: /verdict", () => {
     client.responses["/repos/o/r/issues/comments"] = [
       comment(20, "/verdict changes minor rename it\nand split the test", "2026-11-01T00:00:01Z"),
       comment(21, "/verdict", "2026-11-01T00:00:02Z"),
-      comment(22, "/verdictx accept none", "2026-11-01T00:00:03Z"),
+      comment(22, "/verdict/x accept none", "2026-11-01T00:00:03Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
