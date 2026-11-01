@@ -7,7 +7,9 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import type {
+  ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource,
+} from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -80,6 +82,8 @@ export class FakeSource implements PollSource {
         if (Number(e.comment_id) <= last) continue;
         last = Number(e.comment_id);
       }
+      // Like GitHub, the source keeps who closed an item and reads it back when it closes the item's PR.
+      if (e.kind === "source_closed") this.closers.set(e.source.id, e.closer);
       events.push(e);
     }
     this.queue = [];
@@ -106,6 +110,29 @@ export class FakeSource implements PollSource {
   async closeIssue(source: SourceRef): Promise<void> {
     if (this.closeError) throw this.closeError;
     this.closed.push(source);
+  }
+  /** Who closed each source item, by source id, as the last delivered source_closed said. */
+  closers = new Map<string, ExternalIdentity | null>();
+  /** PR states; a PR not listed is open. closePr turns an open one `closed`. */
+  prStates = new Map<number, "open" | "closed" | "merged">();
+  /** Comments closePr posted on PRs, at most one per marker. */
+  prComments: { pr_number: number; body: string; marker: string }[] = [];
+  /** Every closePr call, failed ones included, in order. */
+  prCloseCalls: number[] = [];
+  /** When set, closePr posts its comment, then throws this instead of closing the PR. */
+  prCloseError: Error | null = null;
+  /** When set, closePr throws this before posting anything. */
+  prCommentError: Error | null = null;
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    this.prCloseCalls.push(input.pr_number);
+    if ((this.prStates.get(input.pr_number) ?? "open") !== "open") return "not_open";
+    if (this.prCommentError) throw this.prCommentError;
+    if (!this.prComments.some((c) => c.marker === input.marker)) {
+      this.prComments.push({ pr_number: input.pr_number, body: input.body(this.closers.get(input.closed.id) ?? null), marker: input.marker });
+    }
+    if (this.prCloseError) throw this.prCloseError;
+    this.prStates.set(input.pr_number, "closed");
+    return "closed";
   }
   /** Every setStatus call, in order, including ones that threw. */
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
@@ -188,6 +215,12 @@ export class FakeStreamSource implements StreamSource {
   closed: SourceRef[] = [];
   async closeIssue(source: SourceRef): Promise<void> {
     this.closed.push(source);
+  }
+  /** Every closePr call, in order. The PR is taken to be open; the closer is unknown. */
+  closedPrs: { pr_number: number; body: string; marker: string }[] = [];
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    this.closedPrs.push({ pr_number: input.pr_number, body: input.body(null), marker: input.marker });
+    return "closed";
   }
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
