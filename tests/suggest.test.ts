@@ -6,7 +6,7 @@ import type { WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
 /** Answers each call with the next scripted reply (the last one repeats) and records every request. */
 class ScriptedLLM implements LLMProvider {
@@ -125,7 +125,7 @@ describe("controller: plain comments", () => {
       ...(opts.llm === false ? {} : { llm }),
     });
     const actor = { kind: "system" as const, id: "test" };
-    const { item } = await store.createWorkItem({ source: issueRef(7), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] }, actor);
+    const { item } = await store.createWorkItem({ source: issueRef(7), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
     const r = await store.transition({ id: item.id, expected_version: item.version, actor, reason: "setup", patch: PATCHES[phase] });
     if (!r.ok) throw new Error("setup failed");
     return { store, source, llm, controller, item: r.item };

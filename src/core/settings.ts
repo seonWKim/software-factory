@@ -48,7 +48,10 @@ export const BUILT_IN_SETTINGS: Readonly<ProjectSettings> = Object.freeze({
 export interface SettingsLayers {
   /** `defaults` merged with the same keys at top level (setting both is a startup error). */
   defaults: Partial<ProjectSettings>;
-  /** Project ID ("owner/name", as in WorkItem.project) to its overrides. */
+  /**
+   * Project to its overrides. Keyed by "owner/name" as factory.config.json writes it until startup resolves
+   * the repo; the composition root then re-keys it to the project key, as in WorkItem.project (design 2026-11-01).
+   */
   projects: Readonly<Record<string, Partial<ProjectSettings>>>;
 }
 

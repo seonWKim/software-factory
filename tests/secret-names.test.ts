@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fakeRepoLookup } from "./helpers/fakes.js";
 import { Plugins, build, loadConfig } from "../src/compose.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js";
@@ -205,7 +206,7 @@ describe("a plugin brings its own secret (TEST_GATEWAY_TOKEN)", () => {
   it("missing from the file does not fail startup; doctor reports it as FAIL with a hint to run setup", async () => {
     vi.spyOn(console, "log").mockImplementation(() => undefined);
     const loaded = await loadConfig(root(config, "# nothing here yet\n"), { registry });
-    const built = await build(loaded, { clock: new FakeClock() });
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     await built.close();
 
     const checks = await doctorChecks(loaded);

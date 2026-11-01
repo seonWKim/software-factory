@@ -1,4 +1,5 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
+import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
@@ -14,7 +15,21 @@ import type {
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
+/** The configured repo o/r as startup resolves it: keyed by its (fake) node ID, labelled by its path. */
+export const PROJECT: ProjectRef = { key: "github:github.com:R_kgDOrepo1", label: "github.com/o/r" };
+
+/**
+ * Stands in for GitHubClient.repoIdentity at startup: every repo resolves to a fixed node ID under its own
+ * path, so build() needs no network.
+ */
+export const fakeRepoLookup = {
+  async repoIdentity(repo: { owner: string; name: string }) {
+    return { node_id: "R_kgDOfake", owner: repo.owner, name: repo.name, host: "github.com" };
+  },
+};
+
 export const config: FactoryConfig = {
+  project: PROJECT,
   repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", install_command: ["npm", "ci"], test_command: ["npm", "test"] },
   intake_label: "factory",
   status_label_prefix: "sf: ",
@@ -46,7 +61,7 @@ export function settingsWith(changes: Partial<ProjectSettings>, base: FactoryCon
 
 /** The gate values a test config gives every project (no project overrides in the fakes). */
 export function gates(c: FactoryConfig = config): ProjectSettings {
-  return settingValues("o/r", c.settings);
+  return settingValues(c.project.key, c.settings);
 }
 
 export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW", resolve: "RESOLVE" };

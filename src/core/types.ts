@@ -42,6 +42,7 @@ export interface WorkItem {
   /** The source's title (issue title), recorded at intake. Null on items created before it existed. */
   title: string | null;
   requester_id: UserId;
+  /** The project key, `github:<host>:<repo node id>` (design 2026-11-01). Never shown: show its label. */
   project: string;
   problem: string;
   resources: string[];
@@ -269,6 +270,7 @@ export type UnreviewedMergeId = Brand<string, "UnreviewedMergeId">;
  */
 export interface UnreviewedMerge {
   id: UnreviewedMergeId;
+  /** The project key (design 2026-11-01), as on WorkItem. */
   project: string;
   pr_number: number;
   merge_sha: string;

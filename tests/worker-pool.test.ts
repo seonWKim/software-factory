@@ -15,8 +15,7 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import { runDevChild } from "../src/supervisor.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor,
-} from "./helpers/fakes.js";
+  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, prompts, recordingLog, silent, triageSpec, waitFor, fakeRepoLookup } from "./helpers/fakes.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -106,7 +105,7 @@ describe("workers config", () => {
 
   it("build() numbers its workers from SF_WORKER_INDEX_BASE (set by the supervisor; unset: 0)", async () => {
     vi.stubEnv(WORKER_INDEX_BASE_ENV, "6");
-    const built = await build(await loadConfig(root({ workers: 3 })), { clock: new FakeClock() });
+    const built = await build(await loadConfig(root({ workers: 3 })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect(built.worker.workers.map((w) => w.id)).toEqual([6, 7, 8].map((n) => `${hostname()}:${process.pid}:${n}`));
     } finally {
@@ -123,7 +122,7 @@ describe("workers config", () => {
   });
 
   it("build() starts `workers` workers in one pool, each with id <host>:<pid>:<n>", async () => {
-    const built = await build(await loadConfig(root({ workers: 3 })), { clock: new FakeClock() });
+    const built = await build(await loadConfig(root({ workers: 3 })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
       expect(built.worker).toBeInstanceOf(WorkerPool);
       const ids = built.worker.workers.map((w) => w.id);
