@@ -19,7 +19,7 @@ import {
 type Script = () => Partial<AgentRunResult>;
 const used = (tokens: number, output: unknown): Partial<AgentRunResult> => ({
   output,
-  usage: { input_tokens: tokens, output_tokens: 0, cost_usd: null },
+  usage: { input_tokens: tokens, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, model: null },
 });
 const pass = { verdict: "pass", tier: 2, findings: [], summary: "s" };
 const bug = { verdict: "bug", tier: 2, findings: ["off by one"], summary: "s" };

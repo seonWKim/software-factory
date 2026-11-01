@@ -162,14 +162,13 @@ export class ClaudeCodeRunner implements AgentRunner {
       signal: spec.signal,
     });
 
-    const usage = { input_tokens: 0, output_tokens: 0, cost_usd: null as number | null };
+    // Usage is read whenever stdout holds the CLI's JSON result, also on timeout and abort.
+    const parsed = parseJsonResult(result.stdout);
+    const usage = usageOf(parsed);
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage };
     if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage };
 
-    let parsed: ClaudeJsonResult;
-    try {
-      parsed = JSON.parse(result.stdout) as ClaudeJsonResult;
-    } catch {
+    if (parsed === null) {
       return {
         status: "failed",
         output: null,
@@ -178,9 +177,6 @@ export class ClaudeCodeRunner implements AgentRunner {
         error: `claude exited ${result.exit_code} without JSON output`,
       };
     }
-    usage.input_tokens = parsed.usage?.input_tokens ?? 0;
-    usage.output_tokens = parsed.usage?.output_tokens ?? 0;
-    usage.cost_usd = parsed.total_cost_usd ?? null;
 
     if (parsed.api_error_status === 429) {
       const reset_at = parseRateLimitReset(typeof parsed.result === "string" ? parsed.result : "", (this.opts.now ?? (() => new Date()))());
@@ -207,9 +203,48 @@ interface ClaudeJsonResult {
   result?: string;
   structured_output?: unknown;
   total_cost_usd?: number;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  /** Per-model usage, keyed by model name. */
+  modelUsage?: Record<string, { costUSD?: number; outputTokens?: number } | null>;
   /** HTTP status of the API error that ended the run; 429 is a usage or rate limit. */
   api_error_status?: number | null;
+}
+
+/** The CLI's JSON result object on stdout, or null when stdout holds none. */
+function parseJsonResult(stdout: string): ClaudeJsonResult | null {
+  try {
+    const v: unknown = JSON.parse(stdout);
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as ClaudeJsonResult) : null;
+  } catch {
+    return null;
+  }
+}
+
+const count = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
+
+/**
+ * Usage from the CLI's JSON result (design §6 Measurement): the four token counts, `total_cost_usd` (null when
+ * absent), and the model. Several models in `modelUsage` (the CLI uses a small model for side tasks): the one
+ * that cost the most, then the one that wrote the most output. No JSON: zeros and nulls.
+ */
+function usageOf(parsed: ClaudeJsonResult | null): Required<AgentRunResult["usage"]> {
+  const u = parsed?.usage;
+  const cost = parsed?.total_cost_usd;
+  const models = Object.entries(parsed?.modelUsage ?? {});
+  models.sort(([, a], [, b]) => count(b?.costUSD) - count(a?.costUSD) || count(b?.outputTokens) - count(a?.outputTokens));
+  return {
+    input_tokens: count(u?.input_tokens),
+    output_tokens: count(u?.output_tokens),
+    cache_read_tokens: count(u?.cache_read_input_tokens),
+    cache_write_tokens: count(u?.cache_creation_input_tokens),
+    cost_usd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
+    model: models[0]?.[0] ?? null,
+  };
 }
 
 /**
