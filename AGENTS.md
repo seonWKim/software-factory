@@ -13,6 +13,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 | `SET_UP.md` | One-time setup before using the factory (`npm run setup`) |
 | `docs/setup.md` | Where secrets live (`~/.config/software-factory/.env`, never in the repo) and how to create them |
 | `docs/architecture.md` | Layers, control plane vs agent plane, process flow, horizontal scaling rules |
+| `docs/slack-setup.md` | One-time Slack app setup (`scripts/slack-app.sh` create, tokens, check) |
 | `docs/plugins.md` | Every interface's named plugins: config to enable each, secrets it needs, how to switch back; guards cannot be disabled |
 
 ## Rules for working here
