@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { RunId, UserId, WorkItemId } from "../src/core/types.js";
+import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
@@ -295,6 +295,34 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("comment links", () => {
+    it("spec_comment_url and failure_comment_url default to null and round-trip through transition()", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect(item.spec_comment_url).toBeNull();
+      expect(item.failure_comment_url).toBeNull();
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ spec_comment_url: null, failure_comment_url: null });
+
+      const spec = "https://github.com/o/r/issues/1#issuecomment-11";
+      const r = await store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "triaged",
+        patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", spec_comment_url: spec },
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item.spec_comment_url).toBe(spec);
+      expect(r.state_change.changes.spec_comment_url).toEqual({ from: null, to: spec });
+
+      const fail = "https://github.com/o/r/issues/1#issuecomment-22";
+      await store.transition({ id: item.id, expected_version: 2, actor: system, reason: "x", patch: { failure_comment_url: fail } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+      expect((await store.getWorkItemBySource("github_issue", item.source.id))!.failure_comment_url).toBe(fail);
+      expect((await store.listWorkItemsWhere({ limit: 10 }))[0]).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+
+      await store.transition({ id: item.id, expected_version: 3, actor: system, reason: "x", patch: { failure_comment_url: null } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: null });
+    });
+  });
+
   describe("read-only queries", () => {
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
@@ -369,11 +397,32 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.listRunsFinishedWithin(DAY + 10_000)).map((r) => r.id)).toEqual([recentFail, recentOk, old]);
     });
 
+    it("countWorkItemsWhere counts every match, with no limit, by stage, blocked_on and closed", async () => {
+      const { store } = await make();
+      const filter = { blocked_on: "human" as const, exclude_closed: true };
+      expect(await store.countWorkItemsWhere(filter)).toBe(0);
+      const ids = [];
+      for (let n = 1; n <= 6; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const block = (id: WorkItemId, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) =>
+        store.transition({ id, expected_version: 1, patch, actor: system, reason: "x" });
+      await block(ids[0]!, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+      await block(ids[1]!, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      await block(ids[2]!, { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" });
+      await block(ids[3]!, { stage: "CLOSED", close_reason: "rejected", blocked_on: "human", blocked_reason: "x" });
+      await block(ids[4]!, { stage: "RUNNING", blocked_on: "upstream" });
+      expect(await store.countWorkItemsWhere(filter)).toBe(3);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human" })).toBe(4);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human", stage: "REVIEW" })).toBe(1);
+      expect(await store.countWorkItemsWhere({})).toBe(6);
+      expect(await store.countWorkItemsWhere({ exclude_closed: true })).toBe(5);
+    });
+
     it("the read methods write nothing", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
       const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
       await store.listWorkItemsWhere({ limit: 10 });
+      await store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
       await store.countWorkItemsByStage();
       await store.listRunsByStatus(["queued", "running"], 10);
       await store.listRunsFinishedWithin(1_000);
@@ -442,6 +491,47 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.listVerdicts(item.id)).toEqual([]);
       expect(await store.listStateChanges(item.id)).toHaveLength(2);
       expect(await store.recordVerdict(verdict("wi_missing" as WorkItemId, 1))).toEqual({ ok: false, reason: "not_found" });
+    });
+  });
+
+  describe("listStatsRecords", () => {
+    it("returns every item with its tier, stage, token_cost, the requested reasons and its verdict severities", async () => {
+      const { store, clock } = await make();
+      expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([]);
+
+      clock.advance(1_000);
+      const a = (await store.createWorkItem(issue(1), system)).item;
+      clock.advance(1_000);
+      const b = (await store.createWorkItem(issue(2), system)).item;
+      await store.transition({ id: a.id, expected_version: 1, actor: system, reason: "triaged", patch: { stage: "READY", tier: 2, token_cost: 40 } });
+      await store.transition({ id: a.id, expected_version: 2, actor: human, reason: "retry_requested", patch: {} });
+      await store.recordVerdict({
+        id: a.id, expected_version: 3, actor: { kind: "user", id: "github:1" as UserId }, verdict: "changes",
+        severity: "major", reason: "r", comment_id: "c1", target: "pr",
+      });
+      await store.transition({ id: a.id, expected_version: 4, actor: human, reason: "retry_requested", patch: {} });
+      await store.recordVerdict({
+        id: a.id, expected_version: 5, actor: { kind: "user", id: "github:1" as UserId }, verdict: "accept",
+        severity: "none", reason: null, comment_id: "c2", target: "pr",
+      });
+      await store.transition({
+        id: b.id, expected_version: 1, actor: human, reason: "spec_rejected",
+        patch: { stage: "CLOSED", close_reason: "rejected" },
+      });
+
+      expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"] },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [] },
+      ]);
+      expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
+    });
+
+    it("writes nothing", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
+      await store.listStatsRecords(["intake", "spec_rejected"]);
+      expect({ item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) }).toEqual(before);
     });
   });
 
@@ -663,6 +753,180 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(h.finished).toBe(3);
       expect([...h.merged_token_costs].sort((a, b) => a - b)).toEqual([100, 300]);
       expect(await store.getTierHistory("o/r", 4)).toEqual({ finished: 0, merged_token_costs: [] });
+    });
+  });
+
+  describe("cancel on close", () => {
+    const close = { stage: "CLOSED" as const, close_reason: "wont_do" as const, blocked_on: "none" as const, blocked_reason: null };
+
+    it("a close with cancel_queued_runs cancels the item's queued runs, waiting ones too, in the same transaction", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const later = new Date(clock.now().getTime() + 60_000).toISOString();
+      const waiting = await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "implement", idempotency_key: "i", not_before: later as never },
+      });
+      if (!waiting.ok) throw new Error(waiting.reason);
+      const other = await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "t2" } });
+
+      const r = await store.transition({
+        id: item.id, expected_version: 2, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.cancelled).toHaveLength(2);
+      const runs = await store.listRuns(item.id);
+      expect(runs.map((x) => x.status)).toEqual(["cancelled", "cancelled"]);
+      expect(r.cancelled.sort()).toEqual(runs.map((x) => x.id).sort());
+      expect(runs.every((x) => x.acknowledged_at === null && x.lease === null)).toBe(true);
+
+      // No worker can claim them, even after the backoff; the other item's run is untouched.
+      clock.advance(120_000);
+      const claimed = await store.claimRun({ worker_id: w1, kinds: ["triage", "implement"], lease_ms: LEASE });
+      expect(claimed!.work_item_id).toBe(other.item.id);
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage", "implement"], lease_ms: LEASE })).toBeNull();
+
+      // Cancelled runs go through the ack path like any finished run.
+      const unacked = await store.listUnacknowledgedRuns(10);
+      expect(unacked.map((x) => x.id).sort()).toEqual(runs.map((x) => x.id).sort());
+      const ack = await store.transition({
+        id: item.id, expected_version: 3, patch: {}, actor: system, reason: "run_ignored", ack_run: runs[0]!.id,
+      });
+      expect(ack.ok).toBe(true);
+    });
+
+    it("leaves a running run alone, and cancels nothing without the flag or when the transition loses", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const running = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "review", idempotency_key: "r" },
+      });
+
+      const plain = await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "y" });
+      expect(plain.ok && plain.cancelled).toEqual([]);
+      const lost = await store.transition({
+        id: item.id, expected_version: 2, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      expect(lost).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.listRuns(item.id)).map((x) => x.status)).toEqual(["running", "queued"]);
+
+      const r = await store.transition({
+        id: item.id, expected_version: 3, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect((await store.listRuns(item.id)).map((x) => x.status)).toEqual(["running", "cancelled"]);
+      // The running run still finishes normally.
+      expect((await store.completeRun(running.id, running.lease!.token, { status: "succeeded", summary: "", data: {} })).ok).toBe(true);
+    });
+
+    it("the reaper cancels an expired run of a CLOSED item instead of requeueing it", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE });
+      await store.transition({ id: item.id, expected_version: 1, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true });
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(3)).toHaveLength(1);
+      const [run] = await store.listRuns(item.id);
+      expect(run).toMatchObject({ status: "cancelled", lease: null });
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+    });
+  });
+
+  describe("overlap rule: implement-type runs of overlapping items never run at once", () => {
+    const ALL: RunKind[] = ["triage", "implement", "review", "update"];
+    const ok = { status: "succeeded" as const, summary: "", data: {} };
+
+    /** Item `n` with these allowed_paths and one queued run per kind given, in order. */
+    async function item(store: FactoryStore, n: number, allowed_paths: string[], kinds: RunKind[]) {
+      const { item } = await store.createWorkItem(issue(n), system);
+      let version = 1;
+      await store.transition({ id: item.id, expected_version: version++, patch: { allowed_paths }, actor: system, reason: "x" });
+      for (const kind of kinds) {
+        await store.transition({
+          id: item.id, expected_version: version++, patch: {}, actor: system, reason: "x",
+          enqueue: { kind, idempotency_key: `${n}:${kind}` },
+        });
+      }
+      return item.id;
+    }
+    const claim = (store: FactoryStore, worker_id = w1) => store.claimRun({ worker_id, kinds: ALL, lease_ms: LEASE });
+
+    it("two items with overlapping allowed_paths never have implement-type runs running at once", async () => {
+      const { store } = await make();
+      const a = await item(store, 1, ["src/"], ["implement"]);
+      const b = await item(store, 2, ["src/core/x.ts"], ["implement"]);
+      const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
+      const claimed = [first, second].filter((r) => r !== null);
+      expect(claimed.map((r) => r!.work_item_id)).toEqual([a]);
+      expect(await claim(store)).toBeNull();
+      expect((await store.listRuns(b))[0]!.status).toBe("queued");
+      expect(await store.listRunsByStatus(["running"], 10)).toHaveLength(1);
+    });
+
+    it("an update overlaps an implement, and an item overlaps itself even with no allowed_paths", async () => {
+      const { store } = await make();
+      await item(store, 1, ["docs/a.md"], ["implement"]);
+      await item(store, 2, ["docs/a.md"], ["update"]);
+      expect((await claim(store))?.kind).toBe("implement");
+      expect(await claim(store)).toBeNull();
+
+      const other = await make();
+      const self = await item(other.store, 3, [], ["update", "implement"]);
+      expect((await claim(other.store))?.kind).toBe("update");
+      expect(await claim(other.store)).toBeNull();
+      expect((await other.store.listRuns(self)).map((r) => r.status)).toEqual(["running", "queued"]);
+    });
+
+    it("two items with no overlap have runs running at the same time", async () => {
+      const { store } = await make();
+      const a = await item(store, 1, ["docs/"], ["implement"]);
+      const b = await item(store, 2, ["src/", "docs"], ["update"]);
+      const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
+      expect(new Set([first?.work_item_id, second?.work_item_id])).toEqual(new Set([a, b]));
+      expect(await store.listRunsByStatus(["running"], 10)).toHaveLength(2);
+    });
+
+    it("the skipped run stays queued and is claimed once the overlapping run completes", async () => {
+      const { store } = await make();
+      await item(store, 1, ["src/"], ["implement"]);
+      const b = await item(store, 2, ["src/a.ts"], ["implement"]);
+      const first = (await claim(store))!;
+      expect(await claim(store, w2)).toBeNull();
+      expect((await store.listRuns(b))[0]).toMatchObject({ status: "queued", attempt: 0 });
+
+      await store.completeRun(first.id, first.lease!.token, ok);
+      const next = await claim(store, w2);
+      expect(next).toMatchObject({ work_item_id: b, kind: "implement", status: "running", attempt: 1 });
+    });
+
+    it("a skipped run does not hold up a later run that does not overlap (FIFO among eligible runs)", async () => {
+      const { store } = await make();
+      await item(store, 1, ["src/"], ["implement"]);
+      const b = await item(store, 2, ["src/core/"], ["implement"]);
+      const c = await item(store, 3, ["docs/"], ["implement"]);
+      await claim(store);
+      expect((await claim(store))?.work_item_id).toBe(c);
+      expect((await store.listRuns(b))[0]!.status).toBe("queued");
+    });
+
+    it("triage and review runs are never skipped by the overlap rule", async () => {
+      const { store } = await make();
+      await item(store, 1, ["src/"], ["implement"]);
+      const b = await item(store, 2, ["src/"], ["review", "triage", "implement"]);
+      expect((await claim(store))?.kind).toBe("implement");
+      const kinds = [(await claim(store))?.kind, (await claim(store))?.kind];
+      expect(kinds).toEqual(["review", "triage"]);
+      expect(await claim(store)).toBeNull();
+      expect((await store.listRuns(b)).find((r) => r.kind === "implement")!.status).toBe("queued");
+    });
+
+    it("a running triage or review does not hold back an overlapping implement", async () => {
+      const { store } = await make();
+      await item(store, 1, ["src/"], ["review"]);
+      const b = await item(store, 2, ["src/"], ["implement"]);
+      expect((await claim(store))?.kind).toBe("review");
+      expect((await claim(store))?.work_item_id).toBe(b);
     });
   });
 

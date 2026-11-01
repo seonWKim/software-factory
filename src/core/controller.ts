@@ -8,6 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
+import { commandFooter, commandState, failedRunKind, helpReply, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
@@ -54,6 +55,8 @@ type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejecte
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
+type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
+type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -68,7 +71,11 @@ const RETRY = Symbol("retry");
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
+/** Closes an item whose source was closed by someone the factory cannot name (design §4). */
+const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const MAX_CONFLICT_RETRIES = 5;
+/** Characters of an approval note kept on the state change (design §4). */
+const MAX_NOTE_CHARS = 2000;
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 const FLOOR_TIER = "floor_tier";
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
@@ -203,6 +210,8 @@ export class Controller {
       }
       case "base_commit":
         return this.recordReverts(e);
+      case "source_closed":
+        return this.closeFromSource(e);
       case "spec_approved":
       case "spec_rejected":
       case "revise_requested":
@@ -211,6 +220,9 @@ export class Controller {
         return this.handleCommand(e);
       case "verdict_submitted":
         return this.handleVerdict(e);
+      case "help_requested":
+      case "unknown_command":
+        return this.handleInfo(e);
       case "pr_merged":
       case "pr_closed": {
         const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
@@ -261,9 +273,15 @@ export class Controller {
     if (!item) return;
     const who = e.kind === "retry_requested" || e.kind === "revise_requested" ? e.requester : e.approver;
     const principal = await this.authorize(who, "approve_spec", item.id);
-    const refusal = "refuse" in principal
-      ? principal.refuse
-      : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id });
+    let refusal: string | null;
+    if ("refuse" in principal) refusal = principal.refuse;
+    else {
+      // The note is untrusted text bound for the store and agent prompts: G5 before either.
+      const note = e.kind === "spec_approved" ? await this.approvalNote(item.id, e.note) : { note: null };
+      refusal = "refuse" in note
+        ? note.refuse
+        : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, note.note);
+    }
     await this.markSeen(e.source, e.comment_id);
     if (e.kind === "spec_rejected" && refusal === null) {
       // Best effort here; tickSourceCloses retries whatever did not happen.
@@ -289,7 +307,12 @@ export class Controller {
    * `/budget` and `/reject` at a budget checkpoint answer it (design §6); every other command, and `/reject`
    * elsewhere, goes through `command`. Returns the refusal reason, else null.
    */
-  private async applyCommand(id: WorkItemId, e: CommandEvent, actor: Extract<Actor, { kind: "user" }>): Promise<string | null> {
+  private async applyCommand(
+    id: WorkItemId,
+    e: CommandEvent,
+    actor: Extract<Actor, { kind: "user" }>,
+    note: string | null,
+  ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const it = await this.d.store.getWorkItem(id);
       if (!it) return null;
@@ -302,7 +325,7 @@ export class Controller {
       if (e.kind === "budget_continue") {
         return it.stage === "CLOSED" ? "the work item is closed" : "the work item is not at a budget checkpoint";
       }
-      return this.decide(id, async (x) => this.command(e, x, actor, await this.floorTierNeeded(x)));
+      return this.decide(id, async (x) => this.command(e, x, actor, await this.floorTierNeeded(x), note));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -356,6 +379,67 @@ export class Controller {
     if (r.reason === "version_conflict" || r.reason === "checkpoint_not_pending") return RETRY;
     this.d.log.warn("transition refused", { work_item_id: it.id, reason: r.reason });
     return null;
+  }
+
+  /**
+   * The source issue was closed (design §4): the item closes as `wont_do` and its queued runs are cancelled in
+   * the same transition. Store first: an item already CLOSED (by /reject, a merge, or an earlier delivery of
+   * this close) is left alone, so a repeat or the factory's own close writes nothing. No login is checked and
+   * nothing is posted. A run already running finishes; applyRun ignores its result because the item is closed.
+   */
+  private async closeFromSource(e: SourceClosedEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item || item.stage === "CLOSED") return;
+    const closer = e.closer ? await this.d.auth.resolve(e.closer) : null;
+    if (!closer) {
+      this.d.log.warn("source closed by an unknown user; recorded as the system actor", { work_item_id: item.id, source_id: e.source.id });
+    }
+    const actor: Actor = closer ? { kind: "user", id: closer.user_id } : INTAKE;
+    await this.decide(item.id, (it) =>
+      it.stage === "CLOSED"
+        ? null
+        : {
+            patch: { stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null },
+            actor,
+            reason: "source_closed",
+            cancel_queued_runs: true,
+          },
+    );
+  }
+
+  /**
+   * The approval note to store: trimmed, capped at MAX_NOTE_CHARS, null when empty. The whole note is
+   * egress-scanned first; a finding refuses the approval, and neither the note nor the rule's match is kept.
+   */
+  private async approvalNote(id: WorkItemId, raw: string | undefined): Promise<{ note: string | null } | Refusal> {
+    const text = (raw ?? "").trim();
+    if (!text) return { note: null };
+    const scan = await this.d.scanner.scan("comment", text);
+    if (!scan.clean) {
+      const rules = scan.findings.map((f) => f.rule).join(",");
+      this.d.log.warn("approval note blocked by the egress scan; approval refused", { work_item_id: id, rules });
+      return {
+        refuse: `the note was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed; post \`/approve\` again without the secret`,
+      };
+    }
+    return { note: text.slice(0, MAX_NOTE_CHARS).trim() };
+  }
+
+  /**
+   * `/help` or an unknown command on a work item: 👀, then one reply keyed on the comment id, listing the
+   * commands for the item's current state. Like other commands, ignored entirely on an issue that is not one.
+   */
+  private async handleInfo(e: InfoEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item) return;
+    await this.markSeen(e.source, e.comment_id);
+    const state = commandState(item);
+    const help = e.kind === "help_requested";
+    await this.d.source.postComment(
+      item.source,
+      help ? helpReply(state) : unknownCommandReply(e.command, state),
+      `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
+    );
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -436,12 +520,18 @@ export class Controller {
    * The transition a command asks for, or why the item's current state cannot take it. Async only because
    * a `/revise` past the limit posts its comment before the transition (keyed, so a conflict re-run posts once).
    */
-  private async command(e: ItemCommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Promise<Decision | Refusal> {
+  private async command(
+    e: ItemCommandEvent,
+    it: WorkItem,
+    actor: Actor,
+    floorNeed: number | null,
+    note: string | null,
+  ): Promise<Decision | Refusal> {
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) {
       return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
     }
-    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
+    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor);
     if (!awaitingSpec(it)) return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
     switch (e.kind) {
@@ -466,12 +556,15 @@ export class Controller {
           return { refuse: `the spec reached the revision limit (\`max_loops\` = ${limit}); reply \`/approve\` or \`/reject <reason>\`` };
         }
         if (it.revision_count >= limit) {
+          const patch = { blocked_on: "human" as const, blocked_reason: "max_revisions" };
           await this.comment(it, `max-revisions:${it.id}`, [
             `The spec was revised ${it.revision_count} times (limit \`max_loops\` = ${limit}), so the factory started no new triage run (\`max_revisions\`).`,
             "",
             "Reply `/approve` to implement the spec above, or `/reject <reason>` to close.",
+            "",
+            footerAfter(it, patch),
           ].join("\n"));
-          return { patch: { blocked_on: "human", blocked_reason: "max_revisions" }, actor, reason: "max_revisions" };
+          return { patch, actor, reason: "max_revisions" };
         }
         const n = it.revision_count + 1;
         return {
@@ -487,6 +580,7 @@ export class Controller {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
           actor,
           reason: "spec_approved",
+          ...(note ? { detail: { note } } : {}),
           enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
         };
     }
@@ -584,10 +678,11 @@ export class Controller {
         const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
         if (run.kind === "implement" && code === DIFF_TOO_LARGE) return this.diffTooLarge(it, run);
         if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
-        await this.comment(it, `run-failed:${run.id}`,
-          `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.`);
+        const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
+        const url = await this.comment(it, `run-failed:${run.id}`,
+          `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
         return {
-          patch: { blocked_on: "human", blocked_reason: `run_failed:${run.kind}:${code}` },
+          patch: { ...patch, failure_comment_url: url },
           actor: SYSTEM,
           reason: "run_failed",
           ack_run: run.id,
@@ -622,9 +717,11 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          await this.comment(it, `spec:${run.id}`, renderSpec(spec, tier, { floor, previous: it.tier }));
+          const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
+          const url = await this.comment(it, `spec:${run.id}`,
+            renderSpec(spec, tier, { floor, previous: it.tier }, footerAfter(it, patch)));
           return {
-            patch: { ...fields, stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" },
+            patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
             reason: "triaged",
             ack_run: run.id,
@@ -647,10 +744,11 @@ export class Controller {
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.d.config.floors), it.tier);
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.d.config.max_loops) {
+              const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
               await this.comment(it, `max-loops:${run.id}`,
-                `Review found bugs ${it.loop_count + 1} times (limit ${this.d.config.max_loops}). A human needs to decide.`);
+                `Review found bugs ${it.loop_count + 1} times (limit ${this.d.config.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
               return {
-                patch: { tier, token_cost: tokens, blocked_on: "human", blocked_reason: "max_loops" },
+                patch,
                 actor: SYSTEM,
                 reason: "max_loops",
                 ack_run: run.id,
@@ -666,10 +764,11 @@ export class Controller {
             };
           }
           // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
+          const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "merge_pending" };
           await this.comment(it, `merge:${run.id}`,
-            `PR #${it.pr_number} passed review (tier ${tier}). A human merge is required.`);
+            `PR #${it.pr_number} passed review (tier ${tier}). A human merge is required.\n\n${footerAfter(it, patch)}`);
           return {
-            patch: { tier, token_cost: tokens, blocked_on: "human", blocked_reason: "merge_pending" },
+            patch,
             actor: SYSTEM,
             reason: "review_passed",
             ack_run: run.id,
@@ -692,7 +791,8 @@ export class Controller {
               };
             default:
               return {
-                patch: { blocked_reason: "run_failed:update:invalid_output" },
+                // No comment is posted for this one, so an older failure link must not stand in for it.
+                patch: { blocked_reason: "run_failed:update:invalid_output", failure_comment_url: null },
                 actor: SYSTEM,
                 reason: "run_failed",
                 ack_run: run.id,
@@ -725,9 +825,10 @@ export class Controller {
 
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
     if (cls !== "rate_limited" && limit) {
-      await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra);
+      const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
+      const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
-        patch: { ...restart, blocked_on: "human", blocked_reason: limit },
+        patch: { ...patch, failure_comment_url: url },
         actor: SYSTEM,
         reason: limit,
         detail,
@@ -755,7 +856,8 @@ export class Controller {
   private async diffTooLarge(it: WorkItem, run: Run): Promise<Decision> {
     const detail = run.outcome?.status === "failed" ? run.outcome.detail : "";
     const { max_diff_lines, max_diff_files } = this.d.config;
-    await this.comment(it, `run-failed:${run.id}`, [
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` };
+    const url = await this.comment(it, `run-failed:${run.id}`, [
       "## Factory size check: push blocked",
       "",
       `The implement run's diff is too large to review, so nothing was pushed: ${detail}.`,
@@ -763,9 +865,11 @@ export class Controller {
       `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
       "",
       "Split the work item, or comment `/retry` to run the implementer again; it must make a smaller change.",
+      "",
+      footerAfter(it, patch),
     ].join("\n"));
     return {
-      patch: { blocked_on: "human", blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` },
+      patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
       detail: { run_id: run.id, error_code: DIFF_TOO_LARGE },
@@ -781,6 +885,7 @@ export class Controller {
     const hits = parseFloorHits(data.floor_paths);
     const need = hits.reduce((m, h) => Math.max(m, h.tier), 0);
     if (hits.length === 0 || data.required_tier !== need) return this.retryOrBlock(it, run, "task", "invalid_output");
+    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: FLOOR_TIER };
     await this.comment(it, `floor:${run.id}`, [
       "## Factory floor check: push blocked",
       "",
@@ -789,9 +894,11 @@ export class Controller {
       ...hits.map((h) => `- \`${h.path}\` needs tier ${h.tier}`),
       "",
       `Reply \`/approve\` to raise the item to tier ${need} and run the implementer again, or \`/reject <reason>\` to close it.`,
+      "",
+      footerAfter(it, patch),
     ].join("\n"));
     return {
-      patch: { token_cost: tokens, blocked_on: "human", blocked_reason: FLOOR_TIER },
+      patch,
       actor: SYSTEM,
       reason: "floor_blocked",
       detail: { run_id: run.id, item_tier: it.tier, required_tier: need, paths: hits.map((h) => h.path).join(",").slice(0, 1000) },
@@ -799,8 +906,11 @@ export class Controller {
     };
   }
 
-  /** The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes. */
-  private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number): Promise<void> {
+  /**
+   * The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes.
+   * Returns the comment's URL, or null when the scan withheld it.
+   */
+  private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<string | null> {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.d.config.max_attempts}), so the factory stopped retrying it.`
@@ -813,6 +923,8 @@ export class Controller {
       "",
       ...(tail ? ["Output tail of the last run:", "", fenced(tail), ""] : ["The last run left no output.", ""]),
       "Comment `/retry` to run it again.",
+      "",
+      footer,
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body);
     if (!scan.clean) {
@@ -821,9 +933,9 @@ export class Controller {
         run_id: run.id,
         rules: scan.findings.map((f) => f.rule).join(","),
       });
-      return;
+      return null;
     }
-    await this.comment(it, `run-failed:${run.id}`, body);
+    return this.comment(it, `run-failed:${run.id}`, body);
   }
 
   // Internals
@@ -979,8 +1091,9 @@ export class Controller {
     }
   }
 
-  private comment(it: WorkItem, key: string, body: string): Promise<void> {
-    return this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`);
+  /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
+  private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
+    return (await this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`)).url;
   }
 
   private async guard(what: string, fn: () => Promise<void>): Promise<void> {
@@ -1030,7 +1143,7 @@ function quote(text: string): string {
  * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
  * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
  */
-function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null): Decision | Refusal {
+function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
     return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
   }
@@ -1050,20 +1163,17 @@ function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: num
     patch: { tier: next.tier, restart_count: next.restart_count, blocked_on: "none", blocked_reason: null },
     actor,
     reason: "floor_tier_approved",
-    detail: { previous_tier: it.tier, tier: next.tier },
+    detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}) },
     enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
   };
 }
 
-/** The kind of run a human `/retry` would restart, or undefined if the item is not blocked by a failed run. */
-function failedRunKind(it: WorkItem): RunKind | undefined {
-  const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
-  if (kind) return kind;
-  if (it.blocked_reason !== "max_attempts" && it.blocked_reason !== "max_restart") return undefined;
-  if (it.stage === "NEW") return "triage";
-  if (it.stage === "RUNNING") return "implement";
-  if (it.stage === "REVIEW") return "review";
-  return undefined;
+/**
+ * The command footer for a comment posted before its transition: the commands for the state the item will
+ * be in once `patch` applies (design §4). Same table as the parser and the controller's checks.
+ */
+function footerAfter(it: WorkItem, patch: Partial<Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number">>): string {
+  return commandFooter(commandState({ ...it, ...patch }));
 }
 
 const FAILURES: Record<string, string> = {

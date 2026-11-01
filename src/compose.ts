@@ -4,12 +4,13 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { FactoryConfig, Prompts } from "./core/config.js";
-import type { Tier, WorkerId } from "./core/types.js";
+import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
+import type { Tier, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
-import { Worker } from "./core/worker.js";
+import { VERDICT_SEVERITIES } from "./core/verdict.js";
+import { WorkerPool } from "./core/worker-pool.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
@@ -61,6 +62,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
+  workers?: unknown;
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
@@ -70,6 +73,8 @@ export interface FileConfig {
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
   budget_min_sample?: unknown;
+  /** `factory stats` (design §6): a weight per verdict severity (all required), min_sample (absent: 10). */
+  stats?: { weights?: unknown; min_sample?: unknown };
 }
 
 export { CODE_ROOT_ENV } from "./interfaces/updater.js";
@@ -89,6 +94,8 @@ export interface Loaded {
   plugins: Selection;
   /** Where plugin names resolve. The built-in REGISTRY unless a test passes another. */
   registry: Registry;
+  /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
+  stats: StatsConfig;
 }
 
 /**
@@ -110,9 +117,11 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   uiPort(file.ui);
+  const workers = workerCount(file.workers);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
   const budget = budgetConfig(file);
+  const stats = statsConfig(file.stats);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -140,6 +149,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    workers,
     deny_paths: [
       dirname(secretsFile),
       join(stateDir, "db"),
@@ -163,7 +173,7 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry };
+  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats };
 }
 
 export interface Built {
@@ -172,7 +182,8 @@ export interface Built {
   store: FactoryStore;
   secrets: SecretStore;
   controller: Controller;
-  worker: Worker;
+  /** `config.workers` worker loops; `run(signal)` runs them all. */
+  worker: WorkerPool;
   close(): Promise<void>;
 }
 
@@ -241,8 +252,8 @@ export async function build(
     scanner,
   });
 
-  const worker = new Worker({
-    id: `${hostname()}:${process.pid}` as WorkerId,
+  const worker = new WorkerPool({
+    id_prefix: `${hostname()}:${process.pid}`,
     store,
     sandbox,
     runner: await p.runner(sandbox, secrets),
@@ -260,6 +271,15 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+export function workerCount(value: unknown): number {
+  if (value === undefined) return 1;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  return value;
 }
 
 export const DEFAULT_UI_PORT = 4310;
@@ -295,6 +315,44 @@ export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
   await store.migrate();
   const scanner = await p.scanner(secrets);
   return { clock, store, scanner, close: () => store.close() };
+}
+
+/**
+ * The configured store for `factory stats`, and nothing else. Unlike build() and buildUiParts() it never
+ * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because
+ * the MySQL store needs MYSQL_PASSWORD.
+ */
+export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
+  const p = new Plugins(loaded);
+  const clock = await p.clock();
+  return p.store(await p.secrets(), clock);
+}
+
+export const STATS_MIN_SAMPLE_DEFAULT = 10;
+
+/**
+ * The `stats` key (design §6): every severity needs a weight that is a finite number ≥ 0, and `min_sample`
+ * (absent: 10) is an integer ≥ 1, or startup fails. There are no default weights.
+ */
+export function statsConfig(raw: FileConfig["stats"]): StatsConfig {
+  const weights = raw?.weights;
+  if (typeof weights !== "object" || weights === null || Array.isArray(weights)) {
+    throw new Error(`stats.weights must be an object with a weight for each of ${VERDICT_SEVERITIES.join(", ")}`);
+  }
+  const w = weights as Record<string, unknown>;
+  const checked = {} as Record<VerdictSeverity, number>;
+  for (const s of VERDICT_SEVERITIES) {
+    const v = w[s];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      throw new Error(`stats.weights.${s} must be a number ≥ 0`);
+    }
+    checked[s] = v;
+  }
+  const min_sample = raw?.min_sample === undefined ? STATS_MIN_SAMPLE_DEFAULT : raw.min_sample;
+  if (typeof min_sample !== "number" || !Number.isInteger(min_sample) || min_sample < 1) {
+    throw new Error("stats.min_sample must be an integer ≥ 1");
+  }
+  return { weights: checked, min_sample };
 }
 
 /** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */

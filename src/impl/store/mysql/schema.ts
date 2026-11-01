@@ -132,7 +132,20 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
     "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
   ],
-  // 7: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  // 7: parallel workers (architecture §4). One lock row the claim takes first (FOR UPDATE), so two claimers
+  // never both pass the overlap check for overlapping items.
+  [
+    `CREATE TABLE claim_locks (
+      name  VARCHAR(64) NOT NULL PRIMARY KEY
+    ) ${TABLE}`,
+    "INSERT INTO claim_locks (name) VALUES ('claim')",
+  ],
+  // 8: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  [
+    "ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT NULL",
+  ],
+  // 9: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
   [
     `CREATE TABLE budget_checkpoints (
       seq                  BIGINT NOT NULL AUTO_INCREMENT UNIQUE,

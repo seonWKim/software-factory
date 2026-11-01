@@ -46,5 +46,6 @@
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
   "ui": { "port": 4310 },
+  "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" }
 }

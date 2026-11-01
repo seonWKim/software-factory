@@ -119,7 +119,20 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE work_items ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE work_items ADD COLUMN spec_feedback TEXT;
   `,
-  // 7: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  // 7: parallel workers (architecture §4). One lock row the claim takes first, so two claimers never both pass
+  // the overlap check. SQLite's BEGIN IMMEDIATE already serializes claims; the row keeps both schemas alike.
+  `
+  CREATE TABLE claim_locks (
+    name  TEXT PRIMARY KEY
+  );
+  INSERT INTO claim_locks (name) VALUES ('claim');
+  `,
+  // 8: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  `
+  ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT;
+  ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT;
+  `,
+  // 9: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
   `
   CREATE TABLE budget_checkpoints (
     id                   TEXT PRIMARY KEY,

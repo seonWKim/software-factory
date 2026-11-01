@@ -54,6 +54,13 @@ export interface WorkItem {
   pr_number: number | null;
   merge_sha: string | null;
   fixes_pr: number | null;
+  /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
+  spec_comment_url: string | null;
+  /**
+   * URL of the last failure comment, set by the transition that blocks on a failed run. Null when that
+   * comment was withheld by the egress scan or never posted, and on older items.
+   */
+  failure_comment_url: string | null;
   /**
    * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
    * revision reads this instead. Null on items created before it existed.
