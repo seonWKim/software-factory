@@ -121,24 +121,18 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]> {
-    const where: string[] = [];
-    const params: SqlValue[] = [];
-    if (filter.stage !== undefined) {
-      where.push("stage = ?");
-      params.push(filter.stage);
-    } else if (filter.exclude_closed) {
-      where.push("stage <> 'CLOSED'");
-    }
-    if (filter.blocked_on !== undefined) {
-      where.push("blocked_on = ?");
-      params.push(filter.blocked_on);
-    }
+    const { where, params } = whereOf(filter);
     const rows = await this.db.all(
-      `SELECT * FROM work_items${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
-       ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
+      `SELECT * FROM work_items${where} ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
       [...params, filter.limit],
     );
     return rows.map(rowToWorkItem);
+  }
+
+  async countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number> {
+    const { where, params } = whereOf(filter);
+    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM work_items${where}`, params);
+    return Number(row?.n ?? 0);
   }
 
   async countWorkItemsByStage(): Promise<Record<Stage, number>> {
@@ -527,6 +521,23 @@ class DuplicateVerdict extends Error {}
 
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";
+
+/** The WHERE clause (with leading space, or empty) for a WorkItemFilter. */
+function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params: SqlValue[] } {
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  if (filter.stage !== undefined) {
+    where.push("stage = ?");
+    params.push(filter.stage);
+  } else if (filter.exclude_closed) {
+    where.push("stage <> 'CLOSED'");
+  }
+  if (filter.blocked_on !== undefined) {
+    where.push("blocked_on = ?");
+    params.push(filter.blocked_on);
+  }
+  return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
+}
 
 function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");

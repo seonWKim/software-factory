@@ -295,6 +295,34 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("comment links", () => {
+    it("spec_comment_url and failure_comment_url default to null and round-trip through transition()", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect(item.spec_comment_url).toBeNull();
+      expect(item.failure_comment_url).toBeNull();
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ spec_comment_url: null, failure_comment_url: null });
+
+      const spec = "https://github.com/o/r/issues/1#issuecomment-11";
+      const r = await store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "triaged",
+        patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", spec_comment_url: spec },
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item.spec_comment_url).toBe(spec);
+      expect(r.state_change.changes.spec_comment_url).toEqual({ from: null, to: spec });
+
+      const fail = "https://github.com/o/r/issues/1#issuecomment-22";
+      await store.transition({ id: item.id, expected_version: 2, actor: system, reason: "x", patch: { failure_comment_url: fail } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+      expect((await store.getWorkItemBySource("github_issue", item.source.id))!.failure_comment_url).toBe(fail);
+      expect((await store.listWorkItemsWhere({ limit: 10 }))[0]).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+
+      await store.transition({ id: item.id, expected_version: 3, actor: system, reason: "x", patch: { failure_comment_url: null } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: null });
+    });
+  });
+
   describe("read-only queries", () => {
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
@@ -369,11 +397,32 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.listRunsFinishedWithin(DAY + 10_000)).map((r) => r.id)).toEqual([recentFail, recentOk, old]);
     });
 
+    it("countWorkItemsWhere counts every match, with no limit, by stage, blocked_on and closed", async () => {
+      const { store } = await make();
+      const filter = { blocked_on: "human" as const, exclude_closed: true };
+      expect(await store.countWorkItemsWhere(filter)).toBe(0);
+      const ids = [];
+      for (let n = 1; n <= 6; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const block = (id: WorkItemId, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) =>
+        store.transition({ id, expected_version: 1, patch, actor: system, reason: "x" });
+      await block(ids[0]!, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+      await block(ids[1]!, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      await block(ids[2]!, { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" });
+      await block(ids[3]!, { stage: "CLOSED", close_reason: "rejected", blocked_on: "human", blocked_reason: "x" });
+      await block(ids[4]!, { stage: "RUNNING", blocked_on: "upstream" });
+      expect(await store.countWorkItemsWhere(filter)).toBe(3);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human" })).toBe(4);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human", stage: "REVIEW" })).toBe(1);
+      expect(await store.countWorkItemsWhere({})).toBe(6);
+      expect(await store.countWorkItemsWhere({ exclude_closed: true })).toBe(5);
+    });
+
     it("the read methods write nothing", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
       const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
       await store.listWorkItemsWhere({ limit: 10 });
+      await store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
       await store.countWorkItemsByStage();
       await store.listRunsByStatus(["queued", "running"], 10);
       await store.listRunsFinishedWithin(1_000);

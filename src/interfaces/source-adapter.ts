@@ -52,9 +52,10 @@ export interface SourceAdapter {
   poll(cursor: string | null): Promise<PollResult>;
   /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
-   * is posted at most once. Agents never call this.
+   * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the
+   * marker already exists (null if the source has no link for it). Agents never call this.
    */
-  postComment(source: SourceRef, body: string, marker: string): Promise<void>;
+  postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }>;
   /**
    * Marks an event as seen (GitHub: a 👀 reaction). `commentId` null means the item itself (the issue).
    * Idempotent. Failures are the caller's to log; they must not block a transition.

@@ -126,4 +126,9 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
     ) ${TABLE}`,
   ],
+  // 6: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  [
+    "ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT NULL",
+  ],
 ];

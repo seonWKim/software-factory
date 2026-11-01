@@ -113,4 +113,9 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
   `,
+  // 6: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  `
+  ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT;
+  ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT;
+  `,
 ];

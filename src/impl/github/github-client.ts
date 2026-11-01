@@ -70,14 +70,21 @@ export class GitHubClient {
     return out;
   }
 
-  /** Posts at most one comment carrying `marker` (an HTML comment) on an issue or PR. */
-  async commentOnce(repo: RepoRef, number: number, body: string, marker: string): Promise<{ created: boolean }> {
-    const existing = await this.list<{ body?: string }>(`/repos/${repo.owner}/${repo.name}/issues/${number}/comments`, 10);
-    if (existing.some((c) => c.body?.includes(marker))) return { created: false };
-    await this.request("POST", `/repos/${repo.owner}/${repo.name}/issues/${number}/comments`, {
-      body: `${body}\n\n${marker}`,
-    });
-    return { created: true };
+  /**
+   * Posts at most one comment carrying `marker` (an HTML comment) on an issue or PR. `url` is the comment's
+   * html_url: the new one's, or the existing one's when the marker is already there.
+   */
+  async commentOnce(
+    repo: RepoRef,
+    number: number,
+    body: string,
+    marker: string,
+  ): Promise<{ created: boolean; url: string | null }> {
+    const path = `/repos/${repo.owner}/${repo.name}/issues/${number}/comments`;
+    const existing = (await this.list<{ body?: string; html_url?: string }>(path, 10)).find((c) => c.body?.includes(marker));
+    if (existing) return { created: false, url: existing.html_url ?? null };
+    const posted = await this.request<{ html_url?: string } | undefined>("POST", path, { body: `${body}\n\n${marker}` });
+    return { created: true, url: posted?.html_url ?? null };
   }
 }
 

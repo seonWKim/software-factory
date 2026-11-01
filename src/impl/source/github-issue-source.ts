@@ -220,8 +220,9 @@ export class GitHubIssueSource implements SourceAdapter {
     return { events, next_cursor: JSON.stringify(next) };
   }
 
-  async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
-    await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    const { url } = await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+    return { url };
   }
 
   /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */

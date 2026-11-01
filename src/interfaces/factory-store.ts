@@ -132,6 +132,8 @@ export interface FactoryStore {
   listWorkItems(limit: number): Promise<WorkItem[]>;
   /** Items matching `filter`, most recently updated first. Read-only. */
   listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
+  /** Number of items matching `filter`, with no limit. Read-only. */
+  countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number>;
   /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
   countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /** The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue). */

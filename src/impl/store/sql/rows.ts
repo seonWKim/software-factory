@@ -44,6 +44,8 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "pr_number",
   "merge_sha",
   "fixes_pr",
+  "spec_comment_url",
+  "failure_comment_url",
 ];
 
 export function newId(prefix: string): string {
@@ -75,6 +77,8 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     pr_number: null,
     merge_sha: null,
     fixes_pr: null,
+    spec_comment_url: null,
+    failure_comment_url: null,
     created_at: now,
     updated_at: now,
   };
@@ -84,7 +88,8 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
 export const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
-  "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title";
+  "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
+  "failure_comment_url";
 
 export function workItemValues(i: WorkItem): SqlValue[] {
   return [
@@ -92,6 +97,7 @@ export function workItemValues(i: WorkItem): SqlValue[] {
     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
     JSON.stringify(i.allowed_paths), i.tier, i.stage, i.blocked_on, i.blocked_reason, i.close_reason, i.loop_count,
     i.restart_count, i.token_cost, i.pr_number, i.merge_sha, i.fixes_pr, i.created_at, i.updated_at, i.title,
+    i.spec_comment_url, i.failure_comment_url,
   ];
 }
 
@@ -151,6 +157,8 @@ export function rowToWorkItem(r: Row): WorkItem {
     pr_number: r.pr_number === null ? null : Number(r.pr_number),
     merge_sha: r.merge_sha as string | null,
     fixes_pr: r.fixes_pr === null ? null : Number(r.fixes_pr),
+    spec_comment_url: (r.spec_comment_url as string | null | undefined) ?? null,
+    failure_comment_url: (r.failure_comment_url as string | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
