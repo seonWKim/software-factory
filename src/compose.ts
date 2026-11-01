@@ -10,6 +10,7 @@ import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { WorkerPool } from "./core/worker-pool.js";
+import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
@@ -102,7 +103,9 @@ export async function loadConfig(
   opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
-  const file = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8")) as FileConfig;
+  const raw: unknown = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8"));
+  checkConfigKeys(raw);
+  const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
     throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
