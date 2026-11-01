@@ -294,6 +294,8 @@ Plugins:
 
 Switch back / turn it off: `"plugins": { "updater": "none" }` (add the guards too if you write a `plugins` object, see above). The supervisor itself reads `plugins.updater`, `repo.base_branch`, `poll_interval_ms` and `run_timeout_ms` from the checkout it was started in; restart `dev` after changing them.
 
+The `git-worktree` updater also writes `<state_dir>/supervisor.json` (what it is doing: running, building, draining, restarting, build_failed, crashed with the child's error, stopped) for the status page's banner. `none` writes nothing, and the page then shows no banner state beyond "stopped".
+
 ## KeepAwake
 
 What it does: keeps the host from idle-sleeping while a job runs. The worker holds it right after it claims a run and releases it when the run is done, whether the run succeeded or failed. It is never held while the worker is idle, so the machine can sleep between jobs. Staying awake is best effort: if the hold fails, the worker logs a warning and runs the job anyway.
