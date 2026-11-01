@@ -31,6 +31,11 @@ export type SourceEvent =
    */
   | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null }
   /**
+   * `/budget [tokens]` at a budget checkpoint (design §6). `amount` is the raw text after `/budget` on the
+   * first line, null when there is none; the controller checks it is a whole number.
+   */
+  | { kind: "budget_continue"; source: SourceRef; comment_id: string; approver: ExternalIdentity; amount: string | null }
+  /**
    * A `/verdict` comment on an issue or on a PR. `args` is the raw text after `/verdict` (following lines
    * included); the controller parses it. A PR target names the head branch, which maps to the work item.
    */

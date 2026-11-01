@@ -3,6 +3,8 @@
 
 import { randomUUID } from "node:crypto";
 import type {
+  BudgetCheckpoint,
+  BudgetCheckpointId,
   Handoff,
   HandoffId,
   Run,
@@ -236,5 +238,24 @@ export function rowToVerdict(r: Row): Verdict {
     comment_id: r.comment_id as string,
     target: r.target as VerdictTarget,
     at: r.at as Timestamp,
+  };
+}
+
+export function rowToBudgetCheckpoint(r: Row): BudgetCheckpoint {
+  return {
+    id: r.id as BudgetCheckpointId,
+    work_item_id: r.work_item_id as WorkItemId,
+    tier: Number(r.tier) as BudgetCheckpoint["tier"],
+    tokens_spent: Number(r.tokens_spent),
+    budget: Number(r.budget),
+    suggested_budget: Number(r.suggested_budget),
+    answer: r.answer as BudgetCheckpoint["answer"],
+    granted_budget: r.granted_budget === null || r.granted_budget === undefined ? null : Number(r.granted_budget),
+    held_run_kind: r.held_run_kind as BudgetCheckpoint["held_run_kind"],
+    held_run_key: r.held_run_key as string,
+    held_run_not_before: (r.held_run_not_before as Timestamp | null | undefined) ?? null,
+    outcome: (r.outcome as BudgetCheckpoint["outcome"] | undefined) ?? null,
+    created_at: r.created_at as Timestamp,
+    answered_at: (r.answered_at as Timestamp | null | undefined) ?? null,
   };
 }

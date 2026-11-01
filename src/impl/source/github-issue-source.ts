@@ -180,6 +180,12 @@ export class GitHubIssueSource implements SourceAdapter {
         case "retry":
           events.push({ kind: "retry_requested", source, comment_id, requester: who });
           break;
+        case "budget": {
+          // Only the same line counts: `/budget` or `/budget <tokens>`.
+          const amount = (text.split(/\r?\n/)[0] ?? "").trim();
+          events.push({ kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount });
+          break;
+        }
         case "help":
           events.push({ kind: "help_requested", source, comment_id, requester: who });
           break;

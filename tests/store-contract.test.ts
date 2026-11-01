@@ -596,6 +596,166 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("budget checkpoints", () => {
+    const held = {
+      tier: 2 as const,
+      tokens_spent: 1_200_000,
+      budget: 1_000_000,
+      suggested_budget: 2_000_000,
+      held_run_kind: "review" as const,
+      held_run_key: "k:review:l0:r0",
+      held_run_not_before: null,
+    };
+    const block = { blocked_on: "budget" as const, blocked_reason: "budget_checkpoint" };
+
+    async function opened(store: FactoryStore) {
+      const { item } = await store.createWorkItem(issue(1), system);
+      const r = await store.openBudgetCheckpoint({
+        id: item.id, expected_version: 1, patch: block, actor: system, reason: "budget_checkpoint", checkpoint: held,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      return r;
+    }
+
+    it("opens a pending checkpoint in the same transaction as the block and its state change", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      expect(r.item).toMatchObject({ version: 2, blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+      expect(r.state_change.reason).toBe("budget_checkpoint");
+      expect(r.enqueued).toBeNull();
+      expect(r.checkpoint).toMatchObject({
+        ...held, work_item_id: r.item.id, answer: "pending", granted_budget: null, outcome: null,
+        created_at: clock.now().toISOString(), answered_at: null,
+      });
+      expect(await store.listBudgetCheckpoints(r.item.id)).toEqual([r.checkpoint]);
+      expect(await store.listRuns(r.item.id)).toEqual([]);
+    });
+
+    it("opens nothing on a version conflict, or while another checkpoint of the item is pending", async () => {
+      const { store } = await make();
+      const { item: other } = await store.createWorkItem(issue(2), system);
+      const stale = { id: other.id, expected_version: 0, patch: block, actor: system, reason: "budget_checkpoint", checkpoint: held };
+      expect(await store.openBudgetCheckpoint(stale)).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect(await store.listBudgetCheckpoints(other.id)).toEqual([]);
+      expect(await store.listStateChanges(other.id)).toHaveLength(1);
+
+      const r = await opened(store);
+      const again = { id: r.item.id, patch: {}, actor: system, reason: "budget_checkpoint", checkpoint: held };
+      expect(await store.openBudgetCheckpoint({ ...again, expected_version: 2 })).toEqual({ ok: false, reason: "checkpoint_pending" });
+      expect(await store.listBudgetCheckpoints(r.item.id)).toHaveLength(1);
+      expect(await store.listStateChanges(r.item.id)).toHaveLength(2);
+    });
+
+    it("answers a pending checkpoint once, enqueueing the held run with its key and not_before in the same transaction", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      clock.advance(5_000);
+      const at = new Date(clock.now().getTime() + 1_000).toISOString();
+      const answer = {
+        id: r.item.id, patch: { blocked_on: "none" as const, blocked_reason: null }, actor: human, reason: "budget_continued",
+        checkpoint_id: r.checkpoint.id, answer: "continued_custom" as const, granted_budget: 9_000_000,
+        enqueue: { kind: "review" as const, idempotency_key: held.held_run_key, not_before: at as never },
+      };
+      const a = await store.answerBudgetCheckpoint({ ...answer, expected_version: 2 });
+      if (!a.ok) throw new Error(a.reason);
+      expect(a.item).toMatchObject({ version: 3, blocked_on: "none" });
+      expect(a.state_change).toMatchObject({ reason: "budget_continued", actor: human });
+      expect(a.enqueued).toMatchObject({ kind: "review", idempotency_key: held.held_run_key, not_before: at, status: "queued" });
+      expect(a.checkpoint).toMatchObject({
+        answer: "continued_custom", granted_budget: 9_000_000, answered_at: clock.now().toISOString(), outcome: null,
+      });
+      // A second answer (a redelivery) changes nothing, whatever the version.
+      expect(await store.answerBudgetCheckpoint({ ...answer, expected_version: 3 })).toEqual({ ok: false, reason: "checkpoint_not_pending" });
+      expect(await store.listStateChanges(r.item.id)).toHaveLength(3);
+      expect(await store.listRuns(r.item.id)).toHaveLength(1);
+    });
+
+    it("an answer on a version conflict changes nothing", async () => {
+      const { store } = await make();
+      const r = await opened(store);
+      const a = await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 1, patch: {}, actor: human, reason: "budget_continued",
+        checkpoint_id: r.checkpoint.id, answer: "continued_suggested", granted_budget: 2_000_000,
+        enqueue: { kind: "review", idempotency_key: held.held_run_key },
+      });
+      expect(a).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.listBudgetCheckpoints(r.item.id))[0]).toMatchObject({ answer: "pending", granted_budget: null });
+      expect(await store.listRuns(r.item.id)).toEqual([]);
+    });
+
+    it("a rejecting answer that closes the item sets answer rejected and outcome rejected", async () => {
+      const { store } = await make();
+      const r = await opened(store);
+      const a = await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 2, actor: human, reason: "budget_rejected",
+        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+        checkpoint_id: r.checkpoint.id, answer: "rejected", granted_budget: null,
+      });
+      if (!a.ok) throw new Error(a.reason);
+      expect(a.checkpoint).toMatchObject({ answer: "rejected", granted_budget: null, outcome: "rejected" });
+    });
+
+    for (const [close_reason, outcome] of [["completed", "merged"], ["rejected", "rejected"], ["failed", "failed"]] as const) {
+      it(`closing the item with ${close_reason} sets the open checkpoint's outcome to ${outcome}, in the same transition`, async () => {
+        const { store } = await make();
+        const r = await opened(store);
+        await store.transition({
+          id: r.item.id, expected_version: 2, actor: system, reason: "close",
+          patch: { stage: "CLOSED", close_reason, blocked_on: "none", blocked_reason: null },
+        });
+        expect((await store.listBudgetCheckpoints(r.item.id))[0]).toMatchObject({ answer: "pending", outcome });
+      });
+    }
+
+    it("lists an item's checkpoints oldest first; an outcome already set is not overwritten", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 2, patch: { blocked_on: "none", blocked_reason: null }, actor: human,
+        reason: "budget_continued", checkpoint_id: r.checkpoint.id, answer: "continued_suggested", granted_budget: 2_000_000,
+      });
+      clock.advance(1_000);
+      const second = await store.openBudgetCheckpoint({
+        id: r.item.id, expected_version: 3, patch: { blocked_on: "budget", blocked_reason: "budget_checkpoint" }, actor: system,
+        reason: "budget_checkpoint", checkpoint: { ...held, tokens_spent: 2_100_000, budget: 2_000_000, held_run_key: "k2" },
+      });
+      if (!second.ok) throw new Error(second.reason);
+      await store.transition({
+        id: r.item.id, expected_version: 4, actor: system, reason: "pr_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null },
+      });
+      // A later transition of a closed item does not touch the outcome again.
+      await store.transition({ id: r.item.id, expected_version: 5, actor: system, reason: "x", patch: { close_reason: "rejected" } });
+      const list = await store.listBudgetCheckpoints(r.item.id);
+      expect(list.map((c) => [c.held_run_key, c.answer, c.outcome])).toEqual([
+        ["k:review:l0:r0", "continued_suggested", "merged"],
+        ["k2", "pending", "merged"],
+      ]);
+      expect(await store.listBudgetCheckpoints("wi_missing" as WorkItemId)).toEqual([]);
+    });
+
+    it("tier history: finished (CLOSED) items of the project and tier, and token_cost of the merged ones", async () => {
+      const { store } = await make();
+      const close = async (n: number, tier: 1 | 2, close_reason: "completed" | "rejected" | null, token_cost: number, project = "o/r") => {
+        const { item } = await store.createWorkItem({ ...issue(n), project }, system);
+        await store.transition({
+          id: item.id, expected_version: 1, actor: system, reason: "x",
+          patch: close_reason ? { tier, token_cost, stage: "CLOSED", close_reason } : { tier, token_cost, stage: "RUNNING" },
+        });
+      };
+      await close(1, 2, "completed", 300);
+      await close(2, 2, "completed", 100);
+      await close(3, 2, "rejected", 900);
+      await close(4, 2, null, 5_000);
+      await close(5, 1, "completed", 7_000);
+      await close(6, 2, "completed", 8_000, "other/repo");
+      const h = await store.getTierHistory("o/r", 2);
+      expect(h.finished).toBe(3);
+      expect([...h.merged_token_costs].sort((a, b) => a - b)).toEqual([100, 300]);
+      expect(await store.getTierHistory("o/r", 4)).toEqual({ finished: 0, merged_token_costs: [] });
+    });
+  });
+
   describe("cancel on close", () => {
     const close = { stage: "CLOSED" as const, close_reason: "wont_do" as const, blocked_on: "none" as const, blocked_reason: null };
 

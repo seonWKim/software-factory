@@ -46,6 +46,13 @@ export interface FactoryConfig {
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
+  /**
+   * Token budget per tier (design §6). A tier with no entry, or an absent map, has no limit. At the budget,
+   * the next implement or review run is held at a checkpoint for a human. Absent: no limits.
+   */
+  budgets?: Partial<Record<Tier, number>>;
+  /** Finished items a tier needs before budget suggestions come from its history. Absent: 10. */
+  budget_min_sample?: number;
 }
 
 export interface Prompts {

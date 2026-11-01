@@ -61,9 +61,13 @@ Then on GitHub:
 2. The factory posts a spec on the issue. Reply `/approve [notes]`, `/reject <reason>`, or `/revise <feedback>`. Notes after `/approve` (on the same line or the lines below) go to the implementer and the reviewer; `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
+   If `budgets` is set for the item's tier in `factory.config.json` (e.g. `"budgets": {"2": 2000000}`; absent means no limit) and the item has spent that many tokens, the factory stops before its next implement or review run and comments a budget checkpoint: what was spent, the current budget and a suggested one. All work so far is kept. Reply:
+   - `/budget` to continue with the suggested budget;
+   - `/budget <tokens>` to continue with your own budget, a whole number greater than the current one (e.g. `/budget 9000000`);
+   - `/reject <reason>` to close the item. The branch and the PR stay as they are; close the PR yourself if you want.
 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
 
-Only users with write permission on the repository can approve, reject, revise, retry or record a verdict.
+Only users with write permission on the repository can approve, reject, revise, retry, answer a budget checkpoint or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Commands
@@ -73,9 +77,10 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | Command | What it does | Applies when |
 |---|---|---|
 | `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint |
 | `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
 | `/retry` | Run the failed run again | blocked by a failed run |
+| `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
 | `/help` | List every command and which ones apply now | any time |
 
@@ -92,7 +97,7 @@ Each work item's issue carries exactly one status label, and so does its PR once
 | `sf: implementing` | The implementer agent is working on the branch |
 | `sf: in review` | The PR is open and the reviewer agent is checking it |
 | `sf: ready to merge` | The PR passed review; a human merges it |
-| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, or the PR has a conflict. The comments say which |
+| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, the PR has a conflict, or the item reached its token budget (reply `/budget`, `/budget <tokens>` or `/reject <reason>`). The comments say which |
 | `sf: done` | The PR was merged |
 | `sf: rejected` | Closed without a merge: spec rejected, or PR closed unmerged |
 
