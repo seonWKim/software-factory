@@ -12,6 +12,7 @@ import type {
   StateChange,
   StateChangeDetail,
   Stage,
+  Timestamp,
   UserId,
   WorkItem,
   WorkItemId,
@@ -39,6 +40,8 @@ export interface NewRun {
   work_item_id: WorkItemId;
   kind: RunKind;
   idempotency_key: string;
+  /** Earliest claim time (retry backoff). Absent or null: claimable at once. */
+  not_before?: Timestamp | null;
 }
 
 export interface TransitionInput {
@@ -113,8 +116,18 @@ export interface FactoryStore {
 
   // Runs
 
-  /** Pull-based claim: oldest queued run of the given kinds → running, attempt + 1, new lease with token + 1. */
+  /**
+   * Pull-based claim: oldest queued run of the given kinds whose `not_before` has passed → running,
+   * attempt + 1, new lease with token + 1. Returns null while a claim pause (pauseClaims) is in effect.
+   */
   claimRun(input: ClaimInput): Promise<Run | null>;
+  /**
+   * Stops every claim, for every work item and worker, until `resume_at` (a usage or rate limit). Only ever
+   * moves the pause later. `extended` is true when this call moved it, so exactly one caller logs it.
+   */
+  pauseClaims(resume_at: Timestamp): Promise<{ extended: boolean; resume_at: Timestamp }>;
+  /** The current claim pause's end, or null if there is none or it has passed. Read-only. */
+  getClaimPause(): Promise<Timestamp | null>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
@@ -124,8 +137,11 @@ export interface FactoryStore {
   completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult>;
   /** Finished runs the controller has not applied yet, oldest first. */
   listUnacknowledgedRuns(limit: number): Promise<Run[]>;
-  /** Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim) reached max_attempts. */
-  expireLeases(max_attempts: number): Promise<RunId[]>;
+  /**
+   * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
+   * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
+   */
+  expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
   listRuns(id: WorkItemId): Promise<Run[]>;
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
