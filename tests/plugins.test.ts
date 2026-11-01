@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
 import type { WorkerDeps } from "../src/core/worker.js";
@@ -24,14 +25,16 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
-import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
   type Contexts,
+  IMPL_DIR,
+  type PluginDescriptor,
   defaultPlugins,
+  findPluginFiles,
   PLUGIN_KINDS,
   PLUGINS_KEYS,
   type PluginKind,
@@ -40,29 +43,41 @@ import {
   createPlugin,
   withPlugin,
 } from "../src/plugins.js";
+import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
 type Ctor = abstract new (...args: never[]) => unknown;
 
-/** The implementation class behind every registered plugin. Every registry name must appear here. */
+/**
+ * The implementation class behind the default selection (darwin), for the defaults test only. Other plugins
+ * are covered by the property tests over every discovered descriptor, so a new plugin edits no test here.
+ */
 const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
-  store: { sqlite: SqlFactoryStore, mysql: SqlFactoryStore },
+  store: { mysql: SqlFactoryStore },
   sandbox: { noop: NoOpSandbox },
   runner: { "claude-code": ClaudeCodeRunner },
   llm: { "claude-cli": ClaudeCliLLMProvider },
-  auth: { github: GitHubAuthProvider, none: NoAuthProvider },
+  auth: { github: GitHubAuthProvider },
   secrets: { "env-file": EnvFileSecretStore },
   egress: { pattern: PatternEgressScanner },
   broker: { github: GitHubToolBroker },
   storage: { fs: FsSharedStorage },
   source: { "github-issues": GitHubIssueSource },
-  capability: { "list-all": ListAllCapabilitySearch, bm25: Bm25CapabilitySearch },
+  capability: { "list-all": ListAllCapabilitySearch },
   clock: { system: SystemClock },
-  updater: { none: NoneUpdater, "git-worktree": GitWorktreeUpdater },
-  awake: { caffeinate: CaffeinateKeepAwake, none: NoKeepAwake },
+  updater: { "git-worktree": GitWorktreeUpdater },
+  awake: { caffeinate: CaffeinateKeepAwake },
+  github_auth: { token: TokenCredentials },
 };
-const STORE_DRIVER: Record<string, Ctor> = { sqlite: SqliteDriver, mysql: MysqlDriver };
+
+/** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
+const DESCRIPTORS = await Promise.all(
+  findPluginFiles([IMPL_DIR]).map(async (file) => ({
+    file,
+    descriptor: ((await import(pathToFileURL(file).href)) as { default: PluginDescriptor }).default,
+  })),
+);
 
 const GUARDS = ["secrets", "egress", "broker"] as const;
 
@@ -110,7 +125,7 @@ async function context(loaded: Loaded): Promise<Contexts[PluginKind] & Record<st
   const base = new Plugins(loaded).base;
   const secrets = new MapSecrets();
   const clock = new FakeClock();
-  const github = new GitHubClient(secrets);
+  const github = new GitHubClient(new TokenCredentials(secrets));
   mkdirSync(join(loaded.stateDir, "db"), { recursive: true });
   const store = (await createPlugin(loaded.registry, "store", "sqlite", { ...base, secrets, clock })) as FactoryStore;
   const scanner = new PatternEgressScanner(async () => []);
@@ -151,6 +166,7 @@ describe("plugin registry: defaults", () => {
       clock: "system",
       updater: "git-worktree",
       awake: "caffeinate",
+      github_auth: "token",
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
@@ -163,14 +179,16 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the same defaults, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, ...rest } = loaded.plugins;
-      expect(rest).toEqual(defaultPlugins(platform));
+      const { store: _s, auth: _a, github_auth, ...rest } = loaded.plugins;
+      expect(github_auth).toBe("app");
+      const { github_auth: _g, ...defaults } = defaultPlugins(platform);
+      expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual(fixed);
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
@@ -188,26 +206,74 @@ describe("plugin registry: defaults", () => {
   });
 });
 
-describe("plugin registry: every registered name", () => {
-  it("resolves to an instance of its implementation", async () => {
-    vi.stubEnv("PATH", pathWithFakeCaffeinate());
-    const loaded = await loadConfig(root(withoutPlugins()));
-    const ctx = await context(loaded);
-    let count = 0;
-    for (const kind of PLUGIN_KINDS) {
-      expect(Object.keys(REGISTRY[kind].plugins).sort(), kind).toEqual(Object.keys(EXPECTED[kind]).sort());
-      for (const name of Object.keys(REGISTRY[kind].plugins)) {
-        const x = await createPlugin(REGISTRY, kind, name, ctx as never);
-        expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
-        if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(STORE_DRIVER[name]);
-        await closeIfStore(kind, x);
-        count++;
-      }
-    }
-    expect(count).toBe(19); // SqliteDriver and MysqlDriver sit under the two store plugins; updater and awake add two each; capability adds bm25
-    await (ctx.store as FactoryStore).close();
+describe("plugin registry: every discovered plugin", () => {
+  it("every registered name comes from exactly one descriptor file, and every descriptor is registered", () => {
+    const registered = PLUGIN_KINDS.flatMap((kind) => Object.keys(REGISTRY[kind].plugins).map((name) => `${kind}/${name}`));
+    const described = DESCRIPTORS.map(({ descriptor: d }) => `${d.kind}/${d.name}`);
+    expect([...described].sort()).toEqual([...registered].sort());
+    expect(new Set(described).size).toBe(described.length);
   });
+
+  for (const { file, descriptor: d } of DESCRIPTORS) {
+    describe(`${d.kind} \`${d.name}\` (${file.slice(IMPL_DIR.length + 1)})`, () => {
+      it("is registered with its descriptor's factory and secrets", () => {
+        expect(REGISTRY[d.kind].plugins[d.name]).toBe(d.create);
+        expect(REGISTRY[d.kind].secrets[d.name]).toEqual(d.secrets ?? []);
+      });
+
+      it("sits beside its implementation, built with definePlugin", () => {
+        const text = readFileSync(file, "utf8");
+        expect(text).toMatch(/export default definePlugin\(/);
+        const local = [...text.matchAll(/from\s+"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
+        expect(local.filter((p) => p.startsWith(IMPL_DIR)).length, "imports its implementation from src/impl").toBeGreaterThan(0);
+      });
+
+      it("builds an object from a full context without running anything", async () => {
+        vi.stubEnv("PATH", pathWithFakeCaffeinate());
+        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
+        const ctx = await context(loaded);
+        const isMysql = d.kind === "store" && d.name === "mysql";
+        const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
+        try {
+          const x = await run();
+          expect(x).toBeTypeOf("object");
+          expect(x).not.toBeNull();
+          await closeIfStore(d.kind, x);
+        } finally {
+          await (ctx.store as FactoryStore).close();
+        }
+      });
+
+      it("declares well-formed secrets, a valid default, and a guard name that does not mean disabled", () => {
+        for (const s of d.secrets ?? []) {
+          expect(s.name).toMatch(/^[A-Z][A-Z0-9_]*$/);
+          expect(s.purpose.trim()).not.toBe("");
+        }
+        if (d.kind === "store" || d.kind === "auth") expect(d.default).toBeUndefined();
+        if (REGISTRY[d.kind].guard) expect(["", "none"]).not.toContain(d.name);
+      });
+    });
+  }
 });
+
+/**
+ * The classes a descriptor constructs from its own interface's directory (src/impl/<dir>/...), such as
+ * SqlFactoryStore and SqliteDriver; shared helpers such as ConsoleLogger come from elsewhere.
+ */
+function implementationClasses(file: string): string[] {
+  const text = readFileSync(file, "utf8");
+  const own = join(IMPL_DIR, file.slice(IMPL_DIR.length + 1).split(/[\\/]/)[0]!);
+  const constructed = new Set([...text.matchAll(/new\s+([A-Z]\w*)/g)].map((m) => m[1]!));
+  return [...text.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(\.[^"]+)"/g)]
+    .filter((m) => join(dirname(file), m[2]!).startsWith(own))
+    .flatMap((m) => m[1]!.split(",").map((x) => x.trim()))
+    .filter((name) => constructed.has(name));
+}
+
+/** A loaded config whose store block is mysql (the mysql plugin checks it; the driver connects lazily). */
+function mysqlLoaded(loaded: Loaded): Loaded {
+  return { ...loaded, store: { type: "mysql", host: "127.0.0.1", port: 3306, database: "sf", user: "sf" } };
+}
 
 describe("plugin registry: unknown names fail at startup", () => {
   const configWith = (kind: PluginKind, value: unknown): Record<string, unknown> => {
@@ -494,12 +560,11 @@ describe("plugin registry: CapabilitySearch wiring", () => {
   });
 });
 
-describe("plugin registry: only src/plugins.ts constructs implementations", () => {
+describe("plugin registry: only plugin descriptors construct implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
-    const classes = Object.values(EXPECTED)
-      .flatMap((m) => Object.values(m))
-      .concat([SqliteDriver, MysqlDriver])
-      .map((c) => c.name);
+    const classes = new Set(DESCRIPTORS.flatMap(({ file }) => implementationClasses(file)));
+    expect(classes).toContain("MysqlDriver");
+    expect(classes).toContain("SqliteDriver");
     for (const f of ["compose.ts", "canary.ts", "setup.ts"]) {
       const text = readFileSync(join(REPO_ROOT, "src", f), "utf8");
       for (const name of classes) expect(text, `${f}: new ${name}`).not.toMatch(new RegExp(`new\\s+${name}\\b`));
@@ -542,7 +607,7 @@ describe("docs/plugins.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 14 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(14);
+  it("covers 15 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(15);
   });
 });

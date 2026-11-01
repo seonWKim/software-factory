@@ -14,6 +14,7 @@ import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
+import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -237,6 +238,9 @@ export class Plugins {
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
   }
+  githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
+    return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
+  }
   runner(sandbox: Sandbox, secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
   }
@@ -256,7 +260,8 @@ export async function build(
   await store.migrate();
 
   const scanner = await p.scanner(secrets);
-  const github = new GitHubClient(secrets);
+  const credentials = await p.githubCredentials(secrets, clock);
+  const github = new GitHubClient(credentials);
   const sandbox = await p.sandbox();
 
   const controller = new Controller({
@@ -276,7 +281,7 @@ export async function build(
     store,
     sandbox,
     runner: await p.runner(sandbox, secrets),
-    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, secrets, store, scanner, clock }),
+    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock }),
     scanner,
     storage: await createPlugin(registry, "storage", sel.storage, base),
     clock,

@@ -1,6 +1,4 @@
-import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
-
-const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
+import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 
 export interface RepoRef {
   owner: string;
@@ -16,10 +14,10 @@ export class GitHubError extends Error {
   }
 }
 
-/** REST client. The token is read from SecretStore at call time and never leaves this class. */
+/** REST client. The token comes from GitHubCredentials at call time and never leaves this class. */
 export class GitHubClient {
   constructor(
-    private readonly secrets: SecretStore,
+    private readonly credentials: GitHubCredentials,
     private readonly baseUrl = "https://api.github.com",
   ) {}
 
@@ -47,8 +45,8 @@ export class GitHubClient {
   }
 
   private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
-    const token = await this.secrets.get(GITHUB_TOKEN);
-    if (!token) throw new Error("GITHUB_TOKEN missing from the secret file (SET_UP.md)");
+    const token = await this.credentials.token();
+    if (!token) throw new Error("GitHub credentials missing from the secret file (SET_UP.md, plugins.github_auth)");
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {

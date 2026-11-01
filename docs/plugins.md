@@ -1,10 +1,11 @@
 # Plugins
 
 Every infrastructure interface has one or more **named plugins** (design D6). `factory.config.json` picks one
-name per interface; `src/plugins.ts` maps each name to the code that builds it, and it is the only non-test
-file that constructs these implementations. `src/compose.ts` (`build()`), the setup/doctor commands and the
-G6 canary all resolve plugins through that registry, so whatever config selects is what runs and what
-the canary tests.
+name per interface. Each plugin describes itself in a `*.plugin.ts` descriptor file beside its implementation
+under `src/impl/`; the descriptors are the only non-test code that constructs these implementations. At startup
+the loader in `src/plugins.ts` discovers them and fills the registry (the discovered registry, since 2026-11-01).
+`src/compose.ts` (`build()`), the setup/doctor commands and the G6 canary all resolve plugins through that
+registry, so whatever config selects is what runs and what the canary tests.
 
 ## How selection works
 
@@ -47,11 +48,21 @@ Rules, checked by `loadConfig` at startup (and again by `build()`):
 - **Unknown config keys are rejected at load**, at every level of `factory.config.json` (top level, `store` for its `type`, `repo`, `dials`, each `floors[i]`, `models`, `agent_git_identity`, `ui`, `stats`, `plugins`): one error lists every unknown key with its path and the valid keys, and adds `did you mean "…"?` when a valid key is within edit distance 2. `npm run factory -- doctor` prints each as a FAIL line and exits 1.
 - **Guards cannot be disabled.** For `secrets`, `egress` and `broker`, leaving the key out of a `plugins` object, or setting it to `null`, `false`, `""`, `"none"` or anything that is not a registered name, fails startup with an error that the plugin is a guard and points to `docs/architecture.md` §5. You can switch a guard to another registered plugin; you cannot turn it off.
 
-To switch back to the defaults, set the key back to the default name above, or delete the whole `plugins` object. There is no loading from external packages: a plugin is code in this repository, registered in `src/plugins.ts`.
+To switch back to the defaults, set the key back to the default name above, or delete the whole `plugins` object. There is no loading from external packages: a plugin is a descriptor file in this repository.
 
-**Adding an implementation:** in the same change, add its registry entry in `src/plugins.ts`, its section below, and an entry in the class table in `tests/plugins.test.ts`. The tests fail if a registered name is missing from this file.
+### The discovered registry (changed 2026-11-01)
 
-**Declared secrets.** Each registry entry lists, per plugin, the secret names that plugin reads, each with a one-line purpose (`secrets` in `src/plugins.ts`; `withPlugin` takes the same list as an optional last argument). A name is checked by `secretName()`: upper-case letters, digits and `_`, starting with a letter. The secret set is the union of the names the **selected** plugins declare (`declaredSecretNames`): the `SecretStore` loads, returns and scans exactly those, so switching a plugin in config changes the set with no code edit (for example `store.type` `sqlite` drops `MYSQL_PASSWORD`). Any other key in the secret file, a plain setting such as `MYSQL_HOST` or a secret no selected plugin declares, is never returned and never scanned. A declared secret missing from the file does not stop startup; `npm run factory -- doctor` reports it as FAIL and `npm run setup` asks for it. Declarations that share a `oneOf` label are alternatives (the model credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Each plugin's **Secrets:** line below lists exactly its declared names; `tests/secret-names.test.ts` fails when they drift, and checks that `.env.example` lists every name the default selection declares.
+Before 2026-11-01, `src/plugins.ts` imported every implementation and listed every plugin by hand, and `tests/plugins.test.ts` repeated that list and its count, so every new plugin edited the same lines. Now:
+
+- **One descriptor per plugin.** `src/impl/<area>/<name>.plugin.ts`, beside the implementation, default-exports `definePlugin({ kind, name, create, secrets?, default? })` from `src/plugin-api.ts`. `kind` is the interface's short name (`store`, `sandbox`, … `awake`); `name` is what config selects and must be unique within the kind (the same name under two kinds is fine); `create` gets the kind's typed context. Shared helpers live in modules without the `.plugin` suffix (for example `src/impl/claude/claude-shared.ts`).
+- **Discovery.** At startup `src/plugins.ts` finds every `*.plugin.js` under the built `dist/impl/` (`*.plugin.ts` under `src/impl/` when run from source, as in tests; `*.d.ts` and source maps are ignored), sorts them by path, imports each one and registers it. `REGISTRY` is filled by top-level await. `src/plugins.ts` names no plugin and imports no implementation; only a new interface (a row in its kind table) edits it.
+- **Defaults** come from the descriptors: `default: true` makes a plugin its kind's default on every platform no other plugin claims; `default: { platforms: ["darwin"] }` makes it the default on those platforms only (`awake`: `caffeinate` on `darwin`, `none` with `default: true` elsewhere). `store` and `auth` plugins take no default: their top-level keys always pick one.
+- **Startup fails**, naming the file(s), when a descriptor has no default export or an unknown `kind`; when two plugins of one kind share a name (the error names the kind, the name and both files); when a non-guard `plugins` kind has no `default: true`, or two plugins claim the default for the same platform (the error names the kind and the files); when a guard kind has no plugin at all; or when a guard plugin is named `none` or `""`.
+- **Stale builds.** `npm run build` (also run by `npm run factory` and `npm run setup`) empties `dist/` before `tsc`, so a deleted descriptor leaves no `*.plugin.js` behind to be registered.
+
+**Adding an implementation:** in the same change, add the implementation and its `*.plugin.ts` descriptor beside it, and its section below. No central file and no test list changes: `tests/plugins.test.ts` runs its property tests over every discovered descriptor, and fails if a registered name is missing from this file.
+
+**Declared secrets.** Each descriptor lists the secret names its plugin reads, each with a one-line purpose (`secrets` in the `*.plugin.ts` file; `withPlugin` takes the same list as an optional last argument). A name is checked by `secretName()`: upper-case letters, digits and `_`, starting with a letter. The secret set is the union of the names the **selected** plugins declare (`declaredSecretNames`): the `SecretStore` loads, returns and scans exactly those, so switching a plugin in config changes the set with no code edit (for example `store.type` `sqlite` drops `MYSQL_PASSWORD`). Any other key in the secret file, a plain setting such as `MYSQL_HOST` or a secret no selected plugin declares, is never returned and never scanned. A declared secret missing from the file does not stop startup; `npm run factory -- doctor` reports it as FAIL and `npm run setup` asks for it. Declarations that share a `oneOf` label are alternatives (the model credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Each plugin's **Secrets:** line below lists exactly its declared names; `tests/secret-names.test.ts` fails when they drift, and checks that `.env.example` lists every name the default selection declares.
 
 ## FactoryStore
 
@@ -74,7 +85,7 @@ What it does: resolves an external identity to a principal and decides whether i
 Plugins:
 
 - `github`: `GitHubAuthProvider`. Approvals need write permission on the repository.
-  - Enable: `"auth": "github"` (top level). Secrets: `GITHUB_TOKEN` (shared with the GitHub client).
+  - Enable: `"auth": "github"` (top level). Secrets: none of its own; it calls GitHub through the shared client, whose credential comes from `GitHubCredentials`.
 - `none`: `NoAuthProvider`. Allows everything; local development only.
   - Enable: `"auth": "none"`. Secrets: none.
 
@@ -116,7 +127,7 @@ Plugins:
 
 - `github`: `GitHubToolBroker`.
   - Enable: `"plugins": { "broker": "github", ... }`, or no `plugins` object.
-  - Secrets: `GITHUB_TOKEN` (fine-grained, this repository only; `docs/setup.md`). Settings: `branch_prefix`, `repo`.
+  - Secrets: none of its own; the push uses the token from `GitHubCredentials`. Settings: `branch_prefix`, `repo`.
 
 Switch back: `"broker": "github"`.
 
@@ -128,7 +139,12 @@ What it does: where an agent run happens: create a workspace for a branch, run c
 
 Plugins:
 
-- `noop`: `NoOpSandbox`. A git worktree under `worktrees_dir` on the host, no isolation (design §5: keep it on test environments only).
+- `noop`: `NoOpSandbox`. One clone of the factory repo per run, in its own folder under `worktrees_dir` on the host, no OS isolation (design §5: keep it on test environments only).
+  - The clone has its own git folder inside the run folder, not a worktree sharing the owner's `.git`: branches, index, `HEAD`, refs and config an agent changes there never reach the factory repo, and the run gets no writable path outside its folder (architecture §5). Objects are borrowed from the factory repo through an alternates link, not copied; the agent can still read them.
+  - `core.hooksPath` points to `<worktrees_dir>/.empty-hooks`, an empty, read-only folder outside every run folder, so a hook the agent puts in the clone's `.git/hooks` never runs. Creation refuses if that folder is not empty.
+  - The handle's `base_sha` is the factory repo's `origin/<base>`, resolved before any agent runs; the worker's gates and the broker diff from the factory repo's commit, not the run folder's ref. The clone's `origin` names the real remote for reading only: the broker pushes to the factory repo's remote.
+  - `destroy` removes the run folder. Nothing is registered in the factory repo, so `git worktree list` there has no entry for it; a second destroy is a no-op.
+  - Risk: if the factory repo runs `git gc --prune` during a run and drops an object only a clone still needs, that clone can break. Runs are short, so this is accepted.
   - Enable: `"plugins": { "sandbox": "noop", ... }`. Secrets: none. Settings: `worktrees_dir`.
 
 Switch back / disable: `"sandbox": "noop"`. There is no "off": runs need a workspace.
@@ -174,7 +190,7 @@ Plugins:
 - `github-issues`: `GitHubIssueSource`. Issues with the intake label on the configured repository, their comments and pull requests, and commits on the base branch (`repo.base_branch`; one extra API call per poll, for revert tracking, design §6).
   - `setStatus(source, status, pr_number)`: shows one of eight statuses (`triaging`, `needs_approval`, `implementing`, `in_review`, `ready_to_merge`, `needs_human`, `done`, `rejected`) as a label. `pr_number` null labels the issue; non-null labels that PR instead (PRs share the issue labels API), so the controller calls it once for the issue and once for the PR. Each call creates the label if missing (a 422 `already_exists` counts as success), adds it, and removes the other seven fixed names; a 404 on removal counts as success, and no other label is touched, including other labels under the prefix. Idempotent and best effort: the controller logs a failure as a warning and the transition stands. Names, colours and descriptions live in one table in `src/impl/source/github-issue-source.ts`. Uses the existing Issues read/write permission; no new scope.
   - Enable: `"plugins": { "source": "github-issues", ... }`.
-  - Secrets: `GITHUB_TOKEN`. Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
+  - Secrets: none of its own (the shared client's `GitHubCredentials`). Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
 
 Other sources may implement `setStatus` as a no-op.
 
@@ -278,3 +294,18 @@ Turn on / off: set `plugins.awake` to `caffeinate` (on) or `none` (off); delete 
 **Closing the laptop lid still sleeps a Mac.** `caffeinate` only stops idle and system sleep; macOS sleeps on lid close regardless (unless an external display, power and keyboard are attached). Keep the lid open while jobs run. A worker that sleeps anyway recovers through the lease rules in `docs/design.md` §5 (host sleep).
 
 Linux and Windows plugins do not exist yet.
+
+## GitHubCredentials
+
+What it does: supplies the token for every GitHub call: the shared REST client (issues, comments, labels, PRs) and the broker's `git push`. Only those two tool implementations call it; the token never reaches an agent, a prompt, a log or the store (guards G1–G2).
+
+Plugins:
+
+- `token`: `TokenCredentials`. A personal access token from the secret file, used as is. GitHub shows every write as the token's owner.
+  - Enable: `"plugins": { "github_auth": "token", ... }`, or no `github_auth` key.
+  - Secrets: `GITHUB_TOKEN` (fine-grained, this repository only; `docs/setup.md`).
+- `app`: `AppCredentials`. Acts as the GitHub App's bot. It signs a JWT (RS256, 9 minutes) with the App's key, looks up the App's installation on `repo`, and exchanges the JWT for an installation token limited to that one repository. The token is cached until 5 minutes before it expires (GitHub gives one hour); concurrent callers share one mint.
+  - Enable: `"plugins": { "github_auth": "app", ... }`. The App must be installed on the repository with Contents, Issues and Pull requests read and write.
+  - Secrets: `GITHUB_APP_ID`. Settings: the App's private key in `github-app.pem`, next to the secret file (`~/.config/software-factory/`), read only when a token is minted. A missing ID or unreadable key is a FAIL in `npm run factory -- doctor`.
+
+Turn on / off: set `plugins.github_auth` to `app` (bot) or `token` (your account); delete the key to go back to `token`.

@@ -70,16 +70,30 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     }
   }
 
-  // A missing GITHUB_TOKEN is already a FAIL above when a selected plugin declares it.
-  const gh = await secrets.get(GITHUB_TOKEN);
-  if (!gh) return checks;
+  // A missing GITHUB_TOKEN or GITHUB_APP_ID is already a FAIL above when the selected plugin declares it.
+  const credentials = await plugins.githubCredentials(secrets, await plugins.clock());
+  try {
+    if (!(await credentials.token())) return checks;
+  } catch (err) {
+    add(false, `GitHub credentials: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+    return checks;
+  }
 
-  const client = new GitHubClient(secrets);
+  const client = new GitHubClient(credentials);
   const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
   try {
     const r = await client.request<{ permissions?: { push?: boolean } }>("GET", `/repos/${repo.owner}/${repo.name}`);
-    add(r.permissions?.push === true, `GitHub token can push to ${repo.owner}/${repo.name}`);
-    const exp = await client.tokenExpiration(repo);
+    const grant = credentials.grant?.() ?? null;
+    if (grant) {
+      // A GitHub App token: GitHub's repo `permissions` field says nothing about it; the mint response does.
+      const p = grant.permissions;
+      const missing = ["contents", "issues", "pull_requests"].filter((k) => p[k] !== "write");
+      const why = missing.length > 0 ? ` (missing: ${missing.join(", ")}; set them in the App's settings and accept on the installation)` : "";
+      add(missing.length === 0, `GitHub App can write contents, issues and pull requests on ${repo.owner}/${repo.name}${why}`);
+    } else {
+      add(r.permissions?.push === true, `GitHub token can push to ${repo.owner}/${repo.name}`);
+    }
+    const exp = grant ? grant.expires_at : await client.tokenExpiration(repo);
     // Local use may keep a non-expiring token; a shared or cloud deployment should not.
     if (exp === null) add(false, `GitHub token never expires (fine locally; use ≤ ${MAX_TOKEN_DAYS} days when shared)`, true);
     else if (Number.isNaN(exp.getTime())) add(false, "GitHub token expiry is readable");
@@ -283,10 +297,11 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
 
   step(6, `Labels on ${repo.owner}/${repo.name}: intake "${loaded.config.intake_label}" and the status labels`);
   secrets = await plugins.secrets();
-  if (!(await secrets.get(GITHUB_TOKEN))) {
-    console.log("   skipped: no GITHUB_TOKEN");
+  const credentials = await plugins.githubCredentials(secrets, await plugins.clock());
+  if (!(await credentials.token())) {
+    console.log("   skipped: no GitHub credentials");
   } else {
-    const client = new GitHubClient(secrets);
+    const client = new GitHubClient(credentials);
     await createLabels(client, repo, [
       { name: loaded.config.intake_label, ...LABEL },
       ...statusLabels(loaded.config.status_label_prefix),
