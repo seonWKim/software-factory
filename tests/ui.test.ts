@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +10,8 @@ import type { WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import type { FactoryStatus } from "../src/ui/factory-status.js";
+import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
 import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
@@ -318,9 +323,9 @@ function rows(body: string): string[][] {
     .map((r) => r.split("<td>").slice(1).map((c) => c.slice(0, c.lastIndexOf("</td>"))));
 }
 
-async function startOn(store: FactoryStore, clock: FakeClock) {
+async function startOn(store: FactoryStore, clock: FakeClock, factoryStatus?: () => Promise<FactoryStatus | null>) {
   const ui = await startUi(
-    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
+    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (project, n) => `https://github.com/${project}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock), ...(factoryStatus ? { factoryStatus } : {}) },
     0,
   );
   servers.push(ui);
@@ -624,5 +629,46 @@ describe("ui: page shell, script and CSP", () => {
     const list = section((await get(port, "/")).body, "items");
     expect(list).toMatch(new RegExp(`data-key="${items.merging.id}" data-sig="\\d+:ready_to_merge:none"`));
     expect(list).toMatch(new RegExp(`data-key="${items.running.id}" data-sig="\\d+:stuck:running"`));
+  });
+});
+
+describe("ui: factory status banner", () => {
+  const status = (over: Partial<FactoryStatus>): FactoryStatus => ({
+    state: "running", rev: "aaaaaaa1111", target_rev: null, child_pid: 4242, since: "2026-01-01T00:00:00.000Z", workers: 10, ...over,
+  });
+
+  it("while draining, says new runs are paused, counts the old process's in-flight runs, and when settings apply", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(1), system);
+    await store.transition({ id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "i" } });
+    await store.claimRun({ worker_id: "host:4242:3" as never, kinds: ["implement"], lease_ms: LEASE });
+    const port = await startOn(store, clock, async () => status({ state: "draining", target_rev: "bbbbbbb2222", since: clock.now().toISOString() }));
+    const banner = section((await get(port, "/")).body, "factory");
+    expect(banner).toContain("Updating to bbbbbbb: new runs are paused.");
+    expect(banner).toContain("its 1 in-flight run finish");
+    expect(banner).toContain("starts with 10 workers");
+    expect(banner).toContain("Code and settings changes apply when the new revision starts.");
+  });
+
+  it("running, build failure and a stopped factory each say so; no status function shows no banner", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const running = section((await get(await startOn(store, clock, async () => status({})), "/")).body, "factory");
+    expect(running).toContain("Factory running.");
+    expect(running).toContain("10 workers");
+    const failed = section((await get(await startOn(store, clock, async () => status({ state: "build_failed", target_rev: "ccccccc" })), "/")).body, "factory");
+    expect(failed).toContain("failed to build");
+    expect(section((await get(await startOn(store, clock, async () => null), "/")).body, "factory")).toContain("Factory stopped.");
+    expect((await get(await startOn(store, clock), "/")).body).not.toContain('<section id="factory">');
+  });
+
+  it("reads the status file; a dead child pid reads as stopped; a missing file as null", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-ui-status-"));
+    const file = join(dir, "supervisor.json");
+    expect(await readFactoryStatus(file, 3)).toBeNull();
+    writeFileSync(file, JSON.stringify({ state: "draining", rev: "a", target_rev: "b", child_pid: 99, since: "x" }));
+    expect(await readFactoryStatus(file, 3, () => true)).toMatchObject({ state: "draining", workers: 3 });
+    expect(await readFactoryStatus(file, 3, () => false)).toMatchObject({ state: "stopped", child_pid: null });
   });
 });

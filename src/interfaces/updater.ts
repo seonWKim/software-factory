@@ -65,3 +65,23 @@ export interface Updater {
   /** Stops the child (SIGTERM, then SIGKILL after the drain timeout) and stops supervising. */
   shutdown(): Promise<void>;
 }
+
+/**
+ * What the supervisor is doing, written to `<state_dir>/supervisor.json` on every change so the status page
+ * can say why no new runs start (a drain) and when new code and settings take effect.
+ */
+export interface SupervisorStatus {
+  /** running: the child claims work. building: a new revision builds beside it. draining: the child takes no
+   * new runs and finishes its in-flight ones. restarting: the new revision is starting. build_failed: the
+   * running child stays on `rev`. stopped: no child. */
+  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "stopped";
+  /** The revision the child runs (null before the first start). */
+  rev: string | null;
+  /** The revision being built or started, when there is one. */
+  target_rev: string | null;
+  child_pid: number | null;
+  /** ISO time this state began. */
+  since: string;
+}
+
+export const SUPERVISOR_STATUS_FILE = "supervisor.json";

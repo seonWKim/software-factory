@@ -14,6 +14,8 @@ import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
+import { readFactoryStatus } from "./ui/factory-status.js";
+import { SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
 
@@ -134,6 +136,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           prUrl: (project, n) => `https://github.com/${project || `${owner}/${name}`}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           health: new HealthMonitor(() => doctorChecks(loaded), parts.clock),
+          // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
+          factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
         },
         uiPort(loaded.file.ui),
       );
