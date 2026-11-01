@@ -1,17 +1,34 @@
+import { lstat, realpath } from "node:fs/promises";
+import { join } from "node:path";
+import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import type { GitHubClient, RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
-const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
+/**
+ * The run folder's git folder, as a real path, if it is the clone's own: a directory (not a link or a `gitdir:`
+ * file) with no `commondir` or `config.worktree` that would make git read another folder's config.
+ */
+async function runFolderGitDir(workdir: string): Promise<string | null> {
+  const dir = join(workdir, ".git");
+  const st = await lstat(dir).catch(() => null);
+  if (!st?.isDirectory()) return null;
+  for (const f of ["commondir", "config.worktree"]) {
+    if (await lstat(join(dir, f)).then(() => true, () => false)) return null;
+  }
+  const cfg = await lstat(join(dir, "config")).catch(() => null);
+  if (!cfg?.isFile()) return null;
+  return realpath(dir);
+}
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
     name: "github.push_branch",
-    description: "Push the current HEAD of a factory worktree to its factory branch.",
+    description: "Push the current HEAD of a run folder to its factory branch on the factory repo's remote.",
     input_schema: {
       type: "object",
       required: ["workdir", "branch", "base_ref"],
@@ -68,12 +85,14 @@ export class GitHubToolBroker implements ToolBroker {
   constructor(
     private readonly deps: {
       client: GitHubClient;
-      secrets: SecretStore;
+      credentials: GitHubCredentials;
       store: FactoryStore;
       scanner: EgressScanner;
       clock: Clock;
       repo: RepoRef;
       branchPrefix: string;
+      /** The factory repo: its origin is the trusted push remote, its origin/<base> the trusted base. */
+      repoPath?: string;
     },
   ) {}
 
@@ -109,15 +128,48 @@ export class GitHubToolBroker implements ToolBroker {
     );
   }
 
+  /**
+   * Pushes the run folder's HEAD. Everything trusted comes from the factory repo, never from the run folder the
+   * agent could write (design §5): the remote URL, and the base commit the scanned diff starts from. Git in the
+   * run folder runs with TRUSTED_GIT_ENV and only after its git folder and config pass the checks, so no hook,
+   * fsmonitor, textconv or URL rewrite the agent configured runs or redirects the push.
+   */
   private async push(a: PushArgs): Promise<ToolResult> {
     if (!a.branch.startsWith(this.deps.branchPrefix)) {
       return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
     }
-    const git = (args: string[], extra: Record<string, string> = {}) =>
-      runProcess(["git", ...args], { cwd: a.workdir, env: baseEnv({ GIT_TERMINAL_PROMPT: "0", ...extra }) });
+    const repo = this.deps.repoPath;
+    if (!repo) return { ok: false, error_code: "no_trusted_repo", message: "the broker has no factory repo path" };
+    const trusted = (args: string[]) => runProcess(["git", "-C", repo, ...args], { cwd: repo, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
+    const [baseR, urlR] = await Promise.all([
+      trusted(["rev-parse", "--verify", "--end-of-options", `origin/${a.base_ref}^{commit}`]),
+      trusted(["remote", "get-url", "--push", "origin"]),
+    ]);
+    if (baseR.exit_code !== 0 || urlR.exit_code !== 0) {
+      return { ok: false, error_code: "git_failed", message: (baseR.stderr + urlR.stderr).trim().slice(0, 500) };
+    }
+    const base = baseR.stdout.trim();
+    const url = urlR.stdout.trim();
 
-    const range = `origin/${a.base_ref}...HEAD`;
-    const [log, diff] = await Promise.all([git(["log", "--format=%B", range]), git(["diff", range])]);
+    const gitDir = await runFolderGitDir(a.workdir);
+    if (!gitDir) return { ok: false, error_code: "untrusted_git_dir", message: "the run folder's .git is not its own git folder" };
+    const git = (args: string[], extra: Record<string, string> = {}) =>
+      runProcess(["git", ...args], {
+        cwd: a.workdir,
+        env: baseEnv({ ...extra, ...TRUSTED_GIT_ENV, GIT_DIR: gitDir, GIT_WORK_TREE: a.workdir }),
+      });
+    const names = await git(["config", "--file", join(gitDir, "config"), "--name-only", "--list", "-z"]);
+    if (names.exit_code !== 0) return { ok: false, error_code: "git_failed", message: names.stderr.trim().slice(0, 500) };
+    const untrusted = untrustedGitConfig(names.stdout);
+    if (untrusted.length > 0) {
+      return { ok: false, error_code: "untrusted_git_config", message: untrusted.join(", ").slice(0, 500) };
+    }
+
+    const range = `${base}...HEAD`;
+    const [log, diff] = await Promise.all([
+      git(["log", "--no-textconv", "--format=%B", range]),
+      git(["diff", "--no-textconv", "--no-ext-diff", range]),
+    ]);
     if (log.exit_code !== 0 || diff.exit_code !== 0) {
       return { ok: false, error_code: "git_failed", message: (log.stderr + diff.stderr).trim() };
     }
@@ -126,12 +178,12 @@ export class GitHubToolBroker implements ToolBroker {
       if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
     }
 
-    const token = await this.deps.secrets.get(GITHUB_TOKEN);
-    if (!token) return { ok: false, error_code: "no_credential", message: "GITHUB_TOKEN missing" };
+    const token = await this.deps.credentials.token();
+    if (!token) return { ok: false, error_code: "no_credential", message: "GitHub credentials missing" };
     // The token reaches git only through this child's env and an inline credential helper, never argv.
     const helper = '!f() { echo username=x-access-token; echo "password=$SF_GIT_TOKEN"; }; f';
     const r = await git(
-      ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "push", "--quiet", "origin", `HEAD:refs/heads/${a.branch}`],
+      ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "push", "--quiet", "--no-verify", url, `HEAD:refs/heads/${a.branch}`],
       { SF_GIT_TOKEN: token.reveal() },
     );
     if (r.exit_code !== 0) return { ok: false, error_code: "push_failed", message: r.stderr.trim().slice(0, 500) };

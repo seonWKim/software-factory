@@ -746,9 +746,12 @@ export class SqlFactoryStore implements FactoryStore {
     const now = this.now();
     const inserted = await this.insertOnce(
       tx,
-      `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, not_before, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?)`,
-      [id, input.work_item_id, input.kind, input.idempotency_key, input.not_before ?? null, now, now],
+      `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, not_before, input, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?, ?)`,
+      [
+        id, input.work_item_id, input.kind, input.idempotency_key, input.not_before ?? null,
+        input.input ? JSON.stringify(input.input) : null, now, now,
+      ],
     );
     return inserted ? this.selectRun(tx, id) : null;
   }

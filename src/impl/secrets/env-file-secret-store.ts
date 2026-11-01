@@ -9,7 +9,7 @@ export function defaultSecretsFile(env: NodeJS.ProcessEnv = process.env): string
   return join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "software-factory", ".env");
 }
 
-class OpaqueSecret implements Secret {
+export class OpaqueSecret implements Secret {
   readonly #value: string;
   constructor(
     readonly name: SecretName,

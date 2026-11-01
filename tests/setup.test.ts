@@ -6,6 +6,7 @@ import { loadConfig } from "../src/compose.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import { createLabels, ensureSecretFile, setSecret, statusLabelChecks } from "../src/setup.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 describe("setup: secret file writes", () => {
   it("creates the file from the template with private modes, and replaces only the named line", async () => {
@@ -47,7 +48,7 @@ class LabelsClient extends GitHubClient {
   names = new Set<string>();
   failOn: string | null = null;
   constructor() {
-    super({} as SecretStore, "http://unused");
+    super({} as GitHubCredentials, "http://unused");
   }
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (method === "GET") {

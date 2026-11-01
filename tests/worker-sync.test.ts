@@ -250,7 +250,10 @@ describe("implement run: sync with base before push", () => {
     expect(prompt).toContain("- `src/a.txt`");
     expect(prompt).toContain(`${mainSha.slice(0, 8)} main edits a`);
     expect(prompt).not.toContain("add x"); // only base commits since the fork that touched the conflicting files
-    expect(f.conflictSteps[0]!.writable_paths).toEqual([join(f.root, "repo", ".git")]);
+    // Only the run's own git folder (#94): never the factory repo's .git.
+    const writable = f.conflictSteps[0]!.writable_paths;
+    expect(writable).toHaveLength(1);
+    expect(writable[0]).toMatch(/[/]\.worktrees[/]sbx_[^/]+[/]\.git$/);
 
     const head = git(f.origin, "log", "-1", "--format=%P%n%s", branch).split("\n");
     expect(head[0]!.split(" ")).toContain(mainSha);

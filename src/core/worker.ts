@@ -10,6 +10,7 @@ import {
   parseTriage,
 } from "./outputs.js";
 import { RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
+import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import type { Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
@@ -54,7 +55,7 @@ export interface WorkerDeps {
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
 /** How many search results go into the prompt's doc index. */
@@ -65,6 +66,42 @@ const TAIL_CHARS = 2000;
 const MAX_CONFLICT_COMMITS = 30;
 /** Git hooks off for the worker's own merge and commit after an agent step. */
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
+
+/**
+ * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
+ * config, above the run's `.git/config`, which the agent can write: no hooks, no fsmonitor, no signing program.
+ * Replace refs and grafts the agent wrote cannot change what the gates see.
+ */
+export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
+  GIT_CONFIG_COUNT: "4",
+  GIT_CONFIG_KEY_0: "core.hooksPath",
+  GIT_CONFIG_VALUE_0: "/dev/null",
+  GIT_CONFIG_KEY_1: "core.fsmonitor",
+  GIT_CONFIG_VALUE_1: "false",
+  GIT_CONFIG_KEY_2: "commit.gpgSign",
+  GIT_CONFIG_VALUE_2: "false",
+  GIT_CONFIG_KEY_3: "tag.gpgSign",
+  GIT_CONFIG_VALUE_3: "false",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_GRAFT_FILE: "/dev/null",
+  GIT_TERMINAL_PROMPT: "0",
+};
+
+const TRUSTED_GIT_KEYS = new Set([
+  "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
+  "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
+  "remote.origin.url", "remote.origin.fetch", "user.name", "user.email",
+]);
+
+/**
+ * The keys in a run's `.git/config` (`git config --name-only --list -z` output) that are not plain data a sandbox
+ * or git itself writes there. Anything else may make git run a program (filters, textconv, fsmonitor, ssh,
+ * credential helpers, includes, URL rewrites), so trusted git calls never read it (design §5).
+ */
+export function untrustedGitConfig(names: string): string[] {
+  const keys = names.split("\0").filter(Boolean);
+  return [...new Set(keys.filter((k) => !TRUSTED_GIT_KEYS.has(k) && !/^branch\.[^\n]+\.(remote|merge)$/.test(k)))];
+}
 
 class RunFailure extends Error {
   constructor(
@@ -191,6 +228,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
+    if (run.kind === "resolve") return this.resolve(run, item, ctx, signal);
     const { repo } = this.d.config;
     const branch = run.kind === "triage" ? null : branchFor(item, this.d.config.branch_prefix);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch });
@@ -221,6 +259,9 @@ export class Worker {
   private async implement(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, signal: AbortSignal) {
     const base = this.d.config.repo.base_branch;
     const start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    const baseSha = await this.trustedBase(handle);
+    const dirs = await this.gitDirs(handle);
+    // The run's own git folder, inside its workdir: the merge step below may write only there.
     const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
     const previous = await this.previousContext(item);
     const notes = await this.approverNotes(item);
@@ -234,18 +275,20 @@ export class Worker {
       harness_tools: WRITE_TOOLS,
       model_class: "strong",
       output_schema: IMPLEMENT_SCHEMA,
-      writable_paths: [gitDir],
+      // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
+      writable_paths: [],
       env_allowlist: gitIdentity(this.d.config.agent_git_identity),
     });
     const out = parseImplement(result.output);
     if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+    await this.distrustAgentGit(handle, dirs);
 
     const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
     if (commits.length === 0) {
       throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
     }
     // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in.
-    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir);
+    const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha);
     const tokens = tokensOf(result) + sync.tokens;
     const floor = await this.prePush(run, item, handle, ctx, sync.baseSha);
     if (floor) {
@@ -295,11 +338,21 @@ export class Worker {
     ctx: ToolCallContext,
     signal: AbortSignal,
     gitDir: string,
+    dirs: string,
+    trustedBaseSha: string,
   ): Promise<{ baseSha: string; merged: boolean; tokens: number }> {
     const { repo } = this.d.config;
     const baseRef = `origin/${repo.base_branch}`;
-    await this.git(handle, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${repo.base_branch}:refs/remotes/${baseRef}`]);
+    // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
+    const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+    await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, `+refs/remotes/${baseRef}:refs/remotes/${baseRef}`]);
     const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
+    if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
+    // The fetched base may only move forward from the base the sandbox resolved before any agent ran.
+    if (baseSha !== trustedBaseSha) {
+      const forward = await this.gitRaw(handle, ["merge-base", "--is-ancestor", trustedBaseSha, baseSha]);
+      if (forward.exit_code !== 0) throw new RunFailure("untrusted_base", "the fetched base does not contain the base resolved before the run");
+    }
 
     const ancestor = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
     if (ancestor.exit_code === 0) return { baseSha, merged: false, tokens: 0 };
@@ -338,6 +391,7 @@ export class Worker {
       writable_paths: [gitDir],
       env_allowlist: identity,
     }, "merge");
+    await this.distrustAgentGit(handle, dirs);
     const tokens = tokensOf(result);
     const fail = (why: string) => this.mergeConflict(run, item, ctx, conflicts, why, result.transcript);
 
@@ -505,7 +559,7 @@ export class Worker {
   }
 
   /**
-   * Merges origin/<base> into the PR branch in a fresh worktree, runs the test command, and pushes only a clean,
+   * Merges origin/<base> into the PR branch in a fresh run folder (its own clone), runs the test command, and pushes only a clean,
    * passing merge (never a force push). No agent. Conflicts and failing tests are reported on the PR and in
    * `result`; the controller decides the state. Git and push errors fail the run.
    */
@@ -581,6 +635,133 @@ export class Worker {
       return { result: "pushed", merge_sha, head_sha, base_sha };
     } finally {
       await this.d.sandbox.destroy(handle);
+    }
+  }
+
+  /**
+   * The resolve run (design §5 Merge conflict), started by a human's `/resolve`. In the PR branch's sandbox:
+   * merge origin/<base> with --no-commit and leave the conflicts; snapshot the tree; let the agent resolve;
+   * then, before any push, the worker's own gates: nothing left unmerged, the scope gate (every file changed
+   * since the snapshot, tracked or untracked, is a conflicting file or under allowed_paths), the merge commit
+   * contains the base, and the install and test commands pass. Only then push through the broker (same branch,
+   * same PR, never a force push). Any failure throws: nothing is pushed and the controller re-blocks the item.
+   */
+  private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
+    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    const system_prompt = this.d.prompts.resolve;
+    if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
+    const { repo, branch_prefix } = this.d.config;
+    const branch = branchFor(item, branch_prefix);
+    const baseRef = `origin/${repo.base_branch}`;
+    const identity = gitIdentity(this.d.config.agent_git_identity);
+    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+      throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
+    });
+    try {
+      // The sandbox starts a missing branch from base; a resolve must only ever touch the PR's own branch.
+      await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
+      const baseSha = await this.trustedBase(handle);
+      // The run's own git folder, inside its workdir: the clone has no other.
+      const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+      const dirs = await this.gitDirs(handle);
+      const index = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-path", "sf-resolve-index"])).trim();
+
+      const merge = await this.gitRaw(
+        handle,
+        ["merge", "--no-ff", "--no-commit", "-m", `Merge ${baseRef} into ${branch}`, baseRef],
+        identity,
+      );
+      const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
+      if (merge.exit_code !== 0 && conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+
+      let tokens = 0;
+      if (conflicts.length > 0) {
+        const files: ConflictFile[] = [];
+        for (const path of conflicts) {
+          const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
+          files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
+        }
+        const before = await this.snapshot(handle, index);
+        const notes = run.input?.notes ?? "";
+        const result = await this.agent(run, item, handle, signal, {
+          system_prompt,
+          prompt: await this.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
+          harness_tools: WRITE_TOOLS,
+          model_class: "strong",
+          output_schema: IMPLEMENT_SCHEMA,
+          writable_paths: [gitDir],
+          env_allowlist: identity,
+        });
+        const out = parseImplement(result.output);
+        if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+        tokens = tokensOf(result);
+        await this.distrustAgentGit(handle, dirs);
+
+        const after = await this.snapshot(handle, index);
+        const changed = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", before, after]);
+        const outside = resolveScopeViolations(changed, conflicts, item.allowed_paths);
+        if (outside.length > 0) {
+          throw new RunFailure("out_of_scope", `changed files outside the conflicts and allowed_paths: ${outside.join(", ")}`.slice(0, 500));
+        }
+        const markers = await this.gitRaw(handle, ["grep", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", after, "--", ...conflicts]);
+        if (markers.exit_code === 0) throw new RunFailure("unresolved_conflicts", `conflict markers left in: ${markers.stdout.trim()}`.slice(0, 500));
+      }
+
+      await this.commitResolution(handle, identity);
+      const contains = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
+      if (contains.exit_code === 1) throw new RunFailure("merge_incomplete", `HEAD does not contain ${baseRef} (${baseSha.slice(0, 8)})`);
+      if (contains.exit_code !== 0) throw new RunFailure("git_failed", `git merge-base: ${contains.stderr.trim()}`, true);
+
+      for (const cmd of [repo.install_command, repo.test_command]) await this.gate(handle, cmd, signal);
+
+      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
+      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+      const head_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+      return { result: "pushed", conflicts, head_sha, base_sha: baseSha, tokens };
+    } finally {
+      await this.d.sandbox.destroy(handle);
+    }
+  }
+
+  /**
+   * The working tree as a tree object (tracked and untracked, .gitignore respected), written through a separate
+   * index file so the merge's own index, with its conflict stages, is untouched.
+   */
+  private async snapshot(handle: SandboxHandle, index: string): Promise<string> {
+    const env = { GIT_INDEX_FILE: index };
+    await this.gitEnv(handle, ["read-tree", "--empty"], env);
+    await this.gitEnv(handle, ["add", "-A"], env);
+    return (await this.gitEnv(handle, ["write-tree"], env)).trim();
+  }
+
+  /**
+   * Stages the tree the gates checked and commits it: the open merge (MERGE_HEAD) with its message, or staged
+   * leftovers. A path still unmerged after `add -A` (git could not stage it) fails `unresolved_conflicts`.
+   */
+  private async commitResolution(handle: SandboxHandle, identity: Record<string, string>): Promise<void> {
+    await this.git(handle, ["add", "-A"]);
+    const unmerged = (await this.git(handle, ["ls-files", "--unmerged", "-z"])).trim();
+    if (unmerged) throw new RunFailure("unresolved_conflicts", "files are still unmerged after the agent ran");
+    const merging = await this.gitRaw(handle, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]);
+    if (merging.exit_code === 0) {
+      await this.gitEnv(handle, ["commit", "--no-edit"], identity);
+      return;
+    }
+    const staged = await this.gitRaw(handle, ["diff", "--cached", "--quiet"]);
+    if (staged.exit_code === 1) await this.gitEnv(handle, ["commit", "-m", "Resolve merge conflicts"], identity);
+  }
+
+  /** One gate command (install or test) in the sandbox with the worker's tool env. Non-zero: `tests_failed`. */
+  private async gate(handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal): Promise<void> {
+    const r = await this.d.sandbox
+      .exec(handle, cmd, { env: this.d.toolEnv, timeout_ms: this.d.config.run_timeout_ms, signal })
+      .catch((err: unknown) => {
+        throw new RunFailure("tests_failed", `\`${cmd.join(" ")}\` could not run: ${err instanceof Error ? err.message : "unknown"}`);
+      });
+    if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+    if (r.exit_code !== 0) {
+      const how = r.timed_out ? "timed out" : `exited ${r.exit_code ?? r.signal ?? "abnormally"}`;
+      throw new RunFailure("tests_failed", `\`${cmd.join(" ")}\` ${how}`, false, { output_tail: tail(`${r.stdout}${r.stderr}`) });
     }
   }
 
@@ -705,8 +886,47 @@ export class Worker {
     return r.stdout;
   }
 
+  private async gitEnv(handle: SandboxHandle, args: string[], env: Record<string, string>): Promise<string> {
+    const r = await this.gitRaw(handle, args, env);
+    if (r.exit_code !== 0) throw new RunFailure("git_failed", `git ${args[0]}: ${r.stderr.trim()}`, true);
+    return r.stdout;
+  }
+
+  /** Every worker git call in a run folder: the trusted env ranks above whatever the run's .git/config says. */
   private gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
-    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, GIT_TERMINAL_PROMPT: "0" } });
+    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
+  }
+
+  /**
+   * The base commit the gates diff against: the factory repo's origin/<base>, as the sandbox resolved it before
+   * any agent ran. A sandbox that does not report it: origin/<base> in the run folder, still before the agent.
+   */
+  private async trustedBase(handle: SandboxHandle): Promise<string> {
+    if (handle.base_sha) return handle.base_sha;
+    const base = this.d.config.repo.base_branch;
+    return (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
+  }
+
+  /** The run folder's git dir and common dir, as real paths. Taken before the agent, compared after. */
+  private async gitDirs(handle: SandboxHandle): Promise<string> {
+    return (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"])).trim();
+  }
+
+  /**
+   * After an agent ran in the run folder, before any other worker or broker git call there. The git folder must
+   * still be the one the sandbox made (not swapped for a link or a `gitdir:` file pointing elsewhere), and every
+   * config key the agent added that is not plain data is removed, so no trusted call runs a program it named.
+   */
+  private async distrustAgentGit(handle: SandboxHandle, before: string): Promise<void> {
+    const after = await this.gitDirs(handle);
+    if (after !== before) throw new RunFailure("untrusted_git_dir", "the run's git folder changed while the agent ran");
+    const file = `${after.split("\n")[0]}/config`;
+    const list = () => this.git(handle, ["config", "--file", file, "--name-only", "--list", "-z"]);
+    for (const key of untrustedGitConfig(await list())) {
+      await this.git(handle, ["config", "--file", file, "--unset-all", key]);
+    }
+    const left = untrustedGitConfig(await list());
+    if (left.length > 0) throw new RunFailure("untrusted_git_config", `git config keys left: ${left.join(", ")}`.slice(0, 500));
   }
 }
 

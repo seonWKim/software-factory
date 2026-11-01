@@ -8,6 +8,7 @@ import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 // The spec and failure comment URLs land on the item in the transition that blocks it (design §9).
 
@@ -129,7 +130,7 @@ class FakeClient extends GitHubClient {
   postedUrl = "https://github.com/o/r/issues/7#issuecomment-900";
 
   constructor() {
-    super({} as SecretStore, "http://unused");
+    super({} as GitHubCredentials, "http://unused");
   }
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     this.calls.push({ method, path, body });
@@ -172,7 +173,7 @@ describe("GitHub comments return their URL", () => {
     const client = new FakeClient();
     const broker = new GitHubToolBroker({
       client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      secrets: { get: async () => null, valuesForScan: async () => [] },
+      credentials: { token: async () => null },
       scanner: cleanScanner,
     });
     const r = await broker.call({ run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token }, "github.comment", {

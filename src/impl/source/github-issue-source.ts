@@ -25,6 +25,8 @@ interface GhIssueFull extends GhIssue {
 interface GhComment {
   id: number;
   issue_url: string;
+  /** `.../pull/<n>#issuecomment-<id>` for a comment on a PR's conversation, `.../issues/<n>#...` on an issue. */
+  html_url?: string;
   body: string;
   user: GhUser;
   updated_at: string;
@@ -187,6 +189,12 @@ export class GitHubIssueSource implements PollSource {
           events.push({ kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount });
           break;
         }
+        case "resolve": {
+          const onPr = cm.html_url?.includes("/pull/") ? await this.factoryPull(base, Number(cm.issue_url.split("/").pop())) : null;
+          if (cm.html_url?.includes("/pull/") && !onPr) break;
+          events.push({ kind: "resolve_requested", source, comment_id, requester: who, notes: text, pr: onPr });
+          break;
+        }
         case "help":
           events.push({ kind: "help_requested", source, comment_id, requester: who });
           break;
@@ -259,6 +267,20 @@ export class GitHubIssueSource implements PollSource {
 
     events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /**
+   * The PR's number and head branch if it is a factory PR; null for another PR or one that is gone (404), so
+   * a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
+   */
+  private async factoryPull(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
+    try {
+      const p = await this.client.request<Pick<GhPull, "number" | "head">>("GET", `${base}/pulls/${n}`);
+      return p.head.ref.startsWith(this.branchPrefix) ? { pr_number: p.number, head_branch: p.head.ref } : null;
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 404) return null;
+      throw err;
+    }
   }
 
   /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */

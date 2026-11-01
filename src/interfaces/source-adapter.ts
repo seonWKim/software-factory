@@ -36,6 +36,19 @@ export type SourceEvent =
    */
   | { kind: "budget_continue"; source: SourceRef; comment_id: string; approver: ExternalIdentity; amount: string | null }
   /**
+   * `/resolve [notes]` (design §5 Merge conflict). `notes`: the rest of the comment, trimmed; untrusted text.
+   * On a factory PR's conversation, `pr` names that PR and `source` is the PR itself, so the 👀 and any reply
+   * go there; the controller finds the work item by the head branch. On an issue, `pr` is null.
+   */
+  | {
+      kind: "resolve_requested";
+      source: SourceRef;
+      comment_id: string;
+      requester: ExternalIdentity;
+      notes: string;
+      pr: { pr_number: number; head_branch: string } | null;
+    }
+  /**
    * A `/verdict` comment on an issue or on a PR. `args` is the raw text after `/verdict` (following lines
    * included); the controller parses it. A PR target names the head branch, which maps to the work item.
    */
