@@ -1585,11 +1585,12 @@ function awaitingSpec(it: WorkItem): boolean {
   return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
 }
 
-/** A rejected item whose reject comment or source close may not have happened yet. */
+/** An item closed from its source whose PR comment or PR close may not have happened yet. */
 function prClosePending(it: WorkItem): boolean {
   return it.stage === "CLOSED" && it.blocked_on === "upstream" && it.blocked_reason === PR_CLOSE_PENDING;
 }
 
+/** A rejected item whose reject comment or source close may not have happened yet. */
 function closePending(it: WorkItem): boolean {
   return it.stage === "CLOSED" && it.blocked_on === "upstream" && it.blocked_reason === SOURCE_CLOSE_PENDING;
 }
