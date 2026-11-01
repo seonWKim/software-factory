@@ -1,10 +1,12 @@
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { SecretStore } from "../../interfaces/secret-store.js";
+import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import type { GitHubClient, RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
+
+const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
@@ -124,7 +126,7 @@ export class GitHubToolBroker implements ToolBroker {
       if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
     }
 
-    const token = await this.deps.secrets.get("GITHUB_TOKEN");
+    const token = await this.deps.secrets.get(GITHUB_TOKEN);
     if (!token) return { ok: false, error_code: "no_credential", message: "GITHUB_TOKEN missing" };
     // The token reaches git only through this child's env and an inline credential helper, never argv.
     const helper = '!f() { echo username=x-access-token; echo "password=$SF_GIT_TOKEN"; }; f';

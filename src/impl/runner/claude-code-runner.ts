@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
-import type { SecretStore } from "../../interfaces/secret-store.js";
+import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 
 export interface ClaudeCodeRunnerOptions {
   sandbox: Sandbox;
@@ -117,9 +117,9 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
 }
 
 export async function harnessCredential(secrets: SecretStore): Promise<HarnessCredential> {
-  const oauth = await secrets.get("CLAUDE_CODE_OAUTH_TOKEN");
+  const oauth = await secrets.get(secretName("CLAUDE_CODE_OAUTH_TOKEN"));
   if (oauth) return { name: "CLAUDE_CODE_OAUTH_TOKEN", value: oauth.reveal() };
-  const key = await secrets.get("ANTHROPIC_API_KEY");
+  const key = await secrets.get(secretName("ANTHROPIC_API_KEY"));
   if (key) return { name: "ANTHROPIC_API_KEY", value: key.reveal() };
   throw new Error("no model credential in the secret file (docs/setup.md §3)");
 }
