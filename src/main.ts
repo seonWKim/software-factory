@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-import { CODE_ROOT_ENV, type Loaded, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
+import { GitHubClient } from "./impl/github/github-client.js";
 import type { WorkItemId } from "./core/types.js";
 import type { SecretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
@@ -18,7 +22,14 @@ const USAGE = `factory <command>
   status [id]  work items, or one item's state_changes trail
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   doctor       checks setup without printing any secret
-  canary       G6: a real agent tries to find a planted canary secret`;
+  canary       G6: a real agent tries to find a planted canary secret
+  golden add <pr> [--expect should_flag|should_pass] [--force]
+               writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
+               egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
+  golden run --agent reviewer
+               replays every golden case through the reviewer (no push, no GitHub writes), prints
+               catch_rate and false_alarm_rate, writes <state_dir>/golden/results/<timestamp>.json.
+               With the noop sandbox the agent runs as the host user: test environment only (design §5)`;
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
@@ -100,6 +111,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "doctor":
       return doctor(loaded);
+    case "golden":
+      return golden(loaded, args[0], args.slice(1));
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));
@@ -109,6 +122,44 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       console.log(USAGE);
       return cmd ? 1 : 0;
   }
+}
+
+/** `golden add` reads the store and GitHub (read-only); `golden run` opens neither. */
+async function golden(loaded: Loaded, sub: string | undefined, args: string[]): Promise<number> {
+  const p = new Plugins(loaded);
+  if (sub === "add") {
+    const opts = parseAddArgs(args);
+    await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+    const secrets = await p.secrets();
+    const store = await p.store(secrets, await p.clock());
+    try {
+      await store.migrate();
+      const { owner, name } = loaded.config.repo;
+      const github = new GitHubClient(secrets);
+      const r = await addCase(
+        {
+          store,
+          project: `${owner}/${name}`,
+          github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
+          scanner: await p.scanner(secrets),
+          casesDir: join(loaded.root, "golden", "cases"),
+        },
+        opts,
+      );
+      console.log(`wrote ${r.dir} (${r.case.expect}, ${r.case.outcome})`);
+      return 0;
+    } finally {
+      await store.close();
+    }
+  }
+  if (sub === "run") {
+    const opts = parseRunArgs(args);
+    const report = await runCases(await buildGoldenRunDeps(p, loaded), opts);
+    console.log(formatReport(report));
+    return 0;
+  }
+  console.log(USAGE);
+  return 1;
 }
 
 main(process.argv[2], process.argv.slice(3)).then(

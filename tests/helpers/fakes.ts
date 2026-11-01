@@ -212,6 +212,18 @@ export class FakeBroker implements ToolBroker {
   }
 }
 
+/** Read-only PR diffs by number, standing in for GitHubClient.pullDiff. Records every PR asked for. */
+export class FakeGitHubDiff {
+  calls: number[] = [];
+  constructor(private readonly diffs: Record<number, string>) {}
+  async pullDiff(pr: number): Promise<string> {
+    this.calls.push(pr);
+    const d = this.diffs[pr];
+    if (d === undefined) throw new Error(`no diff for PR ${pr}`);
+    return d;
+  }
+}
+
 export class MemoryStorage implements SharedStorage {
   data = new Map<string, Uint8Array>();
   async put(k: string, v: Uint8Array) {
