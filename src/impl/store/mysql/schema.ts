@@ -126,4 +126,27 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
     ) ${TABLE}`,
   ],
+  // 6: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  [
+    `CREATE TABLE budget_checkpoints (
+      seq                  BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
+      id                   VARCHAR(64) NOT NULL PRIMARY KEY,
+      work_item_id         VARCHAR(64) NOT NULL,
+      tier                 TINYINT NOT NULL,
+      tokens_spent         BIGINT NOT NULL,
+      budget               BIGINT NOT NULL,
+      suggested_budget     BIGINT NOT NULL,
+      answer               VARCHAR(32) NOT NULL,
+      granted_budget       BIGINT,
+      held_run_kind        VARCHAR(16) NOT NULL,
+      held_run_key         VARCHAR(255) NOT NULL,
+      held_run_not_before  CHAR(24),
+      outcome              VARCHAR(16),
+      created_at           CHAR(24) NOT NULL,
+      answered_at          CHAR(24),
+      KEY budget_checkpoints_work_item (work_item_id, created_at),
+      FOREIGN KEY (work_item_id) REFERENCES work_items (id)
+    ) ${TABLE}`,
+    "CREATE INDEX work_items_tier ON work_items (project, tier, stage)",
+  ],
 ];

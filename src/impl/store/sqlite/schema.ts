@@ -113,4 +113,25 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
   `,
+  // 6: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  `
+  CREATE TABLE budget_checkpoints (
+    id                   TEXT PRIMARY KEY,
+    work_item_id         TEXT NOT NULL REFERENCES work_items(id),
+    tier                 INTEGER NOT NULL,
+    tokens_spent         INTEGER NOT NULL,
+    budget               INTEGER NOT NULL,
+    suggested_budget     INTEGER NOT NULL,
+    answer               TEXT NOT NULL,
+    granted_budget       INTEGER,
+    held_run_kind        TEXT NOT NULL,
+    held_run_key         TEXT NOT NULL,
+    held_run_not_before  TEXT,
+    outcome              TEXT,
+    created_at           TEXT NOT NULL,
+    answered_at          TEXT
+  );
+  CREATE INDEX budget_checkpoints_work_item ON budget_checkpoints (work_item_id, created_at);
+  CREATE INDEX work_items_tier ON work_items (project, tier, stage);
+  `,
 ];

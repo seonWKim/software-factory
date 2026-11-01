@@ -1,5 +1,10 @@
+import type { TierHistory } from "../../../core/budget.js";
 import type {
   Actor,
+  BudgetCheckpoint,
+  BudgetCheckpointId,
+  BudgetOutcome,
+  CloseReason,
   Handoff,
   Run,
   RunId,
@@ -10,6 +15,7 @@ import type {
   StateChange,
   StateChangeDetail,
   StateChangeId,
+  Tier,
   Timestamp,
   Verdict,
   VerdictId,
@@ -18,11 +24,14 @@ import type {
 } from "../../../core/types.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
+  AnswerBudgetCheckpointInput,
+  BudgetCheckpointResult,
   ClaimInput,
   FactoryStore,
   LeaseResult,
   NewRun,
   NewWorkItem,
+  OpenBudgetCheckpointInput,
   RecordVerdictInput,
   RecordVerdictResult,
   TransitionInput,
@@ -35,6 +44,7 @@ import {
   diffPatch,
   newId,
   newWorkItem,
+  rowToBudgetCheckpoint,
   rowToHandoff,
   rowToRun,
   rowToStateChange,
@@ -149,38 +159,47 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async transition(input: TransitionInput): Promise<TransitionResult> {
+    return this.db.transaction((tx) => this.applyTransition(tx, input));
+  }
+
+  /** transition() inside a caller's transaction. A refusal returns before anything is written. */
+  private async applyTransition(tx: SqlExecutor, input: TransitionInput): Promise<TransitionResult> {
     const { forUpdate } = this.db.dialect;
-    return this.db.transaction(async (tx) => {
-      const current = await this.selectItem(tx, input.id, forUpdate);
-      if (!current) return { ok: false, reason: "not_found" };
-      if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+    const current = await this.selectItem(tx, input.id, forUpdate);
+    if (!current) return { ok: false, reason: "not_found" };
+    if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
 
-      if (input.ack_run !== undefined) {
-        const run = await this.selectRun(tx, input.ack_run, forUpdate);
-        const finished = run && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
-        if (!run || run.work_item_id !== input.id || !finished || run.acknowledged_at !== null) {
-          return { ok: false, reason: "run_not_ackable" };
-        }
+    if (input.ack_run !== undefined) {
+      const run = await this.selectRun(tx, input.ack_run, forUpdate);
+      const finished = run && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
+      if (!run || run.work_item_id !== input.id || !finished || run.acknowledged_at !== null) {
+        return { ok: false, reason: "run_not_ackable" };
       }
+    }
 
-      const { changes, sets, values } = diffPatch(current, input.patch);
-      const now = this.now();
-      const version = current.version + 1;
-      const updated = await tx.run(
-        `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
-        [...values, version, now, input.id, input.expected_version],
-      );
-      if (updated !== 1) return { ok: false, reason: "version_conflict", current };
+    const { changes, sets, values } = diffPatch(current, input.patch);
+    const now = this.now();
+    const version = current.version + 1;
+    const updated = await tx.run(
+      `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
+      [...values, version, now, input.id, input.expected_version],
+    );
+    if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-      const state_change = await this.insertStateChange(
-        tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
-      );
-      if (input.ack_run !== undefined) {
-        await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
-      }
-      const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-      return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, enqueued };
-    });
+    const state_change = await this.insertStateChange(
+      tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
+    );
+    if (input.ack_run !== undefined) {
+      await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
+    }
+    const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
+    const item = (await this.selectItem(tx, input.id))!;
+    // Closing the item settles its checkpoints that have no outcome yet (design §6).
+    const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
+    if (current.stage !== "CLOSED" && item.stage === "CLOSED" && outcome) {
+      await tx.run("UPDATE budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
+    }
+    return { ok: true, item, state_change, enqueued };
   }
 
   async listStateChanges(id: WorkItemId): Promise<StateChange[]> {
@@ -240,6 +259,70 @@ export class SqlFactoryStore implements FactoryStore {
   async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
     const rows = await this.db.all(`SELECT * FROM verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
+  }
+
+  // Budget checkpoints
+
+  async openBudgetCheckpoint(input: OpenBudgetCheckpointInput): Promise<BudgetCheckpointResult> {
+    const { checkpoint, ...transition } = input;
+    return this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
+      const [pending] = await tx.all("SELECT id FROM budget_checkpoints WHERE work_item_id = ? AND answer = 'pending'", [input.id]);
+      if (pending) return { ok: false, reason: "checkpoint_pending" };
+      const r = await this.applyTransition(tx, transition);
+      if (!r.ok) return r;
+      const id = newId("bc") as BudgetCheckpointId;
+      await tx.run(
+        `INSERT INTO budget_checkpoints (id, work_item_id, tier, tokens_spent, budget, suggested_budget, answer, granted_budget,
+           held_run_kind, held_run_key, held_run_not_before, outcome, created_at, answered_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?, NULL)`,
+        [
+          id, input.id, checkpoint.tier, checkpoint.tokens_spent, checkpoint.budget, checkpoint.suggested_budget,
+          checkpoint.held_run_kind, checkpoint.held_run_key, checkpoint.held_run_not_before, this.now(),
+        ],
+      );
+      return { ...r, checkpoint: (await this.selectCheckpoint(tx, id))! };
+    });
+  }
+
+  async answerBudgetCheckpoint(input: AnswerBudgetCheckpointInput): Promise<BudgetCheckpointResult> {
+    const { checkpoint_id, answer, granted_budget, ...transition } = input;
+    try {
+      return await this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
+        const cp = await this.selectCheckpoint(tx, checkpoint_id, this.db.dialect.forUpdate);
+        if (!cp || cp.work_item_id !== input.id || cp.answer !== "pending") return { ok: false, reason: "checkpoint_not_pending" };
+        const r = await this.applyTransition(tx, transition);
+        if (!r.ok) return r;
+        const answered = await tx.run(
+          "UPDATE budget_checkpoints SET answer = ?, granted_budget = ?, answered_at = ? WHERE id = ? AND answer = 'pending'",
+          [answer, granted_budget, this.now(), checkpoint_id],
+        );
+        // A concurrent answer committed first: undo this transition.
+        if (answered !== 1) throw new CheckpointAnswered();
+        return { ...r, checkpoint: (await this.selectCheckpoint(tx, checkpoint_id))! };
+      });
+    } catch (err) {
+      if (!(err instanceof CheckpointAnswered)) throw err;
+      return { ok: false, reason: "checkpoint_not_pending" };
+    }
+  }
+
+  async listBudgetCheckpoints(id: WorkItemId): Promise<BudgetCheckpoint[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM budget_checkpoints WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
+      [id],
+    );
+    return rows.map(rowToBudgetCheckpoint);
+  }
+
+  async getTierHistory(project: string, tier: Tier): Promise<TierHistory> {
+    const rows = await this.db.all(
+      "SELECT close_reason, token_cost FROM work_items WHERE project = ? AND tier = ? AND stage = 'CLOSED'",
+      [project, tier],
+    );
+    return {
+      finished: rows.length,
+      merged_token_costs: rows.filter((r) => r.close_reason === "completed").map((r) => Number(r.token_cost)),
+    };
   }
 
   // Runs
@@ -474,6 +557,11 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToVerdict(row) : null;
   }
 
+  private async selectCheckpoint(q: SqlExecutor, id: BudgetCheckpointId, lock = ""): Promise<BudgetCheckpoint | null> {
+    const [row] = await q.all(`SELECT * FROM budget_checkpoints WHERE id = ?${lock}`, [id]);
+    return row ? rowToBudgetCheckpoint(row) : null;
+  }
+
   private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
     const [row] = await q.all(`SELECT * FROM runs WHERE id = ?${lock}`, [id]);
     return row ? rowToRun(row) : null;
@@ -524,6 +612,12 @@ export class SqlFactoryStore implements FactoryStore {
 
 /** Thrown inside recordVerdict's transaction to roll it back when the verdict's comment id is already taken. */
 class DuplicateVerdict extends Error {}
+
+/** Thrown inside answerBudgetCheckpoint's transaction to roll it back when another answer won. */
+class CheckpointAnswered extends Error {}
+
+/** A closed item's checkpoint outcome, by close_reason. Other close reasons leave it null. */
+const OUTCOME: Partial<Record<CloseReason, BudgetOutcome>> = { completed: "merged", rejected: "rejected", failed: "failed" };
 
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";
