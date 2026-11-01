@@ -445,6 +445,47 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("listStatsRecords", () => {
+    it("returns every item with its tier, stage, token_cost, the requested reasons and its verdict severities", async () => {
+      const { store, clock } = await make();
+      expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([]);
+
+      clock.advance(1_000);
+      const a = (await store.createWorkItem(issue(1), system)).item;
+      clock.advance(1_000);
+      const b = (await store.createWorkItem(issue(2), system)).item;
+      await store.transition({ id: a.id, expected_version: 1, actor: system, reason: "triaged", patch: { stage: "READY", tier: 2, token_cost: 40 } });
+      await store.transition({ id: a.id, expected_version: 2, actor: human, reason: "retry_requested", patch: {} });
+      await store.recordVerdict({
+        id: a.id, expected_version: 3, actor: { kind: "user", id: "github:1" as UserId }, verdict: "changes",
+        severity: "major", reason: "r", comment_id: "c1", target: "pr",
+      });
+      await store.transition({ id: a.id, expected_version: 4, actor: human, reason: "retry_requested", patch: {} });
+      await store.recordVerdict({
+        id: a.id, expected_version: 5, actor: { kind: "user", id: "github:1" as UserId }, verdict: "accept",
+        severity: "none", reason: null, comment_id: "c2", target: "pr",
+      });
+      await store.transition({
+        id: b.id, expected_version: 1, actor: human, reason: "spec_rejected",
+        patch: { stage: "CLOSED", close_reason: "rejected" },
+      });
+
+      expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"] },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [] },
+      ]);
+      expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
+    });
+
+    it("writes nothing", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
+      await store.listStatsRecords(["intake", "spec_rejected"]);
+      expect({ item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) }).toEqual(before);
+    });
+  });
+
   describe("retry waits and the claim pause", () => {
     it("a run enqueued with not_before is not claimed before it, by any worker, and is claimed at that exact time", async () => {
       const { store, clock } = await make();

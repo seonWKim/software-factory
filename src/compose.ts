@@ -4,10 +4,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { FactoryConfig, Prompts } from "./core/config.js";
-import type { Tier, WorkerId } from "./core/types.js";
+import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
+import type { Tier, VerdictSeverity, WorkerId } from "./core/types.js";
 import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
+import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { Worker } from "./core/worker.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -65,6 +66,8 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
   ui?: { port?: number };
+  /** `factory stats` (design §6): a weight per verdict severity (all required), min_sample (absent: 10). */
+  stats?: { weights?: unknown; min_sample?: unknown };
 }
 
 export { CODE_ROOT_ENV } from "./interfaces/updater.js";
@@ -84,6 +87,8 @@ export interface Loaded {
   plugins: Selection;
   /** Where plugin names resolve. The built-in REGISTRY unless a test passes another. */
   registry: Registry;
+  /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
+  stats: StatsConfig;
 }
 
 /**
@@ -107,6 +112,7 @@ export async function loadConfig(
   uiPort(file.ui);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
+  const stats = statsConfig(file.stats);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -155,7 +161,7 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry };
+  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats };
 }
 
 export interface Built {
@@ -287,6 +293,44 @@ export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
   await store.migrate();
   const scanner = await p.scanner(secrets);
   return { clock, store, scanner, close: () => store.close() };
+}
+
+/**
+ * The configured store for `factory stats`, and nothing else. Unlike build() and buildUiParts() it never
+ * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because
+ * the MySQL store needs MYSQL_PASSWORD.
+ */
+export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
+  const p = new Plugins(loaded);
+  const clock = await p.clock();
+  return p.store(await p.secrets(), clock);
+}
+
+export const STATS_MIN_SAMPLE_DEFAULT = 10;
+
+/**
+ * The `stats` key (design §6): every severity needs a weight that is a finite number ≥ 0, and `min_sample`
+ * (absent: 10) is an integer ≥ 1, or startup fails. There are no default weights.
+ */
+export function statsConfig(raw: FileConfig["stats"]): StatsConfig {
+  const weights = raw?.weights;
+  if (typeof weights !== "object" || weights === null || Array.isArray(weights)) {
+    throw new Error(`stats.weights must be an object with a weight for each of ${VERDICT_SEVERITIES.join(", ")}`);
+  }
+  const w = weights as Record<string, unknown>;
+  const checked = {} as Record<VerdictSeverity, number>;
+  for (const s of VERDICT_SEVERITIES) {
+    const v = w[s];
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      throw new Error(`stats.weights.${s} must be a number ≥ 0`);
+    }
+    checked[s] = v;
+  }
+  const min_sample = raw?.min_sample === undefined ? STATS_MIN_SAMPLE_DEFAULT : raw.min_sample;
+  if (typeof min_sample !== "number" || !Number.isInteger(min_sample) || min_sample < 1) {
+    throw new Error("stats.min_sample must be an integer ≥ 1");
+  }
+  return { weights: checked, min_sample };
 }
 
 /** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */
