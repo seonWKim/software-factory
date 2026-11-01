@@ -890,6 +890,19 @@ describe("pre-push diff gates: size limit and floor check", () => {
     expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:floor:"))).toBe(false);
   });
 
+  it("/revise on a floor block is refused and changes nothing", async () => {
+    const f = await implemented(65, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    }, { workerConfig: raised });
+    f.source.queue.push({ kind: "revise_requested", source: f.src, comment_id: "6501", requester: alice, feedback: "smaller change" });
+    await f.step();
+    const refusals = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.body).toContain("floor check");
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "RUNNING", blocked_reason: "floor_tier", tier: 2, revision_count: 0 });
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(1);
+  });
+
   it("/approve delivered twice on a floor block enqueues one implement run", async () => {
     const f = await implemented(66, (f) => {
       f.sandbox.changedFiles = [".github/workflows/scope.yml"];
