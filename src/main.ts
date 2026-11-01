@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
+import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import type { WorkItemId } from "./core/types.js";
-import type { SecretName } from "./interfaces/secret-store.js";
+import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { startUi } from "./ui/server.js";
@@ -21,7 +22,11 @@ const USAGE = `factory <command>
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
-  doctor       checks setup without printing any secret
+  doctor [--llm]
+               checks setup without printing any secret; --llm adds one line that runs llm-check
+  llm-check [--model cheap|strong]
+               two small real calls to the configured LLM provider (plugins.llm), one plain and one
+               with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -104,13 +109,22 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "setup": {
       const rotate: SecretName[] = [];
-      if (args.includes("--rotate-github")) rotate.push("GITHUB_TOKEN");
-      if (args.includes("--rotate-claude")) rotate.push("CLAUDE_CODE_OAUTH_TOKEN");
-      if (args.includes("--rotate-mysql")) rotate.push("MYSQL_PASSWORD");
+      if (args.includes("--rotate-github")) rotate.push(secretName("GITHUB_TOKEN"));
+      if (args.includes("--rotate-claude")) rotate.push(secretName("CLAUDE_CODE_OAUTH_TOKEN"));
+      if (args.includes("--rotate-mysql")) rotate.push(secretName("MYSQL_PASSWORD"));
       return setup(loaded, { rotate });
     }
     case "doctor":
-      return doctor(loaded);
+      return doctor(loaded, { llm: args.includes("--llm") });
+    case "llm-check": {
+      const parsed = parseLlmCheckArgs(args);
+      if ("error" in parsed) {
+        console.log(parsed.error);
+        return 1;
+      }
+      const r = await llmCheckFromPlugins(new Plugins(loaded), parsed.model, (line) => console.log(line));
+      return r.ok ? 0 : 1;
+    }
     case "golden":
       return golden(loaded, args[0], args.slice(1));
     case "canary": {

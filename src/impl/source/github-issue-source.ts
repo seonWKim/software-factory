@@ -164,6 +164,9 @@ export class GitHubIssueSource implements SourceAdapter {
       else if (command.startsWith("/reject")) {
         const reason = [command.slice("/reject".length).trim(), ...rest].join("\n").trim();
         events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
+      } else if (/^\/revise(\s|$)/.test(command)) {
+        const feedback = [command.slice("/revise".length).trim(), ...rest].join("\n").trim();
+        events.push({ kind: "revise_requested", source, comment_id, requester: identity(cm.user), feedback });
       } else if (command === "/retry") {
         events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
       } else if (command === "/verdict" || /^\/verdict\s/.test(command)) {
@@ -265,6 +268,14 @@ export class GitHubIssueSource implements SourceAdapter {
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
     await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+  }
+
+  /** Closes the issue as "not planned". GitHub accepts the same PATCH on an issue that is already closed. */
+  async closeIssue(source: SourceRef): Promise<void> {
+    await this.client.request("PATCH", `/repos/${this.repo.owner}/${this.repo.name}/issues/${issueNumberFromSourceId(source.id)}`, {
+      state: "closed",
+      state_reason: "not_planned",
+    });
   }
 
   /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */
