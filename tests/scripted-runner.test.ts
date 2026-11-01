@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Grep, Read } from "../src/core/tools/index.js";
 import type { RunId, WorkItemId } from "../src/core/types.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec, AgentRunner } from "../src/interfaces/agent-runner.js";
@@ -45,7 +46,7 @@ function spec(): AgentRunSpec {
     sandbox: handle,
     system_prompt: "",
     prompt: "",
-    harness_tools: ["Read", "Grep"],
+    tools: [Read, Grep],
     tool_grants: [],
     lease_token: 1,
     env_allowlist: {},

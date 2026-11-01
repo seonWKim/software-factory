@@ -65,7 +65,7 @@ export class ScriptedRunner implements AgentRunner {
           transcript.push(`final: ${JSON.stringify(step.final)}`);
           return { status: "completed", output: step.final, transcript: transcript.join("\n"), usage };
         }
-        const tool = RUNNER_TOOLS.find((t) => t.name === step.tool && spec.harness_tools.includes(t.name));
+        const tool = RUNNER_TOOLS.find((t) => t.name === step.tool && spec.tools.some((s) => s.name === t.name));
         const result: ToolResult = tool
           ? await tool.run(step.input, ctx)
           : { ok: false, error: `tool ${step.tool} is not available to this run` };

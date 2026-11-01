@@ -29,14 +29,14 @@ import {
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunId, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, NewBudgetCheckpoint, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
-import type { PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
   store: FactoryStore;
@@ -114,6 +114,13 @@ const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", 
  * `blocked_on: upstream` and this reason until both are done (design §4, gate commands).
  */
 const SOURCE_CLOSE_PENDING = "source_close_pending";
+/** blocked_reason (with `blocked_on: ci`) of a reviewed PR whose checks have not finished (design §5 CI gate). */
+const CHECKS_PENDING = "checks_pending";
+/** Items waiting on checks looked at per tick. */
+const CHECKS_BATCH = 50;
+/** Failed check names kept per decision, and characters per name. */
+const MAX_CHECK_NAMES = 20;
+const MAX_CHECK_NAME_CHARS = 100;
 /** Rejected items finished per intake tick. */
 const CLOSE_BATCH = 50;
 /** Inbox rows a stream intake step reads at most per tick. */
@@ -189,6 +196,8 @@ export class Controller {
       // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
       if (due || streams.length > 0) await this.guard("intake", () => this.intake(due));
       if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
+      // PR checks are read from the forge, so on the poll interval like a poll source.
+      if (due) await this.guard("checks", () => this.tickChecks());
       await this.guard("runs", () => this.tickRuns());
       await this.guard("reaper", () => this.tickReaper());
       await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
@@ -1003,16 +1012,7 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
-          const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "merge_pending" };
-          await this.comment(it, `merge:${run.id}`,
-            `PR #${it.pr_number} passed review (tier ${tier}). A human merge is required.\n\n${footerAfter(it, patch)}`);
-          return {
-            patch,
-            actor: SYSTEM,
-            reason: "review_passed",
-            ack_run: run.id,
-          };
+          return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
         }
         case "resolve":
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
@@ -1052,6 +1052,101 @@ export class Controller {
         }
       }
     });
+  }
+
+  /**
+   * The CI gate (design §5): a PR that passed review is offered for a human merge only once its checks
+   * passed. Pending (or the source could not say): the item waits in `REVIEW` with `blocked_on: ci` /
+   * `checks_pending`, and tickChecks looks again. Failed: back to implement like a review bug (loop_count + 1,
+   * max_loops applies), with the failing check names on the state change for the next implementer.
+   * `reviewRunId` is the review that passed; it keys the comments, so a re-decide posts each once.
+   * `ackRun` acks that review when called from applyRun; tickChecks passes null.
+   */
+  private async checkGate(
+    it: WorkItem,
+    reviewRunId: RunId,
+    fields: { tier?: Tier; token_cost?: number },
+    ackRun: RunId | null,
+  ): Promise<Decision> {
+    const checks = await this.readChecks(it);
+    const ack = ackRun ? { ack_run: ackRun } : {};
+    const tier = fields.tier ?? it.tier;
+    if (checks.state === "pending") {
+      if (waitingOnChecks(it)) return null;
+      return {
+        patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_PENDING },
+        actor: SYSTEM,
+        reason: "checks_pending",
+        detail: { review_run_id: reviewRunId },
+        ...ack,
+      };
+    }
+    if (checks.state === "failed") {
+      const names = checks.failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
+      const detail = { failed_checks: JSON.stringify(names), review_run_id: reviewRunId };
+      const loop = it.loop_count + 1;
+      if (loop >= this.d.config.max_loops) {
+        const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
+        await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
+          `PR #${it.pr_number} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.d.config.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+        return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
+      }
+      const next = { ...it, loop_count: loop };
+      await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
+        `PR #${it.pr_number} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.d.config.max_loops}).`);
+      return {
+        patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
+        actor: SYSTEM,
+        reason: "checks_failed",
+        detail,
+        ...ack,
+        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      };
+    }
+    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
+    const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
+    await this.comment(it, `merge:${reviewRunId}`,
+      `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed. A human merge is required.\n\n${footerAfter(it, patch)}`);
+    return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
+  }
+
+  /** The PR's checks; a source without them counts as passed, a source error as pending (logged). */
+  private async readChecks(it: WorkItem): Promise<PrChecks> {
+    // PRs live on the PR source (the forge), whatever source the item came from.
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    if (!forge?.prChecks || it.pr_number === null) return { state: "passed" };
+    try {
+      return await forge.prChecks(it.pr_number);
+    } catch (err) {
+      this.d.log.warn("reading PR checks failed", {
+        work_item_id: it.id,
+        pr_number: it.pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return { state: "pending" };
+    }
+  }
+
+  /** A checks comment naming the failed checks; the names are forge text (G5), so they are left out if the scan flags them. */
+  private async checksComment(it: WorkItem, key: string, names: string[], body: (list: string) => string): Promise<void> {
+    const list = names.length ? `: ${names.map((n) => `\`${n.replace(/`/g, "'")}\``).join(", ")}` : "";
+    const scan = await this.d.scanner.scan("comment", body(list));
+    await this.comment(it, key, body(scan.clean ? list : ""));
+  }
+
+  /**
+   * Looks again at every item waiting on its PR checks (`blocked_on: ci` / `checks_pending`) and applies the
+   * gate: still pending changes nothing; passed → merge_pending; failed → back to implement. Safe on any
+   * replica and safe to repeat: each decision re-reads the item and lands as a conditional transition.
+   */
+  async tickChecks(): Promise<void> {
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
+    for (const w of waiting) {
+      if (!waitingOnChecks(w)) continue;
+      const review = (await this.d.store.listRuns(w.id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+      if (!review) continue;
+      await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review.id, {}, null) : null)).then(() => undefined));
+    }
   }
 
   /**
@@ -1421,6 +1516,11 @@ function retry(it: WorkItem, actor: Actor): Decision | Refusal {
     reason: "retry_requested",
     enqueue: { kind, idempotency_key: runKey(next, kind) },
   };
+}
+
+/** A reviewed PR whose checks have not finished (design §5 CI gate). */
+function waitingOnChecks(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_PENDING;
 }
 
 /** A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. */

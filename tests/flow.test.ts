@@ -50,6 +50,87 @@ const review = (verdict: "pass" | "bug", tier = 2) => () => ({
   output: { verdict, tier, findings: verdict === "bug" ? ["off-by-one in gate"] : [], summary: "s" },
 });
 
+describe("CI check gate before merge_pending", () => {
+  async function toReview(results: import("../src/interfaces/source-adapter.js").PrChecks[]) {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    f.source.checkResults = results;
+    const src = issueRef(61);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "300", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    return { ...f, runner, item };
+  }
+  const reasons = async (f: { store: { listStateChanges(id: never): Promise<{ reason: string }[]> } }, id: string) =>
+    (await f.store.listStateChanges(id as never)).map((c) => c.reason);
+
+  it("checks passed: the item moves to merge_pending", async () => {
+    const f = await toReview([{ state: "passed" }]);
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(f.source.checkCalls).toEqual([42]);
+    expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
+    expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["review_passed"]);
+  });
+
+  it("checks pending: the item stays in REVIEW with no merge_pending until they pass", async () => {
+    const f = await toReview([{ state: "pending" }]);
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", pr_number: 42, loop_count: 0 });
+    expect(f.source.comments.some((c) => c.body.includes("human merge is required"))).toBe(false);
+    expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["checks_pending"]);
+
+    // Still pending on the next look: nothing changes, no new state change.
+    f.source.checkResults = [{ state: "pending" }];
+    const before = (await f.store.getWorkItem(f.item.id))!;
+    await f.controller.tickChecks();
+    expect((await f.store.getWorkItem(f.item.id))!.version).toBe(before.version);
+
+    // A source error is not a verdict: the item keeps waiting.
+    f.source.checksError = new Error("boom");
+    await f.controller.tickChecks();
+    expect((await f.store.getWorkItem(f.item.id))!.version).toBe(before.version);
+    f.source.checksError = null;
+
+    await f.controller.tickChecks();
+    const after = (await f.store.getWorkItem(f.item.id))!;
+    expect(after).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    expect(f.source.comments.filter((c) => c.body.includes("human merge is required"))).toHaveLength(1);
+    expect((await reasons(f, f.item.id)).slice(-2)).toEqual(["checks_pending", "review_passed"]);
+    // Running the sweep again changes nothing.
+    await f.controller.tickChecks();
+    expect((await f.store.getWorkItem(f.item.id))!.version).toBe(after.version);
+  });
+
+  it("checks failed: back to implement with the failing check names and loop_count + 1", async () => {
+    const f = await toReview([{ state: "failed", failed: ["test", "test-mysql"] }, { state: "passed" }]);
+    const changes = await f.store.listStateChanges(f.item.id);
+    const failed = changes.find((c) => c.reason === "checks_failed")!;
+    expect(failed.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 0, to: 1 } });
+    expect(failed.detail).toMatchObject({ failed_checks: JSON.stringify(["test", "test-mysql"]) });
+    expect(changes.map((c) => c.reason).slice(-4)).toEqual(["implemented", "checks_failed", "implemented", "review_passed"]);
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 1 });
+
+    const implementSpecs = f.runner.specs.filter((s) => s.role === "implement");
+    expect(implementSpecs).toHaveLength(2);
+    expect(implementSpecs[0]!.prompt).not.toContain("Failing CI checks");
+    expect(implementSpecs[1]!.prompt).toContain("## Failing CI checks to fix");
+    expect(implementSpecs[1]!.prompt).toContain("test-mysql");
+    expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:checks-failed:") && c.body.includes("`test-mysql`"))).toBe(true);
+  });
+
+  it("checks failed at the loop limit: blocks on a human with max_loops", async () => {
+    const failed = { state: "failed" as const, failed: ["test"] };
+    const f = await toReview([failed, failed, failed]);
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: 2 });
+    expect(f.runner.specs.filter((s) => s.role === "implement")).toHaveLength(3);
+  });
+});
+
 describe("one issue to one merged PR", () => {
   it("runs triage → human spec gate → implement → review loop → human merge, with a full trail", async () => {
     let reviews = 0;
