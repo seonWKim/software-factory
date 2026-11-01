@@ -97,7 +97,8 @@ describe("workers config", () => {
   }
 
   it("loadConfig carries workers into FactoryConfig (absent: 1) and refuses a bad value", async () => {
-    expect((await loadConfig(root({}))).config.workers).toBe(1);
+    // undefined drops the key, whatever the real config sets.
+    expect((await loadConfig(root({ workers: undefined }))).config.workers).toBe(1);
     expect((await loadConfig(root({ workers: 3 }))).config.workers).toBe(3);
     await expect(loadConfig(root({ workers: 0 }))).rejects.toThrow("workers must be an integer of 1 or more");
   });

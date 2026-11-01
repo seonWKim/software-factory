@@ -17,6 +17,7 @@
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
+  "workers": 3,
   "plugins": {
     "secrets": "env-file",
     "egress": "pattern",
