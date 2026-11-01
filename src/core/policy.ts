@@ -101,12 +101,21 @@ export function pathsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * Whether two items' allowed_paths overlap (any pair does). Two items that overlap must not have
- * implement-type runs in progress at once, or their PRs would conflict (architecture §4). The store also
- * treats an item as overlapping with itself, whatever its paths.
+ * Files most items touch with small, additive edits (the living docs, test helpers). A conflict there is cheap
+ * to resolve, so they do not count toward the overlap rule; without this every item that updates
+ * `docs/design.md` would wait for every other one.
+ */
+export const SHARED_PATHS: readonly string[] = ["docs/design.md", "docs/architecture.md", "docs/plugins.md", "SET_UP.md", "tests/helpers/"];
+
+/**
+ * Whether two items' allowed_paths overlap (any pair does, ignoring paths SHARED_PATHS covers). Two items
+ * that overlap must not have implement-type runs in progress at once, or their PRs would conflict
+ * (architecture §4). The store also treats an item as overlapping with itself, whatever its paths.
  */
 export function allowedPathsOverlap(a: readonly string[], b: readonly string[]): boolean {
-  return a.some((p) => b.some((q) => pathsOverlap(p, q)));
+  const own = (paths: readonly string[]) => paths.filter((p) => !isCovered(p, SHARED_PATHS));
+  const bs = own(b);
+  return own(a).some((p) => bs.some((q) => pathsOverlap(p, q)));
 }
 
 /**

@@ -128,6 +128,12 @@ describe("overlap rule for parallel implement-type runs", () => {
     expect(allowedPathsOverlap(["docs/", "src/a.ts"], ["tests/", "src/a.ts"])).toBe(true);
     expect(allowedPathsOverlap(["docs/"], ["src/", "tests/x.ts"])).toBe(false);
     expect(allowedPathsOverlap([], ["src/"])).toBe(false);
+    // Shared docs and test helpers do not count; a folder that holds them still overlaps its other files.
+    expect(allowedPathsOverlap(["docs/design.md", "SET_UP.md", "src/a.ts"], ["docs/design.md", "SET_UP.md", "src/b.ts"])).toBe(false);
+    expect(allowedPathsOverlap(["tests/helpers/fakes.ts"], ["tests/helpers/"])).toBe(false);
+    expect(allowedPathsOverlap(["docs/"], ["docs/design.md"])).toBe(false);
+    expect(allowedPathsOverlap(["docs/"], ["docs/setup.md"])).toBe(true);
+    expect(allowedPathsOverlap(["tests/"], ["tests/helpers/fakes.ts", "tests/x.test.ts"])).toBe(true);
   });
 
   it("implement-type kinds are implement (also a review fix) and update; triage and review are not", () => {
