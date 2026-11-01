@@ -10,6 +10,7 @@ import {
   isFiltered, runKindOf, searchKeys,
 } from "./filters.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
+import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
 import { type Level, NEEDS_YOU, type PriorityInput, rank } from "./priority.js";
 import { Withholder } from "./withhold.js";
@@ -26,6 +27,8 @@ export interface UiDeps {
   prUrl(project: string, n: number): string;
   /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
   health: HealthMonitor;
+  /** The supervisor's state (null: no status file); absent: the banner is not shown. */
+  factoryStatus?: () => Promise<FactoryStatus | null>;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,6 +87,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
   const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const rows = await listRows(c, f);
   const sections = [
+    await factorySection(c),
     await totalsSection(c),
     filtersSection(f, facetCounts(rows, f)),
     await itemsSection(c, applyFilters(rows, f), f),
@@ -94,6 +98,47 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
   const body =
     `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` + sections.join("");
   return page(`(${waiting}) software-factory status`, body, self);
+}
+
+const short = (rev: string | null) => (rev ? rev.slice(0, 7) : "unknown");
+
+/**
+ * The banner on top: what the factory process is doing. During an update the old process takes no new runs
+ * until its in-flight runs finish, which looks like "my workers setting is ignored"; this says so.
+ */
+async function factorySection(c: Ctx): Promise<string> {
+  if (!c.d.factoryStatus) return "";
+  const s = await c.d.factoryStatus();
+  const open = (cls: string, text: string) => `<section id="factory"><p class="banner ${cls}"><strong>${text}</strong>`;
+  if (s === null || s.state === "stopped") {
+    return `${open("bad", "Factory stopped.")} No runs start. Start it with <code>npm run factory -- dev</code>.</p></section>`;
+  }
+  const since = `${esc(c.ago(s.since))} ago`;
+  const pid = s.child_pid;
+  const inFlight = pid === null ? 0 : (await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)).filter((r) => r.lease?.owner.includes(`:${pid}:`)).length;
+  switch (s.state) {
+    case "running":
+      return `${open("ok", "Factory running.")} Revision <code>${esc(short(s.rev))}</code>, process ${esc(pid ?? "?")}, ${esc(s.workers)} workers, since ${since}.</p></section>`;
+    case "building":
+      return `${open("warn", `Building ${esc(short(s.target_rev))}.`)} Runs continue on <code>${esc(short(s.rev))}</code> meanwhile (started ${since}).</p></section>`;
+    case "draining":
+      return (
+        `${open("warn", `Updating to ${esc(short(s.target_rev))}: new runs are paused.`)} ` +
+        `The running process (${esc(pid ?? "?")}) takes no new runs until its ${esc(inFlight)} in-flight run${inFlight === 1 ? "" : "s"} finish; ` +
+        `then the new revision starts with ${esc(s.workers)} workers. Draining for ${esc(c.ago(s.since))}. ` +
+        `Code and settings changes apply when the new revision starts.</p></section>`
+      );
+    case "restarting":
+      return `${open("warn", `Starting ${esc(short(s.target_rev))}.`)} New runs start in a moment (since ${since}).</p></section>`;
+    case "crashed":
+      return (
+        `${open("bad", `Factory not running: revision ${esc(short(s.rev))} exits.`)} ` +
+        `${s.error ? `<code>${esc(s.error)}</code>. ` : ""}It is restarted every poll; no runs start until it stays up ` +
+        `(failing for ${esc(c.ago(s.since))}).</p></section>`
+      );
+    case "build_failed":
+      return `${open("bad", `Revision ${esc(short(s.target_rev))} failed to build.`)} Still running <code>${esc(short(s.rev))}</code>; its settings stay in effect until main builds.</p></section>`;
+  }
 }
 
 /** One ranked row of the list, with what the filters read. */

@@ -8,6 +8,7 @@ import type {
   Handoff,
   Run,
   RunId,
+  RunKind,
   RunOutcome,
   RunStatus,
   SourceType,
@@ -387,13 +388,15 @@ export class SqlFactoryStore implements FactoryStore {
         ).map((r) => r.work_item_id as string),
       );
 
-      // Queued runs in FIFO order. not_before: a retry waits out its backoff, whichever worker looks.
+      // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
+      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
+      const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(input.kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?)
-         ORDER BY r.created_at, r.${seq}`,
-        [...input.kinds, now],
+         ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
+        [...input.kinds, now, ...CLAIM_ORDER],
       );
       for (const next of queued) {
         // An implement-type run waits while its own item has one running; it stays queued. Triage and review never wait.
@@ -828,6 +831,13 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
 
 /** The one row in `claim_locks`: every claim takes it first (migration 7). */
 const CLAIM_LOCK = "claim";
+
+/**
+ * claimRun's kind rank (design §5 Parallel workers): runs that lead to a human decision first (review takes a PR
+ * toward ready-to-merge, triage gives the owner a spec), then the branch writers, resolve last. Within a kind,
+ * created_at, then insertion order.
+ */
+const CLAIM_ORDER: readonly RunKind[] = ["review", "triage", "update", "implement", "resolve"];
 
 /** A JSON string array column (allowed_paths). */
 function parseList(value: unknown): string[] {
