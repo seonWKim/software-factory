@@ -249,9 +249,10 @@ export class Worker {
       // The forge refused the credentials: implement-type claims pause for every worker, also before the outcome
       // is stored (design §5 Restarts). A pause that was not in effect starts here: one log line, and the
       // controller posts one owner comment for it. Only the code goes in the line, never the forge's answer.
-      const before = await this.d.store.getClaimPause("forge_auth");
+      // `started` comes from the store's conditional write, never a read before it, so two workers refused at
+      // the same moment cannot both start the pause.
       const pause = await this.d.store.pauseClaims(this.after(this.d.config.auth_pause_ms ?? this.d.config.retry_max_ms), "forge_auth");
-      const started = before === null && pause.extended;
+      const started = pause.started === true;
       outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
       if (started) {
         this.d.log.warn(`forge auth refused: implement and update runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });

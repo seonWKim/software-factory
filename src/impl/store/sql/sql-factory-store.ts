@@ -440,18 +440,30 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
-  async pauseClaims(resume_at: Timestamp, name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<{ extended: boolean; resume_at: Timestamp }> {
+  async pauseClaims(
+    resume_at: Timestamp,
+    name: ClaimPauseName = RATE_LIMIT_PAUSE,
+  ): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
+    // `started` only for forge_auth: the rate-limit pause's result stays exactly as it was (out of this change).
+    const result = (extended: boolean, started: boolean, at: Timestamp) =>
+      name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
     return this.db.transaction(async (tx) => {
       if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
-        return { extended: true, resume_at };
+        return result(true, true, resume_at);
       }
-      // Conditional: only a later time moves it, so concurrent pauses keep the latest.
-      const moved = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [
-        resume_at, name, resume_at,
+      // Conditional, so concurrent callers never both start it: only the update that finds the pause already
+      // ended starts a new one (the row stays after a pause ends), and only a later time moves a running one.
+      const now = this.now();
+      const restarted = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at <= ? AND resume_at < ?", [
+        resume_at, name, now, resume_at,
       ]);
-      if (moved === 1) return { extended: true, resume_at };
+      if (restarted === 1) return result(true, true, resume_at);
+      const moved = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ? AND resume_at < ?", [
+        resume_at, name, now, resume_at,
+      ]);
+      if (moved === 1) return result(true, false, resume_at);
       const [row] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
-      return { extended: false, resume_at: row!.resume_at as Timestamp };
+      return result(false, false, row!.resume_at as Timestamp);
     });
   }
 

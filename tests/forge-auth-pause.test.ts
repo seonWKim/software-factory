@@ -142,10 +142,39 @@ describe("forge-auth pause", () => {
   it("the forge-auth pause only ever moves later and reports whether this call moved it", async () => {
     const { store, clock } = await newStore();
     const at = (ms: number) => iso(clock.now().getTime() + ms) as Timestamp;
-    expect(await store.pauseClaims(at(1000), "forge_auth")).toEqual({ extended: true, resume_at: at(1000) });
-    expect(await store.pauseClaims(at(500), "forge_auth")).toEqual({ extended: false, resume_at: at(1000) });
-    expect(await store.pauseClaims(at(2000), "forge_auth")).toEqual({ extended: true, resume_at: at(2000) });
+    expect(await store.pauseClaims(at(1000), "forge_auth")).toEqual({ extended: true, started: true, resume_at: at(1000) });
+    expect(await store.pauseClaims(at(500), "forge_auth")).toEqual({ extended: false, started: false, resume_at: at(1000) });
+    expect(await store.pauseClaims(at(2000), "forge_auth")).toEqual({ extended: true, started: false, resume_at: at(2000) });
     expect(await store.getClaimPause()).toBeNull();
+    // Once the pause has ended, the next call starts a new one (the row stays; its time is in the past).
+    clock.advance(2000);
+    expect(await store.pauseClaims(at(1000), "forge_auth")).toEqual({ extended: true, started: true, resume_at: at(1000) });
+  });
+
+  it("two workers that pause at about the same time: exactly one starts the pause, so one comment and one line", async () => {
+    // Each call reaches the store with a different end (the second worker's clock read is later). Only the
+    // store's conditional update decides which one started it, never a read before the write.
+    const { store, clock } = await newStore();
+    const at = (ms: number) => iso(clock.now().getTime() + ms) as Timestamp;
+    const results = await Promise.all([at(1000), at(1001), at(999)].map((t) => store.pauseClaims(t, "forge_auth")));
+    expect(results.filter((r) => r.started)).toHaveLength(1);
+    expect(await store.getClaimPause("forge_auth")).toBe(at(1001));
+  });
+
+  it("two workers refused at the same moment post one owner comment and log one line", async () => {
+    const f = await pipeline();
+    const a = await f.submit();
+    const b = await f.submit();
+    await f.w1.tick();
+    await f.w1.tick();
+    await f.controller.tickRuns();
+    f.broker.responses["github.preflight"] = [AUTH, AUTH];
+    await Promise.all([f.w1.tick(), f.w2.tick()]);
+    await f.controller.tickRuns();
+    expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
+    expect((await f.runs(b, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
+    expect(f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:forge-auth:"))).toHaveLength(1);
+    expect(f.log.lines.filter((l) => l.msg.startsWith("forge auth refused"))).toHaveLength(1);
   });
 });
 
