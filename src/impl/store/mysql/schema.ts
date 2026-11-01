@@ -107,4 +107,10 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       resume_at  CHAR(24) NOT NULL
     ) ${TABLE}`,
   ],
+  // 5: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  [
+    "ALTER TABLE work_items ADD COLUMN issue_text MEDIUMTEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
+    "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
+  ],
 ];
