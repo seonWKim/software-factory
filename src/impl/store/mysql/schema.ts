@@ -99,7 +99,15 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     "CREATE INDEX work_items_stage ON work_items (stage, updated_at)",
     "CREATE INDEX runs_finished ON runs (finished_at)",
   ],
-  // 4: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  // 4: automatic retries (design §5 Restarts). Old rows keep not_before NULL (claimable at once).
+  [
+    "ALTER TABLE runs ADD COLUMN not_before CHAR(24) NULL",
+    `CREATE TABLE claim_pauses (
+      name       VARCHAR(64) NOT NULL PRIMARY KEY,
+      resume_at  CHAR(24) NOT NULL
+    ) ${TABLE}`,
+  ],
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
   [
     `CREATE TABLE verdicts (
       seq              BIGINT NOT NULL AUTO_INCREMENT UNIQUE,

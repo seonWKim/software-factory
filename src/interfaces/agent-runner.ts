@@ -30,13 +30,20 @@ export interface AgentRunSpec {
 }
 
 export interface AgentRunResult {
-  status: "completed" | "failed" | "timed_out" | "aborted";
+  /**
+   * `rate_limited`: the model provider refused for a usage or rate limit. Not a failed attempt; the
+   * factory pauses every claim until `reset_at` (design §5 Restarts). Each runner maps its own harness's
+   * signal to this; core never parses harness text.
+   */
+  status: "completed" | "failed" | "timed_out" | "aborted" | "rate_limited";
   /** Final structured answer, if any. Not yet egress-scanned: the caller scans it before storing (G5). */
   output: unknown;
   /** Raw harness output. Not yet egress-scanned: the caller scans it before storing anywhere (G5). */
   transcript: string;
   usage: { input_tokens: number; output_tokens: number; cost_usd: number | null };
   error?: string;
+  /** For `rate_limited`: when the limit resets (ISO-8601 UTC), if the runner could tell. */
+  reset_at?: string;
 }
 
 export interface AgentRunner {

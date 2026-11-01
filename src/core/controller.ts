@@ -2,13 +2,25 @@ import type { FactoryConfig } from "./config.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
-import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBranch } from "./policy.js";
+import {
+  type FailureClass,
+  effectiveTier,
+  failureClass,
+  floorTier,
+  needsSpecApproval,
+  retryDelayMs,
+  retryKey,
+  runKey,
+  sameStep,
+  workItemIdFromBranch,
+} from "./policy.js";
 import { renderSpec } from "./spec-comment.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
+import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
 import type { SourceAdapter, SourceEvent } from "../interfaces/source-adapter.js";
 
@@ -19,6 +31,8 @@ export interface ControllerDeps {
   clock: Clock;
   config: FactoryConfig;
   log: Logger;
+  /** G5: the last-attempt comment carries run output, so it is scanned before it is posted. */
+  scanner: EgressScanner;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -112,7 +126,9 @@ export class Controller {
       this.d.log.warn("reaper woke after a gap; grace before expiring leases", { gap_ms: now - previous });
     }
     if (now < this.reaperGraceUntil) return;
-    const ids = await this.d.store.expireLeases(this.d.config.max_attempts);
+    const { max_attempts, retry_base_ms, retry_max_ms } = this.d.config;
+    // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
+    const ids = await this.d.store.expireLeases(max_attempts, (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms));
     for (const id of ids) this.d.log.warn("lease expired", { run_id: id });
   }
 
@@ -350,6 +366,7 @@ export class Controller {
       if (!run.outcome || run.outcome.status !== "succeeded") {
         if (!this.expects(it, run.kind)) return ack("run_ignored");
         const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+        if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
         await this.comment(it, `run-failed:${run.id}`,
           `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.`);
         return {
@@ -365,14 +382,7 @@ export class Controller {
       switch (run.kind) {
         case "triage": {
           const parsed = parseTriage(data.spec);
-          if (!parsed.ok) {
-            return {
-              patch: { blocked_on: "human", blocked_reason: `run_failed:triage:invalid_output` },
-              actor: SYSTEM,
-              reason: "run_failed",
-              ack_run: run.id,
-            };
-          }
+          if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, this.d.config.floors);
           const tier = effectiveTier(spec.tier, floor, it.tier);
@@ -415,14 +425,7 @@ export class Controller {
         }
         case "review": {
           const parsed = parseReview(data.review);
-          if (!parsed.ok) {
-            return {
-              patch: { blocked_on: "human", blocked_reason: "run_failed:review:invalid_output" },
-              actor: SYSTEM,
-              reason: "run_failed",
-              ack_run: run.id,
-            };
-          }
+          if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.d.config.floors), it.tier);
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.d.config.max_loops) {
@@ -480,6 +483,78 @@ export class Controller {
         }
       }
     });
+  }
+
+  /**
+   * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
+   * this step (the first run and its automatic retries): a rate limit is never an attempt; infra failures
+   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. Under both
+   * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
+   * its reset time). At a limit, the item blocks on a human with the last error posted. The retry key comes
+   * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
+   */
+  private async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
+    const { max_attempts, max_restart, retry_base_ms, retry_max_ms } = this.d.config;
+    const step = (await this.d.store.listRuns(it.id)).filter(
+      (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null),
+    );
+    const count = (c: FailureClass) => step.filter((r) => failureClass(r.outcome) === c).length;
+    const task = count("task");
+    const infra = count("infra");
+    const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
+    const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
+    const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
+
+    const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
+    if (cls !== "rate_limited" && limit) {
+      await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra);
+      return {
+        patch: { ...restart, blocked_on: "human", blocked_reason: limit },
+        actor: SYSTEM,
+        reason: limit,
+        detail,
+        ack_run: run.id,
+      };
+    }
+    const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
+    const notBefore = cls === "rate_limited"
+      ? (reset ?? iso(failedAt + retry_max_ms))
+      : iso(failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms));
+    return {
+      patch: restart,
+      actor: SYSTEM,
+      reason: cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
+      detail: { ...detail, not_before: notBefore },
+      ack_run: run.id,
+      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore },
+    };
+  }
+
+  /** The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes. */
+  private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number): Promise<void> {
+    const out = run.outcome?.status === "failed" ? run.outcome : null;
+    const what = limit === "max_attempts"
+      ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.d.config.max_attempts}), so the factory stopped retrying it.`
+      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.d.config.max_restart}), so the factory stopped restarting it.`;
+    const tail = (out?.output_tail || out?.detail || "").trim();
+    const body = [
+      what,
+      "",
+      `Last error: \`${code}\`: ${describeFailure(code)}.${out?.detail ? ` ${out.detail}` : ""}`,
+      "",
+      ...(tail ? ["Output tail of the last run:", "", fenced(tail), ""] : ["The last run left no output.", ""]),
+      "Comment `/retry` to run it again.",
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body);
+    if (!scan.clean) {
+      this.d.log.warn("last-attempt comment blocked by the egress scan; not posted", {
+        work_item_id: it.id,
+        run_id: run.id,
+        rules: scan.findings.map((f) => f.rule).join(","),
+      });
+      return;
+    }
+    await this.comment(it, `run-failed:${run.id}`, body);
   }
 
   // Internals
@@ -585,13 +660,14 @@ export class Controller {
 function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusal {
   if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
   if (e.kind === "retry_requested") {
-    const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
+    const kind = failedRunKind(it);
     if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
     const next = { ...it, restart_count: it.restart_count + 1 };
     // A retried update goes back to waiting for the merge, which is the state an update run expects.
     const unblocked = kind === "update"
       ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
       : { blocked_on: "none" as const, blocked_reason: null };
+    // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
     return {
       patch: { ...unblocked, restart_count: next.restart_count },
       actor,
@@ -615,6 +691,46 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor): Decision | Refusa
     reason: "spec_approved",
     enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
   };
+}
+
+/** The kind of run a human `/retry` would restart, or undefined if the item is not blocked by a failed run. */
+function failedRunKind(it: WorkItem): RunKind | undefined {
+  const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
+  if (kind) return kind;
+  if (it.blocked_reason !== "max_attempts" && it.blocked_reason !== "max_restart") return undefined;
+  if (it.stage === "NEW") return "triage";
+  if (it.stage === "RUNNING") return "implement";
+  if (it.stage === "REVIEW") return "review";
+  return undefined;
+}
+
+const FAILURES: Record<string, string> = {
+  invalid_output: "the agent's answer did not have the expected shape",
+  no_commits: "the implementer made no commits",
+  scope_violation: "the branch changed files outside the allowed paths",
+  egress_blocked: "the output was stopped by the leak scanner",
+  agent_failed: "the agent exited with an error",
+  agent_timed_out: "the agent run timed out",
+  lease_lost: "the worker lost its lease on the run (stopped, crashed or slept)",
+  lease_expired: "the run's lease expired with no heartbeat (the worker stopped, crashed or slept)",
+  exception: "the worker hit an unexpected error",
+  git_failed: "a git command failed",
+  cancelled: "the run was cancelled",
+};
+
+function describeFailure(code: string): string {
+  return FAILURES[code] ?? "the run failed";
+}
+
+/** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
+function fenced(text: string): string {
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = "`".repeat(longest + 1);
+  return `${fence}text\n${text}\n${fence}`;
+}
+
+function iso(ms: number): Timestamp {
+  return new Date(ms).toISOString() as Timestamp;
 }
 
 /** A PR that passed review and waits for a human merge: the only state an update run may change. */

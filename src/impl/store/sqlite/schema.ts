@@ -90,7 +90,15 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX work_items_stage ON work_items (stage, updated_at);
   CREATE INDEX runs_finished ON runs (finished_at);
   `,
-  // 4: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  // 4: automatic retries (design §5 Restarts). Old rows keep not_before NULL (claimable at once).
+  `
+  ALTER TABLE runs ADD COLUMN not_before TEXT;
+  CREATE TABLE claim_pauses (
+    name       TEXT PRIMARY KEY,
+    resume_at  TEXT NOT NULL
+  );
+  `,
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
   `
   CREATE TABLE verdicts (
     id               TEXT PRIMARY KEY,

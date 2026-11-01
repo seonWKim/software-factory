@@ -4,7 +4,7 @@ import { parseFixReferences, parseRevert } from "../src/core/links.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { newStore, issue, system } from "./helpers/store.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 
 describe("links: revert matching", () => {
   it("finds reverted shas in `This reverts commit <sha>`", () => {
@@ -38,7 +38,7 @@ async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   /** A factory item whose PR `pr` merged as `sha`. */
   const merged = async (n: number, pr: number, sha: string): Promise<WorkItem> => {
     const { item } = await store.createWorkItem(issue(n), system);
@@ -118,7 +118,7 @@ describe("revert tracking", () => {
   it("concurrent controllers handling the same revert record it once", async () => {
     const f = await setup();
     const orig = await f.merged(1, 34, SHA);
-    const other = new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent });
+    const other = new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent, scanner: cleanScanner });
     const e = { kind: "base_commit" as const, sha: "r1", message: `This reverts commit ${SHA}.` };
     await Promise.all([f.controller.handleEvent(e), other.handleEvent(e), f.controller.handleEvent(e)]);
     expect(await f.rows(orig, "reverted")).toHaveLength(1);

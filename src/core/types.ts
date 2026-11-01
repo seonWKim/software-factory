@@ -118,6 +118,11 @@ export interface Run {
   started_at: Timestamp | null;
   /** When the run reached succeeded or failed (worker completion or reaper). Null until then, and on older rows. */
   finished_at: Timestamp | null;
+  /**
+   * Earliest time any worker may claim this run (retry backoff, rate-limit reset). Null: at once. Stored on
+   * the run so every worker and replica waits, not only the one that saw the failure (design §5 Restarts).
+   */
+  not_before: Timestamp | null;
   created_at: Timestamp;
   /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;
@@ -125,7 +130,18 @@ export interface Run {
 
 export type RunOutcome =
   | { status: "succeeded"; summary: string; data: Record<string, unknown> }
-  | { status: "failed"; error_code: string; detail: string; infra: boolean };
+  | {
+      status: "failed";
+      /** `rate_limited` means a usage or rate limit, not a failed attempt (design §5 Restarts). */
+      error_code: string;
+      detail: string;
+      /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
+      infra: boolean;
+      /** For `rate_limited`: when the limit resets, if the runner could tell. */
+      reset_at?: Timestamp | null;
+      /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
+      output_tail?: string;
+    };
 
 /** One row per implementer commit (design §4). Truth for resuming on any node. */
 export interface Handoff {

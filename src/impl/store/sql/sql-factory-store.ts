@@ -248,11 +248,17 @@ export class SqlFactoryStore implements FactoryStore {
     if (input.kinds.length === 0) return null;
     const { seq, forUpdateSkipLocked } = this.db.dialect;
     return this.db.transaction(async (tx) => {
+      const now = this.now();
+      // A usage or rate limit pauses every claim, for every item, on every replica (design §5 Restarts).
+      const [pause] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
+      if (pause && (pause.resume_at as string) > now) return null;
       // SKIP LOCKED: concurrent workers each take a different candidate instead of queueing on one.
+      // not_before: a retry waits out its backoff, whichever worker looks.
       const [next] = await tx.all(
         `SELECT id FROM runs WHERE status = 'queued' AND kind IN (${placeholders(input.kinds.length)})
+           AND (not_before IS NULL OR not_before <= ?)
          ORDER BY created_at, ${seq} LIMIT 1${forUpdateSkipLocked}`,
-        input.kinds,
+        [...input.kinds, now],
       );
       if (!next) return null;
       const id = next.id as RunId;
@@ -260,10 +266,31 @@ export class SqlFactoryStore implements FactoryStore {
         `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
            lease_expires_at = ?, started_at = ?, updated_at = ?
          WHERE id = ? AND status = 'queued'`,
-        [input.worker_id, this.after(input.lease_ms), this.now(), this.now(), id],
+        [input.worker_id, this.after(input.lease_ms), now, now, id],
       );
       return claimed === 1 ? this.selectRun(tx, id) : null;
     });
+  }
+
+  async pauseClaims(resume_at: Timestamp): Promise<{ extended: boolean; resume_at: Timestamp }> {
+    return this.db.transaction(async (tx) => {
+      if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [RATE_LIMIT_PAUSE, resume_at])) {
+        return { extended: true, resume_at };
+      }
+      // Conditional: only a later time moves it, so concurrent pauses keep the latest.
+      const moved = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [
+        resume_at, RATE_LIMIT_PAUSE, resume_at,
+      ]);
+      if (moved === 1) return { extended: true, resume_at };
+      const [row] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
+      return { extended: false, resume_at: row!.resume_at as Timestamp };
+    });
+  }
+
+  async getClaimPause(): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
+    const at = (row?.resume_at as Timestamp | undefined) ?? null;
+    return at !== null && at > this.now() ? at : null;
   }
 
   // Lease checks below test status and token only, never lease_expires_at. Fencing comes from the token:
@@ -302,7 +329,7 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToRun);
   }
 
-  async expireLeases(max_attempts: number): Promise<RunId[]> {
+  async expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]> {
     const { forUpdateSkipLocked } = this.db.dialect;
     return this.db.transaction(async (tx) => {
       const now = this.now();
@@ -326,10 +353,12 @@ export class SqlFactoryStore implements FactoryStore {
             [JSON.stringify(failed), now, now, run.id as string],
           );
         } else {
+          // Same backoff as any other retry, so a lasting outage does not use up the attempts at once.
+          const not_before = backoff_ms ? this.after(backoff_ms(Number(run.attempt))) : null;
           await tx.run(
-            `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
              WHERE id = ? AND status = 'running'`,
-            [now, run.id as string],
+            [not_before, now, run.id as string],
           );
         }
       }
@@ -456,9 +485,9 @@ export class SqlFactoryStore implements FactoryStore {
     const now = this.now();
     const inserted = await this.insertOnce(
       tx,
-      `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'queued', 0, 0, ?, ?)`,
-      [id, input.work_item_id, input.kind, input.idempotency_key, now, now],
+      `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, not_before, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?)`,
+      [id, input.work_item_id, input.kind, input.idempotency_key, input.not_before ?? null, now, now],
     );
     return inserted ? this.selectRun(tx, id) : null;
   }
@@ -495,6 +524,9 @@ export class SqlFactoryStore implements FactoryStore {
 
 /** Thrown inside recordVerdict's transaction to roll it back when the verdict's comment id is already taken. */
 class DuplicateVerdict extends Error {}
+
+/** The one claim pause today: a usage or rate limit on the agent harness. */
+const RATE_LIMIT_PAUSE = "rate_limit";
 
 function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");

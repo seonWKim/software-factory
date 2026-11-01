@@ -1,5 +1,5 @@
 import type { FactoryConfig } from "./config.js";
-import type { RunKind, Tier, WorkItem } from "./types.js";
+import type { RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -30,6 +30,45 @@ export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"]): boolean
 export function runKey(item: Pick<WorkItem, "id" | "loop_count" | "restart_count">, kind: RunKind): string {
   return `${item.id}:${kind}:l${item.loop_count}:r${item.restart_count}`;
 }
+
+/**
+ * The key of the automatic retry of the run with key `key`: the step's first key plus `:a<n>`, n counting
+ * the retries of that step. Derived from the failed run alone, so applying it twice asks for the same key.
+ */
+export function retryKey(key: string): string {
+  const m = key.match(/^(.*):a(\d+)$/);
+  return m ? `${m[1]}:a${Number(m[2]) + 1}` : `${key}:a1`;
+}
+
+/** Whether two run keys belong to the same step (the same first run and its automatic retries). */
+export function sameStep(a: string, b: string): boolean {
+  return stepKey(a) === stepKey(b);
+}
+
+function stepKey(key: string): string {
+  return key.replace(/:a\d+$/, "");
+}
+
+/** Wait before retry number `attempt` (1 = first retry): base × 2^(attempt−1), never more than max. */
+export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): number {
+  return Math.min(max_ms, base_ms * 2 ** Math.max(0, attempt - 1));
+}
+
+/**
+ * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt;
+ * infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
+ * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure.
+ */
+export type FailureClass = "rate_limited" | "infra" | "task";
+
+export function failureClass(outcome: RunOutcome | null): FailureClass {
+  if (outcome?.status !== "failed") return "task";
+  if (outcome.error_code === RATE_LIMITED) return "rate_limited";
+  return outcome.infra ? "infra" : "task";
+}
+
+/** The error code of a run stopped by a usage or rate limit. */
+export const RATE_LIMITED = "rate_limited";
 
 export function branchFor(item: Pick<WorkItem, "id">, prefix: string): string {
   return `${prefix}${item.id}`;

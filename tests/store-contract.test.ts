@@ -445,6 +445,67 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("retry waits and the claim pause", () => {
+    it("a run enqueued with not_before is not claimed before it, by any worker, and is claimed at that exact time", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const at = new Date(clock.now().getTime() + 60_000).toISOString();
+      const r = await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "triage", idempotency_key: "t:a1", not_before: at as never },
+      });
+      expect(r.ok && r.enqueued?.not_before).toBe(at);
+      clock.advance(59_999);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      clock.advance(1);
+      expect((await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("t:a1");
+    });
+
+    it("a waiting run does not hold up a later run that may start now", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "triage", idempotency_key: "wait", not_before: new Date(clock.now().getTime() + 1_000).toISOString() as never },
+      });
+      await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "now" } });
+      expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("now");
+    });
+
+    it("the reaper requeues an expired run with the backoff it is given, stored on the run", async () => {
+      const { store, clock } = await make();
+      await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(3, (attempt) => attempt * 10_000)).toEqual([run.id]);
+      const requeued = (await store.getRun(run.id))!;
+      expect(requeued).toMatchObject({ status: "queued", not_before: new Date(clock.now().getTime() + 10_000).toISOString() });
+      clock.advance(9_999);
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      clock.advance(1);
+      expect((await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))?.id).toBe(run.id);
+    });
+
+    it("a claim pause stops every claim until resume_at; it only ever moves later", async () => {
+      const { store, clock } = await make();
+      await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const until = new Date(clock.now().getTime() + 30_000).toISOString();
+      expect(await store.getClaimPause()).toBeNull();
+      expect(await store.pauseClaims(until as never)).toEqual({ extended: true, resume_at: until });
+      // An earlier time does not shorten it; the same time again is not an extension.
+      expect(await store.pauseClaims(new Date(clock.now().getTime() + 1_000).toISOString() as never)).toEqual({ extended: false, resume_at: until });
+      expect(await store.pauseClaims(until as never)).toEqual({ extended: false, resume_at: until });
+      expect(await store.getClaimPause()).toBe(until);
+
+      clock.advance(29_999);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      clock.advance(1);
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
+    });
+  });
+
   describe("cursors", () => {
     it("advances only from the expected value", async () => {
       const { store } = await make();
