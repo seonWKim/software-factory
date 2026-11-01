@@ -35,6 +35,9 @@ export const TOP_LEVEL_KEYS = [
   "agent_git_identity",
   "ui",
   "stats",
+  "budgets",
+  "budget_min_sample",
+  "inbox_retention_days",
 ] as const satisfies readonly (keyof FileConfig)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
