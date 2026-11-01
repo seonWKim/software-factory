@@ -74,6 +74,11 @@ The factory reacts 👀 to each command it handled and to each issue it took in;
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
+| Watch the factory in a browser (read-only) | `npm run factory -- ui`, then open <http://127.0.0.1:4310/> |
 | Suspect a leak | Revoke the token on GitHub first, then rotate |
+
+### Status page
+
+`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). It shows what waits for you, what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).
