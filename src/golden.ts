@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { FactoryConfig, Prompts } from "./core/config.js";
 import { REVIEW_SCHEMA, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
+import { toolsNamed } from "./core/worker.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
@@ -20,7 +21,8 @@ export const EXPECTS = ["should_flag", "should_pass"] as const;
 export type Expect = (typeof EXPECTS)[number];
 
 /**
- * The harness tools of the worker's review run (`WRITE_TOOLS` in src/core/worker.ts, not exported there).
+ * The tool names of the worker's review run (`WRITE_TOOLS` in src/core/worker.ts), resolved to the shared
+ * tool specs with `toolsNamed`.
  * tests/golden.test.ts checks this against a real Worker review run, so a drift fails the tests.
  */
 export const REVIEW_HARNESS_TOOLS: readonly string[] = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
@@ -454,7 +456,7 @@ async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal:
       sandbox: handle,
       system_prompt: deps.reviewPrompt,
       prompt: `${c.spec}\n\n## Diff\n\n\`\`\`diff\n${c.diff}\n\`\`\``,
-      harness_tools: REVIEW_HARNESS_TOOLS,
+      tools: toolsNamed(REVIEW_HARNESS_TOOLS),
       tool_grants: [],
       lease_token: 0,
       env_allowlist: gitIdentity(deps.config.agent_git_identity),

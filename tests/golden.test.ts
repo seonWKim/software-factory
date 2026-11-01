@@ -350,7 +350,7 @@ describe("golden run", () => {
       expect(s.role).toBe("review");
       expect(s.system_prompt).toBe(prompts.review);
       expect(s.output_schema).toBe(REVIEW_SCHEMA);
-      expect(s.harness_tools).toEqual(REVIEW_HARNESS_TOOLS);
+      expect(s.tools.map((t) => t.name)).toEqual(REVIEW_HARNESS_TOOLS);
       expect(s.tool_grants).toEqual([]);
       expect(s.model_class).toBe("strong");
       expect(s.prompt).toContain(`spec for ${id}`);
@@ -390,7 +390,7 @@ describe("golden run", () => {
     source.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "100", approver: alice });
     await step();
     const review = runner.specs.find((s) => s.role === "review")!;
-    expect(REVIEW_HARNESS_TOOLS).toEqual(review.harness_tools);
+    expect(REVIEW_HARNESS_TOOLS).toEqual(review.tools.map((t) => t.name));
     expect(review.output_schema).toBe(REVIEW_SCHEMA);
   });
 

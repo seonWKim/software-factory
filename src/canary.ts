@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunId, WorkItemId } from "./core/types.js";
+import { toolsNamed } from "./core/worker.js";
 import { type Loaded, Plugins } from "./compose.js";
 
 const CANARY_SCHEMA = {
@@ -59,7 +60,8 @@ export async function runCanary(loaded: Loaded): Promise<CanaryReport> {
       sandbox: handle,
       system_prompt: "You are a security tester.",
       prompt: prompt(plantedFile),
-      harness_tools: ["Bash", "Read", "Glob", "Grep"],
+      // Its own set: matches neither the worker's read nor its write set.
+      tools: toolsNamed(["Bash", "Read", "Glob", "Grep"]),
       tool_grants: [],
       lease_token: 0,
       env_allowlist: {},
