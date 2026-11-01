@@ -82,4 +82,12 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX work_items_pr ON work_items (project, pr_number);
   CREATE INDEX work_items_merge_sha ON work_items (merge_sha);
   `,
+  // 3: read-only status page (design §9). Old rows keep title, started_at and finished_at NULL.
+  `
+  ALTER TABLE work_items ADD COLUMN title TEXT;
+  ALTER TABLE runs ADD COLUMN started_at TEXT;
+  ALTER TABLE runs ADD COLUMN finished_at TEXT;
+  CREATE INDEX work_items_stage ON work_items (stage, updated_at);
+  CREATE INDEX runs_finished ON runs (finished_at);
+  `,
 ];

@@ -242,6 +242,145 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("title and run timing columns", () => {
+    it("records the title at intake, null when not given; transitions leave it alone", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem({ ...issue(1), title: "Add a status page" }, system);
+      expect(item.title).toBe("Add a status page");
+      const { item: untitled } = await store.createWorkItem(issue(2), system);
+      expect(untitled.title).toBeNull();
+      await store.transition({ id: item.id, expected_version: 1, patch: { problem: "the spec" }, actor: system, reason: "x" });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ title: "Add a status page", problem: "the spec" });
+      expect((await store.getWorkItem(untitled.id))!.title).toBeNull();
+    });
+
+    it("sets started_at on each claim and finished_at on completion; queued runs have neither", async () => {
+      const { store, clock } = await make();
+      await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const [queued] = await store.listRunsByStatus(["queued"], 10);
+      expect(queued).toMatchObject({ started_at: null, finished_at: null });
+
+      clock.advance(1_000);
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      expect(run.started_at).toBe(clock.now().toISOString());
+      expect(run.finished_at).toBeNull();
+
+      clock.advance(5_000);
+      await store.heartbeat(run.id, run.lease!.token, LEASE);
+      expect((await store.getRun(run.id))!.started_at).toBe(run.started_at);
+
+      clock.advance(5_000);
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
+      const done = (await store.getRun(run.id))!;
+      expect(done.started_at).toBe(run.started_at);
+      expect(done.finished_at).toBe(clock.now().toISOString());
+    });
+
+    it("the reaper sets finished_at only when it fails the run; a requeue clears nothing and a reclaim restarts", async () => {
+      const { store, clock } = await make();
+      await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const first = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      clock.advance(LEASE + 1);
+      await store.expireLeases(2);
+      expect((await store.getRun(first.id))!.finished_at).toBeNull();
+
+      const second = (await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))!;
+      expect(second.started_at).toBe(clock.now().toISOString());
+      expect(second.started_at).not.toBe(first.started_at);
+      clock.advance(LEASE + 1);
+      await store.expireLeases(2);
+      const failed = (await store.getRun(first.id))!;
+      expect(failed.status).toBe("failed");
+      expect(failed.finished_at).toBe(clock.now().toISOString());
+    });
+  });
+
+  describe("read-only queries", () => {
+    it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
+      const { store, clock } = await make();
+      const ids = [];
+      for (let n = 1; n <= 4; n++) {
+        clock.advance(1_000);
+        ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      }
+      const [a, b, c, d] = ids as [WorkItemId, WorkItemId, WorkItemId, WorkItemId];
+      clock.advance(1_000);
+      await store.transition({ id: a, expected_version: 1, patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_review" }, actor: system, reason: "x" });
+      clock.advance(1_000);
+      await store.transition({ id: b, expected_version: 1, patch: { stage: "CLOSED", close_reason: "wont_do" }, actor: system, reason: "x" });
+      clock.advance(1_000);
+      await store.transition({ id: c, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" }, actor: system, reason: "x" });
+
+      const idsOf = (xs: { id: WorkItemId }[]) => xs.map((x) => x.id);
+      expect(idsOf(await store.listWorkItemsWhere({ limit: 10 }))).toEqual([c, b, a, d]);
+      expect(idsOf(await store.listWorkItemsWhere({ exclude_closed: true, limit: 10 }))).toEqual([c, a, d]);
+      expect(idsOf(await store.listWorkItemsWhere({ stage: "CLOSED", exclude_closed: true, limit: 10 }))).toEqual([b]);
+      expect(idsOf(await store.listWorkItemsWhere({ stage: "READY", limit: 10 }))).toEqual([a]);
+      expect(idsOf(await store.listWorkItemsWhere({ blocked_on: "human", limit: 10 }))).toEqual([c, a]);
+      expect(idsOf(await store.listWorkItemsWhere({ blocked_on: "human", stage: "REVIEW", limit: 10 }))).toEqual([c]);
+      expect(idsOf(await store.listWorkItemsWhere({ limit: 2 }))).toEqual([c, b]);
+    });
+
+    it("countWorkItemsByStage counts every stage, 0 when empty", async () => {
+      const { store } = await make();
+      expect(await store.countWorkItemsByStage()).toEqual({ NEW: 0, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 0 });
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.createWorkItem(issue(2), system);
+      await store.transition({ id: item.id, expected_version: 1, patch: { stage: "CLOSED", close_reason: "wont_do" }, actor: system, reason: "x" });
+      expect(await store.countWorkItemsByStage()).toEqual({ NEW: 1, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 1 });
+    });
+
+    it("listRunsByStatus returns runs in the given statuses, oldest first, up to the limit", async () => {
+      const { store, clock } = await make();
+      for (let n = 1; n <= 3; n++) {
+        clock.advance(1_000);
+        await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      }
+      const claimed = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      expect(claimed.idempotency_key).toBe("t1");
+      expect((await store.listRunsByStatus(["queued"], 10)).map((r) => r.idempotency_key)).toEqual(["t2", "t3"]);
+      expect((await store.listRunsByStatus(["queued"], 1)).map((r) => r.idempotency_key)).toEqual(["t2"]);
+      expect((await store.listRunsByStatus(["running"], 10)).map((r) => r.id)).toEqual([claimed.id]);
+      expect(await store.listRunsByStatus(["queued", "running"], 10)).toHaveLength(3);
+      expect(await store.listRunsByStatus([], 10)).toEqual([]);
+    });
+
+    it("listRunsFinishedWithin returns runs finished inside the window, newest first", async () => {
+      const { store, clock } = await make();
+      const DAY = 24 * 60 * 60 * 1000;
+      for (let n = 1; n <= 3; n++) {
+        await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      }
+      const finish = async (outcome: Parameters<FactoryStore["completeRun"]>[2]) => {
+        const r = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+        await store.completeRun(r.id, r.lease!.token, outcome);
+        return r.id;
+      };
+      const old = await finish({ status: "succeeded", summary: "", data: { tokens: 5 } });
+      clock.advance(DAY);
+      const recentOk = await finish({ status: "succeeded", summary: "", data: { tokens: 7 } });
+      clock.advance(1_000);
+      const recentFail = await finish({ status: "failed", error_code: "x", detail: "", infra: false });
+      clock.advance(1_000);
+
+      const within = await store.listRunsFinishedWithin(DAY);
+      expect(within.map((r) => r.id)).toEqual([recentFail, recentOk]);
+      expect(within.map((r) => r.id)).not.toContain(old);
+      expect((await store.listRunsFinishedWithin(DAY + 10_000)).map((r) => r.id)).toEqual([recentFail, recentOk, old]);
+    });
+
+    it("the read methods write nothing", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
+      await store.listWorkItemsWhere({ limit: 10 });
+      await store.countWorkItemsByStage();
+      await store.listRunsByStatus(["queued", "running"], 10);
+      await store.listRunsFinishedWithin(1_000);
+      expect({ item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) }).toEqual(before);
+    });
+  });
+
   describe("cursors", () => {
     it("advances only from the expected value", async () => {
       const { store } = await make();

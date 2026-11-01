@@ -4,7 +4,9 @@ import type {
   Run,
   RunId,
   RunOutcome,
+  RunStatus,
   SourceType,
+  Stage,
   StateChange,
   StateChangeDetail,
   StateChangeId,
@@ -21,8 +23,9 @@ import type {
   NewWorkItem,
   TransitionInput,
   TransitionResult,
+  WorkItemFilter,
 } from "../../../interfaces/factory-store.js";
-import type { SqlDriver, SqlExecutor } from "./driver.js";
+import type { SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import {
   WORK_ITEM_COLUMNS,
   diffPatch,
@@ -112,6 +115,34 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToWorkItem);
   }
 
+  async listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]> {
+    const where: string[] = [];
+    const params: SqlValue[] = [];
+    if (filter.stage !== undefined) {
+      where.push("stage = ?");
+      params.push(filter.stage);
+    } else if (filter.exclude_closed) {
+      where.push("stage <> 'CLOSED'");
+    }
+    if (filter.blocked_on !== undefined) {
+      where.push("blocked_on = ?");
+      params.push(filter.blocked_on);
+    }
+    const rows = await this.db.all(
+      `SELECT * FROM work_items${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
+      [...params, filter.limit],
+    );
+    return rows.map(rowToWorkItem);
+  }
+
+  async countWorkItemsByStage(): Promise<Record<Stage, number>> {
+    const counts: Record<Stage, number> = { NEW: 0, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 0 };
+    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM work_items GROUP BY stage");
+    for (const r of rows) counts[r.stage as Stage] = Number(r.n);
+    return counts;
+  }
+
   async transition(input: TransitionInput): Promise<TransitionResult> {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx) => {
@@ -168,9 +199,9 @@ export class SqlFactoryStore implements FactoryStore {
       const id = next.id as RunId;
       const claimed = await tx.run(
         `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
-           lease_expires_at = ?, updated_at = ?
+           lease_expires_at = ?, started_at = ?, updated_at = ?
          WHERE id = ? AND status = 'queued'`,
-        [input.worker_id, this.after(input.lease_ms), this.now(), id],
+        [input.worker_id, this.after(input.lease_ms), this.now(), this.now(), id],
       );
       return claimed === 1 ? this.selectRun(tx, id) : null;
     });
@@ -195,9 +226,9 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const completed = await tx.run(
-        `UPDATE runs SET status = ?, outcome = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+        `UPDATE runs SET status = ?, outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
-        [outcome.status, JSON.stringify(outcome), now, runId, token],
+        [outcome.status, JSON.stringify(outcome), now, now, runId, token],
       );
       return completed === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
@@ -230,9 +261,10 @@ export class SqlFactoryStore implements FactoryStore {
       for (const run of expired) {
         if (Number(run.attempt) >= max_attempts) {
           await tx.run(
-            `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
+               updated_at = ?
              WHERE id = ? AND status = 'running'`,
-            [JSON.stringify(failed), now, run.id as string],
+            [JSON.stringify(failed), now, now, run.id as string],
           );
         } else {
           await tx.run(
@@ -252,6 +284,23 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listRuns(id: WorkItemId): Promise<Run[]> {
     const rows = await this.db.all(`SELECT * FROM runs WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
+    return rows.map(rowToRun);
+  }
+
+  async listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]> {
+    if (statuses.length === 0) return [];
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq} LIMIT ?`,
+      [...statuses, limit],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async listRunsFinishedWithin(window_ms: number): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at DESC, ${this.db.dialect.seq} DESC`,
+      [this.after(-window_ms)],
+    );
     return rows.map(rowToRun);
   }
 

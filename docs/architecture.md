@@ -19,6 +19,7 @@ graph TB
     GH["GitHub: issues, PRs, reviews"]
     SL["Slack (later)"]
     CLI["factory CLI"]
+    UI["factory ui: read-only status page"]
   end
 
   subgraph CORE["Core: factory logic, no vendor code"]
@@ -71,7 +72,9 @@ graph TB
 | `EgressScanner` (G5) | Known secret values + patterns | + a managed secret scanner |
 | `Clock` | `SystemClock` (tests: `FakeClock`) | `SystemClock` |
 
-Code layout: interfaces in `src/interfaces/`, control and agent-plane logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
+Code layout: interfaces in `src/interfaces/`, control and agent-plane logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`, the status page in `src/ui/`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
+
+**Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. It reads `FactoryStore` only, through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`), and never calls a method that writes. `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD only, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
 
 ## 2. Control plane vs agent plane
 

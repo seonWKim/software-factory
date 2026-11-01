@@ -40,5 +40,6 @@
   "run_timeout_ms": 2700000,
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
+  "ui": { "port": 4310 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" }
 }

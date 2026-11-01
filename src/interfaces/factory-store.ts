@@ -1,14 +1,17 @@
 import type {
   Actor,
+  BlockedOn,
   Handoff,
   Run,
   RunId,
   RunKind,
   RunOutcome,
+  RunStatus,
   SourceRef,
   SourceType,
   StateChange,
   StateChangeDetail,
+  Stage,
   UserId,
   WorkItem,
   WorkItemId,
@@ -24,6 +27,8 @@ import type {
 
 export interface NewWorkItem {
   source: SourceRef;
+  /** The source's title, kept apart from `problem` (triage overwrites `problem` with the spec). */
+  title?: string | null;
   requester_id: UserId;
   project: string;
   problem: string;
@@ -58,6 +63,15 @@ export type TransitionResult =
   /** ack_run was given but that run is not finished, belongs to another item, or is already acknowledged. */
   | { ok: false; reason: "run_not_ackable" };
 
+/** Read-only filter for listWorkItemsWhere. Absent fields do not filter. */
+export interface WorkItemFilter {
+  stage?: Stage | undefined;
+  blocked_on?: BlockedOn | undefined;
+  /** Leave out CLOSED items. Ignored when `stage` is given. */
+  exclude_closed?: boolean | undefined;
+  limit: number;
+}
+
 export interface ClaimInput {
   worker_id: WorkerId;
   kinds: readonly RunKind[];
@@ -89,6 +103,10 @@ export interface FactoryStore {
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
   /** Newest first. */
   listWorkItems(limit: number): Promise<WorkItem[]>;
+  /** Items matching `filter`, most recently updated first. Read-only. */
+  listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]>;
+  /** Number of work items in each stage. Every stage is present, 0 when it has none. Read-only. */
+  countWorkItemsByStage(): Promise<Record<Stage, number>>;
   /** The only way to change a work item: conditional update + state_changes row (+ optional ack/enqueue). */
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
@@ -110,6 +128,13 @@ export interface FactoryStore {
   expireLeases(max_attempts: number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
   listRuns(id: WorkItemId): Promise<Run[]>;
+  /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
+  listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
+  /**
+   * Runs whose finished_at lies within the last `window_ms` of the store's clock, newest first. Runs that
+   * finished before finished_at existed (null) are never included. Read-only.
+   */
+  listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
 
   // Handoffs
 

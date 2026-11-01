@@ -33,6 +33,8 @@ export interface WorkItem {
   /** Optimistic-concurrency version. Every successful transition increments it by 1. */
   version: number;
   source: SourceRef;
+  /** The source's title (issue title), recorded at intake. Null on items created before it existed. */
+  title: string | null;
   requester_id: UserId;
   project: string;
   problem: string;
@@ -56,9 +58,9 @@ export interface WorkItem {
   updated_at: Timestamp;
 }
 
-/** Fields a transition may change. id, source, requester, version and timestamps are store-owned. */
+/** Fields a transition may change. id, source, title, requester, version and timestamps are store-owned. */
 export type WorkItemPatch = Partial<
-  Omit<WorkItem, "id" | "version" | "source" | "requester_id" | "created_at" | "updated_at">
+  Omit<WorkItem, "id" | "version" | "source" | "title" | "requester_id" | "created_at" | "updated_at">
 >;
 
 export type Actor =
@@ -112,7 +114,12 @@ export interface Run {
   outcome: RunOutcome | null;
   /** Set when the controller has applied the outcome to the work item. */
   acknowledged_at: Timestamp | null;
+  /** When the latest claim started this run (set on every claim). Null until claimed, and on rows from before it existed. */
+  started_at: Timestamp | null;
+  /** When the run reached succeeded or failed (worker completion or reaper). Null until then, and on older rows. */
+  finished_at: Timestamp | null;
   created_at: Timestamp;
+  /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;
 }
 
