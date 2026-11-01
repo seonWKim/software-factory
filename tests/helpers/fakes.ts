@@ -1,13 +1,13 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
-import type { SourceRef, UserId } from "../../src/core/types.js";
+import type { SourceRef, SourceType, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, PollSource, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import type { PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -55,9 +55,14 @@ export function issueRef(n: number): SourceRef {
  * high-water mark, and a command event at or below it is not delivered again. Records every markSeen call.
  */
 export class FakeSource implements PollSource {
-  readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
   queue: SourceEvent[] = [];
+  /** Every poll call, failed ones included, with the cursor it was given. */
+  polls: (string | null)[] = [];
+  /** When set, poll throws this instead of returning events. */
+  pollError: Error | null = null;
+
+  constructor(readonly type: SourceType = "github_issue") {}
   /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
   comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
@@ -65,6 +70,8 @@ export class FakeSource implements PollSource {
   reactionError: Error | null = null;
 
   async poll(cursor: string | null): Promise<PollResult> {
+    this.polls.push(cursor);
+    if (this.pollError) throw this.pollError;
     const c = cursor ? (JSON.parse(cursor) as { n: number; last_comment_id: number }) : { n: 0, last_comment_id: 0 };
     let last = c.last_comment_id;
     const events: SourceEvent[] = [];
@@ -118,11 +125,41 @@ export class FakeSource implements PollSource {
     set.add(status);
     this.labels.set(key, set);
   }
+  /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
+  checkResults: PrChecks[] = [];
+  /** Every PR number prChecks was asked about, in order. */
+  checkCalls: number[] = [];
+  /** When set, prChecks records the call, then throws this. */
+  checksError: Error | null = null;
+  async prChecks(pr_number: number): Promise<PrChecks> {
+    this.checkCalls.push(pr_number);
+    if (this.checksError) throw this.checksError;
+    return this.checkResults.shift() ?? { state: "passed" };
+  }
   /** The status labels on a target. */
   statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
     const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
     return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
   }
+}
+
+/**
+ * A second poll source, of type `slack_thread`: FakeSource's replay contract and records, under another
+ * source type. Test-only plugin name `fake-slack-poll` (docs/plugins.md), through `fakeSlackPollRegistry()`.
+ */
+export class FakeSlackPollSource extends FakeSource {
+  constructor() {
+    super("slack_thread");
+  }
+}
+
+/** REGISTRY plus the test-only `fake-slack-poll` source. */
+export function fakeSlackPollRegistry(base: Registry = REGISTRY, make: () => FakeSlackPollSource = () => new FakeSlackPollSource()): Registry {
+  return withPlugin(base, "source", "fake-slack-poll", make);
+}
+
+export function slackRef(n: number): SourceRef {
+  return { type: "slack_thread", id: `C1/${n}`, link: `https://slack.example/archives/C1/p${n}` };
 }
 
 /**
@@ -350,9 +387,13 @@ export class FakeRunner implements AgentRunner {
   }
 }
 
-/** Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). */
-export async function waitFor(cond: () => boolean | Promise<boolean>, what = "condition", tries = 200): Promise<void> {
-  for (let i = 0; i < tries; i++) {
+/**
+ * Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). Gives up
+ * after at least `tries` yields and `ms` of real time, so a slow machine (CI) gets the same chance as a fast one.
+ */
+export async function waitFor(cond: () => boolean | Promise<boolean>, what = "condition", tries = 200, ms = 5_000): Promise<void> {
+  const deadline = Date.now() + ms;
+  for (let i = 0; i < tries || Date.now() < deadline; i++) {
     if (await cond()) return;
     await new Promise((r) => setImmediate(r));
   }
@@ -407,6 +448,7 @@ export class MemoryStorage implements SharedStorage {
 }
 
 export const triageSpec = {
+  in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
   problem: "Add a CI scope gate",
   done_criteria: ["CI fails when files outside allowed_paths change"],
   desired_output: "workflow + test",

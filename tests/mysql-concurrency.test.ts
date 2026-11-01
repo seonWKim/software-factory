@@ -74,7 +74,10 @@ describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
         }
         running.set(run.id, run);
         maxAtOnce = Math.max(maxAtOnce, running.size);
-        await new Promise((r) => setTimeout(r, 2));
+        // Hold the run until another claimer has one too (or 200 ms pass), so "side by side" is observed
+        // on a slow machine as well, not only when two claims happen to land within a couple of ms.
+        for (let t = 0; t < 40 && running.size < 2; t++) await new Promise((r) => setTimeout(r, 5));
+        maxAtOnce = Math.max(maxAtOnce, running.size);
         running.delete(run.id);
         const done = await s.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
         expect(done.ok).toBe(true);

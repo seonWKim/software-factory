@@ -622,3 +622,69 @@ describe("GitHubIssueSource: status labels", () => {
     expect(client.issueLabels.get(7)).toEqual(["sf: triaging", "factory/done"]);
   });
 });
+
+describe("GitHubIssueSource.prChecks", () => {
+  /** Answers GET /pulls/42 with head sha "h1", and the check runs and commit statuses of "h1". */
+  class ChecksClient extends FakeClient {
+    runs: { name: string; status: string; conclusion: string | null }[] = [];
+    statuses: { context: string; state: string }[] = [];
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      this.calls.push({ method, path, body });
+      const bare = path.split("?")[0]!;
+      if (bare === "/repos/o/r/pulls/42") return { number: 42, head: { ref: "factory/wi_a", sha: "h1" } } as T;
+      if (bare === "/repos/o/r/commits/h1/check-runs") {
+        return { total_count: this.runs.length, check_runs: path.includes("page=1") ? this.runs : [] } as T;
+      }
+      if (bare === "/repos/o/r/commits/h1/status") {
+        return { state: "pending", total_count: this.statuses.length, statuses: this.statuses } as T;
+      }
+      throw new Error(`unexpected ${method} ${path}`);
+    }
+  }
+  const run = (name: string, status: string, conclusion: string | null = null) => ({ name, status, conclusion });
+  function make() {
+    const client = new ChecksClient();
+    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
+  }
+
+  it("reads the check runs and statuses of the PR's head commit, read-only", async () => {
+    const { client, source } = make();
+    client.runs = [run("test", "completed", "success")];
+    await source.prChecks(42);
+    expect(client.calls).toEqual([
+      { method: "GET", path: "/repos/o/r/pulls/42", body: undefined },
+      { method: "GET", path: "/repos/o/r/commits/h1/check-runs?per_page=100&page=1", body: undefined },
+      { method: "GET", path: "/repos/o/r/commits/h1/status?per_page=100", body: undefined },
+    ]);
+  });
+
+  it("passed when every check succeeded, was skipped or neutral, and when there are none", async () => {
+    const { client, source } = make();
+    expect(await source.prChecks(42)).toEqual({ state: "passed" });
+    client.runs = [run("test", "completed", "success"), run("lint", "completed", "skipped"), run("x", "completed", "neutral")];
+    client.statuses = [{ context: "ci/legacy", state: "success" }];
+    expect(await source.prChecks(42)).toEqual({ state: "passed" });
+  });
+
+  it("pending while a check has not finished and none failed", async () => {
+    const { client, source } = make();
+    client.runs = [run("test", "completed", "success"), run("test-mysql", "in_progress")];
+    expect(await source.prChecks(42)).toEqual({ state: "pending" });
+    client.runs = [run("test", "completed", "success")];
+    client.statuses = [{ context: "ci/legacy", state: "pending" }];
+    expect(await source.prChecks(42)).toEqual({ state: "pending" });
+  });
+
+  it("failed as soon as one check finished without success, naming every failed one", async () => {
+    const { client, source } = make();
+    client.runs = [
+      run("test", "completed", "failure"),
+      run("test-mysql", "queued"),
+      run("typecheck", "completed", "timed_out"),
+      run("cancelled-one", "completed", "cancelled"),
+      run("ok", "completed", "success"),
+    ];
+    client.statuses = [{ context: "ci/legacy", state: "error" }, { context: "ci/fine", state: "success" }];
+    expect(await source.prChecks(42)).toEqual({ state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"] });
+  });
+});

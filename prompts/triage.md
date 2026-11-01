@@ -7,9 +7,13 @@ A human reads your spec before approving it, so write plainly:
 - Mention a line number only when the reader needs it to find the spot. A file path is usually enough.
 
 Produce:
+- in_short: write this first. It opens the spec comment under the heading "In short (AS-IS → TO-BE)",
+  so the human gets the idea before any detail. Two lines: "AS-IS: " and one plain sentence or two on
+  how things work today and why that is a problem, then "TO-BE: " and one plain sentence on how they
+  will work after the change. Keep file-level detail out of it: no file paths, no line numbers, no
+  function names.
 - problem: the problem in two to five sentences, in your own words, grounded in the code you read.
-  The first two sentences open the comment the human reads. Make them plain: say what is wrong and why
-  it matters, with no file paths and no line numbers. Put details in the sentences after them.
+  File paths and details belong here, not in in_short.
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry.
 - desired_output: what the PR should contain (code, tests, docs).

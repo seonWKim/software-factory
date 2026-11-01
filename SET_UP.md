@@ -52,8 +52,12 @@ GitHub → Settings → Developer settings → Personal access tokens → **Fine
 | Contents | Read and write |
 | Issues | Read and write |
 | Pull requests | Read and write |
+| Checks | Read-only (the CI gate reads the PR's check runs) |
+| Commit statuses | Read-only (the CI gate reads the PR's commit statuses) |
 | Metadata | Read-only (added automatically) |
 | Everything else | No access |
+
+`npm run setup` does not list Checks and Commit statuses yet; add them by hand. Without them the factory cannot read a PR's checks, logs `reading PR checks failed`, and the PR waits in review.
 
 ## After setup
 
@@ -69,7 +73,7 @@ Then on GitHub:
 
 1. Label an issue `factory`.
 2. The factory posts a spec on the issue. Reply `/approve [notes]`, `/reject <reason>`, or `/revise <feedback>`. Notes after `/approve` (on the same line or the lines below) go to the implementer and the reviewer; `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
-3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
+3. It opens a PR, reviews it, waits for the PR's checks (the `test` workflow, below), and comments when a human merge is needed. Merge it yourself. If a check fails, the factory sends the PR back to the implementer with the failing check names; that counts as one loop, like a review that found a bug.
 4. If a step fails, it comments; reply `/retry`.
    If `budgets` is set for the item's tier in `factory.config.json` (e.g. `"budgets": {"2": 2000000}`; absent means no limit) and the item has spent that many tokens, the factory stops before its next implement or review run and comments a budget checkpoint: what was spent, the current budget and a suggested one. All work so far is kept. Reply:
    - `/budget` to continue with the suggested budget;
@@ -88,9 +92,9 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | Command | What it does | Applies when |
 |---|---|---|
 | `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint |
-| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
-| `/retry` | Run the failed run again | blocked by a failed run |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run |
+| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run |
+| `/retry` | Run the failed run again | blocked by a failed run, blocked: the change was too large, blocked by a failed implement run |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
@@ -111,7 +115,7 @@ Each work item's issue carries exactly one status label, and so does its PR once
 | `sf: implementing` | The implementer agent is working on the branch |
 | `sf: in review` | The PR is open and the reviewer agent is checking it |
 | `sf: ready to merge` | The PR passed review; a human merges it |
-| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, the PR has a conflict, or the item reached its token budget (reply `/budget`, `/budget <tokens>` or `/reject <reason>`). The comments say which |
+| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, the PR has a conflict, or the item reached its token budget (reply `/budget`, `/budget <tokens>` or `/reject <reason>`). The comments say which. For now it also shows while a reviewed PR waits for its checks; nothing is needed from you then |
 | `sf: done` | The PR was merged |
 | `sf: rejected` | Closed without a merge: spec rejected, or PR closed unmerged |
 
@@ -124,6 +128,19 @@ By default the factory builds one item at a time. To build several in parallel, 
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
+
+### CI and branch protection
+
+`.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. Job `test-mysql`: starts a `mysql:8` service and runs `npm test` with `SF_TEST_MYSQL_URL` set, so the MySQL store tests run too. No secret is needed.
+
+The factory waits for a PR's checks before it posts "A human merge is required": while any check runs, the item stays in review (`blocked_on: ci`, `checks_pending`) and the factory looks again every `poll_interval_ms`; a failed check sends the item back to implement; when every check passed it moves to `merge_pending`. A PR with no checks at all counts as passed.
+
+Once, after the workflow has run at least once on GitHub, make the `test` check required so no PR can be merged with failing tests, by hand or by the factory:
+
+1. GitHub → the repository → Settings → Branches (or Rules → Rulesets) → Add branch protection rule for `main`.
+2. Turn on **Require status checks to pass before merging** and **Require branches to be up to date before merging**.
+3. In the search box, add the status check `test` (and `test-mysql` if you want the MySQL tests required too).
+4. Save.
 
 ## Routine
 

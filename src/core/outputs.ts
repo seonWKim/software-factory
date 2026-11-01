@@ -5,6 +5,8 @@ import type { Tier } from "./types.js";
 // Agents can be wrong; nothing they return is trusted until it passes these.
 
 export interface TriageOutput {
+  /** Plain AS-IS → TO-BE statement that opens the spec comment; no file-level detail. Not stored. */
+  in_short: string;
   problem: string;
   done_criteria: string[];
   desired_output: string;
@@ -34,8 +36,9 @@ const strings = { type: "array", items: { type: "string" } };
 export const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["problem", "done_criteria", "desired_output", "scope", "allowed_paths", "files_to_change", "tier", "tier_reason"],
+  required: ["in_short", "problem", "done_criteria", "desired_output", "scope", "allowed_paths", "files_to_change", "tier", "tier_reason"],
   properties: {
+    in_short: { type: "string" },
     problem: { type: "string" },
     done_criteria: { ...strings, minItems: 1 },
     desired_output: { type: "string" },
@@ -82,8 +85,8 @@ function isSafePath(p: string): boolean {
 
 export function parseTriage(v: unknown): Validation<TriageOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
-  const { problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason } = v;
-  if (!isStr(problem) || !isStr(desired_output) || !isStr(scope) || !isStr(tier_reason)) {
+  const { in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason } = v;
+  if (!isStr(in_short) || !isStr(problem) || !isStr(desired_output) || !isStr(scope) || !isStr(tier_reason)) {
     return { ok: false, error: "missing text field" };
   }
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
@@ -98,7 +101,7 @@ export function parseTriage(v: unknown): Validation<TriageOutput> {
   if (!isTier(tier)) return { ok: false, error: "tier" };
   return {
     ok: true,
-    value: { problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason },
+    value: { in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason },
   };
 }
 

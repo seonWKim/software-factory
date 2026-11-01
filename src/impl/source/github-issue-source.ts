@@ -2,7 +2,7 @@ import { parseComment } from "../../core/commands.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { PollResult, PollSource, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
+import type { PollResult, PollSource, PrChecks, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
@@ -43,6 +43,18 @@ interface GhPullFull extends GhPull {
   /** null while GitHub is still computing it. */
   mergeable: boolean | null;
   merged_by: GhUser | null;
+}
+interface GhCheckRun {
+  name: string;
+  /** queued, in_progress, completed, waiting, requested, pending. */
+  status: string;
+  /** Set once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale, ... */
+  conclusion: string | null;
+}
+interface GhStatus {
+  context: string;
+  /** error, failure, pending, success. */
+  state: string;
 }
 interface GhCommit {
   sha: string;
@@ -106,6 +118,11 @@ export function statusLabels(prefix: string): StatusLabel[] {
     return { status, name: `${prefix}${suffix}`, color, description };
   });
 }
+
+/** Check-run pages read per prChecks call, 100 each. */
+const CHECK_PAGES = 3;
+/** Check-run conclusions that do not fail the gate. */
+const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
@@ -358,6 +375,39 @@ export class GitHubIssueSource implements PollSource {
         if (!(err instanceof GitHubError && err.status === 404)) throw err;
       }
     }
+  }
+
+  /**
+   * The checks on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per
+   * name, GitHub's default) and its commit statuses (older integrations). Three read-only GETs and at most
+   * CHECK_PAGES pages of check runs. A check run with a conclusion other than success, neutral or skipped,
+   * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
+   */
+  async prChecks(pr_number: number): Promise<PrChecks> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${pr_number}`);
+    const sha = encodeURIComponent(pull.head.sha);
+    const runs: GhCheckRun[] = [];
+    for (let page = 1; page <= CHECK_PAGES; page++) {
+      const r = await this.client.request<{ total_count: number; check_runs: GhCheckRun[] }>(
+        "GET", `${base}/commits/${sha}/check-runs?per_page=100&page=${page}`);
+      runs.push(...r.check_runs);
+      if (r.check_runs.length < 100 || runs.length >= r.total_count) break;
+    }
+    const status = await this.client.request<{ statuses: GhStatus[] }>("GET", `${base}/commits/${sha}/status?per_page=100`);
+
+    const failed: string[] = [];
+    let pending = false;
+    for (const r of runs) {
+      if (r.status !== "completed") pending = true;
+      else if (!PASSING_CONCLUSIONS.has(r.conclusion ?? "")) failed.push(r.name);
+    }
+    for (const s of status.statuses) {
+      if (s.state === "pending") pending = true;
+      else if (s.state !== "success") failed.push(s.context);
+    }
+    if (failed.length) return { state: "failed", failed };
+    return pending ? { state: "pending" } : { state: "passed" };
   }
 
   /**

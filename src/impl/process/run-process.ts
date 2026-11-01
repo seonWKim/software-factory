@@ -17,7 +17,18 @@ export function runProcess(cmd: readonly string[], opts: RunProcessOptions): Pro
   return new Promise((resolve, reject) => {
     const [file, ...args] = cmd;
     if (!file) return reject(new Error("empty command"));
-    const child = spawn(file, args, { cwd: opts.cwd, env: { ...opts.env }, stdio: ["pipe", "pipe", "pipe"] });
+    // Its own process group, so a timeout or abort stops everything it started: `/bin/sh -c "sleep 5"` on
+    // Linux (dash) keeps `sleep` as a child holding the output pipes, and killing only the shell left the
+    // run waiting until `sleep` ended.
+    const child = spawn(file, args, { cwd: opts.cwd, env: { ...opts.env }, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const stop = () => {
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+        else child.kill("SIGTERM");
+      } catch {
+        child.kill("SIGTERM");
+      }
+    };
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -30,10 +41,10 @@ export function runProcess(cmd: readonly string[], opts: RunProcessOptions): Pro
     const timer = opts.timeout_ms
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
+          stop();
         }, opts.timeout_ms)
       : null;
-    const onAbort = () => child.kill("SIGTERM");
+    const onAbort = stop;
     opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
@@ -45,6 +56,9 @@ export function runProcess(cmd: readonly string[], opts: RunProcessOptions): Pro
       opts.signal?.removeEventListener("abort", onAbort);
       resolve({ exit_code: code, signal, stdout, stderr, timed_out: timedOut });
     });
+    // A child that exits without reading its input closes the pipe; the exit code reports the outcome, so the
+    // write error (EPIPE) is not one.
+    child.stdin.on("error", () => {});
     child.stdin.end(opts.stdin ?? "");
   });
 }

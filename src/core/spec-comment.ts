@@ -12,12 +12,6 @@ export interface TierSources {
 const FOOTER =
   "Reply `/approve` to start implementation, `/reject <reason>` to close, or `/revise <feedback>` to get a new spec.";
 
-/** The first one or two sentences of the problem, as the plain opening of the comment. */
-function opening(problem: string): string {
-  const sentences = problem.trim().split(/(?<=[.!?])\s+/);
-  return sentences.slice(0, 2).join(" ");
-}
-
 function raiseReason(tier: Tier, from: TriageOutput["tier"], why: TierSources): string {
   if (why.floor != null && why.floor === tier) return "a path is under a floor";
   if (why.previous != null && why.previous === tier) {
@@ -33,7 +27,8 @@ const code = (p: string): string => `- \`${p}\``;
  * default last line; the controller passes the command footer for the spec gate (`commandFooter`).
  */
 export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
-  const out = ["## Factory spec", "", opening(spec.problem), ""];
+  // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
+  const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", spec.in_short.trim(), ""];
   if (tier > spec.tier) {
     out.push(
       "### Please check",
@@ -44,6 +39,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   out.push("### What changes", spec.desired_output, "");
   out.push("### Done when", ...spec.done_criteria.map((c) => `- ${c}`), "");
   out.push("### Not included", spec.scope, "");
+  out.push("### Problem", spec.problem, "");
   out.push("### Files", "Allowed to change:", ...spec.allowed_paths.map(code));
   if (spec.files_to_change.length > 0) out.push("", "Expected to change:", ...spec.files_to_change.map(code));
   out.push("");

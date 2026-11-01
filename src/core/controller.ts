@@ -8,7 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
-import { commandFooter, commandState, failedRunKind, helpReply, unknownCommandReply } from "./commands.js";
+import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, phaseLabel, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
@@ -29,18 +29,25 @@ import {
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
-import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunId, RunKind, SourceRef, SourceType, StateChangeDetail, Tier, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, NewBudgetCheckpoint, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
-import type { PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
   store: FactoryStore;
-  source: SourceAdapter;
+  /**
+   * The configured sources (`plugins.source`), at most one per source type (design 2026-11-01). Each item's
+   * comments, mark-seen, status and close go to the adapter of its own source type; status on a PR goes to
+   * the `github_issue` adapter. Give `sources`, or `source` for exactly one.
+   */
+  sources?: readonly SourceAdapter[];
+  /** One source: the same as `sources: [source]`. */
+  source?: SourceAdapter;
   auth: AuthProvider;
   clock: Clock;
   config: FactoryConfig;
@@ -107,11 +114,46 @@ const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", 
  * `blocked_on: upstream` and this reason until both are done (design §4, gate commands).
  */
 const SOURCE_CLOSE_PENDING = "source_close_pending";
+/** blocked_reason (with `blocked_on: ci`) of a reviewed PR whose checks have not finished (design §5 CI gate). */
+const CHECKS_PENDING = "checks_pending";
+/** Items waiting on checks looked at per tick. */
+const CHECKS_BATCH = 50;
+/** Failed check names kept per decision, and characters per name. */
+const MAX_CHECK_NAMES = 20;
+const MAX_CHECK_NAME_CHARS = 100;
 /** Rejected items finished per intake tick. */
 const CLOSE_BATCH = 50;
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
+
+/** PRs live on GitHub: status on a PR goes to the adapter of this type, whatever the item's source. */
+const PR_SOURCE_TYPE: SourceType = "github_issue";
+
+/**
+ * The sources a controller runs (design 2026-11-01): at least one, no two of one type, and when there are
+ * several, one of type github_issue, the only source of PR merge, close and unmergeable events. Errors name
+ * `plugins.source`, the config key that lists them.
+ */
+function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
+  if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
+  const sources = d.sources ?? (d.source ? [d.source] : []);
+  if (sources.length === 0) throw new Error("plugins.source selects no SourceAdapter: list at least one source");
+  const seen = new Set<SourceType>();
+  for (const s of sources) {
+    if (seen.has(s.type)) {
+      throw new Error(`plugins.source lists two sources of type "${s.type}"; each source type can be listed once`);
+    }
+    seen.add(s.type);
+  }
+  if (sources.length > 1 && !seen.has(PR_SOURCE_TYPE)) {
+    throw new Error(
+      `plugins.source lists ${sources.length} sources but none of type "${PR_SOURCE_TYPE}": PR merge, close and ` +
+        "unmergeable events come only from it, so factory PRs would never close their items",
+    );
+  }
+  return sources;
+}
 
 /** The cursor a stream source's inbox is read through (one per source type, shared by every replica). */
 export function inboxCursorName(type: SourceAdapter["type"]): string {
@@ -132,13 +174,19 @@ export class Controller {
    */
   private lastReaperTick: number | null = null;
   private reaperGraceUntil = -Infinity;
+  /** The configured sources, in config order. Fixed at construction; the same on every replica. */
+  private readonly sources: readonly SourceAdapter[];
+  private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
 
-  constructor(private readonly d: ControllerDeps) {}
+  constructor(private readonly d: ControllerDeps) {
+    this.sources = checkSources(d);
+    this.byType = new Map(this.sources.map((s) => [s.type, s]));
+  }
 
   async run(signal: AbortSignal): Promise<void> {
-    const source = this.d.source;
-    // Stream source: this process also runs a listener; the store lease lets only one replica's subscribe.
-    const listening = source.intake === "stream" ? this.listener(source).run(signal) : Promise.resolve();
+    const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
+    // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
+    const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
     await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
@@ -146,8 +194,10 @@ export class Controller {
       const due = now - lastPoll >= this.d.config.poll_interval_ms;
       if (due) lastPoll = now;
       // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
-      if (due || source.intake === "stream") await this.guard("intake", () => this.tickIntake());
-      if (due && source.intake === "stream") await this.guard("inbox cleanup", () => this.cleanupInbox());
+      if (due || streams.length > 0) await this.guard("intake", () => this.intake(due));
+      if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
+      // PR checks are read from the forge, so on the poll interval like a poll source.
+      if (due) await this.guard("checks", () => this.tickChecks());
       await this.guard("runs", () => this.tickRuns());
       await this.guard("reaper", () => this.tickReaper());
       await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
@@ -167,19 +217,35 @@ export class Controller {
     });
   }
 
+  /** One intake step of every source: each poll source is polled, each stream source's inbox is read. */
   async tickIntake(): Promise<void> {
-    const source = this.d.source;
-    if (source.intake === "stream") return this.tickInbox(source);
-    return this.tickPoll(source);
+    await this.intake(true);
   }
 
+  /**
+   * Each source's step runs on its own guard, so one source failing (a poll that throws, a bad cursor) never
+   * stops the others in the same tick. Poll sources run only when `pollDue`. Unfinished rejects are retried
+   * once per tick that polled.
+   */
+  private async intake(pollDue: boolean): Promise<void> {
+    let polled = false;
+    for (const s of this.sources) {
+      if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
+      else if (pollDue) {
+        polled = true;
+        await this.guard(`intake:${s.type}`, () => this.tickPoll(s));
+      }
+    }
+    if (polled) await this.guard("source closes", () => this.tickSourceCloses());
+  }
+
+  /** One poll of one source, through its own cursor `intake:<type>`. */
   private async tickPoll(source: PollSource): Promise<void> {
     const name = `intake:${source.type}`;
     const cursor = await this.d.store.getCursor(name);
     const { events, next_cursor } = await source.poll(cursor);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
-    await this.guard("source closes", () => this.tickSourceCloses());
   }
 
   /**
@@ -213,8 +279,12 @@ export class Controller {
    * yet keeps every row.
    */
   async cleanupInbox(): Promise<void> {
-    const source = this.d.source;
-    if (source.intake !== "stream") return;
+    for (const s of this.sources) {
+      if (s.intake === "stream") await this.guard(`inbox cleanup:${s.type}`, () => this.cleanupInboxOf(s));
+    }
+  }
+
+  private async cleanupInboxOf(source: StreamSource): Promise<void> {
     const cursor = await this.d.store.getCursor(inboxCursorName(source.type));
     if (cursor === null) return;
     const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.d.config.inbox_retention_days * DAY_MS);
@@ -379,7 +449,7 @@ export class Controller {
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve sent on the PR is answered on the PR; every other command on the item's own issue.
-    await this.d.source.postComment(
+    await this.post(
       e.kind === "resolve_requested" ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -526,7 +596,7 @@ export class Controller {
     await this.markSeen(e.source, e.comment_id);
     const state = commandState(item);
     const help = e.kind === "help_requested";
-    await this.d.source.postComment(
+    await this.post(
       item.source,
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
@@ -572,7 +642,7 @@ export class Controller {
       }
     }
     this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
-    await this.d.source.postComment(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await this.post(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -603,7 +673,7 @@ export class Controller {
     // A refused comment that was stored before (e.g. a since-revoked permission) is not answered either.
     if ((await this.d.store.listVerdicts(item.id)).some((v) => v.comment_id === e.comment_id)) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
-    await this.d.source.postComment(
+    await this.post(
       item.source,
       `\`/verdict\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -667,7 +737,12 @@ export class Controller {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor);
-    if (!awaitingSpec(it)) return { refuse: `the spec is not waiting for approval (stage \`${it.stage}\`)` };
+    const phase = commandPhase(it);
+    const afterFailure = phase === "too_large" || phase === "failed_implement";
+    if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
+    if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
+      return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})` };
+    }
     switch (e.kind) {
       case "spec_rejected":
         // Recorded first; the comment and the close follow (finishReject), and survive a stop in between.
@@ -721,18 +796,57 @@ export class Controller {
   }
 
   /**
+   * `/revise <feedback>` at a failed implement run or a `diff_too_large` block (design §4): the item goes back
+   * through triage with the feedback, then to the spec gate. The revision counter and `max_loops` apply as at
+   * the spec gate, but at the limit nothing changes: the item keeps its block, where `/retry` and `/reject`
+   * still apply. restart_count + 1 so the implement run after the next `/approve` gets a new run key; the old
+   * failure comment is unlinked.
+   */
+  private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
+    const feedback = e.feedback.trim();
+    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+    const limit = this.d.config.max_loops;
+    if (it.revision_count >= limit) {
+      return {
+        refuse: `the spec was revised ${it.revision_count} times, the revision limit (\`max_loops\` = ${limit}); ` +
+          "reply `/retry` to run the implementer again or `/reject <reason>` to close",
+      };
+    }
+    const n = it.revision_count + 1;
+    return {
+      patch: {
+        stage: "NEW",
+        blocked_on: "none",
+        blocked_reason: null,
+        revision_count: n,
+        restart_count: it.restart_count + 1,
+        spec_feedback: feedback,
+        failure_comment_url: null,
+      },
+      actor,
+      reason: "spec_revision_requested",
+      detail: { previous_blocked_reason: it.blocked_reason },
+      // The spec-gate revision key: differs from the intake key and from every earlier revision's key.
+      enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
+    };
+  }
+
+  /**
    * The rest of a reject: one comment quoting the reason, then the source issue closed as not planned,
    * then the pending mark cleared. Each step is idempotent, so a repeat after a stop does no harm.
    */
   private async finishReject(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !closePending(it)) return;
+    // No adapter for the item's source: it stays pending (its state is kept) until one is configured.
+    const source = this.adapterFor(it.source, "closeIssue");
+    if (!source) return;
     const reason = it.spec_feedback?.trim() ?? "";
     const body = reason
       ? ["The spec was rejected, so the factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
       : "The spec was rejected with no reason given, so the factory closed this issue as not planned.";
     await this.comment(it, `rejected:${it.id}`, body);
-    await this.d.source.closeIssue(it.source);
+    await source.closeIssue(it.source);
     await this.decide(id, (cur) =>
       closePending(cur)
         ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "source_closed" }
@@ -898,16 +1012,7 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
-          const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "merge_pending" };
-          await this.comment(it, `merge:${run.id}`,
-            `PR #${it.pr_number} passed review (tier ${tier}). A human merge is required.\n\n${footerAfter(it, patch)}`);
-          return {
-            patch,
-            actor: SYSTEM,
-            reason: "review_passed",
-            ack_run: run.id,
-          };
+          return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
         }
         case "resolve":
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
@@ -947,6 +1052,101 @@ export class Controller {
         }
       }
     });
+  }
+
+  /**
+   * The CI gate (design §5): a PR that passed review is offered for a human merge only once its checks
+   * passed. Pending (or the source could not say): the item waits in `REVIEW` with `blocked_on: ci` /
+   * `checks_pending`, and tickChecks looks again. Failed: back to implement like a review bug (loop_count + 1,
+   * max_loops applies), with the failing check names on the state change for the next implementer.
+   * `reviewRunId` is the review that passed; it keys the comments, so a re-decide posts each once.
+   * `ackRun` acks that review when called from applyRun; tickChecks passes null.
+   */
+  private async checkGate(
+    it: WorkItem,
+    reviewRunId: RunId,
+    fields: { tier?: Tier; token_cost?: number },
+    ackRun: RunId | null,
+  ): Promise<Decision> {
+    const checks = await this.readChecks(it);
+    const ack = ackRun ? { ack_run: ackRun } : {};
+    const tier = fields.tier ?? it.tier;
+    if (checks.state === "pending") {
+      if (waitingOnChecks(it)) return null;
+      return {
+        patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_PENDING },
+        actor: SYSTEM,
+        reason: "checks_pending",
+        detail: { review_run_id: reviewRunId },
+        ...ack,
+      };
+    }
+    if (checks.state === "failed") {
+      const names = checks.failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
+      const detail = { failed_checks: JSON.stringify(names), review_run_id: reviewRunId };
+      const loop = it.loop_count + 1;
+      if (loop >= this.d.config.max_loops) {
+        const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
+        await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
+          `PR #${it.pr_number} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.d.config.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+        return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
+      }
+      const next = { ...it, loop_count: loop };
+      await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
+        `PR #${it.pr_number} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.d.config.max_loops}).`);
+      return {
+        patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
+        actor: SYSTEM,
+        reason: "checks_failed",
+        detail,
+        ...ack,
+        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      };
+    }
+    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
+    const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
+    await this.comment(it, `merge:${reviewRunId}`,
+      `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed. A human merge is required.\n\n${footerAfter(it, patch)}`);
+    return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
+  }
+
+  /** The PR's checks; a source without them counts as passed, a source error as pending (logged). */
+  private async readChecks(it: WorkItem): Promise<PrChecks> {
+    // PRs live on the PR source (the forge), whatever source the item came from.
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    if (!forge?.prChecks || it.pr_number === null) return { state: "passed" };
+    try {
+      return await forge.prChecks(it.pr_number);
+    } catch (err) {
+      this.d.log.warn("reading PR checks failed", {
+        work_item_id: it.id,
+        pr_number: it.pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return { state: "pending" };
+    }
+  }
+
+  /** A checks comment naming the failed checks; the names are forge text (G5), so they are left out if the scan flags them. */
+  private async checksComment(it: WorkItem, key: string, names: string[], body: (list: string) => string): Promise<void> {
+    const list = names.length ? `: ${names.map((n) => `\`${n.replace(/`/g, "'")}\``).join(", ")}` : "";
+    const scan = await this.d.scanner.scan("comment", body(list));
+    await this.comment(it, key, body(scan.clean ? list : ""));
+  }
+
+  /**
+   * Looks again at every item waiting on its PR checks (`blocked_on: ci` / `checks_pending`) and applies the
+   * gate: still pending changes nothing; passed → merge_pending; failed → back to implement. Safe on any
+   * replica and safe to repeat: each decision re-reads the item and lands as a conditional transition.
+   */
+  async tickChecks(): Promise<void> {
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
+    for (const w of waiting) {
+      if (!waitingOnChecks(w)) continue;
+      const review = (await this.d.store.listRuns(w.id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+      if (!review) continue;
+      await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review.id, {}, null) : null)).then(() => undefined));
+    }
   }
 
   /**
@@ -1035,7 +1235,7 @@ export class Controller {
       "",
       `Limits: \`max_diff_lines\` = ${max_diff_lines} (added plus deleted lines), \`max_diff_files\` = ${max_diff_files}.`,
       "",
-      "Split the work item, or comment `/retry` to run the implementer again; it must make a smaller change.",
+      "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
       "",
       footerAfter(it, patch),
     ].join("\n"));
@@ -1231,7 +1431,7 @@ export class Controller {
   /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
   private async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     try {
-      await this.d.source.markSeen(source, commentId);
+      await this.adapterFor(source, "markSeen")?.markSeen(source, commentId);
     } catch (err) {
       this.d.log.warn("mark seen failed", {
         source_id: source.id,
@@ -1248,10 +1448,17 @@ export class Controller {
     if (it.pr_number !== null) await this.setStatus(it.source, status, it.pr_number);
   }
 
-  /** Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. */
+  /**
+   * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
+   * itself is labelled through its own source; a PR through the GitHub adapter, where PRs live. With no
+   * GitHub adapter (one non-GitHub source alone), the PR call goes to the item's own source, as it always did.
+   */
   private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     try {
-      await this.d.source.setStatus(source, status, pr_number);
+      const adapter = pr_number === null
+        ? this.adapterFor(source, "setStatus")
+        : (this.byType.get(PR_SOURCE_TYPE) ?? this.adapterFor(source, "setStatus"));
+      await adapter?.setStatus(source, status, pr_number);
     } catch (err) {
       this.d.log.warn("set status failed", {
         source_id: source.id,
@@ -1264,7 +1471,24 @@ export class Controller {
 
   /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
   private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
-    return (await this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`)).url;
+    return (await this.post(it.source, body, `<!-- factory:${key} -->`))?.url ?? null;
+  }
+
+  /** postComment through the adapter of `source`'s type; null (and a warning) when none is configured. */
+  private async post(source: SourceRef, body: string, marker: string): Promise<{ url: string | null } | null> {
+    const adapter = this.adapterFor(source, "postComment");
+    return adapter ? adapter.postComment(source, body, marker) : null;
+  }
+
+  /**
+   * The adapter for `source`'s type. None configured (the source was removed from `plugins.source`): a
+   * warning and null, so the call is skipped and the item keeps its state.
+   */
+  private adapterFor(source: SourceRef, call: string): SourceAdapter | null {
+    const adapter = this.byType.get(source.type);
+    if (adapter) return adapter;
+    this.d.log.warn("no source adapter for the item's source type; skipped", { source_type: source.type, source_id: source.id, call });
+    return null;
   }
 
   private async guard(what: string, fn: () => Promise<void>): Promise<void> {
@@ -1294,6 +1518,11 @@ function retry(it: WorkItem, actor: Actor): Decision | Refusal {
   };
 }
 
+/** A reviewed PR whose checks have not finished (design §5 CI gate). */
+function waitingOnChecks(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_PENDING;
+}
+
 /** A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. */
 function awaitingSpec(it: WorkItem): boolean {
   return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
@@ -1317,8 +1546,8 @@ function quote(text: string): string {
 function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor): Decision | Refusal {
   if (!conflictPending(it)) {
     return {
-      refuse: `the item is not waiting on a merge conflict (stage \`${it.stage}\`, blocked_on \`${it.blocked_on}\`, ` +
-        `blocked_reason \`${it.blocked_reason ?? "none"}\`); \`/resolve\` needs blocked_reason \`${CONFLICT_PENDING}\``,
+      refuse: `the item is not waiting on a merge conflict (it is ${phaseLabel(commandPhase(it))}); ` +
+        `\`/resolve\` applies only when the ${phaseLabel("merge_conflict")}`,
     };
   }
   const next = { ...it, restart_count: it.restart_count + 1 };
@@ -1343,10 +1572,10 @@ function conflictPending(it: WorkItem): boolean {
  */
 function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
-    return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
+    return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
   }
   if (e.kind === "revise_requested") {
-    return { refuse: "the item is blocked by the floor check (`floor_tier`), not waiting on a spec; reply `/approve` to raise its tier or `/reject <reason>` to close" };
+    return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
   }
   if (e.kind === "spec_rejected") {
     return {

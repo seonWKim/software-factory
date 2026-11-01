@@ -40,7 +40,7 @@ export type {
   SecretDeclaration,
   Selection,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, definePlugin } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, definePlugin, selectedSources } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -234,6 +234,29 @@ export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown
 }
 
 /**
+ * `plugins.source` (design 2026-11-01): one registered name, or a list of them. Returns the checked names in
+ * config order. An empty list, an unknown or non-string entry, or the same name twice fails. Which source
+ * types the names build, and whether two share one, is known only once they are built: the controller checks
+ * that at startup.
+ */
+export function checkSources(registry: Registry, value: unknown): string[] {
+  if (!Array.isArray(value)) return [checkPlugin(registry, "source", value)];
+  const entry = registry.source;
+  if (value.length === 0) {
+    throw new Error(
+      `${entry.configKey} is an empty list: name at least one ${entry.interface} plugin; available: ${Object.keys(entry.plugins).join(", ")}`,
+    );
+  }
+  const out: string[] = [];
+  for (const v of value) {
+    const name = checkPlugin(registry, "source", v);
+    if (out.includes(name)) throw new Error(`${entry.configKey} lists ${JSON.stringify(name)} twice; name each source once`);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * Turns the raw config into one checked plugin name per interface. No `plugins` object means the
  * defaults. A `plugins` object must name every guard explicitly; other interfaces fall back to defaults.
  */
@@ -266,7 +289,13 @@ export function selectPlugins(
   chosen.store = raw.store.type;
   chosen.auth = raw.auth;
   const out = {} as Selection;
-  for (const kind of PLUGIN_KINDS) out[kind] = checkPlugin(registry, kind, chosen[kind]);
+  for (const kind of PLUGIN_KINDS) {
+    if (kind !== "source") out[kind] = checkPlugin(registry, kind, chosen[kind]);
+  }
+  // A list of one is the single name: the selection stays exactly what it always was.
+  const sources = checkSources(registry, chosen.source);
+  out.source = sources[0]!;
+  if (sources.length > 1) out.sources = sources;
   return out;
 }
 

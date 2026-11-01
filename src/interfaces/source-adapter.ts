@@ -95,9 +95,23 @@ export interface PushedEvent {
   ack(): Promise<void>;
 }
 
+/**
+ * The automated checks on a PR's head commit (GitHub: check runs). `pending` while any check has not
+ * finished and none failed; `failed` as soon as one finished without success, with the names of the failed
+ * ones (untrusted text: check names come from files in the repository); `passed` when every check passed,
+ * and also when the head commit has no checks at all, so a repository without CI is not held forever.
+ */
+export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[] };
+
 /** What every source offers, whichever way its events arrive. */
 interface SourceAdapterBase {
   readonly type: SourceType;
+  /**
+   * The checks on PR `pr_number`'s current head commit, read before a reviewed PR is offered for a human
+   * merge (design §5 CI gate). Read-only, safe to call any number of times. Absent on sources with no
+   * PRs: the controller then treats the checks as passed.
+   */
+  prChecks?(pr_number: number): Promise<PrChecks>;
   /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
    * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the

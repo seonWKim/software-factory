@@ -19,7 +19,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 | Sandbox | `plugins.sandbox` | `noop` | no |
 | AgentRunner | `plugins.runner` | `claude-code` | no |
 | LLMProvider | `plugins.llm` | `claude-cli` | no |
-| SourceAdapter | `plugins.source` | `github-issues` | no |
+| SourceAdapter | `plugins.source` (a name, or a list of names; see SourceAdapter) | `github-issues` | no |
 | SharedStorage | `plugins.storage` | `fs` | no |
 | CapabilitySearch | `plugins.capability` | `list-all` (`bm25` available) | no |
 | Clock | `plugins.clock` | `system` | no |
@@ -200,6 +200,17 @@ Plugins:
 
 Other sources may implement `setStatus` as a no-op.
 
+**Several sources (changed 2026-11-01; before: `plugins.source` took one name and every comment, 👀, status and close went through that one adapter).** `plugins.source` takes one name or a list of names:
+
+- `"source": "github-issues"` and `"source": ["github-issues"]` select the same thing as always.
+- `"source": ["github-issues", "<other>"]` runs both. The factory builds one adapter per name. Each poll source has its own cursor (`intake:<source type>`) and each stream source its own listener and inbox cursor (`inbox:<source type>`). Each source's intake step runs on its own, so a source that fails (a poll that throws) does not stop the others in the same tick; its cursor simply does not move.
+- Fails at startup, naming `plugins.source`: an empty list, an unknown name, the same name twice, two entries that build the same source type, or several entries with none of type `github_issue`. PR merge, close and unmergeable events come only from `github-issues`, so without it factory PRs would never close their items. One non-GitHub source alone is still accepted.
+- **Per-item routing.** The controller sends each item's `postComment`, `markSeen`, `setStatus` and `closeIssue` to the adapter whose `type` matches the item's source type, so replies go back where the item came from. A command's reply goes to the source the command came from.
+- **PRs stay on GitHub.** `setStatus` for a PR (non-null `pr_number`) goes to the `github_issue` adapter, whatever the item's own source. (With only one non-GitHub source configured, it goes to that source, as before.)
+- An item whose source type is no longer listed keeps its state: its comment, 👀, status and close calls log the warning `no source adapter for the item's source type; skipped` and do nothing.
+- Commands (`/approve`, `/revise`, `/help`, unknown commands, plain comments) from any source run the same command table, the same `AuthProvider` permission check and the same replies.
+- Secrets: the union of what every listed source declares.
+
 **Writing a stream source plugin.** Implement `StreamSource` (`src/interfaces/source-adapter.ts`) with `readonly intake = "stream"` and a `type` from `SourceType`:
 
 - `subscribe(signal)` opens **one** connection and yields a `PushedEvent` per event: the `SourceEvent`, a `dedupe_key` that is unique within the source and the same on every redelivery of that event (e.g. Slack's `envelope_id`, or better the event id), and `ack()`. The iterable completes when the connection ends and throws when it fails. Stop and complete once `signal` aborts. Do not reconnect inside `subscribe`: the listener does that, with backoff, by calling it again.
@@ -210,7 +221,9 @@ Other sources may implement `setStatus` as a no-op.
 
 `fake-stream` (`FakeStreamSource`, source type `slack_thread`) is **test-only**: it lives in `tests/helpers/fakes.ts`, is added with `withPlugin` through `fakeStreamRegistry()` in tests only, and is not in `REGISTRY`, so config cannot select it.
 
-Switch back / disable: `"source": "github-issues"`. There is no "off".
+`fake-slack-poll` (`FakeSlackPollSource`, a poll source of type `slack_thread`) is **test-only** in the same way, through `fakeSlackPollRegistry()`; tests use it as the second source next to GitHub.
+
+Switch back / disable: `"source": "github-issues"` (or drop the other names from the list). There is no "off".
 
 ## SharedStorage
 

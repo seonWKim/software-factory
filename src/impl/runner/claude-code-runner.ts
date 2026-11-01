@@ -1,5 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
+import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
@@ -16,9 +17,6 @@ export interface ClaudeCodeRunnerOptions {
   /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
   now?: () => Date;
 }
-
-/** Env var names that must never be passed to an agent through env_allowlist (G1). */
-const FORBIDDEN_ENV = /TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY|PRIVATE/i;
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
 export interface HarnessCredential {
@@ -58,33 +56,50 @@ function rulePath(p: string): string {
   return p.startsWith("/") ? `/${p}` : p;
 }
 
-/** G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). */
-export function buildHarnessSettings(spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths">): Record<string, unknown> {
+/**
+ * Deny rules only the harness can enforce: the shared tools' guard covers file paths and `.env` files, but
+ * Bash checks no commands and the shared module has no web tools, so these stay with this runner.
+ */
+const HARNESS_ONLY_DENY: readonly string[] = [
+  "Bash(gh:*)",
+  "Bash(security:*)",
+  "Bash(git push:*)",
+  "Bash(git credential:*)",
+  "Bash(printenv:*)",
+  "Bash(env)",
+  "Bash(mysql:*)",
+  "Bash(mysqldump:*)",
+  "Bash(mysqladmin:*)",
+  "WebFetch",
+  "WebSearch",
+];
+
+/** The shared guard's `.env` rule (src/core/tools/guard.ts) as Claude Code permission rules. */
+const ENV_FILE_DENY: readonly string[] = ["Read(**/.env)", "Read(**/.env.*)"];
+
+/**
+ * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
+ * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
+ */
+export function buildHarnessSettings(
+  spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths">,
+  workdir = "/",
+): Record<string, unknown> {
+  const policy = guardPolicy({ workdir, deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, env_allowlist: {} });
   return {
     env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
     permissions: {
       deny: [
-        ...spec.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
-        "Read(**/.env)",
-        "Read(**/.env.*)",
-        "Bash(gh:*)",
-        "Bash(security:*)",
-        "Bash(git push:*)",
-        "Bash(git credential:*)",
-        "Bash(printenv:*)",
-        "Bash(env)",
-        "Bash(mysql:*)",
-        "Bash(mysqldump:*)",
-        "Bash(mysqladmin:*)",
-        "WebFetch",
-        "WebSearch",
+        ...policy.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
+        ...ENV_FILE_DENY,
+        ...HARNESS_ONLY_DENY,
       ],
     },
     sandbox: {
       enabled: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
-      filesystem: { denyRead: [...spec.deny_paths], allowWrite: [...spec.writable_paths] },
+      filesystem: { denyRead: [...policy.deny_paths], allowWrite: [...policy.writable_paths] },
       credentials: {
         envVars: [
           { name: "GITHUB_TOKEN", mode: "deny" },
@@ -97,12 +112,13 @@ export function buildHarnessSettings(spec: Pick<AgentRunSpec, "deny_paths" | "wr
 
 /** Builds the `claude -p` argument list. Exported for tests. */
 export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude"): string[] {
-  const tools = spec.harness_tools.join(",");
+  // Exactly the spec's tools, in its order: the runner adds none.
+  const tools = spec.tools.map((t) => t.name).join(",");
   return [
     bin,
     "-p",
     "--output-format", "json",
-    "--settings", JSON.stringify(buildHarnessSettings(spec)),
+    "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
     "--setting-sources", "project",
     "--strict-mcp-config",
     "--no-session-persistence",
