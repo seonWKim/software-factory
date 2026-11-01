@@ -418,6 +418,7 @@ export class MemoryStorage implements SharedStorage {
 }
 
 export const triageSpec = {
+  in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
   problem: "Add a CI scope gate",
   done_criteria: ["CI fails when files outside allowed_paths change"],
   desired_output: "workflow + test",

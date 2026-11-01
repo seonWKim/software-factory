@@ -10,5 +10,5 @@ Rules:
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
 
 Finish with:
-- summary: how you resolved each conflicting file.
+- summary: the resolution summary. It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on what conflicted, then "TO-BE: " and one plain sentence on how the branch now combines both sides, with no file paths. Only after that section, how you resolved each conflicting file.
 - next_steps: anything the reviewer should look at.

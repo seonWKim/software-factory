@@ -77,6 +77,7 @@ class GitPushBroker implements ToolBroker {
 }
 
 const spec = {
+  in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
   problem: "Change a",
   done_criteria: ["a changes"],
   desired_output: "a",
