@@ -13,8 +13,12 @@ export interface StatsConfig {
 
 /** Runtime config for core code. Built by the composition root; core never reads env or files itself. */
 export interface FactoryConfig {
-  /** `test_command`: argv the update run uses to check a merged branch (no shell), e.g. ["npm", "test"]. */
-  repo: { owner: string; name: string; path: string; base_branch: string; test_command: string[] };
+  /**
+   * `install_command` and `test_command`: argv (no shell) of the gate commands. The update run runs the test
+   * command on a merged branch; the resolve run runs install, then test, before any push. Defaults
+   * ["npm", "ci"] and ["npm", "test"].
+   */
+  repo: { owner: string; name: string; path: string; base_branch: string; install_command: string[]; test_command: string[] };
   intake_label: string;
   /** Status labels are this prefix plus a fixed suffix, e.g. "sf: needs approval". Default "sf: ". */
   status_label_prefix: string;
@@ -41,6 +45,11 @@ export interface FactoryConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /**
+   * Stream intake: inbox rows older than this many days, and already behind their source's inbox cursor,
+   * are deleted by the controller's cleanup. Default 14.
+   */
+  inbox_retention_days: number;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
@@ -59,4 +68,6 @@ export interface Prompts {
   triage: string;
   implement: string;
   review: string;
+  /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
+  resolve?: string;
 }

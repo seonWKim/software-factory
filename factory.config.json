@@ -1,7 +1,7 @@
 {
   "env": "local",
   "store": { "type": "mysql", "host": "localhost", "port": 3306, "database": "software_factory", "user": "factory" },
-  "repo": { "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main", "test_command": ["npm", "test"] },
+  "repo": { "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main", "install_command": ["npm", "ci"], "test_command": ["npm", "test"] },
   "intake_label": "factory",
   "branch_prefix": "factory/",
   "dials": { "spec_gate_min_tier": 1, "auto_merge_max_tier": 0 },
@@ -17,6 +17,7 @@
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
+  "workers": 10,
   "plugins": {
     "secrets": "env-file",
     "egress": "pattern",
@@ -28,7 +29,8 @@
     "storage": "fs",
     "capability": "list-all",
     "clock": "system",
-    "updater": "git-worktree"
+    "updater": "git-worktree",
+    "github_auth": "app"
   },
   "models": { "cheap": "haiku", "strong": "opus" },
   "max_loops": 3,

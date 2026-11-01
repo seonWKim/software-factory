@@ -215,7 +215,7 @@ afterEach(() => {
 /** A temp main checkout with its own config and prompts. */
 function checkout(config: Record<string, unknown>, tag: string, dir = mkdtempSync(join(tmpdir(), "sf-root-"))): string {
   mkdirSync(join(dir, "prompts"), { recursive: true });
-  for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), `${tag} ${p}`);
+  for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), `${tag} ${p}`);
   writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...config, intake_label: `${tag}-label` }));
   return dir;
 }
@@ -257,7 +257,9 @@ describe("updater: code root and state root", () => {
     const loaded = await loadConfig(main, { codeRoot: runtime });
     expect(loaded.file.intake_label).toBe("runtime-label");
     expect(loaded.config.intake_label).toBe("runtime-label");
-    expect(loaded.prompts).toEqual({ triage: "runtime triage", implement: "runtime implement", review: "runtime review" });
+    expect(loaded.prompts).toEqual({
+      triage: "runtime triage", implement: "runtime implement", review: "runtime review", resolve: "runtime resolve",
+    });
 
     expect(loaded.root).toBe(main);
     expect(loaded.stateDir).toBe(join(main, ".factory"));
@@ -284,6 +286,24 @@ describe("updater: code root and state root", () => {
     const loaded = await loadConfig(main);
     expect(loaded.root).toBe(main);
     expect(loaded.prompts.triage).toBe("main triage");
+  });
+
+  it("the resolve prompt is read from prompts/resolve.md; without the file it is absent and loading still succeeds", async () => {
+    const main = checkout({ ...REAL, store: { type: "sqlite" } }, "main");
+    expect((await loadConfig(main)).prompts.resolve).toBe("main resolve");
+    rmSync(join(main, "prompts", "resolve.md"));
+    expect((await loadConfig(main)).prompts.resolve).toBeUndefined();
+  });
+
+  it("repo.install_command defaults to [\"npm\",\"ci\"], the checked-in config sets it, and a bad value fails startup", async () => {
+    expect((REAL.repo as Record<string, unknown>).install_command).toEqual(["npm", "ci"]);
+    const { install_command: _, ...repo } = REAL.repo as Record<string, unknown>;
+    const absent = checkout({ ...REAL, repo, store: { type: "sqlite" } }, "main");
+    expect((await loadConfig(absent)).config.repo.install_command).toEqual(["npm", "ci"]);
+    const set = checkout({ ...REAL, repo: { ...repo, install_command: ["pnpm", "install"] }, store: { type: "sqlite" } }, "main");
+    expect((await loadConfig(set)).config.repo.install_command).toEqual(["pnpm", "install"]);
+    const bad = checkout({ ...REAL, repo: { ...repo, install_command: "npm ci" }, store: { type: "sqlite" } }, "main");
+    await expect(loadConfig(bad)).rejects.toThrow(/repo\.install_command/);
   });
 
   it("the registry wires git-worktree to <state_dir>/runtime and the main checkout", async () => {

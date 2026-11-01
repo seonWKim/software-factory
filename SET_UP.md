@@ -31,7 +31,17 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
-### GitHub token settings
+### GitHub App (the bot; `plugins.github_auth: "app"`, the checked-in setting)
+
+The factory acts on GitHub as your GitHub App, so issues, comments, pushes and PRs show the App's bot as author.
+
+- Put the App's ID in the secret file as `GITHUB_APP_ID` (`npm run setup` asks for it) and its private key in `github-app.pem` next to the secret file (`~/.config/software-factory/`, mode 600).
+- Install the App on the repository. **Repository permissions:** Contents, Issues and Pull requests: read and write; Metadata: read. Everything else: no access.
+- After changing the App's permissions, accept them on the installation (Settings → Applications → Installed GitHub Apps → Review request). `npm run factory -- doctor` names any permission still missing.
+
+To use your own account instead, set `plugins.github_auth` to `token` and create the token below.
+
+### GitHub token settings (`plugins.github_auth: "token"`)
 
 GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token:
 
@@ -66,8 +76,9 @@ Then on GitHub:
    - `/budget <tokens>` to continue with your own budget, a whole number greater than the current one (e.g. `/budget 9000000`);
    - `/reject <reason>` to close the item. The branch and the PR stay as they are; close the PR yourself if you want.
 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
+6. If the PR stops merging cleanly and the factory cannot update it (the PR is marked `sf: needs human` with a conflict comment), reply `/resolve [notes]` on the issue or on the PR. An agent resolves the conflict, and the factory pushes only if the changed files stay within the conflicting files and the allowed paths and `repo.install_command` / `repo.test_command` pass. The PR then goes through review again. If the resolve fails, it comments why; you can send `/resolve` again. Anything after `/resolve` (same line or below) is passed to the agent as notes.
 
-Only users with write permission on the repository can approve, reject, revise, retry, answer a budget checkpoint or record a verdict.
+Only users with write permission on the repository can approve, reject, revise, retry, resolve, answer a budget checkpoint or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Commands
@@ -80,6 +91,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint |
 | `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
 | `/retry` | Run the failed run again | blocked by a failed run |
+| `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
 | `/help` | List every command and which ones apply now | any time |
@@ -109,6 +121,8 @@ By default the factory builds one item at a time. To build several in parallel, 
 
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
 
+Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
+
 ## Routine
 
 | When | Command |
@@ -120,10 +134,13 @@ Items whose allowed paths overlap still wait for each other, so their PRs do not
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> |
-| Suspect a leak | Revoke the token on GitHub first, then rotate |
+| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
+| Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
 
 `npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). Open it to see what needs you: the "Needs you (N)" list at the top has one row per item waiting for a human, oldest first, with a link to the exact comment or PR and the command to type there. Below it the page shows what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
+
+Slack (optional, for real-time threads): [`docs/slack-setup.md`](docs/slack-setup.md), mostly `scripts/slack-app.sh create|tokens|check`.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

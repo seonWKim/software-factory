@@ -16,6 +16,7 @@ import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
 } from "./helpers/fakes.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 const cred = { name: "CLAUDE_CODE_OAUTH_TOKEN" as const, value: "oauth-value-123456" };
 const paths = { home: "/tmp/h", claudeConfigDir: "/tmp/c", path: "/usr/bin" };
@@ -155,7 +156,7 @@ describe("Tool broker", () => {
     } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
       client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      secrets: { get: async () => null, valuesForScan: async () => [] },
+      credentials: { token: async () => null },
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };

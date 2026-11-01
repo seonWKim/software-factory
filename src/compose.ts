@@ -11,8 +11,10 @@ import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { WorkerPool } from "./core/worker-pool.js";
+import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
+import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -32,8 +34,8 @@ export type StoreConfig =
 export interface FileConfig {
   env: "local" | "cloud";
   store?: StoreConfig;
-  /** test_command: argv, default ["npm", "test"]. */
-  repo: { owner: string; name: string; path: string; base_branch: string; test_command?: unknown };
+  /** install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. */
+  repo: { owner: string; name: string; path: string; base_branch: string; install_command?: unknown; test_command?: unknown };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
   status_label_prefix?: string;
@@ -62,6 +64,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
+  inbox_retention_days?: number;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   state_dir: string;
@@ -107,7 +111,9 @@ export async function loadConfig(
   opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
-  const file = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8")) as FileConfig;
+  const raw: unknown = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8"));
+  checkConfigKeys(raw);
+  const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
     throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
@@ -120,6 +126,7 @@ export async function loadConfig(
   const workers = workerCount(file.workers);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
+  const retention = inboxRetentionDays(file);
   const budget = budgetConfig(file);
   const stats = statsConfig(file.stats);
   const registry = opts.registry ?? REGISTRY;
@@ -131,7 +138,12 @@ export async function loadConfig(
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
   const config: FactoryConfig = {
-    repo: { ...file.repo, path: resolve(root, file.repo.path), test_command: testCommand(file.repo.test_command) },
+    repo: {
+      ...file.repo,
+      path: resolve(root, file.repo.path),
+      install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
+      test_command: testCommand(file.repo.test_command),
+    },
     intake_label: file.intake_label,
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
@@ -149,6 +161,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    inbox_retention_days: retention,
     workers,
     deny_paths: [
       dirname(secretsFile),
@@ -173,6 +186,11 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
+  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
+    if (err.code === "ENOENT") return undefined;
+    throw err;
+  });
+  if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
   return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats };
 }
 
@@ -220,6 +238,9 @@ export class Plugins {
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
   }
+  githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
+    return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
+  }
   runner(sandbox: Sandbox, secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
   }
@@ -239,7 +260,8 @@ export async function build(
   await store.migrate();
 
   const scanner = await p.scanner(secrets);
-  const github = new GitHubClient(secrets);
+  const credentials = await p.githubCredentials(secrets, clock);
+  const github = new GitHubClient(credentials);
   const sandbox = await p.sandbox();
 
   const controller = new Controller({
@@ -250,6 +272,8 @@ export async function build(
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
+    // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
+    replica_id: `${hostname()}:${process.pid}`,
   });
 
   const worker = new WorkerPool({
@@ -257,7 +281,7 @@ export async function build(
     store,
     sandbox,
     runner: await p.runner(sandbox, secrets),
-    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, secrets, store, scanner, clock }),
+    broker: await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock }),
     scanner,
     storage: await createPlugin(registry, "storage", sel.storage, base),
     clock,
@@ -377,9 +401,14 @@ export function isSqlName(s: string): boolean {
 
 /** Absent: ["npm", "test"]. Otherwise a non-empty argv of non-empty strings, or startup fails. */
 export function testCommand(value: unknown): string[] {
-  if (value === undefined) return ["npm", "test"];
+  return argvConfig("repo.test_command", value, ["npm", "test"]);
+}
+
+/** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */
+export function argvConfig(key: string, value: unknown, fallback: readonly string[]): string[] {
+  if (value === undefined) return [...fallback];
   if (!Array.isArray(value) || value.length === 0 || !value.every((v) => typeof v === "string" && v !== "")) {
-    throw new Error("repo.test_command must be a non-empty array of non-empty strings (argv), e.g. [\"npm\", \"test\"]");
+    throw new Error(`${key} must be a non-empty array of non-empty strings (argv), e.g. ${JSON.stringify(fallback)}`);
   }
   return [...(value as string[])];
 }
@@ -414,6 +443,16 @@ export function diffLimits(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+export const DEFAULT_INBOX_RETENTION_DAYS = 14;
+
+/** `inbox_retention_days`: absent means 14, otherwise a positive integer or startup fails. */
+export function inboxRetentionDays(file: Pick<FileConfig, "inbox_retention_days">): number {
+  const v = file.inbox_retention_days;
+  if (v === undefined) return DEFAULT_INBOX_RETENTION_DAYS;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("inbox_retention_days must be a positive integer");
+  return v;
 }
 
 function isTier(n: number): n is Tier {

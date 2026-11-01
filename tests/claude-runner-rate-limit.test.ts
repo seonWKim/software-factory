@@ -25,6 +25,7 @@ const CAPTURED_429 = JSON.stringify({
 function runnerWith(stdout: string, exit_code = 1) {
   const sandbox: Sandbox = {
     create: async () => ({ id: "s", workdir: "/w" }),
+    updateBase: async () => "base",
     exec: async (): Promise<ExecResult> => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false }),
     copyIn: async () => {},
     copyOut: async () => {},

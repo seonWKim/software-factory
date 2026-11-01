@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -12,6 +13,7 @@ import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { startUi } from "./ui/server.js";
+import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 
 const USAGE = `factory <command>
 
@@ -31,6 +33,7 @@ const USAGE = `factory <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
@@ -57,7 +60,19 @@ function stopOnSignals(): AbortSignal {
 
 async function main(cmd: string | undefined, args: string[]): Promise<number> {
   // The supervisor sets the code root (its runtime copy) for its child; state stays in the cwd (main checkout).
-  const loaded = await loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  if (cmd === "doctor") {
+    // A config that does not load is a doctor finding: one FAIL line per problem, no stack, exit 1.
+    let loaded: Loaded;
+    try {
+      loaded = await load();
+    } catch (err) {
+      for (const line of configFailLines(err)) console.log(line);
+      return 1;
+    }
+    return doctor(loaded, { llm: args.includes("--llm") });
+  }
+  const loaded = await load();
   switch (cmd) {
     case "dev": {
       if (process.env[SUPERVISED_ENV] === "1" && process.send) {
@@ -128,8 +143,6 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       if (args.includes("--rotate-mysql")) rotate.push(secretName("MYSQL_PASSWORD"));
       return setup(loaded, { rotate });
     }
-    case "doctor":
-      return doctor(loaded, { llm: args.includes("--llm") });
     case "llm-check": {
       const parsed = parseLlmCheckArgs(args);
       if ("error" in parsed) {
@@ -141,6 +154,19 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "golden":
       return golden(loaded, args[0], args.slice(1));
+    case "issue": {
+      const action = parseIssueArgs(args);
+      if (!action) {
+        console.error(ISSUE_USAGE);
+        return 1;
+      }
+      const p = new Plugins(loaded);
+      const secrets = await p.secrets();
+      const client = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
+      const { owner, name } = loaded.config.repo;
+      console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
+      return 0;
+    }
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));
@@ -163,7 +189,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
     try {
       await store.migrate();
       const { owner, name } = loaded.config.repo;
-      const github = new GitHubClient(secrets);
+      const github = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
       const r = await addCase(
         {
           store,

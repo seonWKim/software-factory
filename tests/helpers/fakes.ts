@@ -7,11 +7,12 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, SourceAdapter, SourceEvent } from "../../src/interfaces/source-adapter.js";
+import type { PollResult, PollSource, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
 export const config: FactoryConfig = {
-  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", test_command: ["npm", "test"] },
+  repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", install_command: ["npm", "ci"], test_command: ["npm", "test"] },
   intake_label: "factory",
   status_label_prefix: "sf: ",
   branch_prefix: "factory/",
@@ -29,12 +30,13 @@ export const config: FactoryConfig = {
   tick_ms: 1000,
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
+  inbox_retention_days: 14,
   workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };
 
-export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW" };
+export const prompts: Prompts = { triage: "TRIAGE", implement: "IMPLEMENT", review: "REVIEW", resolve: "RESOLVE" };
 
 /** The real pattern scanner with no known secret values: blocks token-shaped text only. */
 export const cleanScanner = new PatternEgressScanner(async () => []);
@@ -52,8 +54,9 @@ export function issueRef(n: number): SourceRef {
  * Keeps the SourceAdapter replay contract like GitHubIssueSource does: the cursor holds a comment-id
  * high-water mark, and a command event at or below it is not delivered again. Records every markSeen call.
  */
-export class FakeSource implements SourceAdapter {
+export class FakeSource implements PollSource {
   readonly type = "github_issue" as const;
+  readonly intake = "poll" as const;
   queue: SourceEvent[] = [];
   /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
   comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
@@ -122,6 +125,111 @@ export class FakeSource implements SourceAdapter {
   }
 }
 
+/**
+ * Test-only stream source, plugin name `fake-stream` (docs/plugins.md). Behaves like Slack Socket Mode as
+ * the listener sees it: every connection delivers each pushed event that is not acked yet, so an event
+ * delivered on a connection that died before its ack comes back on the next one. Never in REGISTRY; tests
+ * get it through `fakeStreamRegistry()`.
+ */
+export class FakeStreamSource implements StreamSource {
+  readonly type = "slack_thread" as const;
+  readonly intake = "stream" as const;
+  /** Pushed and not acked yet, oldest first. Two pushes with one key are two deliveries (a redelivery). */
+  pending: { event: SourceEvent; dedupe_key: string }[] = [];
+  /** Dedupe keys in ack order. */
+  acks: string[] = [];
+  /** subscribe() calls, failed ones included. */
+  subscribes = 0;
+  /** Connections open right now. */
+  open = 0;
+  /** When set, every subscribe fails at once with this error until it is cleared. */
+  connectError: Error | null = null;
+  /** Runs inside ack(), before the ack is recorded: lets a test look at the store at that moment. */
+  onAck: ((dedupe_key: string) => void | Promise<void>) | null = null;
+  comments: { source: SourceRef; body: string; marker: string }[] = [];
+  /** Every closeIssue call, in order. */
+  closed: SourceRef[] = [];
+  async closeIssue(source: SourceRef): Promise<void> {
+    this.closed.push(source);
+  }
+  reactions: { source: SourceRef; comment_id: string | null }[] = [];
+  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
+  private wake: (() => void)[] = [];
+  private connection: { ended: boolean; error: Error | null } | null = null;
+
+  push(event: SourceEvent, dedupe_key: string): void {
+    this.pending.push({ event, dedupe_key });
+    this.notify();
+  }
+
+  /** Ends the open connection: it completes, or fails with `error`. */
+  disconnect(error: Error | null = null): void {
+    if (this.connection) Object.assign(this.connection, { ended: true, error });
+    this.notify();
+  }
+
+  async *subscribe(signal: AbortSignal): AsyncGenerator<PushedEvent> {
+    this.subscribes++;
+    if (this.connectError) throw this.connectError;
+    const conn = { ended: false, error: null as Error | null };
+    this.connection = conn;
+    this.open++;
+    const sent = new Set<object>();
+    try {
+      while (!signal.aborted && !conn.ended) {
+        const d = this.pending.find((p) => !sent.has(p));
+        if (!d) {
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              signal.removeEventListener("abort", done);
+              resolve();
+            };
+            this.wake.push(done);
+            signal.addEventListener("abort", done, { once: true });
+          });
+          continue;
+        }
+        sent.add(d);
+        yield {
+          event: d.event,
+          dedupe_key: d.dedupe_key,
+          ack: async () => {
+            await this.onAck?.(d.dedupe_key);
+            this.acks.push(d.dedupe_key);
+            this.pending = this.pending.filter((p) => p !== d);
+          },
+        };
+      }
+      if (conn.error) throw conn.error;
+    } finally {
+      this.open--;
+      if (this.connection === conn) this.connection = null;
+    }
+  }
+
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
+    return { url: null };
+  }
+  async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    this.reactions.push({ source, comment_id: commentId });
+  }
+  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    this.statusCalls.push({ source, status, pr_number });
+  }
+
+  private notify(): void {
+    const wake = this.wake;
+    this.wake = [];
+    for (const w of wake) w();
+  }
+}
+
+/** REGISTRY plus the test-only `fake-stream` source. The only place fake-stream is wired. */
+export function fakeStreamRegistry(base: Registry = REGISTRY, make: () => FakeStreamSource = () => new FakeStreamSource()): Registry {
+  return withPlugin(base, "source", "fake-stream", make);
+}
+
 export function labelTarget(source: SourceRef, pr_number: number | null): string {
   return pr_number === null ? source.id : `${source.id}:pr#${pr_number}`;
 }
@@ -150,23 +258,64 @@ export class FakeSandbox implements Sandbox {
   numstat: string | null = null;
   /** Every git command line the worker ran, for asserting on order and arguments. */
   gitCalls: string[] = [];
+  /** Every non-git command (argv joined by spaces), e.g. the install and test gate commands. */
+  commands: string[] = [];
 
+  // Merging the base branch (update and resolve runs).
+  /** Exit of `git merge-base --is-ancestor`: 0 = the base is already in the branch. */
+  ancestorExit = 0;
+  /** Exit of `git merge`: non-zero with `conflicts` set is a conflicted merge. */
+  mergeExit = 0;
+  /** Files `git diff --diff-filter=U` reports as conflicting after the merge. */
+  conflicts: string[] = [];
+  /** Text `cat -- <path>` returns, e.g. a conflicting file with its markers. */
+  files: Record<string, string> = {};
+  /** What `git grep -l` for conflict markers prints in the resolve run's checked tree (non-empty: markers left). */
+  markers = "";
+  /** Files the resolve run changed between its pre-agent and post-agent snapshots. */
+  resolveChanged: string[] = [];
+  /** Exit codes of non-git commands by argv joined with spaces, e.g. { "npm test": 1 }. Default 0. */
+  exits: Record<string, number> = {};
+  /** What `git rev-parse HEAD` prints. A resolve run's checkout makes it its commit-tree result. */
+  head = "base\n";
+  private trees = 0;
+
+  async updateBase(): Promise<string> {
+    return "basesha";
+  }
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     this.created.push(spec);
     return { id: `sbx${this.created.length}`, workdir: `/wt/${this.created.length}` };
   }
   async exec(_h: SandboxHandle, cmd: readonly string[], _o: ExecOptions): Promise<ExecResult> {
+    const res = (exit_code: number, stdout = ""): ExecResult => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false });
+    const out = (stdout: string): ExecResult => res(0, stdout);
+    if (cmd[0] !== "git") {
+      const line = cmd.join(" ");
+      this.commands.push(line);
+      if (cmd[0] === "cat") return out(this.files[cmd.at(-1)!] ?? "");
+      return res(this.exits[line] ?? 0);
+    }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
-    const out = (stdout: string): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
-    if (args === "rev-parse HEAD") return out("base\n");
+    if (args === "rev-parse HEAD") return out(this.head);
+    if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
     if (args.startsWith("rev-parse --verify")) return out("basesha\n");
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
+    if (args.startsWith("merge-base --is-ancestor")) return res(this.ancestorExit);
+    if (args.startsWith("merge ")) return res(this.mergeExit);
+    if (args === "write-tree") return out(`tree${++this.trees}\n`);
+    if (args.startsWith("grep")) return this.markers ? out(this.markers) : res(1);
+    if (args.startsWith("commit-tree")) return out("resolvedsha\n");
+    if (/(^| )checkout /.test(args)) this.head = `${cmd.at(-1)}\n`;
+    if (args.startsWith("diff --cached --quiet")) return res(1);
     if (args.startsWith("diff --numstat")) {
       return out(this.numstat ?? this.changedFiles.map((f) => `1\t0\t${f}\0`).join(""));
     }
+    if (args.startsWith("diff --name-only -z --diff-filter=U")) return out(this.conflicts.map((f) => `${f}\0`).join(""));
+    if (args.startsWith("diff --name-only -z --no-renames tree")) return out(this.resolveChanged.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff --name-only")) return out(this.changedFiles.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff")) return out("+ a change\n");
     return out("");
