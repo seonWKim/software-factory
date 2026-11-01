@@ -73,8 +73,9 @@ class Ctx {
 
 export async function renderIndex(d: UiDeps, q: IndexQuery): Promise<string> {
   const c = new Ctx(d);
+  const needs = await needsSection(c);
   const sections = [
-    await waitingSection(c),
+    needs.html,
     await runningSection(c),
     await queueSection(c),
     await itemsSection(c, q),
@@ -83,26 +84,97 @@ export async function renderIndex(d: UiDeps, q: IndexQuery): Promise<string> {
   const body =
     `<h1>software-factory</h1><p class="muted">Read-only. Refreshes every 5 s. As of ${esc(c.now.toISOString())}.</p>` +
     sections.join("");
-  return page("software-factory status", body);
+  return page(`(${needs.count}) software-factory status`, body);
 }
 
-async function waitingSection(c: Ctx): Promise<string> {
-  const items = await c.d.store.listWorkItemsWhere({ blocked_on: "human", exclude_closed: true, limit: LIST_LIMIT });
-  const groups = new Map<string, WorkItem[]>();
-  for (const it of items) {
-    const key = it.blocked_reason ?? "";
-    groups.set(key, [...(groups.get(key) ?? []), it]);
+/** What a waiting item's row says: the reason in plain words, where to act, and the command to type. */
+interface Need {
+  /** Escaped HTML. */
+  reason: string;
+  url: string;
+  label: string;
+  command: string | null;
+}
+
+/** blocked_reason values with no command, in plain words. Anything else unknown is shown with spaces for `_`. */
+const PLAIN_REASONS: Record<string, string> = {
+  max_loops: "review found bugs too many times",
+  merge_conflict_pending: "merge conflict",
+};
+
+/**
+ * "Needs you (N)": one row per item blocked on a human and not CLOSED, oldest wait first. N is an exact
+ * count; the rows are the LIST_LIMIT most recently updated of them.
+ */
+async function needsSection(c: Ctx): Promise<{ count: number; html: string }> {
+  const filter = { blocked_on: "human" as const, exclude_closed: true };
+  const count = await c.d.store.countWorkItemsWhere(filter);
+  const items = await c.d.store.listWorkItemsWhere({ ...filter, limit: LIST_LIMIT });
+  const waiting = await Promise.all(items.map(async (it) => ({ it, since: await waitingSince(c, it) })));
+  waiting.sort((a, b) => a.since.localeCompare(b.since) || a.it.created_at.localeCompare(b.it.created_at) || a.it.id.localeCompare(b.it.id));
+  const rows = [];
+  for (const { it, since } of waiting) {
+    const need = await needOf(c, it);
+    rows.push({
+      cells: [
+        esc(issueNumber(it.source.id)),
+        await c.itemLink(it, it.id),
+        c.ago(since),
+        need.reason,
+        link(need.url, need.label),
+        need.command === null ? "" : `<code>${esc(need.command)}</code>`,
+      ],
+    });
   }
-  let html = "";
-  for (const [reason, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
-    html += `<h3>${await c.w.text(reason, { fallback: "no reason" })}</h3><ul>`;
-    for (const it of group) {
-      const links = [link(it.source.link, "issue"), c.prLink(it)].filter(Boolean).join(" · ");
-      html += `<li>${await c.itemLink(it, it.id)} <span class="muted">${esc(it.source.id)} · ${esc(it.stage)}</span> — ${links}</li>`;
-    }
-    html += "</ul>";
+  const html = `<section id="needs"><h2>Needs you (${esc(count)})</h2>${table(
+    ["number", "title", "waiting", "reason", "where", "command"],
+    rows,
+    "nothing waits for you",
+  )}</section>`;
+  return { count, html };
+}
+
+/**
+ * When the item started waiting: the latest state change that set its blocked_on or blocked_reason
+ * (created_at if none did).
+ */
+async function waitingSince(c: Ctx, it: WorkItem): Promise<string> {
+  const changes = await c.d.store.listStateChanges(it.id);
+  const set = changes.filter((sc) => sc.changes.blocked_on !== undefined || sc.changes.blocked_reason !== undefined).at(-1);
+  return set?.at ?? it.created_at;
+}
+
+async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
+  const issue = { url: it.source.link, label: "issue" };
+  const reason = it.blocked_reason ?? "";
+  const stored = (url: string | null, label: string) => (url === null ? issue : { url, label });
+  if (reason === "spec_pending") {
+    return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
   }
-  return `<section id="waiting"><h2>Waiting for you</h2>${html || `<p class="muted">nothing</p>`}</section>`;
+  if (reason === "merge_pending") {
+    const pr = it.pr_number === null ? issue : { url: c.d.prUrl(it.project, it.pr_number), label: `PR #${it.pr_number}` };
+    return { reason: "ready to merge", ...pr, command: "merge the PR" };
+  }
+  const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" ? await latestErrorCode(c, it) : null);
+  if (failed !== null) {
+    const code = await c.w.text(failed, { channel: "run_outcome", max: 80 });
+    return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
+  }
+  const plain = PLAIN_REASONS[reason] ?? reason.replace(/[_:]+/g, " ");
+  return { reason: await c.w.text(plain, { fallback: "no reason" }), ...issue, command: null };
+}
+
+/** The error code of the item's latest failed run ("unknown" when it has none). */
+async function latestErrorCode(c: Ctx, it: WorkItem): Promise<string> {
+  const failed = (await c.d.store.listRuns(it.id)).filter((r) => r.outcome?.status === "failed");
+  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
+  return last?.outcome?.status === "failed" ? last.outcome.error_code : "unknown";
+}
+
+/** "#12" from a source id like "owner/repo#12"; the whole id when it has no number. */
+function issueNumber(sourceId: string): string {
+  const n = sourceId.match(/#(\d+)$/)?.[1];
+  return n ? `#${n}` : sourceId;
 }
 
 async function runningSection(c: Ctx): Promise<string> {

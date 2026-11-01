@@ -582,10 +582,10 @@ export class Controller {
         if (run.kind === "implement" && code === DIFF_TOO_LARGE) return this.diffTooLarge(it, run);
         if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
         const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
-        await this.comment(it, `run-failed:${run.id}`,
+        const url = await this.comment(it, `run-failed:${run.id}`,
           `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
         return {
-          patch,
+          patch: { ...patch, failure_comment_url: url },
           actor: SYSTEM,
           reason: "run_failed",
           ack_run: run.id,
@@ -621,10 +621,10 @@ export class Controller {
             };
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          await this.comment(it, `spec:${run.id}`,
+          const url = await this.comment(it, `spec:${run.id}`,
             renderSpec(spec, tier, { floor, previous: it.tier }, footerAfter(it, patch)));
           return {
-            patch,
+            patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
             reason: "triaged",
             ack_run: run.id,
@@ -694,7 +694,8 @@ export class Controller {
               };
             default:
               return {
-                patch: { blocked_reason: "run_failed:update:invalid_output" },
+                // No comment is posted for this one, so an older failure link must not stand in for it.
+                patch: { blocked_reason: "run_failed:update:invalid_output", failure_comment_url: null },
                 actor: SYSTEM,
                 reason: "run_failed",
                 ack_run: run.id,
@@ -728,9 +729,9 @@ export class Controller {
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
     if (cls !== "rate_limited" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
-      await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
+      const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
-        patch,
+        patch: { ...patch, failure_comment_url: url },
         actor: SYSTEM,
         reason: limit,
         detail,
@@ -759,7 +760,7 @@ export class Controller {
     const detail = run.outcome?.status === "failed" ? run.outcome.detail : "";
     const { max_diff_lines, max_diff_files } = this.d.config;
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:implement:${DIFF_TOO_LARGE}` };
-    await this.comment(it, `run-failed:${run.id}`, [
+    const url = await this.comment(it, `run-failed:${run.id}`, [
       "## Factory size check: push blocked",
       "",
       `The implement run's diff is too large to review, so nothing was pushed: ${detail}.`,
@@ -771,7 +772,7 @@ export class Controller {
       footerAfter(it, patch),
     ].join("\n"));
     return {
-      patch,
+      patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
       detail: { run_id: run.id, error_code: DIFF_TOO_LARGE },
@@ -808,8 +809,11 @@ export class Controller {
     };
   }
 
-  /** The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes. */
-  private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<void> {
+  /**
+   * The dead-letter note: what failed, its code, and the tail of the last output. Posted only if G5 passes.
+   * Returns the comment's URL, or null when the scan withheld it.
+   */
+  private async lastAttemptComment(it: WorkItem, run: Run, code: string, limit: string, n: number, footer: string): Promise<string | null> {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.d.config.max_attempts}), so the factory stopped retrying it.`
@@ -832,9 +836,9 @@ export class Controller {
         run_id: run.id,
         rules: scan.findings.map((f) => f.rule).join(","),
       });
-      return;
+      return null;
     }
-    await this.comment(it, `run-failed:${run.id}`, body);
+    return this.comment(it, `run-failed:${run.id}`, body);
   }
 
   // Internals
@@ -923,8 +927,9 @@ export class Controller {
     }
   }
 
-  private comment(it: WorkItem, key: string, body: string): Promise<void> {
-    return this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`);
+  /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
+  private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
+    return (await this.d.source.postComment(it.source, body, `<!-- factory:${key} -->`)).url;
   }
 
   private async guard(what: string, fn: () => Promise<void>): Promise<void> {
