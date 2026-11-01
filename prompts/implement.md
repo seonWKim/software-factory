@@ -16,5 +16,5 @@ Merge conflicts:
 - Migrations: when both sides add a migration with the same number, keep the base's number for its migration and renumber ours to the next free number, in every schema file that lists migrations.
 
 Finish with:
-- summary: what you changed and why, for the PR description.
+- summary: the PR description. It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on how things worked before, then "TO-BE: " and one plain sentence on how they work now, with no file paths. Only after that section, what you changed and why, with the file-level detail.
 - next_steps: what remains or what the reviewer should look at.
