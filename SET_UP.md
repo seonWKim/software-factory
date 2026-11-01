@@ -61,8 +61,9 @@ Then on GitHub:
 2. The factory posts a spec on the issue. Reply `/approve`, or `/reject <reason>`.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
+5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
 
-Only users with write permission on the repository can approve or retry.
+Only users with write permission on the repository can approve, retry or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Status labels

@@ -107,4 +107,23 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       resume_at  CHAR(24) NOT NULL
     ) ${TABLE}`,
   ],
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  [
+    `CREATE TABLE verdicts (
+      seq              BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
+      id               VARCHAR(64) NOT NULL PRIMARY KEY,
+      work_item_id     VARCHAR(64) NOT NULL,
+      state_change_id  VARCHAR(64) NOT NULL,
+      verdict          VARCHAR(16) NOT NULL,
+      severity         VARCHAR(16) NOT NULL,
+      reason           MEDIUMTEXT,
+      comment_id       VARCHAR(64) NOT NULL,
+      target           VARCHAR(16) NOT NULL,
+      at               CHAR(24) NOT NULL,
+      UNIQUE KEY verdicts_comment (comment_id),
+      KEY verdicts_work_item (work_item_id, at),
+      FOREIGN KEY (work_item_id) REFERENCES work_items (id),
+      FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
+    ) ${TABLE}`,
+  ],
 ];

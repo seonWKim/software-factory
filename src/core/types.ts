@@ -153,3 +153,27 @@ export interface Handoff {
   next_steps: string;
   at: Timestamp;
 }
+
+export type VerdictId = Brand<string, "VerdictId">;
+export type VerdictKind = "accept" | "changes" | "reject";
+export type VerdictSeverity = "none" | "minor" | "major" | "critical";
+/** Where the `/verdict` comment was written: the item's issue or its PR. */
+export type VerdictTarget = "issue" | "pr";
+
+/**
+ * A human's structured verdict on a work item (`/verdict`, design §4). Linked to the state_changes row
+ * (reason `human_verdict`) that carries the actor; changes no work-item field.
+ */
+export interface Verdict {
+  id: VerdictId;
+  work_item_id: WorkItemId;
+  state_change_id: StateChangeId;
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  /** Null only for `accept` without a reason. */
+  reason: string | null;
+  /** The comment that held the command. Unique: a redelivered comment records nothing. */
+  comment_id: string;
+  target: VerdictTarget;
+  at: Timestamp;
+}

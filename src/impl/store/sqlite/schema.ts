@@ -98,4 +98,19 @@ export const MIGRATIONS: readonly string[] = [
     resume_at  TEXT NOT NULL
   );
   `,
+  // 5: human verdicts (design §4). One row per `/verdict` comment, linked to its state_changes row.
+  `
+  CREATE TABLE verdicts (
+    id               TEXT PRIMARY KEY,
+    work_item_id     TEXT NOT NULL REFERENCES work_items(id),
+    state_change_id  TEXT NOT NULL REFERENCES state_changes(id),
+    verdict          TEXT NOT NULL,
+    severity         TEXT NOT NULL,
+    reason           TEXT,
+    comment_id       TEXT NOT NULL UNIQUE,
+    target           TEXT NOT NULL,
+    at               TEXT NOT NULL
+  );
+  CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
+  `,
 ];

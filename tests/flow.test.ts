@@ -101,6 +101,43 @@ describe("one issue to one merged PR", () => {
     expect(f.sandbox.destroyed).toBe(f.sandbox.created.length);
   });
 
+  it("records a /verdict on the PR through intake; a refused one gets one reply and stores nothing", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const src = issueRef(9);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "200", approver: alice });
+    await f.step();
+    const before = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(before).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    const replies = f.source.comments.length;
+
+    const pr = { kind: "pr" as const, pr_number: 42, head_branch: `factory/${before.id}` };
+    f.source.queue.push({ kind: "verdict_submitted", target: pr, comment_id: "201", approver: alice, args: "changes extreme too big" });
+    await f.step();
+    expect(await f.store.listVerdicts(before.id)).toEqual([]);
+    expect(f.source.comments.slice(replies)).toEqual([
+      expect.objectContaining({ source: src, marker: "<!-- factory:refused:201 -->" }),
+    ]);
+
+    f.source.queue.push({ kind: "verdict_submitted", target: pr, comment_id: "202", approver: alice, args: "accept minor one nit" });
+    await f.step();
+    const after = (await f.store.getWorkItem(before.id))!;
+    expect(after).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", version: before.version + 1 });
+    expect(await f.store.listVerdicts(before.id)).toEqual([
+      expect.objectContaining({ verdict: "accept", severity: "minor", reason: "one nit", comment_id: "202", target: "pr" }),
+    ]);
+    expect((await f.store.listStateChanges(before.id)).at(-1)).toMatchObject({
+      reason: "human_verdict", actor: { kind: "user", id: "github:1" }, changes: {},
+    });
+    expect(f.source.comments).toHaveLength(replies + 1);
+  });
+
   it("duplicate intake events create one work item and one triage run", async () => {
     const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }) }));
     const e = { kind: "item_requested" as const, source: issueRef(1), requester: alice, title: "t", body: "b" };
