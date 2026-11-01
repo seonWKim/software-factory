@@ -17,6 +17,10 @@ interface GhIssue {
   updated_at: string;
   pull_request?: unknown;
 }
+interface GhIssueFull extends GhIssue {
+  /** Only on the single-issue endpoint. Null when GitHub does not know who closed it. */
+  closed_by: GhUser | null;
+}
 interface GhComment {
   id: number;
   issue_url: string;
@@ -59,6 +63,13 @@ interface Cursor {
    */
   commits?: string | null;
   commit_shas?: string[];
+  /**
+   * Newest updated_at of a closed factory issue already read, and the issue numbers read at exactly that
+   * time (`since` is inclusive; those are skipped unless updated again). Absent in cursors written before
+   * closes were polled: that poll reads every closed factory issue.
+   */
+  closed?: string | null;
+  closed_numbers?: number[];
 }
 
 /**
@@ -129,6 +140,10 @@ export class GitHubIssueSource implements SourceAdapter {
         body: i.body ?? "",
       });
     }
+
+    // Closed factory issues. Read before the pulls (a merge that closes its issue happens before the close, so
+    // the pulls read below already sees it) but delivered after them, so pr_merged is applied first.
+    const closes = await this.closedIssues(c, next);
 
     const comments = await this.client.list<GhComment>(
       `${base}/issues/comments?sort=updated&direction=asc` + (c.comments ? `&since=${c.comments}` : ""),
@@ -217,7 +232,35 @@ export class GitHubIssueSource implements SourceAdapter {
       }
     }
 
+    events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */
+  private async closedIssues(c: Cursor, next: Cursor): Promise<SourceEvent[]> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const issues = await this.client.list<GhIssue>(
+      `${base}/issues?state=closed&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
+        (c.closed ? `&since=${c.closed}` : ""),
+    );
+    const already = new Set(c.closed ? (c.closed_numbers ?? []) : []);
+    next.closed = c.closed ?? null;
+    next.closed_numbers = [...already];
+    const events: SourceEvent[] = [];
+    for (const i of issues) {
+      if (i.updated_at === c.closed && already.has(i.number)) continue;
+      if (next.closed === null || i.updated_at > next.closed) {
+        next.closed = i.updated_at;
+        next.closed_numbers = [i.number];
+      } else if (i.updated_at === next.closed) {
+        next.closed_numbers.push(i.number);
+      }
+      if (i.pull_request) continue;
+      // The list endpoint omits closed_by; the single-issue endpoint has it.
+      const full = await this.client.request<Pick<GhIssueFull, "closed_by">>("GET", `${base}/issues/${i.number}`);
+      events.push({ kind: "source_closed", source: this.ref(i.number), closer: full.closed_by ? identity(full.closed_by) : null });
+    }
+    return events;
   }
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {

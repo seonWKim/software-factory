@@ -94,6 +94,86 @@ describe("GitHubIssueSource", () => {
   });
 });
 
+describe("GitHubIssueSource: closed issues", () => {
+  /** Answers the closed-issue list from `closed`, single-issue GETs from `issues`; everything else as FakeClient. */
+  class ClosedClient extends FakeClient {
+    closed: unknown[] = [];
+    issues: Record<number, unknown> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      if (method === "GET" && path.startsWith("/repos/o/r/issues?state=closed")) {
+        this.calls.push({ method, path, body });
+        return (path.includes("page=1") ? this.closed : []) as T;
+      }
+      const m = /^\/repos\/o\/r\/issues\/(\d+)$/.exec(path);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return this.issues[Number(m[1])] as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new ClosedClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    return { client, source };
+  };
+  const closedIssue = (number: number, updated_at: string, pr = false) => ({
+    number, title: "t", body: null, user, updated_at, ...(pr ? { pull_request: {} } : {}),
+  });
+  const bob = { id: 2, login: "bob", type: "User" };
+
+  it("emits source_closed with the closer for closed factory issues, skips pull requests, and advances its cursor", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z"), closedIssue(8, "2026-11-01T00:00:02Z", true), closedIssue(9, "2026-11-01T00:00:03Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    client.issues[9] = { number: 9, closed_by: null };
+    const first = await source.poll(null);
+    expect(first.events).toEqual([
+      { kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } },
+      { kind: "source_closed", source: issueRef(9), closer: null },
+    ]);
+    const list = client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!;
+    expect(list.path).toContain(`labels=factory`);
+    expect(list.path).not.toContain("since=");
+    // The pull request's closer is never looked up.
+    expect(client.calls.some((c) => c.path === "/repos/o/r/issues/8")).toBe(false);
+    expect(JSON.parse(first.next_cursor)).toMatchObject({ closed: "2026-11-01T00:00:03Z" });
+
+    // `since` is inclusive: #9 comes back unchanged and is not delivered again; #10 is new.
+    client.calls = [];
+    client.closed = [closedIssue(9, "2026-11-01T00:00:03Z"), closedIssue(10, "2026-11-01T00:00:04Z")];
+    client.issues[10] = { number: 10, closed_by: bob };
+    const second = await source.poll(first.next_cursor);
+    expect(second.events).toEqual([
+      { kind: "source_closed", source: issueRef(10), closer: { provider: "github", subject: "2", login: "bob" } },
+    ]);
+    expect(client.calls.find((c) => c.path.startsWith("/repos/o/r/issues?state=closed"))!.path).toContain("since=2026-11-01T00:00:03Z");
+    expect(client.calls.some((c) => c.path === "/repos/o/r/issues/9")).toBe(false);
+    expect(JSON.parse(second.next_cursor)).toMatchObject({ closed: "2026-11-01T00:00:04Z" });
+  });
+
+  it("delivers closes after pull request events, so a merge that closes its issue is seen first", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    client.responses["/repos/o/r/pulls"] = [{
+      number: 42, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:01Z",
+      head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" },
+    }];
+    const { events } = await source.poll(null);
+    expect(events.map((e) => e.kind)).toEqual(["pr_closed", "source_closed"]);
+  });
+
+  it("reads a cursor written before closed issues were polled", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    const old = JSON.stringify({ issues: null, comments: null, pulls: null });
+    const { events } = await source.poll(old);
+    expect(events).toEqual([{ kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" } }]);
+  });
+});
+
 describe("GitHubIssueSource: /verdict", () => {
   /** Answers GET /issues/N and GET /pulls/N from `issues` and `pulls`; everything else as FakeClient. */
   class VerdictClient extends FakeClient {
