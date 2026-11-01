@@ -264,7 +264,8 @@ describe("GitHubIssueSource: closed issues", () => {
       head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" },
     }];
     const { events } = await source.poll(null);
-    expect(events.map((e) => e.kind)).toEqual(["pr_closed", "source_closed"]);
+    // The fake answers the open-PR list with the same PR; pr_open is not what this test is about.
+    expect(events.map((e) => e.kind).filter((k) => k !== "pr_open")).toEqual(["pr_closed", "source_closed"]);
   });
 
   it("carries GitHub's close reason: completed and not_planned as they are, anything else as null", async () => {
@@ -505,7 +506,7 @@ describe("GitHubIssueSource: unmergeable factory PRs", () => {
       4: full(4, "feature/x", false),
     };
     const { events } = await source.poll(null);
-    expect(events).toEqual([
+    expect(events.filter((e) => e.kind === "pr_unmergeable")).toEqual([
       { kind: "pr_unmergeable", pr_number: 1, head_branch: "factory/wi_a", head_sha: "head1", base_sha: "base1" },
     ]);
     const gets = client.calls.filter((c) => c.method === "GET").map((c) => c.path);
@@ -772,5 +773,141 @@ describe("GitHubIssueSource.prChecks", () => {
     ];
     client.statuses = [{ context: "ci/legacy", state: "error" }, { context: "ci/fine", state: "success" }];
     expect(await source.prChecks(42)).toEqual({ state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"] });
+  });
+});
+
+describe("GitHubIssueSource: pull requests the factory did not open (design 2026-11-01)", () => {
+  const bob = { id: 2, login: "bob", type: "User" };
+  const pull = (number: number, ref: string, o: Record<string, unknown> = {}) => ({
+    number, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:00Z", draft: false,
+    title: `PR ${number}`, body: `body ${number}`, user: bob, labels: [],
+    head: { ref, sha: `head${number}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: `base${number}` },
+    ...o,
+  });
+
+  /** Answers the open and closed PR lists, single PRs, PR files, issue timelines and single commits. */
+  class PullsClient extends FakeClient {
+    open: unknown[] = [];
+    closed: unknown[] = [];
+    byNumber: Record<number, unknown> = {};
+    files: Record<number, unknown[]> = {};
+    timeline: Record<number, unknown[]> = {};
+    commits: Record<string, unknown> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      const page1 = path.includes("page=1");
+      const bare = path.split("?")[0]!;
+      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=open")) {
+        this.calls.push({ method, path, body });
+        return (page1 ? this.open : []) as T;
+      }
+      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=closed")) {
+        this.calls.push({ method, path, body });
+        return (page1 ? this.closed : []) as T;
+      }
+      let m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(bare);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return this.byNumber[Number(m[1])] as T;
+      }
+      m = /^\/repos\/o\/r\/pulls\/(\d+)\/files$/.exec(bare);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return (page1 ? (this.files[Number(m[1])] ?? []) : []) as T;
+      }
+      m = /^\/repos\/o\/r\/issues\/(\d+)\/timeline$/.exec(bare);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return (page1 ? (this.timeline[Number(m[1])] ?? []) : []) as T;
+      }
+      m = /^\/repos\/o\/r\/commits\/([0-9a-z]+)$/.exec(bare);
+      if (method === "GET" && m) {
+        this.calls.push({ method, path, body });
+        return this.commits[m[1]!] as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new PullsClient();
+    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
+  };
+  const prRef = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` });
+  const bobId = { provider: "github", subject: "2", login: "bob" };
+
+  it("reports open non-draft PRs against the base from this repository, and every factory PR; no detail reads for others", async () => {
+    const { client, source } = make();
+    client.open = [
+      pull(10, "feature/x", { labels: [{ name: "factory: skip" }, { name: "bug" }] }),
+      pull(11, "feature/draft", { draft: true }),
+      pull(12, "feature/fork", { head: { ref: "feature/fork", sha: "head12", repo: { full_name: "evil/r" } } }),
+      pull(13, "feature/rel", { base: { ref: "release", sha: "b" } }),
+      pull(14, "factory/wi_a"),
+      pull(15, "feature/gone", { head: { ref: "feature/gone", sha: "head15", repo: null } }),
+    ];
+    client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
+    const { events } = await source.poll(null);
+    expect(events.filter((e) => e.kind === "pr_open")).toEqual([
+      {
+        kind: "pr_open", source: prRef(10), pr_number: 10, head_branch: "feature/x", head_sha: "head10",
+        title: "PR 10", body: "body 10", author: bobId, labels: ["factory: skip", "bug"],
+      },
+      {
+        kind: "pr_open", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", head_sha: "head14",
+        title: "PR 14", body: "body 14", author: bobId, labels: [],
+      },
+    ]);
+    const gets = client.calls.filter((c) => /^\/repos\/o\/r\/(pulls|issues)\/\d+/.test(c.path)).map((c) => c.path);
+    expect(gets).toEqual(["/repos/o/r/pulls/14"]);
+  });
+
+  it("reports merges and closes of every PR, with the merger, and marks forks", async () => {
+    const { client, source } = make();
+    client.closed = [
+      pull(20, "feature/x", { merged_at: "2026-11-01T00:00:03Z", merge_commit_sha: "m20", updated_at: "2026-11-01T00:00:03Z" }),
+      pull(21, "patch-1", {
+        merged_at: "2026-11-01T00:00:02Z", merge_commit_sha: "m21", updated_at: "2026-11-01T00:00:02Z",
+        head: { ref: "patch-1", sha: "h", repo: { full_name: "evil/r" } },
+      }),
+      pull(22, "feature/y", { updated_at: "2026-11-01T00:00:01Z" }),
+    ];
+    client.byNumber[20] = { merged_by: bob };
+    client.byNumber[21] = { merged_by: null };
+    const { events } = await source.poll(null);
+    expect(events.filter((e) => e.kind === "pr_merged" || e.kind === "pr_closed")).toEqual([
+      { kind: "pr_merged", pr_number: 20, head_branch: "feature/x", merge_sha: "m20", merger: bobId },
+      { kind: "pr_merged", pr_number: 21, head_branch: "patch-1", merge_sha: "m21", merger: null, fork: true },
+      { kind: "pr_closed", pr_number: 22, head_branch: "feature/y" },
+    ]);
+  });
+
+  it("prFiles lists every changed path, both sides of a rename", async () => {
+    const { client, source } = make();
+    client.files[10] = [
+      { filename: "src/a.ts", status: "modified" },
+      { filename: "src/new.ts", previous_filename: "src/old.ts", status: "renamed" },
+    ];
+    expect(await source.prFiles(10)).toEqual(["src/a.ts", "src/new.ts", "src/old.ts"]);
+    expect(client.calls.map((c) => c.path)).toEqual(["/repos/o/r/pulls/10/files?per_page=100&page=1"]);
+  });
+
+  it("labelAddedBy names the actor of the latest `labeled` event for that label, or null", async () => {
+    const { client, source } = make();
+    client.timeline[10] = [
+      { event: "labeled", label: { name: "factory: skip" }, actor: user },
+      { event: "commented", actor: user },
+      { event: "labeled", label: { name: "bug" }, actor: user },
+      { event: "labeled", label: { name: "factory: skip" }, actor: bob },
+    ];
+    expect(await source.labelAddedBy(10, "factory: skip")).toEqual(bobId);
+    expect(await source.labelAddedBy(10, "other")).toBeNull();
+    expect(await source.labelAddedBy(11, "factory: skip")).toBeNull();
+  });
+
+  it("commitAuthor names the commit's linked account, or null", async () => {
+    const { client, source } = make();
+    client.commits.abc = { sha: "abc", author: bob };
+    client.commits.def = { sha: "def", author: null };
+    expect(await source.commitAuthor("abc")).toEqual(bobId);
+    expect(await source.commitAuthor("def")).toBeNull();
   });
 });

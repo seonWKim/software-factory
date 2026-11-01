@@ -130,6 +130,34 @@ describe("factory stats", () => {
     expect(formatStatsText({ config: cfg, tiers: rows(10) }).split("\n")[2]).toMatch(/^2\s+10\s+30\s+3\.00\s+0\s+0\s+10$/);
   });
 
+  it("adopted items get their own `adopted` row (CLOSED ones only); factory items keep their tier rows", async () => {
+    const { store } = await newStore();
+    await seedAll(store);
+    const adopt = async (n: number, close: boolean, token_cost: number) => {
+      const { item } = await store.createWorkItem({
+        ...issue(n),
+        adopted: { pr_number: n, head_branch: "feature/x", head_sha: "h", allowed_paths: ["a"], tier: 1 },
+      }, human);
+      if (!close) return;
+      const r = await store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "pr_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", token_cost },
+      });
+      if (!r.ok) throw new Error(r.reason);
+    };
+    await adopt(70, true, 7);
+    await adopt(71, true, 3);
+    await adopt(72, false, 0);
+
+    const report = await collectStats(store, config);
+    // Tier 1 is unchanged by the two closed tier-1 adopted items.
+    expect(report.tiers[0]).toEqual({ tier: 1, items: 2, feedback_weight: 14, rate: 7, sufficient: true, reject: 1, retry: 1, token_cost: 150 });
+    expect(report.adopted).toEqual({ tier: null, items: 2, feedback_weight: 0, rate: 0, sufficient: true, reject: 0, retry: 0, token_cost: 10 });
+    const lines = formatStatsText(report).split("\n");
+    expect(lines.slice(1, 8).map((l) => l.split(/\s{2,}/)[0])).toEqual(["1", "2", "3", "4", "5", "untiered", "adopted"]);
+    expect(lines[7]!.split(/\s{2,}/)).toEqual(["adopted", "2", "0", "0.00", "0", "0", "10"]);
+  });
+
   it("an empty store: six zero rows, no rate", async () => {
     const { store } = await newStore();
     const report = await collectStats(store, { weights: WEIGHTS, min_sample: 1 });

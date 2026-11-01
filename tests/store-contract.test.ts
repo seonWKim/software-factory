@@ -521,8 +521,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       });
 
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
-        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"] },
-        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [] },
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], origin: "factory" },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], origin: "factory" },
       ]);
       expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
     });
@@ -612,6 +612,99 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       const claimed = (await store.claimRun({ worker_id: w1, kinds: ["resolve"], lease_ms: LEASE }))!;
       expect(claimed.input).toEqual({ notes });
       expect((await store.getRun(claimed.id))!.input).toEqual({ notes });
+    });
+  });
+
+  describe("adopted PRs, PR heads and unreviewed merges (migration 12)", () => {
+    const adopted = (n: number) => ({
+      ...issue(n),
+      source: { type: "github_issue" as const, id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` },
+      title: `PR ${n}`,
+      adopted: { pr_number: n, head_branch: "feature/x", head_sha: "h1", allowed_paths: ["src/a.ts", "b/c.md"], tier: 4 as const },
+    });
+
+    it("items from intake are origin factory with no head branch or head sha", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect(item).toMatchObject({ origin: "factory", head_branch: null, last_head_sha: null });
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ origin: "factory", head_branch: null, last_head_sha: null });
+    });
+
+    it("an adoption creates the item at REVIEW with its PR, branch, head, paths and tier, idempotent on the source", async () => {
+      const { store } = await make();
+      const enqueue = { kind: "review" as const, idempotency_key: "o/r#5:adopt:review" };
+      const a = await store.createWorkItem(adopted(5), human, { enqueue });
+      const b = await store.createWorkItem(adopted(5), human, { enqueue });
+      expect([a.created, b.created]).toEqual([true, false]);
+      const it = (await store.getWorkItem(a.item.id))!;
+      expect(it).toEqual(a.item);
+      expect(it).toMatchObject({
+        origin: "adopted", stage: "REVIEW", blocked_on: "none", pr_number: 5, head_branch: "feature/x", last_head_sha: "h1",
+        allowed_paths: ["src/a.ts", "b/c.md"], tier: 4, done_criteria: null, version: 1,
+      });
+      expect((await store.listRuns(it.id)).map((r) => r.kind)).toEqual(["review"]);
+      const [sc] = await store.listStateChanges(it.id);
+      expect(sc).toMatchObject({ reason: "pr_adopted", actor: human, version: 1 });
+      expect(sc!.changes).toMatchObject({ stage: { from: null, to: "REVIEW" }, pr_number: { from: null, to: 5 } });
+      expect((await store.getWorkItemByPr("o/r", 5))!.id).toBe(it.id);
+    });
+
+    it("transitions keep origin, head_branch and last_head_sha", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(adopted(5), human);
+      const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { blocked_on: "human" } });
+      expect(r.ok && r.item).toMatchObject({ origin: "adopted", head_branch: "feature/x", last_head_sha: "h1" });
+    });
+
+    it("recordPushedHead is fenced by the run's lease and bumps no version", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "i" } });
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+      expect(await store.recordPushedHead(run.id, run.lease!.token + 1, "x")).toEqual({ ok: false, reason: "lease_lost" });
+      expect(await store.recordPushedHead(run.id, run.lease!.token, "p1")).toEqual({ ok: true });
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ last_head_sha: "p1", version: 1 });
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: {} });
+      expect(await store.recordPushedHead(run.id, run.lease!.token, "p2")).toEqual({ ok: false, reason: "lease_lost" });
+      expect((await store.getWorkItem(item.id))!.last_head_sha).toBe("p1");
+    });
+
+    it("recordPrHead: a baseline writes no run; a person's push writes one acknowledged manual run, once", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const base = await store.recordPrHead({ id: item.id, expected_head: null, head_sha: "a", manual: { actor: human, pr_number: 9 } });
+      expect(base).toMatchObject({ ok: true, run: null, item: { last_head_sha: "a", version: 1 } });
+
+      const push = { id: item.id, expected_head: "a", head_sha: "b", manual: { actor: human, pr_number: 9 } };
+      const r = await store.recordPrHead(push);
+      if (!r.ok || !r.run) throw new Error("expected a manual run");
+      expect(r.item).toMatchObject({ last_head_sha: "b", version: 1, stage: "NEW", blocked_on: "none" });
+      expect(r.run).toMatchObject({
+        kind: "manual", status: "succeeded", attempt: 0, lease: null, work_item_id: item.id,
+        outcome: { status: "succeeded", data: { actor: human, from_sha: "a", to_sha: "b", pr_number: 9 } },
+      });
+      expect(r.run.acknowledged_at).not.toBeNull();
+      expect(r.run.finished_at).not.toBeNull();
+      expect(await store.recordPrHead(push)).toMatchObject({ ok: false, reason: "head_moved", current: { last_head_sha: "b" } });
+      expect((await store.listRuns(item.id)).filter((x) => x.kind === "manual")).toHaveLength(1);
+      expect(await store.listUnacknowledgedRuns(10)).toEqual([]);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["manual"], lease_ms: LEASE })).toBeNull();
+      expect(await store.listStateChanges(item.id)).toHaveLength(1);
+      expect(await store.recordPrHead({ ...push, id: "wi_missing" as WorkItemId })).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("recordUnreviewedMerge is idempotent on (project, pr_number); listUnreviewedMerges is newest first", async () => {
+      const { store, clock } = await make();
+      const a = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 7, merge_sha: "m7", merger_id: "github:1" as UserId });
+      clock.advance(1000);
+      const again = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 7, merge_sha: "other", merger_id: null });
+      const b = await store.recordUnreviewedMerge({ project: "o/r", pr_number: 8, merge_sha: "m8", merger_id: null });
+      const c = await store.recordUnreviewedMerge({ project: "x/y", pr_number: 7, merge_sha: "m7b", merger_id: null });
+      expect([a.created, again.created, b.created, c.created]).toEqual([true, false, true, true]);
+      expect(again.merge).toEqual(a.merge);
+      expect(a.merge).toMatchObject({ project: "o/r", pr_number: 7, merge_sha: "m7", merger_id: "github:1" });
+      const rows = await store.listUnreviewedMerges(10);
+      expect(rows.map((r) => [r.project, r.pr_number])).toEqual([["x/y", 7], ["o/r", 8], ["o/r", 7]]);
+      expect(await store.listUnreviewedMerges(1)).toHaveLength(1);
     });
   });
 

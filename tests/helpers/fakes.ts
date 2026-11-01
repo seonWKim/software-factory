@@ -174,6 +174,23 @@ export class FakeSource implements PollSource {
     if (this.checksError) throw this.checksError;
     return this.checkResults.shift() ?? { state: "passed" };
   }
+  /** What prFiles answers per PR number (absent: []). Every PR asked for is recorded in `fileCalls`. */
+  prFileMap: Record<number, string[]> = {};
+  fileCalls: number[] = [];
+  async prFiles(pr_number: number): Promise<string[]> {
+    this.fileCalls.push(pr_number);
+    return this.prFileMap[pr_number] ?? [];
+  }
+  /** Who added a label, by `${number}:${label}` (absent: null). */
+  labelAdders: Record<string, ExternalIdentity> = {};
+  async labelAddedBy(number: number, label: string): Promise<ExternalIdentity | null> {
+    return this.labelAdders[`${number}:${label}`] ?? null;
+  }
+  /** The author of a commit, by sha (absent: null). */
+  commitAuthors: Record<string, ExternalIdentity> = {};
+  async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
+    return this.commitAuthors[sha] ?? null;
+  }
   /** The status labels on a target. */
   statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
     const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();

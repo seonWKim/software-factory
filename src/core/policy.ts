@@ -71,9 +71,16 @@ export function failureClass(outcome: RunOutcome | null): FailureClass {
 /** The error code of a run stopped by a usage or rate limit. */
 export const RATE_LIMITED = "rate_limited";
 
-export function branchFor(item: Pick<WorkItem, "id">, prefix: string): string {
-  return `${prefix}${item.id}`;
+/** The item's PR branch: an adopted PR's own head branch, else the factory branch `${prefix}${id}`. */
+export function branchFor(item: Pick<WorkItem, "id"> & Partial<Pick<WorkItem, "head_branch">>, prefix: string): string {
+  return item.head_branch ?? `${prefix}${item.id}`;
 }
+
+/**
+ * The label that keeps a pull request a person opened out of the factory (design 2026-11-01). It counts only
+ * when the person who added it has write permission (`approve_spec`), and only before adoption.
+ */
+export const SKIP_LABEL = "factory: skip";
 
 export function workItemIdFromBranch(branch: string, prefix: string): string | null {
   return branch.startsWith(prefix) ? branch.slice(prefix.length) : null;
