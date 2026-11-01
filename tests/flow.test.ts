@@ -85,7 +85,8 @@ describe("one issue to one merged PR", () => {
     const implementSpecs = runner.specs.filter((s) => s.role === "implement");
     expect(implementSpecs).toHaveLength(2);
     expect(implementSpecs[1]!.prompt).toContain("off-by-one in gate");
-    expect(implementSpecs[0]!.writable_paths).toEqual(["/repo/.git"]);
+    // No path outside the run folder: never the factory repo's .git or the owner's checkout (architecture §5).
+    expect(implementSpecs[0]!.writable_paths).toEqual([]);
     expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
