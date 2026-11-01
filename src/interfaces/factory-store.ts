@@ -304,9 +304,12 @@ export interface FactoryStore {
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
    * refused the credentials). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
-   * when this call moved it, so exactly one caller logs it.
+   * when this call moved it, so exactly one caller logs it. For `forge_auth` only, `started` is true when this
+   * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
+   * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
+   * The `rate_limit` result has no `started`.
    */
-  pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; resume_at: Timestamp }>;
+  pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }>;
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
