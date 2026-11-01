@@ -194,7 +194,7 @@ Scale workers for throughput. Scale controllers for availability.
 | Controllers and workers are stateless. All state is in `FactoryStore` (plus commits on GitHub) | Any replica can die or be added at any time |
 | Every state transition is a conditional update: `UPDATE ... WHERE id = ? AND version = ?` | Two replicas acting on the same item: one wins, the other gets 0 rows and moves on |
 | Leases carry a fencing token that increases on every claim; every write by a worker checks it | A worker that paused past its lease (GC, laptop sleep) can't overwrite the run's new owner |
-| Work is pulled, not pushed: workers claim runs with `SELECT ... FOR UPDATE SKIP LOCKED` + a lease | Adding a worker adds capacity with no coordinator; a dead worker's lease expires and the run is reclaimed |
+| Work is pulled, not pushed: workers claim runs in one transaction under the `claim_locks` row (overlap rule below) + a lease | Adding a worker adds capacity with no coordinator; a dead worker's lease expires and the run is reclaimed |
 | Intake is idempotent: unique key on `(source_type, source_id)` | Several controllers polling, or a webhook delivered twice, create one work item |
 | Periodic loops (reaper, post-merge, dial) are idempotent or take a short leader lease in the store | Running them on N replicas does no harm |
 | A worker's worktree is disposable. The branch on GitHub plus handoff rows are the truth | A run resumes on any node, not only the one that started it |
