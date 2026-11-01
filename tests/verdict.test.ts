@@ -5,7 +5,7 @@ import { parseVerdict } from "../src/core/verdict.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, mallory, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
 import { newStore, system } from "./helpers/store.js";
 
 describe("parseVerdict", () => {
@@ -58,7 +58,7 @@ async function setup() {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const auth = new SpyAuth();
-  const controller = new Controller({ store, source, auth, clock, config, log: silent });
+  const controller = new Controller({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
   return { store, source, auth, controller };
 }
 type F = Awaited<ReturnType<typeof setup>>;
