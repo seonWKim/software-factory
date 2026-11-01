@@ -33,7 +33,7 @@ const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
 
 function setup() {
   const client = new FakeClient();
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/");
+  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
   return { client, source };
 }
 
@@ -93,6 +93,48 @@ describe("GitHubIssueSource", () => {
   });
 });
 
+describe("GitHubIssueSource: base-branch commits", () => {
+  const commit = (sha: string, message: string, date: string) => ({ sha, commit: { message, committer: { date } } });
+
+  it("emits one base_commit per new commit on the base branch, oldest first, and cursors on the commit date", async () => {
+    const { client, source } = setup();
+    // The commits endpoint returns newest first.
+    client.responses["/repos/o/r/commits"] = [
+      commit("c2", "Revert \"x (#3)\" (#4)", "2026-11-01T00:00:02Z"),
+      commit("c1", "first", "2026-11-01T00:00:01Z"),
+    ];
+    const first = await source.poll(null);
+    expect(first.events.filter((e) => e.kind === "base_commit")).toEqual([
+      { kind: "base_commit", sha: "c1", message: "first" },
+      { kind: "base_commit", sha: "c2", message: "Revert \"x (#3)\" (#4)" },
+    ]);
+    const call = client.calls.find((c) => c.path.startsWith("/repos/o/r/commits"))!;
+    expect(call.path).toContain("sha=main");
+    expect(call.path).not.toContain("since=");
+    expect(JSON.parse(first.next_cursor)).toMatchObject({ commits: "2026-11-01T00:00:02Z" });
+
+    // `since` is inclusive: c2 comes back with a new commit; only c3 is new.
+    client.calls = [];
+    client.responses["/repos/o/r/commits"] = [
+      commit("c3", "third", "2026-11-01T00:00:03Z"),
+      commit("c2", "Revert \"x (#3)\" (#4)", "2026-11-01T00:00:02Z"),
+    ];
+    const second = await source.poll(first.next_cursor);
+    expect(second.events.filter((e) => e.kind === "base_commit")).toEqual([{ kind: "base_commit", sha: "c3", message: "third" }]);
+    const again = client.calls.find((c) => c.path.startsWith("/repos/o/r/commits"))!;
+    expect(again.path).toContain("since=2026-11-01T00:00:02Z");
+    expect(JSON.parse(second.next_cursor)).toMatchObject({ commits: "2026-11-01T00:00:03Z" });
+  });
+
+  it("reads a cursor written before commits were polled", async () => {
+    const { client, source } = setup();
+    client.responses["/repos/o/r/commits"] = [commit("c1", "first", "2026-11-01T00:00:01Z")];
+    const old = JSON.stringify({ issues: null, comments: null, pulls: null });
+    const { events } = await source.poll(old);
+    expect(events).toEqual([{ kind: "base_commit", sha: "c1", message: "first" }]);
+  });
+});
+
 describe("GitHubIssueSource: unmergeable factory PRs", () => {
   const pull = (number: number, ref: string) => ({
     number, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:00Z",
@@ -120,7 +162,7 @@ describe("GitHubIssueSource: unmergeable factory PRs", () => {
 
   it("emits pr_unmergeable only for open factory PRs whose mergeable is false", async () => {
     const client = new PrClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     client.open = [
       pull(1, "factory/wi_a"), pull(2, "factory/wi_b"), pull(3, "factory/wi_c"), pull(4, "feature/x"),
     ];

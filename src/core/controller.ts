@@ -1,9 +1,10 @@
 import type { FactoryConfig } from "./config.js";
+import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
 import { effectiveTier, floorTier, needsSpecApproval, runKey, workItemIdFromBranch } from "./policy.js";
 import { renderSpec } from "./spec-comment.js";
-import type { Actor, Run, RunKind, SourceRef, WorkItem, WorkItemId } from "./types.js";
+import type { Actor, Run, RunKind, SourceRef, StateChangeDetail, WorkItem, WorkItemId } from "./types.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
@@ -22,6 +23,7 @@ type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 /** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
 type Refusal = { refuse: string };
 type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" }>;
+type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -30,6 +32,8 @@ const COMMAND: Record<CommandEvent["kind"], string> = {
 };
 
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
+/** Records reverts and fix-forwards (design §6). */
+const LINKS: Actor = { kind: "system", id: "system:links" };
 const MAX_CONFLICT_RETRIES = 5;
 
 /**
@@ -103,7 +107,7 @@ export class Controller {
           {
             source: e.source,
             requester_id: principal.user_id,
-            project: `${this.d.config.repo.owner}/${this.d.config.repo.name}`,
+            project: this.project(),
             problem: `${e.title}\n\n${e.body}`.trim(),
             resources: [e.source.link],
           },
@@ -112,8 +116,12 @@ export class Controller {
         );
         if (created) this.d.log.info("intake", { work_item_id: item.id });
         await this.markSeen(e.source, null);
+        // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
+        await this.linkFixForward(item.id, `${e.title}\n${e.body}`);
         return;
       }
+      case "base_commit":
+        return this.recordReverts(e);
       case "spec_approved":
       case "spec_rejected":
       case "retry_requested":
@@ -178,6 +186,67 @@ export class Controller {
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * A base-branch commit that reverts a factory merge: one `reverted` row on each original item it names,
+   * by merge sha (`This reverts commit <sha>`) or by PR number (a `Revert ...` subject). The row changes no
+   * field. Dedupe key: (item, reason, reverting commit), checked inside decide so a conflict re-reads.
+   */
+  private async recordReverts(e: BaseCommitEvent): Promise<void> {
+    const refs = parseRevert(e.message);
+    const project = this.project();
+    const targets = new Set<WorkItemId>();
+    for (const sha of refs.shas) {
+      const it = await this.d.store.getWorkItemByMergeSha(project, sha);
+      if (it) targets.add(it.id);
+    }
+    for (const n of refs.pr_numbers) {
+      const it = await this.d.store.getWorkItemByPr(project, n);
+      if (it) targets.add(it.id);
+    }
+    const detail = { reverting_commit: e.sha, reverting_pr: refs.reverting_pr };
+    for (const id of targets) {
+      await this.decide(id, async (it) =>
+        (await this.hasDetail(it.id, "reverted", "reverting_commit", e.sha))
+          ? null
+          : { patch: {}, actor: LINKS, reason: "reverted", detail },
+      );
+    }
+  }
+
+  /**
+   * A new item that says `Fixes #N` or `Follow-up to #N`, where N is a factory PR: the first such N becomes
+   * its `fixes_pr`, and the item with PR N gets one `fixed_forward` row. Numbers that are not factory PRs
+   * are ignored. Both steps are no-ops when already done.
+   */
+  private async linkFixForward(id: WorkItemId, text: string): Promise<void> {
+    const project = this.project();
+    for (const n of parseFixReferences(text)) {
+      const original = await this.d.store.getWorkItemByPr(project, n);
+      if (!original || original.id === id) continue;
+      await this.decide(id, (it) =>
+        it.fixes_pr !== null
+          ? null
+          : { patch: { fixes_pr: n }, actor: LINKS, reason: "fixes_pr_linked", detail: { original_work_item_id: original.id } },
+      );
+      // An earlier delivery may have linked another PR first; record the forward link only for the one kept.
+      if ((await this.d.store.getWorkItem(id))?.fixes_pr !== n) return;
+      await this.decide(original.id, async (it) =>
+        (await this.hasDetail(it.id, "fixed_forward", "fix_work_item_id", id))
+          ? null
+          : { patch: {}, actor: LINKS, reason: "fixed_forward", detail: { fix_work_item_id: id } },
+      );
+      return;
+    }
+  }
+
+  private async hasDetail(id: WorkItemId, reason: string, key: string, value: StateChangeDetail[string]): Promise<boolean> {
+    return (await this.d.store.listStateChanges(id)).some((c) => c.reason === reason && c.detail?.[key] === value);
+  }
+
+  private project(): string {
+    return `${this.d.config.repo.owner}/${this.d.config.repo.name}`;
   }
 
   // Run outcomes

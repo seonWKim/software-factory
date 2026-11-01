@@ -88,6 +88,34 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("state change detail and PR lookups", () => {
+    it("round-trips detail through transition and listStateChanges; it is null when not given", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const detail = { reverting_commit: "abc123", reverting_pr: 50 };
+      const r = await store.transition({ id: item.id, expected_version: 1, patch: {}, actor: system, reason: "reverted", detail });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.state_change.detail).toEqual(detail);
+      const [intake, reverted] = await store.listStateChanges(item.id);
+      expect(intake!.detail).toBeNull();
+      expect(reverted).toMatchObject({ reason: "reverted", detail, changes: {} });
+    });
+
+    it("finds a work item by (project, pr_number) and by merge_sha", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.createWorkItem(issue(2), system);
+      expect(await store.getWorkItemByPr("o/r", 34)).toBeNull();
+      expect(await store.getWorkItemByMergeSha("o/r", "m1")).toBeNull();
+      await store.transition({ id: item.id, expected_version: 1, patch: { pr_number: 34, merge_sha: "m1" }, actor: system, reason: "x" });
+      expect((await store.getWorkItemByPr("o/r", 34))!.id).toBe(item.id);
+      expect((await store.getWorkItemByMergeSha("o/r", "m1"))!.id).toBe(item.id);
+      expect(await store.getWorkItemByPr("other/repo", 34)).toBeNull();
+      expect(await store.getWorkItemByMergeSha("other/repo", "m1")).toBeNull();
+      expect(await store.getWorkItemByPr("o/r", 35)).toBeNull();
+    });
+  });
+
   describe("runs and leases", () => {
     async function queued() {
       const ctx = await make();

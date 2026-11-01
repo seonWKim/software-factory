@@ -208,7 +208,10 @@ export const REGISTRY: Registry = {
     configKey: "plugins.source",
     guard: false,
     plugins: {
-      "github-issues": (c) => new GitHubIssueSource(c.github, c.repo, c.loaded.config.intake_label, c.loaded.config.branch_prefix),
+      "github-issues": (c) =>
+        new GitHubIssueSource(
+          c.github, c.repo, c.loaded.config.intake_label, c.loaded.config.branch_prefix, c.loaded.config.repo.base_branch,
+        ),
     },
   },
   capability: {

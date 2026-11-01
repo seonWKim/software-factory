@@ -78,7 +78,14 @@ export interface StateChange {
   reason: string;
   /** Only the fields that changed, with old and new values. */
   changes: { [K in keyof WorkItemPatch]?: { from: WorkItem[K]; to: WorkItem[K] } };
+  /**
+   * Facts that are not field diffs, IDs and shas only. E.g. `reverted`: { reverting_commit, reverting_pr };
+   * `fixed_forward`: { fix_work_item_id }. Null on most rows, and on every row written before it existed.
+   */
+  detail: StateChangeDetail | null;
 }
+
+export type StateChangeDetail = Record<string, string | number | boolean | null>;
 
 /** `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5). */
 export type RunKind = "triage" | "implement" | "review" | "update";
