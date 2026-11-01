@@ -106,6 +106,7 @@ export class Controller {
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: e.source,
+            title: e.title,
             requester_id: principal.user_id,
             project: this.project(),
             problem: `${e.title}\n\n${e.body}`.trim(),

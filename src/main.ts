@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { CODE_ROOT_ENV, type Loaded, build, loadConfig } from "./compose.js";
+import { CODE_ROOT_ENV, type Loaded, build, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
 import type { WorkItemId } from "./core/types.js";
 import type { SecretName } from "./interfaces/secret-store.js";
 import { doctor, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
+import { startUi } from "./ui/server.js";
 
 const USAGE = `factory <command>
 
@@ -15,6 +16,7 @@ const USAGE = `factory <command>
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
+  ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   doctor       checks setup without printing any secret
   canary       G6: a real agent tries to find a planted canary secret`;
 
@@ -67,6 +69,26 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version })));
       }
       await app.close();
+      return 0;
+    }
+    case "ui": {
+      const parts = await buildUiParts(loaded);
+      const { owner, name } = loaded.config.repo;
+      const ui = await startUi(
+        {
+          store: parts.store,
+          scanner: parts.scanner,
+          clock: parts.clock,
+          lease_ms: loaded.config.lease_ms,
+          prUrl: (project, n) => `https://github.com/${project || `${owner}/${name}`}/pull/${n}`,
+        },
+        uiPort(loaded.file.ui),
+      );
+      console.log(`status page: http://${ui.address}:${ui.port}/ (read-only; Ctrl-C to stop)`);
+      const signal = stopOnSignals();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      await ui.close();
+      await parts.close();
       return 0;
     }
     case "setup": {

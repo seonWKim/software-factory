@@ -48,6 +48,8 @@ export interface FileConfig {
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
+  /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
+  ui?: { port?: number };
 }
 
 export { CODE_ROOT_ENV } from "./interfaces/updater.js";
@@ -87,6 +89,7 @@ export async function loadConfig(
     throw new Error("tiers must be integers 1–5");
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
+  uiPort(file.ui);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -220,6 +223,41 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+export const DEFAULT_UI_PORT = 4310;
+
+/** `ui.port` from factory.config.json: absent means 4310, otherwise an integer 1–65535 or startup fails. */
+export function uiPort(ui: FileConfig["ui"]): number {
+  const port = ui?.port;
+  if (port === undefined) return DEFAULT_UI_PORT;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("ui.port must be an integer from 1 to 65535");
+  }
+  return port;
+}
+
+export interface UiParts {
+  clock: Clock;
+  store: FactoryStore;
+  scanner: EgressScanner;
+  close(): Promise<void>;
+}
+
+/**
+ * What the status page needs and nothing more: no controller, worker, source or runner. Built through
+ * Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because the
+ * MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches the page.
+ */
+export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
+  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+  const p = new Plugins(loaded);
+  const clock = await p.clock();
+  const secrets = await p.secrets();
+  const store = await p.store(secrets, clock);
+  await store.migrate();
+  const scanner = await p.scanner(secrets);
+  return { clock, store, scanner, close: () => store.close() };
 }
 
 /** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */
