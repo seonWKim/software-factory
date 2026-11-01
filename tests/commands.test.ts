@@ -97,6 +97,7 @@ describe("footers match what the controller accepts", () => {
   const PATCHES: Record<CommandPhase, WorkItemPatch> = {
     triaging: {},
     spec_pending: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" },
+    budget_checkpoint: { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" },
     max_revisions: { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" },
     implementing: { stage: "RUNNING" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
@@ -108,7 +109,7 @@ describe("footers match what the controller accepts", () => {
     other_blocked: { stage: "RUNNING", blocked_on: "ci", blocked_reason: "something" },
     closed: { stage: "CLOSED", close_reason: "rejected" },
   };
-  const ACTING: CommandName[] = ["approve", "reject", "revise", "retry", "verdict"];
+  const ACTING: CommandName[] = ["approve", "reject", "revise", "retry", "budget", "verdict"];
 
   function event(name: CommandName, n: number): SourceEvent {
     const base = { source: issueRef(n), comment_id: String(n) };
@@ -117,6 +118,7 @@ describe("footers match what the controller accepts", () => {
       case "reject": return { kind: "spec_rejected", ...base, approver: alice, reason: "no" };
       case "revise": return { kind: "revise_requested", ...base, requester: alice, feedback: "more" };
       case "retry": return { kind: "retry_requested", ...base, requester: alice };
+      case "budget": return { kind: "budget_continue", ...base, approver: alice, amount: null };
       default: return { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(n) }, ...base, approver: alice, args: "accept none" };
     }
   }
@@ -134,11 +136,22 @@ describe("footers match what the controller accepts", () => {
         for (const name of ACTING) {
           n++;
           const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] }, actor);
-          const r = await store.transition({
+          const setup = {
             id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
-            patch: { ...PATCHES[phase], pr_number: pr, tier: 2 },
+            patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },
             ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
-          });
+          };
+          // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.
+          const r = phase === "budget_checkpoint"
+            ? await store.openBudgetCheckpoint({
+                ...setup,
+                reason: "budget_checkpoint",
+                checkpoint: {
+                  tier: 2, tokens_spent: 2_000, budget: 1_000, suggested_budget: 3_000,
+                  held_run_kind: "implement", held_run_key: `held:${n}`, held_run_not_before: null,
+                },
+              })
+            : await store.transition(setup);
           if (!r.ok) throw new Error("setup failed");
           expect(commandPhase(r.item)).toBe(phase);
           expect(commandState(r.item)).toEqual(state);

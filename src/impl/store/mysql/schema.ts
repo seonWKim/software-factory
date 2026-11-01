@@ -140,4 +140,52 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     ) ${TABLE}`,
     "INSERT INTO claim_locks (name) VALUES ('claim')",
   ],
+  // 8: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  [
+    "ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT NULL",
+  ],
+  // 9: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  [
+    `CREATE TABLE budget_checkpoints (
+      seq                  BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
+      id                   VARCHAR(64) NOT NULL PRIMARY KEY,
+      work_item_id         VARCHAR(64) NOT NULL,
+      tier                 TINYINT NOT NULL,
+      tokens_spent         BIGINT NOT NULL,
+      budget               BIGINT NOT NULL,
+      suggested_budget     BIGINT NOT NULL,
+      answer               VARCHAR(32) NOT NULL,
+      granted_budget       BIGINT,
+      held_run_kind        VARCHAR(16) NOT NULL,
+      held_run_key         VARCHAR(255) NOT NULL,
+      held_run_not_before  CHAR(24),
+      outcome              VARCHAR(16),
+      created_at           CHAR(24) NOT NULL,
+      answered_at          CHAR(24),
+      KEY budget_checkpoints_work_item (work_item_id, created_at),
+      FOREIGN KEY (work_item_id) REFERENCES work_items (id)
+    ) ${TABLE}`,
+    "CREATE INDEX work_items_tier ON work_items (project, tier, stage)",
+  ],
+  // 10: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
+  // InnoDB keeps the AUTO_INCREMENT counter across restarts (MySQL 8), so a seq is never reused after cleanup.
+  // One listener lease row per source type.
+  [
+    `CREATE TABLE source_inbox (
+      seq          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      source_type  VARCHAR(32) NOT NULL,
+      dedupe_key   VARCHAR(255) NOT NULL,
+      event        MEDIUMTEXT NOT NULL,
+      received_at  CHAR(24) NOT NULL,
+      UNIQUE KEY source_inbox_dedupe (source_type, dedupe_key),
+      KEY source_inbox_seq (source_type, seq)
+    ) ${TABLE}`,
+    `CREATE TABLE listener_leases (
+      source_type  VARCHAR(32) NOT NULL PRIMARY KEY,
+      owner        VARCHAR(255) NOT NULL,
+      token        BIGINT NOT NULL,
+      expires_at   CHAR(24) NOT NULL
+    ) ${TABLE}`,
+  ],
 ];

@@ -208,6 +208,35 @@ Scale workers for throughput. Scale controllers for availability.
 
 **Scaling knobs:** workers per process (`workers`), number of worker processes and nodes, warm sandbox pool size, controller replicas, LLM concurrency cap.
 
+
+### Intake: poll and push
+
+A source's `intake` says how its events arrive (`SourceAdapter` is a union, `src/interfaces/source-adapter.ts`). Both paths end in the same `Controller.handleEvent`, so an event is handled the same way whichever path brought it.
+
+```mermaid
+graph LR
+  subgraph POLL["intake: poll (GitHub issues)"]
+    P1["controller tick, every poll_interval_ms"] -->|"poll(cursor)"| P2["events"]
+  end
+  subgraph PUSH["intake: stream (e.g. Slack Socket Mode)"]
+    S1["listener (lease holder only)"] -->|"subscribe()"| S2["PushedEvent"]
+    S2 -->|"1. appendInbox (fenced by lease token)"| IN[("source_inbox")]
+    S2 -.->|"2. ack() after commit"| S1
+    IN -->|"listInboxAfter(cursor), every tick, any replica"| S3["events"]
+  end
+  P2 --> H["handleEvent"]
+  S3 --> H
+  H --> ST[("work items, state_changes")]
+```
+
+- **Poll.** Unchanged: the controller calls `poll(cursor)` every `poll_interval_ms` and moves the cursor `intake:<source type>` with `advanceCursor`.
+- **Push: the inbox.** Each pushed event is written to the store table `source_inbox` (seq, source type, `dedupe_key`, the event as JSON, received time) **before** it is acknowledged to the source. `ack()` runs only after that write commits; a duplicate `dedupe_key` (unique per source type) is a no-op and is acked too; a failed write is not acked, so the source redelivers it. Every controller replica reads the inbox rows after the cursor `inbox:<source type>` (every tick, since it is a store read), handles each through `handleEvent`, and moves the cursor with `advanceCursor`. A crash at any point loses nothing: before the commit the source still holds the event, after it the inbox does. Handling is idempotent, so two replicas reading the same rows at once is safe.
+- **Push: the listener lease.** A source should have one connection, not one per replica. The table `listener_leases` (one row per source type: owner, token, expiry) decides who connects; every change to it is a conditional update. Each replica's controller runs a listener (`src/core/listener.ts`) that tries to take the lease every `heartbeat_ms`; only the holder subscribes, and it renews every `heartbeat_ms` for `lease_ms`. Each take bumps the token, and the inbox write checks the token in the same transaction, so a listener that lost the lease cannot write. If the holder dies (stops renewing past expiry), another replica takes the lease and connects; a holder that cannot renew for `lease_ms` closes its own connection. The two can overlap briefly (the takeover and the self-close fall due at the same time, and a sleeping host notices late); that is harmless, because the old holder's inbox writes are refused and its unacked events are redelivered to the new one. On shutdown the holder releases the lease so another replica takes over at once.
+- **Ordering.** Appends of one source type lock its lease row, so they commit one at a time in seq order and a reader never moves its cursor past a row that commits later. Seqs are never reused (SQLite `AUTOINCREMENT`, InnoDB's persisted counter).
+- **Reconnects.** When the stream ends or fails, the listener reconnects with exponential backoff (1 s doubling to 60 s; it starts over after a connection that stored an event). It logs once per state change (lease taken, waiting, connected, disconnected, lease lost), not once per retry.
+- **Retention.** On the poll interval, the controller deletes inbox rows that are older than `inbox_retention_days` (default 14) **and** at or below the source's inbox cursor. A source with no cursor keeps every row.
+- Out of scope so far: webhook HTTP endpoints (they would write to the same inbox) and any real stream plugin (Slack).
+
 ## 5. Secret isolation
 
 **Rule:** agents never read secrets. Only tools do. An agent sees a tool's *result*, never the credential the tool used.

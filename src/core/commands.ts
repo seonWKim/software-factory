@@ -10,6 +10,7 @@ import type { RunKind, WorkItem } from "./types.js";
 export type CommandPhase =
   | "triaging"
   | "spec_pending"
+  | "budget_checkpoint"
   | "max_revisions"
   | "implementing"
   | "floor_tier"
@@ -22,7 +23,7 @@ export type CommandPhase =
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
-  "triaging", "spec_pending", "max_revisions", "implementing", "floor_tier", "failed_run",
+  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "floor_tier", "failed_run",
   "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
@@ -34,7 +35,7 @@ export interface CommandState {
   has_pr: boolean;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "verdict" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "budget" | "verdict" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -63,7 +64,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "reject",
     usage: "/reject <reason>",
     description: "Close the item without a merge, giving your reason",
-    phases: ["spec_pending", "max_revisions", "floor_tier"],
+    phases: ["spec_pending", "max_revisions", "floor_tier", "budget_checkpoint"],
     needs_pr: false,
     changes_state: true,
   },
@@ -80,6 +81,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/retry",
     description: "Run the failed run again",
     phases: ["failed_run"],
+    needs_pr: false,
+    changes_state: true,
+  },
+  {
+    name: "budget",
+    usage: "/budget [tokens]",
+    description: "Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens",
+    phases: ["budget_checkpoint"],
     needs_pr: false,
     changes_state: true,
   },
@@ -123,6 +132,7 @@ type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_
 /** The phase of an item; the same checks, in the same order, as the controller's command handling. */
 export function commandPhase(it: ItemState): CommandPhase {
   if (it.stage === "CLOSED") return "closed";
+  if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
   if (it.blocked_reason === "floor_tier") return "floor_tier";
   if (it.blocked_on === "human" && failedRunKind(it as WorkItem)) return "failed_run";
   if (it.stage === "READY" && it.blocked_reason === "spec_pending") return "spec_pending";
@@ -178,6 +188,7 @@ export function helpReply(s: CommandState): string {
 const PHASE_LABELS: Record<CommandPhase, string> = {
   triaging: "triaging",
   spec_pending: "spec waiting for approval",
+  budget_checkpoint: "paused at a budget checkpoint",
   max_revisions: "spec at the revision limit",
   implementing: "implementing",
   floor_tier: "blocked by the floor check",

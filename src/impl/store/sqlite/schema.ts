@@ -127,4 +127,50 @@ export const MIGRATIONS: readonly string[] = [
   );
   INSERT INTO claim_locks (name) VALUES ('claim');
   `,
+  // 8: comment links for the status page's Needs you list (design §9). Old rows keep both NULL (link to the issue).
+  `
+  ALTER TABLE work_items ADD COLUMN spec_comment_url TEXT;
+  ALTER TABLE work_items ADD COLUMN failure_comment_url TEXT;
+  `,
+  // 9: token-budget checkpoints (design §6). One row per checkpoint; the held run waits here, not in runs.
+  `
+  CREATE TABLE budget_checkpoints (
+    id                   TEXT PRIMARY KEY,
+    work_item_id         TEXT NOT NULL REFERENCES work_items(id),
+    tier                 INTEGER NOT NULL,
+    tokens_spent         INTEGER NOT NULL,
+    budget               INTEGER NOT NULL,
+    suggested_budget     INTEGER NOT NULL,
+    answer               TEXT NOT NULL,
+    granted_budget       INTEGER,
+    held_run_kind        TEXT NOT NULL,
+    held_run_key         TEXT NOT NULL,
+    held_run_not_before  TEXT,
+    outcome              TEXT,
+    created_at           TEXT NOT NULL,
+    answered_at          TEXT
+  );
+  CREATE INDEX budget_checkpoints_work_item ON budget_checkpoints (work_item_id, created_at);
+  CREATE INDEX work_items_tier ON work_items (project, tier, stage);
+  `,
+  // 10: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
+  // AUTOINCREMENT: a seq is never reused, even after cleanup deletes the newest rows, so a cursor never
+  // skips an event. One listener lease row per source type.
+  `
+  CREATE TABLE source_inbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type  TEXT NOT NULL,
+    dedupe_key   TEXT NOT NULL,
+    event        TEXT NOT NULL,
+    received_at  TEXT NOT NULL,
+    UNIQUE (source_type, dedupe_key)
+  );
+  CREATE INDEX source_inbox_seq ON source_inbox (source_type, seq);
+  CREATE TABLE listener_leases (
+    source_type  TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    token        INTEGER NOT NULL,
+    expires_at   TEXT NOT NULL
+  );
+  `,
 ];

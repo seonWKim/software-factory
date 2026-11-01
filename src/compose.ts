@@ -6,10 +6,12 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
+import { budgetConfig } from "./core/budget.js";
 import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { WorkerPool } from "./core/worker-pool.js";
+import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
@@ -61,6 +63,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
+  inbox_retention_days?: number;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   state_dir: string;
@@ -68,6 +72,10 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
   ui?: { port?: number };
+  /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by budgetConfig. */
+  budgets?: unknown;
+  /** Finished items a tier needs before suggestions come from history. Absent: 10. */
+  budget_min_sample?: unknown;
   /** `factory stats` (design §6): a weight per verdict severity (all required), min_sample (absent: 10). */
   stats?: { weights?: unknown; min_sample?: unknown };
 }
@@ -102,7 +110,9 @@ export async function loadConfig(
   opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
-  const file = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8")) as FileConfig;
+  const raw: unknown = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8"));
+  checkConfigKeys(raw);
+  const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
     throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
@@ -115,6 +125,8 @@ export async function loadConfig(
   const workers = workerCount(file.workers);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
+  const retention = inboxRetentionDays(file);
+  const budget = budgetConfig(file);
   const stats = statsConfig(file.stats);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
@@ -143,6 +155,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    inbox_retention_days: retention,
     workers,
     deny_paths: [
       dirname(secretsFile),
@@ -159,6 +172,8 @@ export async function loadConfig(
       join(home, ".mylogin.cnf"),
     ],
     agent_git_identity: file.agent_git_identity,
+    budgets: budget.budgets,
+    budget_min_sample: budget.budget_min_sample,
   };
   const prompts: Prompts = {
     triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
@@ -242,6 +257,8 @@ export async function build(
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
+    // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
+    replica_id: `${hostname()}:${process.pid}`,
   });
 
   const worker = new WorkerPool({
@@ -406,6 +423,16 @@ export function diffLimits(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+export const DEFAULT_INBOX_RETENTION_DAYS = 14;
+
+/** `inbox_retention_days`: absent means 14, otherwise a positive integer or startup fails. */
+export function inboxRetentionDays(file: Pick<FileConfig, "inbox_retention_days">): number {
+  const v = file.inbox_retention_days;
+  if (v === undefined) return DEFAULT_INBOX_RETENTION_DAYS;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("inbox_retention_days must be a positive integer");
+  return v;
 }
 
 function isTier(n: number): n is Tier {

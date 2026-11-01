@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2 } from "./helpers/store.js";
 
@@ -295,6 +296,34 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("comment links", () => {
+    it("spec_comment_url and failure_comment_url default to null and round-trip through transition()", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect(item.spec_comment_url).toBeNull();
+      expect(item.failure_comment_url).toBeNull();
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ spec_comment_url: null, failure_comment_url: null });
+
+      const spec = "https://github.com/o/r/issues/1#issuecomment-11";
+      const r = await store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "triaged",
+        patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", spec_comment_url: spec },
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item.spec_comment_url).toBe(spec);
+      expect(r.state_change.changes.spec_comment_url).toEqual({ from: null, to: spec });
+
+      const fail = "https://github.com/o/r/issues/1#issuecomment-22";
+      await store.transition({ id: item.id, expected_version: 2, actor: system, reason: "x", patch: { failure_comment_url: fail } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+      expect((await store.getWorkItemBySource("github_issue", item.source.id))!.failure_comment_url).toBe(fail);
+      expect((await store.listWorkItemsWhere({ limit: 10 }))[0]).toMatchObject({ spec_comment_url: spec, failure_comment_url: fail });
+
+      await store.transition({ id: item.id, expected_version: 3, actor: system, reason: "x", patch: { failure_comment_url: null } });
+      expect(await store.getWorkItem(item.id)).toMatchObject({ spec_comment_url: spec, failure_comment_url: null });
+    });
+  });
+
   describe("read-only queries", () => {
     it("listWorkItemsWhere filters by stage, blocked_on and closed, most recently updated first", async () => {
       const { store, clock } = await make();
@@ -369,11 +398,32 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.listRunsFinishedWithin(DAY + 10_000)).map((r) => r.id)).toEqual([recentFail, recentOk, old]);
     });
 
+    it("countWorkItemsWhere counts every match, with no limit, by stage, blocked_on and closed", async () => {
+      const { store } = await make();
+      const filter = { blocked_on: "human" as const, exclude_closed: true };
+      expect(await store.countWorkItemsWhere(filter)).toBe(0);
+      const ids = [];
+      for (let n = 1; n <= 6; n++) ids.push((await store.createWorkItem(issue(n), system)).item.id);
+      const block = (id: WorkItemId, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) =>
+        store.transition({ id, expected_version: 1, patch, actor: system, reason: "x" });
+      await block(ids[0]!, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+      await block(ids[1]!, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+      await block(ids[2]!, { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" });
+      await block(ids[3]!, { stage: "CLOSED", close_reason: "rejected", blocked_on: "human", blocked_reason: "x" });
+      await block(ids[4]!, { stage: "RUNNING", blocked_on: "upstream" });
+      expect(await store.countWorkItemsWhere(filter)).toBe(3);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human" })).toBe(4);
+      expect(await store.countWorkItemsWhere({ blocked_on: "human", stage: "REVIEW" })).toBe(1);
+      expect(await store.countWorkItemsWhere({})).toBe(6);
+      expect(await store.countWorkItemsWhere({ exclude_closed: true })).toBe(5);
+    });
+
     it("the read methods write nothing", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
       const before = { item: await store.getWorkItem(item.id), runs: await store.listRuns(item.id), sc: await store.listStateChanges(item.id) };
       await store.listWorkItemsWhere({ limit: 10 });
+      await store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
       await store.countWorkItemsByStage();
       await store.listRunsByStatus(["queued", "running"], 10);
       await store.listRunsFinishedWithin(1_000);
@@ -544,6 +594,166 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
       clock.advance(1);
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
+    });
+  });
+
+  describe("budget checkpoints", () => {
+    const held = {
+      tier: 2 as const,
+      tokens_spent: 1_200_000,
+      budget: 1_000_000,
+      suggested_budget: 2_000_000,
+      held_run_kind: "review" as const,
+      held_run_key: "k:review:l0:r0",
+      held_run_not_before: null,
+    };
+    const block = { blocked_on: "budget" as const, blocked_reason: "budget_checkpoint" };
+
+    async function opened(store: FactoryStore) {
+      const { item } = await store.createWorkItem(issue(1), system);
+      const r = await store.openBudgetCheckpoint({
+        id: item.id, expected_version: 1, patch: block, actor: system, reason: "budget_checkpoint", checkpoint: held,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      return r;
+    }
+
+    it("opens a pending checkpoint in the same transaction as the block and its state change", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      expect(r.item).toMatchObject({ version: 2, blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+      expect(r.state_change.reason).toBe("budget_checkpoint");
+      expect(r.enqueued).toBeNull();
+      expect(r.checkpoint).toMatchObject({
+        ...held, work_item_id: r.item.id, answer: "pending", granted_budget: null, outcome: null,
+        created_at: clock.now().toISOString(), answered_at: null,
+      });
+      expect(await store.listBudgetCheckpoints(r.item.id)).toEqual([r.checkpoint]);
+      expect(await store.listRuns(r.item.id)).toEqual([]);
+    });
+
+    it("opens nothing on a version conflict, or while another checkpoint of the item is pending", async () => {
+      const { store } = await make();
+      const { item: other } = await store.createWorkItem(issue(2), system);
+      const stale = { id: other.id, expected_version: 0, patch: block, actor: system, reason: "budget_checkpoint", checkpoint: held };
+      expect(await store.openBudgetCheckpoint(stale)).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect(await store.listBudgetCheckpoints(other.id)).toEqual([]);
+      expect(await store.listStateChanges(other.id)).toHaveLength(1);
+
+      const r = await opened(store);
+      const again = { id: r.item.id, patch: {}, actor: system, reason: "budget_checkpoint", checkpoint: held };
+      expect(await store.openBudgetCheckpoint({ ...again, expected_version: 2 })).toEqual({ ok: false, reason: "checkpoint_pending" });
+      expect(await store.listBudgetCheckpoints(r.item.id)).toHaveLength(1);
+      expect(await store.listStateChanges(r.item.id)).toHaveLength(2);
+    });
+
+    it("answers a pending checkpoint once, enqueueing the held run with its key and not_before in the same transaction", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      clock.advance(5_000);
+      const at = new Date(clock.now().getTime() + 1_000).toISOString();
+      const answer = {
+        id: r.item.id, patch: { blocked_on: "none" as const, blocked_reason: null }, actor: human, reason: "budget_continued",
+        checkpoint_id: r.checkpoint.id, answer: "continued_custom" as const, granted_budget: 9_000_000,
+        enqueue: { kind: "review" as const, idempotency_key: held.held_run_key, not_before: at as never },
+      };
+      const a = await store.answerBudgetCheckpoint({ ...answer, expected_version: 2 });
+      if (!a.ok) throw new Error(a.reason);
+      expect(a.item).toMatchObject({ version: 3, blocked_on: "none" });
+      expect(a.state_change).toMatchObject({ reason: "budget_continued", actor: human });
+      expect(a.enqueued).toMatchObject({ kind: "review", idempotency_key: held.held_run_key, not_before: at, status: "queued" });
+      expect(a.checkpoint).toMatchObject({
+        answer: "continued_custom", granted_budget: 9_000_000, answered_at: clock.now().toISOString(), outcome: null,
+      });
+      // A second answer (a redelivery) changes nothing, whatever the version.
+      expect(await store.answerBudgetCheckpoint({ ...answer, expected_version: 3 })).toEqual({ ok: false, reason: "checkpoint_not_pending" });
+      expect(await store.listStateChanges(r.item.id)).toHaveLength(3);
+      expect(await store.listRuns(r.item.id)).toHaveLength(1);
+    });
+
+    it("an answer on a version conflict changes nothing", async () => {
+      const { store } = await make();
+      const r = await opened(store);
+      const a = await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 1, patch: {}, actor: human, reason: "budget_continued",
+        checkpoint_id: r.checkpoint.id, answer: "continued_suggested", granted_budget: 2_000_000,
+        enqueue: { kind: "review", idempotency_key: held.held_run_key },
+      });
+      expect(a).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.listBudgetCheckpoints(r.item.id))[0]).toMatchObject({ answer: "pending", granted_budget: null });
+      expect(await store.listRuns(r.item.id)).toEqual([]);
+    });
+
+    it("a rejecting answer that closes the item sets answer rejected and outcome rejected", async () => {
+      const { store } = await make();
+      const r = await opened(store);
+      const a = await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 2, actor: human, reason: "budget_rejected",
+        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+        checkpoint_id: r.checkpoint.id, answer: "rejected", granted_budget: null,
+      });
+      if (!a.ok) throw new Error(a.reason);
+      expect(a.checkpoint).toMatchObject({ answer: "rejected", granted_budget: null, outcome: "rejected" });
+    });
+
+    for (const [close_reason, outcome] of [["completed", "merged"], ["rejected", "rejected"], ["failed", "failed"]] as const) {
+      it(`closing the item with ${close_reason} sets the open checkpoint's outcome to ${outcome}, in the same transition`, async () => {
+        const { store } = await make();
+        const r = await opened(store);
+        await store.transition({
+          id: r.item.id, expected_version: 2, actor: system, reason: "close",
+          patch: { stage: "CLOSED", close_reason, blocked_on: "none", blocked_reason: null },
+        });
+        expect((await store.listBudgetCheckpoints(r.item.id))[0]).toMatchObject({ answer: "pending", outcome });
+      });
+    }
+
+    it("lists an item's checkpoints oldest first; an outcome already set is not overwritten", async () => {
+      const { store, clock } = await make();
+      const r = await opened(store);
+      await store.answerBudgetCheckpoint({
+        id: r.item.id, expected_version: 2, patch: { blocked_on: "none", blocked_reason: null }, actor: human,
+        reason: "budget_continued", checkpoint_id: r.checkpoint.id, answer: "continued_suggested", granted_budget: 2_000_000,
+      });
+      clock.advance(1_000);
+      const second = await store.openBudgetCheckpoint({
+        id: r.item.id, expected_version: 3, patch: { blocked_on: "budget", blocked_reason: "budget_checkpoint" }, actor: system,
+        reason: "budget_checkpoint", checkpoint: { ...held, tokens_spent: 2_100_000, budget: 2_000_000, held_run_key: "k2" },
+      });
+      if (!second.ok) throw new Error(second.reason);
+      await store.transition({
+        id: r.item.id, expected_version: 4, actor: system, reason: "pr_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null },
+      });
+      // A later transition of a closed item does not touch the outcome again.
+      await store.transition({ id: r.item.id, expected_version: 5, actor: system, reason: "x", patch: { close_reason: "rejected" } });
+      const list = await store.listBudgetCheckpoints(r.item.id);
+      expect(list.map((c) => [c.held_run_key, c.answer, c.outcome])).toEqual([
+        ["k:review:l0:r0", "continued_suggested", "merged"],
+        ["k2", "pending", "merged"],
+      ]);
+      expect(await store.listBudgetCheckpoints("wi_missing" as WorkItemId)).toEqual([]);
+    });
+
+    it("tier history: finished (CLOSED) items of the project and tier, and token_cost of the merged ones", async () => {
+      const { store } = await make();
+      const close = async (n: number, tier: 1 | 2, close_reason: "completed" | "rejected" | null, token_cost: number, project = "o/r") => {
+        const { item } = await store.createWorkItem({ ...issue(n), project }, system);
+        await store.transition({
+          id: item.id, expected_version: 1, actor: system, reason: "x",
+          patch: close_reason ? { tier, token_cost, stage: "CLOSED", close_reason } : { tier, token_cost, stage: "RUNNING" },
+        });
+      };
+      await close(1, 2, "completed", 300);
+      await close(2, 2, "completed", 100);
+      await close(3, 2, "rejected", 900);
+      await close(4, 2, null, 5_000);
+      await close(5, 1, "completed", 7_000);
+      await close(6, 2, "completed", 8_000, "other/repo");
+      const h = await store.getTierHistory("o/r", 2);
+      expect(h.finished).toBe(3);
+      expect([...h.merged_token_costs].sort((a, b) => a - b)).toEqual([100, 300]);
+      expect(await store.getTierHistory("o/r", 4)).toEqual({ finished: 0, merged_token_costs: [] });
     });
   });
 
@@ -729,6 +939,151 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.advanceCursor("intake", "a", "b")).toBe(true);
       expect(await store.advanceCursor("intake", "a", "c")).toBe(false);
       expect(await store.getCursor("intake")).toBe("b");
+    });
+  });
+
+  describe("source inbox", () => {
+    const slack = "slack_thread" as const;
+    const ev = (n: number): SourceEvent => ({
+      kind: "item_requested",
+      source: { type: slack, id: `C1/${n}`, link: `https://slack.example/C1/${n}` },
+      requester: { provider: "slack", subject: "U1" },
+      title: `t${n}`,
+      body: `b${n}`,
+    });
+    async function leased(store: FactoryStore): Promise<number> {
+      const r = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!r.ok) throw new Error(r.reason);
+      return r.lease.token;
+    }
+
+    it("appends in sequence order and reads back after a cursor", async () => {
+      const { store } = await make();
+      const token = await leased(store);
+      const seqs: number[] = [];
+      for (const n of [1, 2, 3]) {
+        const r = await store.appendInbox({ source_type: slack, dedupe_key: `k${n}`, event: ev(n), lease_token: token });
+        if (!r.ok) throw new Error(r.reason);
+        expect(r.duplicate).toBe(false);
+        seqs.push(r.row.seq);
+      }
+      expect([...seqs].sort((a, b) => a - b)).toEqual(seqs);
+      expect(new Set(seqs).size).toBe(3);
+
+      const all = await store.listInboxAfter(slack, 0, 10);
+      expect(all.map((r) => r.dedupe_key)).toEqual(["k1", "k2", "k3"]);
+      expect(all[0]).toMatchObject({ seq: seqs[0], source_type: slack, event: ev(1) });
+      expect(typeof all[0]!.received_at).toBe("string");
+      expect((await store.listInboxAfter(slack, seqs[0]!, 10)).map((r) => r.dedupe_key)).toEqual(["k2", "k3"]);
+      expect((await store.listInboxAfter(slack, 0, 2)).map((r) => r.dedupe_key)).toEqual(["k1", "k2"]);
+      expect(await store.listInboxAfter("github_issue", 0, 10)).toEqual([]);
+    });
+
+    it("a duplicate dedupe_key is a no-op that reports the stored row", async () => {
+      const { store } = await make();
+      const token = await leased(store);
+      const first = await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: token });
+      const again = await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(2), lease_token: token });
+      expect(again).toEqual({ ok: true, duplicate: true, row: first.ok && first.row });
+      expect(await store.listInboxAfter(slack, 0, 10)).toHaveLength(1);
+    });
+
+    it("refuses the write without the listener lease, or with a stale token", async () => {
+      const { store, clock } = await make();
+      expect(await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: 1 })).toEqual({
+        ok: false, reason: "lease_lost",
+      });
+      const old = await leased(store);
+      clock.advance(LEASE + 1);
+      const b = await store.acquireListenerLease(slack, "replica-b", LEASE);
+      if (!b.ok) throw new Error(b.reason);
+      expect(await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: old })).toEqual({
+        ok: false, reason: "lease_lost",
+      });
+      expect(await store.listInboxAfter(slack, 0, 10)).toEqual([]);
+      expect((await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: b.lease.token })).ok).toBe(true);
+    });
+
+    it("prune deletes only rows both older than the retention and at or below the cursor", async () => {
+      const { store, clock } = await make();
+      const token = await leased(store);
+      const append = async (k: string) => {
+        const r = await store.appendInbox({ source_type: slack, dedupe_key: k, event: ev(1), lease_token: token });
+        if (!r.ok) throw new Error(r.reason);
+        return r.row.seq;
+      };
+      const oldA = await append("old-a");
+      const oldB = await append("old-b");
+      clock.advance(10_000);
+      const fresh = await append("fresh");
+      clock.advance(5_000);
+      // Retention 8s: old-a and old-b are older, fresh is not. Cursor at old-a: old-b is still ahead of it.
+      expect(await store.pruneInbox(slack, oldA, 8_000)).toBe(1);
+      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["old-b", "fresh"]);
+      // Cursor past everything: fresh stays because it is newer than the retention.
+      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
+      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["fresh"]);
+      expect(oldB).toBeGreaterThan(oldA);
+      // Sequence numbers keep growing after the newest rows are deleted.
+      clock.advance(10_000);
+      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
+      expect(await append("next")).toBeGreaterThan(fresh);
+    });
+  });
+
+  describe("listener lease", () => {
+    const slack = "slack_thread" as const;
+
+    it("one owner at a time; the token goes up on every take", async () => {
+      const { store } = await make();
+      const [a, b] = await Promise.all([
+        store.acquireListenerLease(slack, "replica-a", LEASE),
+        store.acquireListenerLease(slack, "replica-b", LEASE),
+      ]);
+      const won = [a, b].filter((r) => r.ok);
+      expect(won).toHaveLength(1);
+      const lost = [a, b].find((r) => !r.ok)!;
+      expect(lost).toMatchObject({ ok: false, reason: "held", holder: { token: 1 } });
+      // Another source type has its own lease.
+      expect((await store.acquireListenerLease("github_issue", "replica-b", LEASE)).ok).toBe(true);
+    });
+
+    it("renew extends the lease while the token is current, even past expiry", async () => {
+      const { store, clock } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE - 1);
+      const r = await store.renewListenerLease(slack, a.lease.token, LEASE);
+      expect(r).toMatchObject({ ok: true, lease: { owner: "replica-a", token: a.lease.token } });
+      expect(r.ok && r.lease.expires_at).toBe(new Date(clock.now().getTime() + LEASE).toISOString());
+      clock.advance(LEASE - 1);
+      expect((await store.acquireListenerLease(slack, "replica-b", LEASE)).ok).toBe(false);
+      // Expired but not taken: the holder can still renew (host sleep), as with run leases.
+      clock.advance(10);
+      expect((await store.renewListenerLease(slack, a.lease.token, LEASE)).ok).toBe(true);
+    });
+
+    it("another owner takes over after expiry; the old token is refused", async () => {
+      const { store, clock } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE);
+      const b = await store.acquireListenerLease(slack, "replica-b", LEASE);
+      expect(b).toMatchObject({ ok: true, lease: { owner: "replica-b", token: a.lease.token + 1 } });
+      expect(await store.renewListenerLease(slack, a.lease.token, LEASE)).toMatchObject({
+        ok: false, reason: "lease_lost", holder: { owner: "replica-b" },
+      });
+      // A stale release changes nothing.
+      await store.releaseListenerLease(slack, a.lease.token);
+      expect((await store.acquireListenerLease(slack, "replica-c", LEASE)).ok).toBe(false);
+    });
+
+    it("release lets another owner take the lease at once", async () => {
+      const { store } = await make();
+      const a = await store.acquireListenerLease(slack, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      await store.releaseListenerLease(slack, a.lease.token);
+      expect(await store.acquireListenerLease(slack, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
     });
   });
 });

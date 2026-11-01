@@ -61,9 +61,13 @@ Then on GitHub:
 2. The factory posts a spec on the issue. Reply `/approve [notes]`, `/reject <reason>`, or `/revise <feedback>`. Notes after `/approve` (on the same line or the lines below) go to the implementer and the reviewer; `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
+   If `budgets` is set for the item's tier in `factory.config.json` (e.g. `"budgets": {"2": 2000000}`; absent means no limit) and the item has spent that many tokens, the factory stops before its next implement or review run and comments a budget checkpoint: what was spent, the current budget and a suggested one. All work so far is kept. Reply:
+   - `/budget` to continue with the suggested budget;
+   - `/budget <tokens>` to continue with your own budget, a whole number greater than the current one (e.g. `/budget 9000000`);
+   - `/reject <reason>` to close the item. The branch and the PR stay as they are; close the PR yourself if you want.
 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
 
-Only users with write permission on the repository can approve, reject, revise, retry or record a verdict.
+Only users with write permission on the repository can approve, reject, revise, retry, answer a budget checkpoint or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Commands
@@ -73,9 +77,10 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | Command | What it does | Applies when |
 |---|---|---|
 | `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint |
 | `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
 | `/retry` | Run the failed run again | blocked by a failed run |
+| `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
 | `/help` | List every command and which ones apply now | any time |
 
@@ -92,7 +97,7 @@ Each work item's issue carries exactly one status label, and so does its PR once
 | `sf: implementing` | The implementer agent is working on the branch |
 | `sf: in review` | The PR is open and the reviewer agent is checking it |
 | `sf: ready to merge` | The PR passed review; a human merges it |
-| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, or the PR has a conflict. The comments say which |
+| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, the PR has a conflict, or the item reached its token budget (reply `/budget`, `/budget <tokens>` or `/reject <reason>`). The comments say which |
 | `sf: done` | The PR was merged |
 | `sf: rejected` | Closed without a merge: spec rejected, or PR closed unmerged |
 
@@ -103,6 +108,8 @@ The factory removes only these eight names (under the current prefix) when it ch
 By default the factory builds one item at a time. To build several in parallel, set `workers` in `factory.config.json`, e.g. `"workers": 3`, and restart `npm run factory -- dev` (or `worker`). It must be a whole number of 1 or more; anything else stops startup with an error. Absent means 1.
 
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
+
+Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
 
 ## Routine
 
@@ -119,6 +126,6 @@ Items whose allowed paths overlap still wait for each other, so their PRs do not
 
 ### Status page
 
-`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). It shows what waits for you, what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
+`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). Open it to see what needs you: the "Needs you (N)" list at the top has one row per item waiting for a human, oldest first, with a link to the exact comment or PR and the command to type there. Below it the page shows what runs now, the queue, all work items and 24-hour totals; `/items/<id>` shows one item's timeline and runs. It refreshes every 5 seconds and has no buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

@@ -2,7 +2,7 @@ import { parseComment } from "../../core/commands.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { PollResult, SourceAdapter, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
+import type { PollResult, PollSource, SourceEvent, VerdictEventTarget } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
 interface GhUser {
@@ -108,8 +108,9 @@ export function statusLabels(prefix: string): StatusLabel[] {
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
-export class GitHubIssueSource implements SourceAdapter {
+export class GitHubIssueSource implements PollSource {
   readonly type = "github_issue" as const;
+  readonly intake = "poll" as const;
 
   constructor(
     private readonly client: GitHubClient,
@@ -180,6 +181,12 @@ export class GitHubIssueSource implements SourceAdapter {
         case "retry":
           events.push({ kind: "retry_requested", source, comment_id, requester: who });
           break;
+        case "budget": {
+          // Only the same line counts: `/budget` or `/budget <tokens>`.
+          const amount = (text.split(/\r?\n/)[0] ?? "").trim();
+          events.push({ kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount });
+          break;
+        }
         case "help":
           events.push({ kind: "help_requested", source, comment_id, requester: who });
           break;
@@ -281,8 +288,9 @@ export class GitHubIssueSource implements SourceAdapter {
     return events;
   }
 
-  async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
-    await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+  async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    const { url } = await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
+    return { url };
   }
 
   /** Closes the issue as "not planned". GitHub accepts the same PATCH on an issue that is already closed. */

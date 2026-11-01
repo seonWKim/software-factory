@@ -145,6 +145,26 @@ describe("GitHubIssueSource", () => {
     expect(JSON.parse(second.next_cursor)).toMatchObject({ comments: "2026-11-01T00:00:06Z", last_comment_id: 14 });
   });
 
+  it("parses /budget and its argument from the first line into budget_continue", async () => {
+    const { client, source } = setup();
+    const approver = { provider: "github", subject: "1", login: "alice" };
+    client.responses["/repos/o/r/issues/comments"] = [
+      comment(30, "/budget", "2026-11-01T00:00:01Z"),
+      comment(31, "/budget 9000000\nmore room please", "2026-11-01T00:00:02Z"),
+      comment(32, "  /budget   1.5  ", "2026-11-01T00:00:03Z"),
+      comment(33, "/budgetx 5", "2026-11-01T00:00:04Z"),
+      comment(34, "please /budget 5", "2026-11-01T00:00:05Z"),
+    ];
+    const { events } = await source.poll(null);
+    expect(events).toEqual([
+      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver, amount: null },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver, amount: "9000000" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver, amount: "1.5" },
+      // Not /budget: an unknown command word gets a reply (design §4).
+      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: approver, command: "budgetx" },
+    ]);
+  });
+
   it("reads a cursor written before the high-water mark existed", async () => {
     const { client, source } = setup();
     client.responses["/repos/o/r/issues/comments"] = [comment(10, "/approve", "2026-11-01T00:00:01Z")];

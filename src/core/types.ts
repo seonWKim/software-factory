@@ -54,6 +54,13 @@ export interface WorkItem {
   pr_number: number | null;
   merge_sha: string | null;
   fixes_pr: number | null;
+  /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
+  spec_comment_url: string | null;
+  /**
+   * URL of the last failure comment, set by the transition that blocks on a failed run. Null when that
+   * comment was withheld by the egress scan or never posted, and on older items.
+   */
+  failure_comment_url: string | null;
   /**
    * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
    * revision reads this instead. Null on items created before it existed.
@@ -188,4 +195,34 @@ export interface Verdict {
   comment_id: string;
   target: VerdictTarget;
   at: Timestamp;
+}
+
+export type BudgetCheckpointId = Brand<string, "BudgetCheckpointId">;
+/** `pending` until a human answers `/budget` (suggested), `/budget <tokens>` (custom) or `/reject`. */
+export type BudgetAnswer = "pending" | "continued_suggested" | "continued_custom" | "rejected";
+/** From the item's close_reason: completed → merged, rejected → rejected, failed → failed. */
+export type BudgetOutcome = "merged" | "rejected" | "failed";
+
+/**
+ * A token-budget checkpoint (design §6): the item reached its budget when its next implement or review run
+ * would start. That run is not queued; its kind, key and not_before are kept here and queued on `/budget`.
+ */
+export interface BudgetCheckpoint {
+  id: BudgetCheckpointId;
+  work_item_id: WorkItemId;
+  tier: Tier;
+  tokens_spent: number;
+  /** The budget in force when the checkpoint was hit. */
+  budget: number;
+  suggested_budget: number;
+  answer: BudgetAnswer;
+  /** The budget a continue granted: the suggestion or the human's number. Null while pending or rejected. */
+  granted_budget: number | null;
+  held_run_kind: RunKind;
+  held_run_key: string;
+  held_run_not_before: Timestamp | null;
+  /** Null until the item closes. */
+  outcome: BudgetOutcome | null;
+  created_at: Timestamp;
+  answered_at: Timestamp | null;
 }

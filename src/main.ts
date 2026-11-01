@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, uiPort } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -57,7 +58,19 @@ function stopOnSignals(): AbortSignal {
 
 async function main(cmd: string | undefined, args: string[]): Promise<number> {
   // The supervisor sets the code root (its runtime copy) for its child; state stays in the cwd (main checkout).
-  const loaded = await loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+  if (cmd === "doctor") {
+    // A config that does not load is a doctor finding: one FAIL line per problem, no stack, exit 1.
+    let loaded: Loaded;
+    try {
+      loaded = await load();
+    } catch (err) {
+      for (const line of configFailLines(err)) console.log(line);
+      return 1;
+    }
+    return doctor(loaded, { llm: args.includes("--llm") });
+  }
+  const loaded = await load();
   switch (cmd) {
     case "dev": {
       if (process.env[SUPERVISED_ENV] === "1" && process.send) {
@@ -128,8 +141,6 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       if (args.includes("--rotate-mysql")) rotate.push(secretName("MYSQL_PASSWORD"));
       return setup(loaded, { rotate });
     }
-    case "doctor":
-      return doctor(loaded, { llm: args.includes("--llm") });
     case "llm-check": {
       const parsed = parseLlmCheckArgs(args);
       if ("error" in parsed) {

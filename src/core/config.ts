@@ -41,11 +41,23 @@ export interface FactoryConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /**
+   * Stream intake: inbox rows older than this many days, and already behind their source's inbox cursor,
+   * are deleted by the controller's cleanup. Default 14.
+   */
+  inbox_retention_days: number;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };
+  /**
+   * Token budget per tier (design §6). A tier with no entry, or an absent map, has no limit. At the budget,
+   * the next implement or review run is held at a checkpoint for a human. Absent: no limits.
+   */
+  budgets?: Partial<Record<Tier, number>>;
+  /** Finished items a tier needs before budget suggestions come from its history. Absent: 10. */
+  budget_min_sample?: number;
 }
 
 export interface Prompts {
