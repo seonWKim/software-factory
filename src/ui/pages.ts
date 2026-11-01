@@ -30,6 +30,8 @@ export interface UiDeps {
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
   factoryStatus?: () => Promise<FactoryStatus | null>;
+  /** The built app served under /app/; absent: web/dist in this checkout. */
+  appDir?: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
