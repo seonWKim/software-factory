@@ -338,7 +338,7 @@ export class FakeSandbox implements Sandbox {
     if (args === "rev-parse HEAD") return out(this.head);
     if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
-    if (args.startsWith("rev-parse --verify")) return out("basesha\n");
+    if (args.startsWith("rev-parse --verify") || args === "rev-parse origin/main") return out("basesha\n");
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
     if (args.startsWith("merge-base --is-ancestor")) return res(this.ancestorExit);
