@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
-import type { SecretStore } from "../src/interfaces/secret-store.js";
+import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import { createLabels, ensureSecretFile, setSecret, statusLabelChecks } from "../src/setup.js";
 
 describe("setup: secret file writes", () => {
@@ -19,8 +19,8 @@ describe("setup: secret file writes", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600);
     expect(statSync(join(root, "cfg", "software-factory")).mode & 0o777).toBe(0o700);
 
-    await setSecret(file, "GITHUB_TOKEN", "github_pat_abc");
-    await setSecret(file, "GITHUB_TOKEN", "github_pat_def");
+    await setSecret(file, secretName("GITHUB_TOKEN"), "github_pat_abc");
+    await setSecret(file, secretName("GITHUB_TOKEN"), "github_pat_def");
     const text = readFileSync(file, "utf8");
     expect(text).toBe("# comment\nCLAUDE_CODE_OAUTH_TOKEN=\nGITHUB_TOKEN=github_pat_def\n");
     expect(statSync(file).mode & 0o777).toBe(0o600);
@@ -38,7 +38,7 @@ describe("setup: secret file writes", () => {
   });
 
   it("refuses empty or whitespace values", async () => {
-    await expect(setSecret("/nonexistent", "GITHUB_TOKEN", "a b")).rejects.toThrow(/nothing written/);
+    await expect(setSecret("/nonexistent", secretName("GITHUB_TOKEN"), "a b")).rejects.toThrow(/nothing written/);
   });
 });
 

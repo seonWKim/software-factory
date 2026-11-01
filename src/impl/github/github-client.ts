@@ -1,4 +1,6 @@
-import type { SecretStore } from "../../interfaces/secret-store.js";
+import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+
+const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 
 export interface RepoRef {
   owner: string;
@@ -37,13 +39,20 @@ export class GitHubClient {
     return header ? new Date(header.replace(" UTC", "Z").replace(" ", "T")) : null;
   }
 
-  private async send(method: string, path: string, body?: unknown): Promise<Response> {
-    const token = await this.secrets.get("GITHUB_TOKEN");
+  /** A PR's unified diff (base...head, as GitHub shows it). Read-only: one GET, nothing written. */
+  async pullDiff(repo: RepoRef, number: number): Promise<string> {
+    if (!Number.isSafeInteger(number) || number <= 0) throw new Error(`not a PR number: ${number}`);
+    const res = await this.send("GET", `/repos/${repo.owner}/${repo.name}/pulls/${number}`, undefined, "application/vnd.github.diff");
+    return res.text();
+  }
+
+  private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
+    const token = await this.secrets.get(GITHUB_TOKEN);
     if (!token) throw new Error("GITHUB_TOKEN missing from the secret file (SET_UP.md)");
     const res = await fetch(`${this.baseUrl}${path}`, {
       method,
       headers: {
-        Accept: "application/vnd.github+json",
+        Accept: accept,
         Authorization: `Bearer ${token.reveal()}`,
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "software-factory",

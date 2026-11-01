@@ -8,13 +8,23 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
 import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
-import type { SecretName } from "./interfaces/secret-store.js";
+import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
+import { type SecretDeclaration, declaredSecrets } from "./plugins.js";
 
 const MAX_TOKEN_DAYS = 30;
 const LABEL = { color: "5319e7", description: "Work item for the software factory" };
+
+const CLAUDE_CODE_OAUTH_TOKEN = secretName("CLAUDE_CODE_OAUTH_TOKEN");
+const ANTHROPIC_API_KEY = secretName("ANTHROPIC_API_KEY");
+const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
+const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
+
+/** Secrets setup has its own guided step for. Any other declared secret gets the generic prompt. */
+const GUIDED: ReadonlySet<SecretName> = new Set([CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, GITHUB_TOKEN, MYSQL_PASSWORD]);
 
 // doctor
 
@@ -36,34 +46,32 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
 
   const plugins = new Plugins(loaded);
   const secrets = await plugins.secrets();
-  const model = (await secrets.get("CLAUDE_CODE_OAUTH_TOKEN")) ?? (await secrets.get("ANTHROPIC_API_KEY"));
-  add(model !== null, `model credential present (${model?.name ?? "none"})`);
+  // One check per secret the selected plugins declare (or per group of alternatives).
+  checks.push(...(await secretChecks(declaredSecrets(loaded.registry, loaded.plugins), secrets)));
   add(!process.env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY is not set in this shell");
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
   add(claude?.exit_code === 0, `claude CLI: ${claude?.stdout.trim() || "not found"}`);
 
   const db = loaded.store;
-  if (db.type === "mysql") {
+  // A missing MYSQL_PASSWORD is already a FAIL above.
+  if (db.type === "mysql" && (await secrets.get(MYSQL_PASSWORD))) {
     const where = `MySQL ${db.user}@${db.host}:${db.port}/${db.database}`;
-    if (!(await secrets.get("MYSQL_PASSWORD"))) add(false, "MYSQL_PASSWORD present (run: npm run setup)");
-    else {
+    try {
+      const store = await plugins.store(secrets, await plugins.clock());
       try {
-        const store = await plugins.store(secrets, await plugins.clock());
-        try {
-          await store.migrate();
-        } finally {
-          await store.close();
-        }
-        add(true, `${where} reachable, schema up to date`);
-      } catch (err) {
-        add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+        await store.migrate();
+      } finally {
+        await store.close();
       }
+      add(true, `${where} reachable, schema up to date`);
+    } catch (err) {
+      add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
     }
   }
 
-  const gh = await secrets.get("GITHUB_TOKEN");
-  add(gh !== null, "GITHUB_TOKEN present");
+  // A missing GITHUB_TOKEN is already a FAIL above when a selected plugin declares it.
+  const gh = await secrets.get(GITHUB_TOKEN);
   if (!gh) return checks;
 
   const client = new GitHubClient(secrets);
@@ -92,6 +100,63 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/**
+ * One check per declared secret: present is ok, missing is a FAIL with a hint to run setup. Declarations
+ * sharing a `oneOf` label make one check that passes when any of them is present. Never prints a value.
+ */
+export async function secretChecks(declared: readonly SecretDeclaration[], secrets: SecretStore): Promise<Check[]> {
+  const order: string[] = [];
+  const singles = new Map<string, SecretDeclaration>();
+  const groups = new Map<string, { names: SecretName[]; found: SecretName | null }>();
+  const present = new Set<SecretName>();
+  for (const d of declared) {
+    if ((await secrets.get(d.name)) !== null) present.add(d.name);
+    if (d.oneOf === undefined) {
+      if (!singles.has(d.name)) order.push(d.name);
+      singles.set(d.name, d);
+      continue;
+    }
+    let g = groups.get(d.oneOf);
+    if (!g) {
+      g = { names: [], found: null };
+      groups.set(d.oneOf, g);
+      order.push(`oneOf:${d.oneOf}`);
+    }
+    g.names.push(d.name);
+    if (!g.found && present.has(d.name)) g.found = d.name;
+  }
+  return order.map((key): Check => {
+    if (key.startsWith("oneOf:")) {
+      const label = key.slice("oneOf:".length);
+      const g = groups.get(label)!;
+      return g.found
+        ? { ok: true, msg: `${label} present (${g.found})` }
+        : { ok: false, msg: `${label} missing: one of ${g.names.join(", ")} (run: npm run setup)` };
+    }
+    const d = singles.get(key)!;
+    return present.has(d.name)
+      ? { ok: true, msg: `${d.name} present` }
+      : { ok: false, msg: `${d.name} missing: ${d.purpose} (run: npm run setup)` };
+  });
+}
+
+/**
+ * The declared secrets setup's generic step prompts for: those without a guided step of their own that are
+ * missing from the file, or named in `rotate`.
+ */
+export async function secretsToPrompt(
+  declared: readonly SecretDeclaration[],
+  secrets: SecretStore,
+  rotate: readonly SecretName[],
+): Promise<SecretDeclaration[]> {
+  const out: SecretDeclaration[] = [];
+  for (const d of declared) {
+    if (GUIDED.has(d.name)) continue;
+    if (rotate.includes(d.name) || (await secrets.get(d.name)) === null) out.push(d);
+  }
+  return out;
 }
 
 /**
@@ -130,8 +195,13 @@ export async function createLabels(
   }
 }
 
-export async function doctor(loaded: Loaded): Promise<number> {
+/** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
+export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
   const checks = await doctorChecks(loaded);
+  if (opts.llm) {
+    const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");
+    checks.push({ ok: r.ok, msg: r.summary });
+  }
   for (const c of checks) console.log(`${c.ok ? "ok  " : c.warn ? "warn" : "FAIL"}  ${c.msg}`);
   return checks.every((c) => c.ok || c.warn) ? 0 : 1;
 }
@@ -145,9 +215,13 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   }
   const file = loaded.secretsFile;
   const repo = loaded.config.repo;
+  const declared = declaredSecrets(loaded.registry, loaded.plugins);
+  const isDeclared = (name: SecretName) => declared.some((d) => d.name === name);
   step(1, "Secret file");
-  await ensureSecretFile(file, join(loaded.root, ".env.example"));
+  await ensureSecretFile(file, join(loaded.root, ".env.example"), declared.map((d) => d.name));
   console.log(`   ${file} (dir 700, file 600, outside the repository)`);
+  console.log("   Secrets the selected plugins declare:");
+  for (const d of declared) console.log(`     ${d.name}${d.oneOf ? ` (${d.oneOf}, one of)` : ""}: ${d.purpose}`);
 
   step(2, "Model credential");
   if (process.env.ANTHROPIC_API_KEY) {
@@ -156,8 +230,10 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   // A fresh SecretStore after each write, so it sees the values just saved.
   const plugins = new Plugins(loaded);
   let secrets = await plugins.secrets();
-  const hasModel = (await secrets.get("CLAUDE_CODE_OAUTH_TOKEN")) ?? (await secrets.get("ANTHROPIC_API_KEY"));
-  if (hasModel && !opts.rotate.includes("CLAUDE_CODE_OAUTH_TOKEN")) {
+  const hasModel = (await secrets.get(CLAUDE_CODE_OAUTH_TOKEN)) ?? (await secrets.get(ANTHROPIC_API_KEY));
+  if (!isDeclared(CLAUDE_CODE_OAUTH_TOKEN)) {
+    console.log("   not needed by the selected plugins");
+  } else if (hasModel && !opts.rotate.includes(CLAUDE_CODE_OAUTH_TOKEN)) {
     console.log(`   already set (${hasModel.name})`);
   } else {
     console.log(
@@ -166,12 +242,14 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
         "   Sign in with your Claude subscription in the browser, then copy the token it prints (shown once).",
       ].join("\n"),
     );
-    await setSecret(file, "CLAUDE_CODE_OAUTH_TOKEN", await askSecret("   Paste the token (hidden): "));
+    await setSecret(file, CLAUDE_CODE_OAUTH_TOKEN, await askSecret("   Paste the token (hidden): "));
   }
 
   step(3, "GitHub token");
   secrets = await plugins.secrets();
-  if ((await secrets.get("GITHUB_TOKEN")) && !opts.rotate.includes("GITHUB_TOKEN")) {
+  if (!isDeclared(GITHUB_TOKEN)) {
+    console.log("   not needed by the selected plugins");
+  } else if ((await secrets.get(GITHUB_TOKEN)) && !opts.rotate.includes(GITHUB_TOKEN)) {
     console.log("   already set");
   } else {
     const url = "https://github.com/settings/personal-access-tokens/new";
@@ -189,28 +267,40 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
       ].join("\n"),
     );
     await openBrowser(url);
-    await setSecret(file, "GITHUB_TOKEN", await askSecret("   Paste the token (hidden): "));
+    await setSecret(file, GITHUB_TOKEN, await askSecret("   Paste the token (hidden): "));
   }
 
   step(4, "Database");
-  if (!(await provisionDatabase(loaded, opts.rotate.includes("MYSQL_PASSWORD")))) return 1;
+  if (!(await provisionDatabase(loaded, opts.rotate.includes(MYSQL_PASSWORD)))) return 1;
 
-  step(5, `Labels on ${repo.owner}/${repo.name}: intake "${loaded.config.intake_label}" and the status labels`);
+  step(5, "Other secrets of the selected plugins");
+  const other = await secretsToPrompt(declared, await plugins.secrets(), opts.rotate);
+  if (other.length === 0) console.log("   nothing to do");
+  for (const d of other) {
+    console.log(`   ${d.name}: ${d.purpose}`);
+    await setSecret(file, d.name, await askSecret(`   Paste ${d.name} (hidden): `));
+  }
+
+  step(6, `Labels on ${repo.owner}/${repo.name}: intake "${loaded.config.intake_label}" and the status labels`);
   secrets = await plugins.secrets();
-  const client = new GitHubClient(secrets);
-  await createLabels(client, repo, [
-    { name: loaded.config.intake_label, ...LABEL },
-    ...statusLabels(loaded.config.status_label_prefix),
-  ]);
+  if (!(await secrets.get(GITHUB_TOKEN))) {
+    console.log("   skipped: no GITHUB_TOKEN");
+  } else {
+    const client = new GitHubClient(secrets);
+    await createLabels(client, repo, [
+      { name: loaded.config.intake_label, ...LABEL },
+      ...statusLabels(loaded.config.status_label_prefix),
+    ]);
+  }
 
-  step(6, "Checks");
+  step(7, "Checks");
   const code = await doctor(loaded);
   if (code !== 0) {
     console.log("\nFix the FAIL lines, then run `npm run setup` again (it skips what is already done).");
     return code;
   }
 
-  step(7, "Canary (G6)");
+  step(8, "Canary (G6)");
   console.log("   A real agent tries to find a planted fake secret. It must fail. Takes a few minutes, uses your plan.");
   if (await confirm("   Run it now? [Y/n] ")) {
     const report = await runCanary(loaded);
@@ -236,7 +326,7 @@ async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boole
     console.log("   SQLite: nothing to do");
     return true;
   }
-  if ((await (await new Plugins(loaded).secrets()).get("MYSQL_PASSWORD")) && !rotate) {
+  if ((await (await new Plugins(loaded).secrets()).get(MYSQL_PASSWORD)) && !rotate) {
     console.log("   already set");
     return true;
   }
@@ -258,7 +348,7 @@ async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boole
       return false;
     }
   }
-  await setSecret(loaded.secretsFile, "MYSQL_PASSWORD", password);
+  await setSecret(loaded.secretsFile, MYSQL_PASSWORD, password);
   return true;
 }
 
@@ -276,8 +366,11 @@ function step(n: number, title: string): void {
   console.log(`\n${n}. ${title}`);
 }
 
-/** Creates the secret file from the template, then appends any template key the file lacks, empty. */
-export async function ensureSecretFile(file: string, template: string): Promise<void> {
+/**
+ * Creates the secret file from the template, then appends, empty, any template key and any `declared`
+ * secret name (the selected plugins') the file lacks.
+ */
+export async function ensureSecretFile(file: string, template: string, declared: readonly SecretName[] = []): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await chmod(dirname(file), 0o700);
   const text = await readFile(template, "utf8");
@@ -287,7 +380,7 @@ export async function ensureSecretFile(file: string, template: string): Promise<
     await writeFile(file, text, { mode: 0o600 });
   }
   await chmod(file, 0o600);
-  const added = await addMissingKeys(file, keysOf(text));
+  const added = await addMissingKeys(file, [...new Set([...keysOf(text), ...declared])]);
   if (added.length > 0) console.log(`   added empty ${added.join(", ")} (fill in as needed)`);
 }
 

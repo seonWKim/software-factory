@@ -113,4 +113,10 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
   `,
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  `
+  ALTER TABLE work_items ADD COLUMN issue_text TEXT;
+  ALTER TABLE work_items ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE work_items ADD COLUMN spec_feedback TEXT;
+  `,
 ];
