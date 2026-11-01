@@ -5,6 +5,7 @@ ALTER TABLE work_items ADD COLUMN origin VARCHAR(16) NOT NULL DEFAULT 'factory';
 ALTER TABLE work_items ADD COLUMN head_branch VARCHAR(255) NULL;
 ALTER TABLE work_items ADD COLUMN last_head_sha VARCHAR(64) NULL;
 CREATE TABLE unreviewed_merges (
+  seq         BIGINT NOT NULL AUTO_INCREMENT UNIQUE,
   id          VARCHAR(64) NOT NULL PRIMARY KEY,
   project     VARCHAR(255) NOT NULL,
   pr_number   INT NOT NULL,

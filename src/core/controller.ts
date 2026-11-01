@@ -16,18 +16,24 @@ import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import { parseReview, parseTriage } from "./outputs.js";
 import {
+  AUTO_RESOLVE_LIMIT,
   type FailureClass,
   SKIP_LABEL,
+  autoResolveAttempts,
+  autoResolveKey,
   effectiveTier,
   failureClass,
   floorTier,
   needsSpecApproval,
+  nextAutoResolveAttempt,
+  parseAutoResolveKey,
   retryDelayMs,
   retryKey,
   runKey,
   sameStep,
   workItemIdFromBranch,
 } from "./policy.js";
+import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
@@ -113,8 +119,11 @@ const MAX_CONFLICT_RETRIES = 5;
 const MAX_NOTE_CHARS = 2000;
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 const FLOOR_TIER = "floor_tier";
-/** blocked_reason of a PR whose base no longer merges cleanly; `/resolve` starts a resolve run (design §5). */
-const CONFLICT_PENDING = "merge_conflict_pending";
+/**
+ * blocked_reason of a PR whose base no longer merges cleanly and whose automatic resolve runs are used up (or
+ * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
+ */
+const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -1234,9 +1243,18 @@ export class Controller {
           }
           return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
         }
-        case "resolve":
+        case "resolve": {
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
           // this run's id, so it never collides with the review of an earlier loop or resolve.
+          const auto = parseAutoResolveKey(run.idempotency_key);
+          if (auto) {
+            const counts = await this.conflictCountsOf(it, 0);
+            await this.prComment(it, `auto-resolved:${run.id}`, [
+              `The factory resolved the merge conflict on PR #${it.pr_number} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
+              "",
+              conflictCountsLine(counts),
+            ].join("\n"));
+          }
           return {
             patch: { stage: "REVIEW", token_cost: tokens },
             actor: SYSTEM,
@@ -1245,6 +1263,7 @@ export class Controller {
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
           };
+        }
         case "manual":
           // Written already acknowledged, so never here; kept for exhaustiveness.
           return ack("run_ignored");
@@ -1256,11 +1275,12 @@ export class Controller {
             case "up_to_date":
               return ack("update_up_to_date");
             case "conflict":
+              return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
             case "tests_failed":
               return {
                 patch: { blocked_reason: CONFLICT_PENDING },
                 actor: SYSTEM,
-                reason: data.result === "conflict" ? "update_conflict" : "update_tests_failed",
+                reason: "update_tests_failed",
                 ack_run: run.id,
               };
             default:
@@ -1426,28 +1446,110 @@ export class Controller {
   }
 
   /**
+   * An update run found a conflict (design §5 Merge conflict, decision changed 2026-11-02): under the limit of
+   * AUTO_RESOLVE_LIMIT automatic resolve runs per base commit, the item goes to RUNNING and a resolve run is
+   * enqueued in the same transition, keyed on (item, base commit, attempt). At the limit, or with no base
+   * commit to key on, it waits for a person on merge_conflict_pending, as before. The ack fences the update run,
+   * so applying it twice enqueues one resolve run.
+   */
+  private async autoResolve(it: WorkItem, run: Run, baseSha: string): Promise<Decision> {
+    const keys = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
+    const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
+    const attempt = nextAutoResolveAttempt(done);
+    const detail = { run_id: run.id, base_sha: baseSha || null, auto_resolve_attempts: done };
+    if (attempt === null) {
+      const counts = await this.conflictCountsOf(it, 1);
+      await this.prComment(it, `auto-resolve-limit:${run.id}`, [
+        `PR #${it.pr_number} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
+        "Comment `/resolve [notes]` to try again, or resolve it by hand.",
+        "",
+        conflictCountsLine(counts),
+      ].join("\n"));
+      return { patch: { blocked_reason: CONFLICT_PENDING }, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+    }
+    return {
+      patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+      actor: SYSTEM,
+      reason: "auto_resolve_started",
+      detail: { ...detail, attempt },
+      ack_run: run.id,
+      enqueue: { kind: "resolve", idempotency_key: autoResolveKey(it.id, baseSha, attempt), input: { notes: "" } },
+    };
+  }
+
+  /**
    * Any failed resolve run (agent, scope, tests, push, egress, rate limit, lease): nothing was pushed, so the
-   * PR is as it was. The item goes back to waiting on the conflict, not to run_failed:*, so the next `/resolve`
-   * is accepted. No automatic retry: a human starts every resolve. One comment, keyed on the run, names the code.
+   * PR is as it was. An automatic run under the limit for its base commit enqueues the next attempt at once
+   * (a rate limit waits for its reset), with no comment; the item stays RUNNING (decision changed 2026-11-02).
+   * Otherwise (a human's `/resolve`, or the last automatic attempt) the item goes back to waiting on the
+   * conflict, not to run_failed:*, so the next `/resolve` is accepted. One comment, keyed on the run, names
+   * the code; for an automatic run it also states the conflict counts.
    */
   private async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
+    const auto = parseAutoResolveKey(run.idempotency_key);
+    const next = auto ? nextAutoResolveAttempt(auto.attempt) : null;
+    if (auto && next !== null) {
+      const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
+      const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
+      const notBefore = code === "rate_limited" ? (reset ?? iso(failedAt + this.d.config.retry_max_ms)) : null;
+      return {
+        patch: {},
+        actor: SYSTEM,
+        reason: "auto_resolve_retry",
+        detail: { run_id: run.id, error_code: code, base_sha: auto.base_sha, attempt: next },
+        ack_run: run.id,
+        enqueue: {
+          kind: "resolve",
+          idempotency_key: autoResolveKey(it.id, auto.base_sha, next),
+          input: { notes: "" },
+          ...(notBefore ? { not_before: notBefore } : {}),
+        },
+      };
+    }
     const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const counts = auto ? await this.conflictCountsOf(it, 1) : null;
     const body = (withDetail: boolean) => [
-      `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      auto
+        ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
+        : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
       `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
+      ...(counts ? ["", conflictCountsLine(counts)] : []),
     ].join("\n");
     // The detail is run output (G5): post it only if the scan passes, else the comment without it.
     const scan = await this.d.scanner.scan("comment", body(true));
-    await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    if (auto) await this.prComment(it, `run-failed:${run.id}`, body(scan.clean));
+    else await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
     return {
       patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING },
       actor: SYSTEM,
       reason: "resolve_failed",
-      detail: { run_id: run.id, error_code: code },
+      detail: { run_id: run.id, error_code: code, ...(auto ? { base_sha: auto.base_sha, attempt: auto.attempt } : {}) },
       ack_run: run.id,
     };
+  }
+
+  /**
+   * The item's conflict counts from its run history and state changes. `pending`: 1 when the decision being
+   * made sets merge_conflict_pending, which its own state change will record only after the comment.
+   */
+  private async conflictCountsOf(it: WorkItem, pending: 0 | 1): Promise<{ automatic: number; person: number }> {
+    const c = conflictCounts(await this.d.store.listRuns(it.id), await this.d.store.listStateChanges(it.id));
+    return { automatic: c.automatic, person: c.person + pending };
+  }
+
+  /**
+   * A comment on the item's PR (the forge holds PRs, whatever source the item came from); on the item's own
+   * source when it has no PR. GitHub serves PR comments through the issue API, so the PR is a source ref.
+   */
+  private async prComment(it: WorkItem, key: string, body: string): Promise<void> {
+    if (it.pr_number === null) {
+      await this.comment(it, key, body);
+      return;
+    }
+    const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
+    await this.post({ type: PR_SOURCE_TYPE, id: `${this.project()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
   }
 
   /**
