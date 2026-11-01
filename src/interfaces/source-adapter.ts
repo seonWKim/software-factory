@@ -25,6 +25,12 @@ export type SourceEvent =
   /** A command word the factory does not know, as typed (letters only, without the `/`). */
   | { kind: "unknown_command"; source: SourceRef; comment_id: string; requester: ExternalIdentity; command: string }
   /**
+   * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
+   * when the source does not say. May be delivered again (same close, later poll); handling is idempotent.
+   * Delivered after any PR events of the same poll, so a merge that closed the issue is seen first.
+   */
+  | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null }
+  /**
    * A `/verdict` comment on an issue or on a PR. `args` is the raw text after `/verdict` (following lines
    * included); the controller parses it. A PR target names the head branch, which maps to the work item.
    */

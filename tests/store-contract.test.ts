@@ -547,6 +547,83 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("cancel on close", () => {
+    const close = { stage: "CLOSED" as const, close_reason: "wont_do" as const, blocked_on: "none" as const, blocked_reason: null };
+
+    it("a close with cancel_queued_runs cancels the item's queued runs, waiting ones too, in the same transaction", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const later = new Date(clock.now().getTime() + 60_000).toISOString();
+      const waiting = await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "implement", idempotency_key: "i", not_before: later as never },
+      });
+      if (!waiting.ok) throw new Error(waiting.reason);
+      const other = await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "t2" } });
+
+      const r = await store.transition({
+        id: item.id, expected_version: 2, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.cancelled).toHaveLength(2);
+      const runs = await store.listRuns(item.id);
+      expect(runs.map((x) => x.status)).toEqual(["cancelled", "cancelled"]);
+      expect(r.cancelled.sort()).toEqual(runs.map((x) => x.id).sort());
+      expect(runs.every((x) => x.acknowledged_at === null && x.lease === null)).toBe(true);
+
+      // No worker can claim them, even after the backoff; the other item's run is untouched.
+      clock.advance(120_000);
+      const claimed = await store.claimRun({ worker_id: w1, kinds: ["triage", "implement"], lease_ms: LEASE });
+      expect(claimed!.work_item_id).toBe(other.item.id);
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage", "implement"], lease_ms: LEASE })).toBeNull();
+
+      // Cancelled runs go through the ack path like any finished run.
+      const unacked = await store.listUnacknowledgedRuns(10);
+      expect(unacked.map((x) => x.id).sort()).toEqual(runs.map((x) => x.id).sort());
+      const ack = await store.transition({
+        id: item.id, expected_version: 3, patch: {}, actor: system, reason: "run_ignored", ack_run: runs[0]!.id,
+      });
+      expect(ack.ok).toBe(true);
+    });
+
+    it("leaves a running run alone, and cancels nothing without the flag or when the transition loses", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      const running = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+      await store.transition({
+        id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "review", idempotency_key: "r" },
+      });
+
+      const plain = await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "y" });
+      expect(plain.ok && plain.cancelled).toEqual([]);
+      const lost = await store.transition({
+        id: item.id, expected_version: 2, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      expect(lost).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.listRuns(item.id)).map((x) => x.status)).toEqual(["running", "queued"]);
+
+      const r = await store.transition({
+        id: item.id, expected_version: 3, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true,
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect((await store.listRuns(item.id)).map((x) => x.status)).toEqual(["running", "cancelled"]);
+      // The running run still finishes normally.
+      expect((await store.completeRun(running.id, running.lease!.token, { status: "succeeded", summary: "", data: {} })).ok).toBe(true);
+    });
+
+    it("the reaper cancels an expired run of a CLOSED item instead of requeueing it", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+      await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE });
+      await store.transition({ id: item.id, expected_version: 1, patch: close, actor: human, reason: "source_closed", cancel_queued_runs: true });
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(3)).toHaveLength(1);
+      const [run] = await store.listRuns(item.id);
+      expect(run).toMatchObject({ status: "cancelled", lease: null });
+      expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+    });
+  });
+
   describe("overlap rule: implement-type runs of overlapping items never run at once", () => {
     const ALL: RunKind[] = ["triage", "implement", "review", "update"];
     const ok = { status: "succeeded" as const, summary: "", data: {} };

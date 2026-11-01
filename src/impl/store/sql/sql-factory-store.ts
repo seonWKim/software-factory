@@ -183,7 +183,8 @@ export class SqlFactoryStore implements FactoryStore {
         await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
       }
       const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-      return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, enqueued };
+      const cancelled = input.cancel_queued_runs ? await this.cancelQueuedRuns(tx, input.id, now) : [];
+      return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, enqueued, cancelled };
     });
   }
 
@@ -390,7 +391,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, attempt FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -400,7 +401,15 @@ export class SqlFactoryStore implements FactoryStore {
         infra: true,
       };
       for (const run of expired) {
-        if (Number(run.attempt) >= max_attempts) {
+        const item = await this.selectItem(tx, run.work_item_id as WorkItemId);
+        if (item?.stage === "CLOSED") {
+          // A closed item never runs again: its expired run is cancelled, not requeued.
+          await tx.run(
+            `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+             WHERE id = ? AND status = 'running'`,
+            [now, run.id as string],
+          );
+        } else if (Number(run.attempt) >= max_attempts) {
           await tx.run(
             `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
@@ -532,6 +541,25 @@ export class SqlFactoryStore implements FactoryStore {
   private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
     const [row] = await q.all(`SELECT * FROM runs WHERE id = ?${lock}`, [id]);
     return row ? rowToRun(row) : null;
+  }
+
+  /**
+   * Cancels the item's queued runs. Each update is conditional on `queued`, so a run a concurrent claim
+   * took first stays running and is not reported.
+   */
+  private async cancelQueuedRuns(tx: SqlExecutor, workItemId: WorkItemId, now: Timestamp): Promise<RunId[]> {
+    const rows = await tx.all(`SELECT id FROM runs WHERE work_item_id = ? AND status = 'queued'${this.db.dialect.forUpdate}`, [
+      workItemId,
+    ]);
+    const cancelled: RunId[] = [];
+    for (const r of rows) {
+      const n = await tx.run(
+        "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'queued'",
+        [now, r.id as string],
+      );
+      if (n === 1) cancelled.push(r.id as RunId);
+    }
+    return cancelled;
   }
 
   /** Returns the new run, or null if the idempotency key already existed. */

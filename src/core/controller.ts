@@ -42,6 +42,7 @@ type Refusal = { refuse: string };
 type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
+type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
@@ -54,6 +55,8 @@ const COMMAND: Record<CommandEvent["kind"], string> = {
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
+/** Closes an item whose source was closed by someone the factory cannot name (design §4). */
+const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const MAX_CONFLICT_RETRIES = 5;
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
@@ -191,6 +194,8 @@ export class Controller {
       }
       case "base_commit":
         return this.recordReverts(e);
+      case "source_closed":
+        return this.closeFromSource(e);
       case "spec_approved":
       case "spec_rejected":
       case "revise_requested":
@@ -279,6 +284,32 @@ export class Controller {
       item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
+    );
+  }
+
+  /**
+   * The source issue was closed (design §4): the item closes as `wont_do` and its queued runs are cancelled in
+   * the same transition. Store first: an item already CLOSED (by /reject, a merge, or an earlier delivery of
+   * this close) is left alone, so a repeat or the factory's own close writes nothing. No login is checked and
+   * nothing is posted. A run already running finishes; applyRun ignores its result because the item is closed.
+   */
+  private async closeFromSource(e: SourceClosedEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item || item.stage === "CLOSED") return;
+    const closer = e.closer ? await this.d.auth.resolve(e.closer) : null;
+    if (!closer) {
+      this.d.log.warn("source closed by an unknown user; recorded as the system actor", { work_item_id: item.id, source_id: e.source.id });
+    }
+    const actor: Actor = closer ? { kind: "user", id: closer.user_id } : INTAKE;
+    await this.decide(item.id, (it) =>
+      it.stage === "CLOSED"
+        ? null
+        : {
+            patch: { stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null },
+            actor,
+            reason: "source_closed",
+            cancel_queued_runs: true,
+          },
     );
   }
 
