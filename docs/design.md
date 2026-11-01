@@ -7,12 +7,12 @@ The design of the factory. Living document: change it when a decision changes.
 ```mermaid
 graph LR
   S["Slack / GitHub issue"] --> I["Intake: one work-item shape"]
-  I --> T["Triage (cheap model)"]
+  I --> T["Triage (model per model_by)"]
   T -->|"tier >= spec_gate_min_tier"| H1["Human confirms spec"]
   T --> M["Manager (code, no LLM)"]
   H1 --> M
   M -->|"lease"| W["Implementer (container + branch)"]
-  W -->|"handoff row per commit"| R["Reviewer (strong model)"]
+  W -->|"handoff row per commit"| R["Reviewer (model per model_by)"]
   R -->|"bug: loop_count + 1"| W
   R -->|"tier <= auto_merge_max_tier"| AM["Auto-merge"]
   R -->|"else"| H2["Human form"]
@@ -38,8 +38,22 @@ graph LR
 |---|---|---|---|
 | Triage | Slack thread, issues, code (API, no clone) | its fields, `READY` / `CLOSED` | cheap |
 | Manager | `READY` queue | lease, assignment | none (code) |
-| Implementer | work item + pointers + previous mistakes | code on its branch, TDD tests, handoff row per commit | — |
-| Reviewer | pass 1: work item + diff + `worked_on` (no transcript); pass 2: intent, how_to_test | acceptance tests (blind, hidden from implementer), verdict, cumulative mistakes, tier recheck | strong, different if measured to help |
+| Implementer | work item + pointers + previous mistakes | code on its branch, TDD tests, handoff row per commit | standard at tier 1–2, strong at tier 3–5 |
+| Reviewer | pass 1: work item + diff + `worked_on` (no transcript); pass 2: intent, how_to_test | acceptance tests (blind, hidden from implementer), verdict, cumulative mistakes, tier recheck | standard, different if measured to help |
+| Resolver (`/resolve`) | conflicting files + work item + notes | the merge resolution | standard at tier 1–2, strong at tier 3–5 |
+
+The model column is the shipped `model_by` table (below); a retry after a review loop goes one class up.
+
+**Model class per run kind and tier (decision changed 2026-11-02, issue #137; before: two classes, `cheap` and `strong`, hard-coded per run kind in the worker: triage cheap, implement, review and resolve strong, whatever the tier or loop, and runs did not record which model they used).** There are three classes, `cheap`, `standard` and `strong`; `models` in `factory.config.json` maps each to a model name (shipped: `haiku`, `sonnet`, `opus`, CLI aliases, not pinned versions) and must list all three. `model_by` maps run kind and tier to a class: one entry per run kind (`triage`, `implement`, `review`, `resolve`), each either one class for every tier or an object with a class for each of tiers `"1"` to `"5"`, plus `retry_up` (default true). Shipped, and used when `model_by` is absent:
+
+| Run kind | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Tier 5 | Retry after a review loop |
+|---|---|---|---|---|---|---|
+| triage | cheap | cheap | cheap | cheap | cheap | not moved |
+| implement | standard | standard | strong | strong | strong | one class up |
+| review | standard | standard | standard | standard | standard | not moved |
+| resolve | standard | standard | strong | strong | strong | one class up |
+
+A retry is an implement or resolve run for an item whose `loop_count` is 1 or more (review or failed checks sent it back); it goes one class up (`cheap` → `standard` → `strong`, `strong` stays) unless `retry_up` is false. Restart retries (`/retry`, backoff) do not move `loop_count` and are not bumped. An item with no tier yet takes its run kind's tier-5 entry. The merge-conflict steps inside an implement run use the implement run's class. Golden reviewer replays use the review class (tier-5 entry, no bump), so they match production review. `loadConfig` checks both keys at startup: an unknown run kind or tier key, a value that is not a class, a tier object missing a tier, or `models` without one of the three classes fails loading with the key or value named. The choice is one pure function (`modelClassFor` in `src/core/model-choice.ts`). Each agent run's succeeded outcome data records `model_class` and `model` (the configured name) next to `tokens`; no schema change. Review moves from strong to standard by default, which lowers the reviewer's model: a human confirms this at merge. Out of scope: suggest, canary and setup's check stay `cheap`; stats per class; per-item overrides.
 
 Instructions are soft; tools and permissions are hard. Credentials live only inside tool wrappers: agents never read secrets, only tools do, enforced by guards G1–G6 (architecture §5).
 
@@ -132,7 +146,7 @@ All three need write permission, and on an item in any other state they are refu
     - **Fixed rules in `prompts/resolve.md`** (they apply to the human, the automatic and the implement-retry resolve alike): keep both sides' sections in `docs/design.md` and `SET_UP.md`; when both sides added a migration with the same number, the base keeps its number and the branch's migration is renumbered to the next free number in every file that lists migrations; keep both sides' entries in lists and tables.
   - **Agent resolve via `/resolve` (decision changed 2026-11-01; before: "Resolving conflicts with an agent is still open").** A human starts it (and, since 2026-11-02, the factory itself on an update conflict, above): a user with write permission comments `/resolve [notes]` (first line `/resolve`; the notes are the rest of the comment, trimmed) on the issue, or on the factory PR's conversation. The source maps a PR comment to the work item by the head branch `factory/<id>`, as `pr_merged` does, and the 👀 and any refusal go to the PR. The permission check reuses the `approve_spec` action (no new `AuthAction`). A non-writer, or an item that is not `REVIEW` / `blocked_on: human` / `merge_conflict_pending`, gets the usual refusal reply (it names the state by its label, §4 Gate commands), and nothing changes.
     - **Accepted:** the item goes to `RUNNING` / `blocked_on: none` / `blocked_reason: null` and a `resolve` run is enqueued in the same transition (`resolve_requested`, actor = the commenter's user ID). Its key is `runKey` after `restart_count + 1`, bumped like `/retry`, so every `/resolve` gets a key no earlier run of the item has. The notes are stored on the run (`runs.input`, migration 11, SQLite and MySQL) for the worker. They are untrusted: the prompt puts them in a marked section, below the conflicts and the spec.
-    - **The run:** the sandbox starts from the factory branch (it must exist on origin) and runs `git merge --no-ff --no-commit origin/<base_branch>`, leaving the conflicts in the tree. The agent (`prompts/resolve.md`, strong model, write tools, the git dir writable; it does not need to commit, the worker commits the checked tree) gets each conflicting file's conflict hunks with both sides, the item's problem, done criteria, scope and `allowed_paths`, the notes, and the instruction to keep both sides' intent and add no new features. **What it may touch:** the conflicting files and `allowed_paths`, nothing else, enforced by the resolve gates in §4. A clean merge (no conflicts) runs no agent and goes straight to the gates.
+    - **The run:** the sandbox starts from the factory branch (it must exist on origin) and runs `git merge --no-ff --no-commit origin/<base_branch>`, leaving the conflicts in the tree. The agent (`prompts/resolve.md`, the resolve class of `model_by` (§4), write tools, the git dir writable; it does not need to commit, the worker commits the checked tree) gets each conflicting file's conflict hunks with both sides, the item's problem, done criteria, scope and `allowed_paths`, the notes, and the instruction to keep both sides' intent and add no new features. **What it may touch:** the conflicting files and `allowed_paths`, nothing else, enforced by the resolve gates in §4. A clean merge (no conflicts) runs no agent and goes straight to the gates.
     - **Success:** the worker pushes the merge to the same branch (no new PR). The controller moves the item to `REVIEW` (`resolved`; `pr_number` unchanged, block cleared) and enqueues a review whose key is `<id>:review:after-resolve:<resolve run id>`, so it never collides with an earlier review key. The usual review outcomes follow (`merge_pending`, or a bug loop), and `pr_merged` closes the item as before.
     - **Failure** (any code: agent, `out_of_scope`, `unresolved_conflicts`, `tests_failed`, `head_moved`, push, egress, rate limit, lease loss): a human's run is not retried automatically (an automatic run under its limit is, above). The item goes back to `REVIEW` / `blocked_on: human` / `merge_conflict_pending` (`resolve_failed`, detail = run id and error code), not `run_failed:*`. One comment, marked `run-failed:<run id>`, names the code and its detail (the detail is dropped if the egress scan flags it) and says `/resolve` can be sent again. The next `/resolve` is accepted under a new key.
 - **CI gate (new decision, 2026-11-01; before: a PR that passed review went straight to `merge_pending`, and GitHub ran no tests on PRs, so PR #51 merged with a failing test and nothing showed it).** Two parts:
