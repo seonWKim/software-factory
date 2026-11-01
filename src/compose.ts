@@ -43,6 +43,12 @@ export interface FileConfig {
   models: { cheap: string; strong: string };
   max_loops: number;
   max_attempts: number;
+  /** Infra failures of one step before it blocks on a human. Absent: 3. */
+  max_restart?: number;
+  /** First automatic retry wait; doubles each retry. Absent: 60000. */
+  retry_base_ms?: number;
+  /** Cap on a retry wait, and the rate-limit pause with no reset time. Absent: 1800000. */
+  retry_max_ms?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -93,6 +99,7 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   uiPort(file.ui);
+  const retry = retryConfig(file);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -110,6 +117,9 @@ export async function loadConfig(
     floors: file.floors.map((f) => ({ prefix: f.prefix, tier: f.tier as Tier })),
     max_loops: file.max_loops,
     max_attempts: file.max_attempts,
+    max_restart: retry.max_restart,
+    retry_base_ms: retry.retry_base_ms,
+    retry_max_ms: retry.retry_max_ms,
     lease_ms: file.lease_ms,
     heartbeat_ms: file.heartbeat_ms,
     tick_ms: file.tick_ms,
@@ -293,6 +303,24 @@ export function testCommand(value: unknown): string[] {
     throw new Error("repo.test_command must be a non-empty array of non-empty strings (argv), e.g. [\"npm\", \"test\"]");
   }
   return [...(value as string[])];
+}
+
+export const RETRY_DEFAULTS = { max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 } as const;
+
+/** The retry keys (design §5 Restarts) with their defaults. Positive integers, base ≤ max, or startup fails. */
+export function retryConfig(
+  file: Pick<FileConfig, "max_restart" | "retry_base_ms" | "retry_max_ms">,
+): { max_restart: number; retry_base_ms: number; retry_max_ms: number } {
+  const r = {
+    max_restart: file.max_restart ?? RETRY_DEFAULTS.max_restart,
+    retry_base_ms: file.retry_base_ms ?? RETRY_DEFAULTS.retry_base_ms,
+    retry_max_ms: file.retry_max_ms ?? RETRY_DEFAULTS.retry_max_ms,
+  };
+  for (const [k, v] of Object.entries(r)) {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
+  }
+  if (r.retry_base_ms > r.retry_max_ms) throw new Error("retry_base_ms must not exceed retry_max_ms");
+  return r;
 }
 
 function isTier(n: number): n is Tier {
