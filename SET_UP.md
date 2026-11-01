@@ -58,12 +58,12 @@ To run your working tree instead (as before), set `"updater": "none"` in the `pl
 Then on GitHub:
 
 1. Label an issue `factory`.
-2. The factory posts a spec on the issue. Reply `/approve`, or `/reject <reason>`.
+2. The factory posts a spec on the issue. Reply `/approve`, `/reject <reason>`, or `/revise <feedback>`. `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
 
-Only users with write permission on the repository can approve, retry or record a verdict.
+Only users with write permission on the repository can approve, reject, revise, retry or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
 
 ### Status labels
@@ -73,7 +73,7 @@ Each work item's issue carries exactly one status label, and so does its PR once
 | Label | Meaning |
 |---|---|
 | `sf: triaging` | Taken in; the triage agent is writing the spec |
-| `sf: needs approval` | The spec is posted; reply `/approve` or `/reject <reason>` |
+| `sf: needs approval` | The spec is posted; reply `/approve`, `/reject <reason>`, or `/revise <feedback>` |
 | `sf: implementing` | The implementer agent is working on the branch |
 | `sf: in review` | The PR is open and the reviewer agent is checking it |
 | `sf: ready to merge` | The PR passed review; a human merges it |
@@ -88,6 +88,7 @@ The factory removes only these eight names (under the current prefix) when it ch
 | When | Command |
 |---|---|
 | Check that everything still works | `npm run factory -- doctor` |
+| Check that the configured LLM provider answers (two small real calls) | `npm run factory -- llm-check` (or `doctor --llm`) |
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |

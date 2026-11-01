@@ -75,6 +75,7 @@ export class FakeSource implements SourceAdapter {
     return { events, next_cursor: JSON.stringify({ n: c.n + 1, last_comment_id: last }) };
   }
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
+    if (this.commentError) throw this.commentError;
     const existing = this.comments.find((c) => c.marker === marker);
     if (existing) return { url: existing.url };
     const url = `${source.link}#issuecomment-${this.comments.length + 1}`;
@@ -84,6 +85,16 @@ export class FakeSource implements SourceAdapter {
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     if (this.reactionError) throw this.reactionError;
     this.reactions.push({ source, comment_id: commentId });
+  }
+  /** Every closeIssue call that succeeded, in order. */
+  closed: SourceRef[] = [];
+  /** When set, closeIssue throws this instead of recording. */
+  closeError: Error | null = null;
+  /** When set, postComment throws this instead of recording. */
+  commentError: Error | null = null;
+  async closeIssue(source: SourceRef): Promise<void> {
+    if (this.closeError) throw this.closeError;
+    this.closed.push(source);
   }
   /** Every setStatus call, in order, including ones that threw. */
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
@@ -214,6 +225,18 @@ export class FakeBroker implements ToolBroker {
     this.calls.push({ ctx, name, args });
     if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
+  }
+}
+
+/** Read-only PR diffs by number, standing in for GitHubClient.pullDiff. Records every PR asked for. */
+export class FakeGitHubDiff {
+  calls: number[] = [];
+  constructor(private readonly diffs: Record<number, string>) {}
+  async pullDiff(pr: number): Promise<string> {
+    this.calls.push(pr);
+    const d = this.diffs[pr];
+    if (d === undefined) throw new Error(`no diff for PR ${pr}`);
+    return d;
   }
 }
 

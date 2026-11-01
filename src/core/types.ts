@@ -61,13 +61,25 @@ export interface WorkItem {
    * comment was withheld by the egress scan or never posted, and on older items.
    */
   failure_comment_url: string | null;
+  /**
+   * The issue text as received at intake (title and body). Triage overwrites `problem` with the spec; a
+   * revision reads this instead. Null on items created before it existed.
+   */
+  issue_text: string | null;
+  /** How many `/revise` commands started a new triage run. Not `loop_count`, which counts review loops. */
+  revision_count: number;
+  /** The text of the latest `/revise <feedback>` or `/reject <reason>` on the spec. Untrusted human text. */
+  spec_feedback: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
 
-/** Fields a transition may change. id, source, title, requester, version and timestamps are store-owned. */
+/**
+ * Fields a transition may change. id, source, title, issue_text, requester, version and timestamps are
+ * store-owned.
+ */
 export type WorkItemPatch = Partial<
-  Omit<WorkItem, "id" | "version" | "source" | "title" | "requester_id" | "created_at" | "updated_at">
+  Omit<WorkItem, "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "created_at" | "updated_at">
 >;
 
 export type Actor =
