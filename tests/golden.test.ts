@@ -45,6 +45,7 @@ import {
   silent,
   triageSpec,
 } from "./helpers/fakes.js";
+import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const PROJECT = "o/r";
 const SYSTEM: Actor = { kind: "system", id: "system:test" };
@@ -284,7 +285,7 @@ describe("GitHubClient.pullDiff", () => {
         return { reveal: () => "tkn" } as never;
       },
     } as unknown as SecretStore;
-    const gh = new GitHubClient(secrets, "https://gh.test");
+    const gh = new GitHubClient(new TokenCredentials(secrets), "https://gh.test");
     expect(await gh.pullDiff({ owner: "o", name: "r" }, 7)).toBe(DIFF);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("https://gh.test/repos/o/r/pulls/7");

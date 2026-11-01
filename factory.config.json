@@ -29,7 +29,8 @@
     "storage": "fs",
     "capability": "list-all",
     "clock": "system",
-    "updater": "git-worktree"
+    "updater": "git-worktree",
+    "github_auth": "app"
   },
   "models": { "cheap": "haiku", "strong": "opus" },
   "max_loops": 3,

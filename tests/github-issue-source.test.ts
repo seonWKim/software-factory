@@ -4,6 +4,7 @@ import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { issueRef } from "./helpers/fakes.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 /** Records every request; GET answers come from `responses` by path prefix (without query), else []. */
 class FakeClient extends GitHubClient {
@@ -11,7 +12,7 @@ class FakeClient extends GitHubClient {
   responses: Record<string, unknown[]> = {};
 
   constructor() {
-    super({} as SecretStore, "http://unused");
+    super({} as GitHubCredentials, "http://unused");
   }
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     this.calls.push({ method, path, body });
@@ -478,7 +479,7 @@ describe("GitHubIssueSource: status labels", () => {
     issueLabels = new Map<number, string[]>();
 
     constructor() {
-      super({} as SecretStore, "http://unused");
+      super({} as GitHubCredentials, "http://unused");
     }
     override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
       this.calls.push({ method, path, body });

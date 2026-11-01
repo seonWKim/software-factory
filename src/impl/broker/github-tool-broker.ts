@@ -4,7 +4,7 @@ import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import type { GitHubClient, RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -24,8 +24,6 @@ async function runFolderGitDir(workdir: string): Promise<string | null> {
   if (!cfg?.isFile()) return null;
   return realpath(dir);
 }
-
-const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
@@ -87,7 +85,7 @@ export class GitHubToolBroker implements ToolBroker {
   constructor(
     private readonly deps: {
       client: GitHubClient;
-      secrets: SecretStore;
+      credentials: GitHubCredentials;
       store: FactoryStore;
       scanner: EgressScanner;
       clock: Clock;
@@ -180,8 +178,8 @@ export class GitHubToolBroker implements ToolBroker {
       if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
     }
 
-    const token = await this.deps.secrets.get(GITHUB_TOKEN);
-    if (!token) return { ok: false, error_code: "no_credential", message: "GITHUB_TOKEN missing" };
+    const token = await this.deps.credentials.token();
+    if (!token) return { ok: false, error_code: "no_credential", message: "GitHub credentials missing" };
     // The token reaches git only through this child's env and an inline credential helper, never argv.
     const helper = '!f() { echo username=x-access-token; echo "password=$SF_GIT_TOKEN"; }; f';
     const r = await git(

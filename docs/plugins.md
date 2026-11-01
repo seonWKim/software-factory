@@ -85,7 +85,7 @@ What it does: resolves an external identity to a principal and decides whether i
 Plugins:
 
 - `github`: `GitHubAuthProvider`. Approvals need write permission on the repository.
-  - Enable: `"auth": "github"` (top level). Secrets: `GITHUB_TOKEN` (shared with the GitHub client).
+  - Enable: `"auth": "github"` (top level). Secrets: none of its own; it calls GitHub through the shared client, whose credential comes from `GitHubCredentials`.
 - `none`: `NoAuthProvider`. Allows everything; local development only.
   - Enable: `"auth": "none"`. Secrets: none.
 
@@ -127,7 +127,7 @@ Plugins:
 
 - `github`: `GitHubToolBroker`.
   - Enable: `"plugins": { "broker": "github", ... }`, or no `plugins` object.
-  - Secrets: `GITHUB_TOKEN` (fine-grained, this repository only; `docs/setup.md`). Settings: `branch_prefix`, `repo`.
+  - Secrets: none of its own; the push uses the token from `GitHubCredentials`. Settings: `branch_prefix`, `repo`.
 
 Switch back: `"broker": "github"`.
 
@@ -190,7 +190,7 @@ Plugins:
 - `github-issues`: `GitHubIssueSource`. Issues with the intake label on the configured repository, their comments and pull requests, and commits on the base branch (`repo.base_branch`; one extra API call per poll, for revert tracking, design §6).
   - `setStatus(source, status, pr_number)`: shows one of eight statuses (`triaging`, `needs_approval`, `implementing`, `in_review`, `ready_to_merge`, `needs_human`, `done`, `rejected`) as a label. `pr_number` null labels the issue; non-null labels that PR instead (PRs share the issue labels API), so the controller calls it once for the issue and once for the PR. Each call creates the label if missing (a 422 `already_exists` counts as success), adds it, and removes the other seven fixed names; a 404 on removal counts as success, and no other label is touched, including other labels under the prefix. Idempotent and best effort: the controller logs a failure as a warning and the transition stands. Names, colours and descriptions live in one table in `src/impl/source/github-issue-source.ts`. Uses the existing Issues read/write permission; no new scope.
   - Enable: `"plugins": { "source": "github-issues", ... }`.
-  - Secrets: `GITHUB_TOKEN`. Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
+  - Secrets: none of its own (the shared client's `GitHubCredentials`). Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
 
 Other sources may implement `setStatus` as a no-op.
 
@@ -294,3 +294,18 @@ Turn on / off: set `plugins.awake` to `caffeinate` (on) or `none` (off); delete 
 **Closing the laptop lid still sleeps a Mac.** `caffeinate` only stops idle and system sleep; macOS sleeps on lid close regardless (unless an external display, power and keyboard are attached). Keep the lid open while jobs run. A worker that sleeps anyway recovers through the lease rules in `docs/design.md` §5 (host sleep).
 
 Linux and Windows plugins do not exist yet.
+
+## GitHubCredentials
+
+What it does: supplies the token for every GitHub call: the shared REST client (issues, comments, labels, PRs) and the broker's `git push`. Only those two tool implementations call it; the token never reaches an agent, a prompt, a log or the store (guards G1–G2).
+
+Plugins:
+
+- `token`: `TokenCredentials`. A personal access token from the secret file, used as is. GitHub shows every write as the token's owner.
+  - Enable: `"plugins": { "github_auth": "token", ... }`, or no `github_auth` key.
+  - Secrets: `GITHUB_TOKEN` (fine-grained, this repository only; `docs/setup.md`).
+- `app`: `AppCredentials`. Acts as the GitHub App's bot. It signs a JWT (RS256, 9 minutes) with the App's key, looks up the App's installation on `repo`, and exchanges the JWT for an installation token limited to that one repository. The token is cached until 5 minutes before it expires (GitHub gives one hour); concurrent callers share one mint.
+  - Enable: `"plugins": { "github_auth": "app", ... }`. The App must be installed on the repository with Contents, Issues and Pull requests read and write.
+  - Secrets: `GITHUB_APP_ID`. Settings: the App's private key in `github-app.pem`, next to the secret file (`~/.config/software-factory/`), read only when a token is minted. A missing ID or unreadable key is a FAIL in `npm run factory -- doctor`.
+
+Turn on / off: set `plugins.github_auth` to `app` (bot) or `token` (your account); delete the key to go back to `token`.
