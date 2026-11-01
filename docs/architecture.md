@@ -65,7 +65,7 @@ graph TB
 | `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
 | `SecretStore` | `~/.config/software-factory/.env` (outside the repo) | Vault / cloud secret manager |
 | `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
-| `CapabilitySearch` | List everything | BM25, vector, hybrid |
+| `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
 | `ToolBroker` (G2) | GitHub REST + `git push` in the worker process | same, per tool |
 | `EgressScanner` (G5) | Known secret values + patterns | + a managed secret scanner |
