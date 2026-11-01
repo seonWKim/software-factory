@@ -131,13 +131,14 @@ Switch back / disable: `"sandbox": "noop"`. There is no "off": runs need a works
 
 ## AgentRunner
 
-What it does: runs one tool-using agent loop in a sandbox and returns its structured output and transcript.
+What it does: runs one tool-using agent loop in a sandbox and returns its structured output and transcript. A runner reports a usage or rate limit as `status: "rate_limited"` (with `reset_at` if it knows it), never as a plain failure, so the factory pauses instead of spending an attempt.
 
 Plugins:
 
 - `claude-code`: `ClaudeCodeRunner` (`claude -p`), with a per-run HOME and a factory-owned `CLAUDE_CONFIG_DIR` under `<state_dir>/agents`, and the harness deny rules of architecture §5.
   - Enable: `"plugins": { "runner": "claude-code", ... }`.
   - Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) from the `SecretStore`, passed to the harness only. Settings: `models`, `run_timeout_ms`; the `claude` CLI on `PATH`.
+  - Rate limits: a Claude result with `api_error_status: 429` (usage or rate limit) is reported as the general `rate_limited` status, with `reset_at` when the message gives a reset time (an `|<epoch>` suffix, or `resets 12:10pm (Area/City)`). The worker then pauses every claim until that time, or for `retry_max_ms` when there is none (design §5 Restarts). All Claude CLI text parsing stays in this runner.
 
 Switch back / disable: `"runner": "claude-code"`. There is no "off".
 

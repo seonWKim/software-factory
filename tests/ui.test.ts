@@ -7,7 +7,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -249,7 +249,7 @@ describe("ui: config and intake", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(9), requester: alice, title: "Status page", body: "please" });
     await controller.tickIntake();
     const item = (await store.getWorkItemBySource("github_issue", issueRef(9).id))!;

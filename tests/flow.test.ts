@@ -19,10 +19,11 @@ async function factory(runner: FakeRunner, knownSecrets: string[] = [], log: Log
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const storage = new MemoryStorage();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log });
+  const scanner = new PatternEgressScanner(async () => knownSecrets);
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config, prompts, log: silent,
-    scanner: new PatternEgressScanner(async () => knownSecrets),
+    scanner,
     toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
   });
   const step = async () => {
@@ -141,7 +142,7 @@ describe("one issue to one merged PR", () => {
     expect(runner.specs.filter((s) => s.role === "implement")).toHaveLength(3);
   });
 
-  it("a failed run blocks on a human; /retry re-runs it with restart_count + 1", async () => {
+  it("a failed triage run is queued again by the factory after a backoff, with no /retry, and the item stays unblocked", async () => {
     let fail = true;
     const runner = new FakeRunner({
       triage: () => (fail ? { status: "failed", error: "boom" } : { output: triageSpec }),
@@ -150,11 +151,38 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "item_requested", source: issueRef(4), requester: alice, title: "t", body: "b" });
     await f.step();
     let item = (await f.store.getWorkItemBySource("github_issue", "o/r#4"))!;
-    expect(item).toMatchObject({ stage: "NEW", blocked_on: "human", blocked_reason: "run_failed:triage:agent_failed" });
+    expect(item).toMatchObject({ stage: "NEW", blocked_on: "none", blocked_reason: null, restart_count: 0 });
+    const runs = await f.store.listRuns(item.id);
+    expect(runs.map((r) => [r.kind, r.status])).toEqual([["triage", "failed"], ["triage", "queued"]]);
+    expect(runs[1]!.not_before).toBe(new Date(f.clock.now().getTime() + config.retry_base_ms).toISOString());
+    expect(f.source.comments).toEqual([]);
 
     fail = false;
-    f.source.queue.push({ kind: "retry_requested", source: issueRef(4), comment_id: "105", requester: alice });
+    f.clock.advance(config.retry_base_ms);
     await f.step();
+    item = (await f.store.getWorkItem(item.id))!;
+    expect(item).toMatchObject({ stage: "READY", restart_count: 0, blocked_reason: "spec_pending" });
+  });
+
+  it("after max_attempts a failed run blocks on a human; /retry re-runs it at once with restart_count + 1", async () => {
+    let fail = true;
+    const runner = new FakeRunner({
+      triage: () => (fail ? { status: "failed", error: "boom" } : { output: triageSpec }),
+    });
+    const f = await factory(runner);
+    f.source.queue.push({ kind: "item_requested", source: issueRef(14), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.clock.advance(config.retry_max_ms);
+    await f.step();
+    f.clock.advance(config.retry_max_ms);
+    await f.step();
+    let item = (await f.store.getWorkItemBySource("github_issue", "o/r#14"))!;
+    expect(item).toMatchObject({ stage: "NEW", blocked_on: "human", blocked_reason: "max_attempts" });
+    expect(runner.specs).toHaveLength(config.max_attempts);
+
+    fail = false;
+    f.source.queue.push({ kind: "retry_requested", source: issueRef(14), comment_id: "105", requester: alice });
+    await f.step(); // no clock advance: the human's retry does not wait
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "READY", restart_count: 1, blocked_reason: "spec_pending" });
   });
@@ -167,9 +195,10 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "item_requested", source: issueRef(9), requester: alice, title: "t", body: "b" });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#9"))!;
-    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "run_failed:triage:invalid_output" });
+    expect(item).toMatchObject({ blocked_on: "none", restart_count: 0 });
     const runs = await f.store.listRuns(item.id);
-    expect(runs.map((r) => [r.kind, r.status])).toEqual([["triage", "failed"]]);
+    expect(runs.map((r) => [r.kind, r.status])).toEqual([["triage", "failed"], ["triage", "queued"]]);
+    expect(runs[0]!.outcome).toMatchObject({ error_code: "invalid_output", infra: false });
     expect(f.source.comments.some((c) => c.body.includes("## Factory spec"))).toBe(false);
   });
 
@@ -185,7 +214,11 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "106", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
-    expect(item.blocked_reason).toBe("run_failed:implement:no_commits");
+    // A task failure: retried after a backoff, and restart_count is not touched.
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: 0 });
+    const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    expect(runs.map((r) => r.status)).toEqual(["failed", "queued"]);
+    expect(runs[0]!.outcome).toMatchObject({ error_code: "no_commits", infra: false });
     expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
   });
 
@@ -202,7 +235,7 @@ describe("one issue to one merged PR", () => {
     await f.step();
 
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#11"))!;
-    expect(item.blocked_reason).toBe("run_failed:implement:scope_violation");
+    expect(item).toMatchObject({ blocked_on: "none", restart_count: 0 });
     const run = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation", infra: false });
     if (run.outcome?.status !== "failed") return;
@@ -249,7 +282,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: issueRef(12), comment_id: "112", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#12"))!;
-    expect(item.blocked_reason).toBe("run_failed:implement:scope_violation");
+    expect((await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!.outcome).toMatchObject({ error_code: "scope_violation" });
     expect(f.broker.calls.some((c) => c.name === "github.comment")).toBe(true);
     expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
   });

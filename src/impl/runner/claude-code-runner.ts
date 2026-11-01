@@ -13,6 +13,8 @@ export interface ClaudeCodeRunnerOptions {
   homesDir: string;
   models: { cheap: string; strong: string };
   claudeBin?: string;
+  /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
+  now?: () => Date;
 }
 
 /** Env var names that must never be passed to an agent through env_allowlist (G1). */
@@ -164,6 +166,17 @@ export class ClaudeCodeRunner implements AgentRunner {
     usage.output_tokens = parsed.usage?.output_tokens ?? 0;
     usage.cost_usd = parsed.total_cost_usd ?? null;
 
+    if (parsed.api_error_status === 429) {
+      const reset_at = parseRateLimitReset(typeof parsed.result === "string" ? parsed.result : "", (this.opts.now ?? (() => new Date()))());
+      return {
+        status: "rate_limited",
+        output: null,
+        transcript: result.stdout,
+        usage,
+        error: "rate_limited",
+        ...(reset_at ? { reset_at } : {}),
+      };
+    }
     if (parsed.is_error || result.exit_code !== 0) {
       return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error" };
     }
@@ -179,4 +192,46 @@ interface ClaudeJsonResult {
   structured_output?: unknown;
   total_cost_usd?: number;
   usage?: { input_tokens?: number; output_tokens?: number };
+  /** HTTP status of the API error that ended the run; 429 is a usage or rate limit. */
+  api_error_status?: number | null;
+}
+
+/**
+ * The reset time in a Claude usage-limit message, as ISO-8601 UTC, or null if the text has none we can read.
+ * Two forms: an epoch suffix (`...limit reached|1762000200`, seconds or ms), and a wall-clock time
+ * (`resets 12:10pm`, optionally `(Area/City)`), read as its next occurrence after `now` in that zone (host
+ * zone when none is given). Exported for tests.
+ */
+export function parseRateLimitReset(text: string, now: Date): string | null {
+  const epoch = text.match(/\|\s*(\d{10}|\d{13})\b/);
+  if (epoch) {
+    const n = Number(epoch[1]);
+    return new Date(epoch[1]!.length === 13 ? n : n * 1000).toISOString();
+  }
+  const m = text.match(/resets\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?(?:\s*\(([^)]+)\))?/i);
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const minute = m[2] ? Number(m[2]) : 0;
+  const ampm = m[3]?.toLowerCase();
+  if (minute > 59 || (ampm ? hour < 1 || hour > 12 : hour > 23)) return null;
+  if (ampm) hour = (hour % 12) + (ampm === "pm" ? 12 : 0);
+  let wall: { h: number; m: number; s: number };
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: m[4]?.trim(),
+      hourCycle: "h23",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(now);
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    wall = { h: get("hour"), m: get("minute"), s: get("second") };
+  } catch {
+    return null; // unknown time zone
+  }
+  const nowMin = wall.h * 60 + wall.m;
+  let ahead = (hour * 60 + minute - nowMin + 1440) % 1440;
+  if (ahead === 0 && (wall.s > 0 || now.getUTCMilliseconds() > 0)) ahead = 1440;
+  const start = now.getTime() - wall.s * 1000 - now.getUTCMilliseconds();
+  return new Date(start + ahead * 60_000).toISOString();
 }

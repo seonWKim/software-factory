@@ -13,7 +13,14 @@ export interface FactoryConfig {
   /** Human floor directories (design §3): touching a prefix raises the tier to at least `tier`. */
   floors: { prefix: string; tier: Tier }[];
   max_loops: number;
+  /** Task failures (bad output, no commits, agent error) of one step before it blocks on a human. */
   max_attempts: number;
+  /** Infra failures (lease loss, timeout, exception) of one step before it blocks on a human. Default 3. */
+  max_restart: number;
+  /** First automatic retry waits this long; each next one twice as long. Default 60000. */
+  retry_base_ms: number;
+  /** Cap on a retry wait, and the pause after a rate limit with no reset time. Default 1800000. */
+  retry_max_ms: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;

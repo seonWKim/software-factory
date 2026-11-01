@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { effectiveTier, floorTier, runKey, workItemIdFromBranch } from "../src/core/policy.js";
+import {
+  effectiveTier, failureClass, floorTier, retryDelayMs, retryKey, runKey, sameStep, workItemIdFromBranch,
+} from "../src/core/policy.js";
 import { parseTriage } from "../src/core/outputs.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { triageSpec } from "./helpers/fakes.js";
@@ -22,6 +24,35 @@ describe("policy", () => {
     const base = { id: "wi_1" as WorkItemId, loop_count: 0, restart_count: 0 };
     expect(runKey(base, "implement")).not.toBe(runKey({ ...base, loop_count: 1 }, "implement"));
     expect(runKey(base, "implement")).not.toBe(runKey({ ...base, restart_count: 1 }, "implement"));
+  });
+
+  it("retry backoff is base × 2^(attempt−1), capped at max", () => {
+    expect(retryDelayMs(1, 60_000, 1_800_000)).toBe(60_000);
+    expect(retryDelayMs(2, 60_000, 1_800_000)).toBe(120_000);
+    expect(retryDelayMs(5, 60_000, 1_800_000)).toBe(960_000);
+    expect(retryDelayMs(6, 60_000, 1_800_000)).toBe(1_800_000);
+    expect(retryDelayMs(10_000, 60_000, 1_800_000)).toBe(1_800_000);
+  });
+
+  it("retry keys are unique per retry and stay in the step of the run they retry", () => {
+    const first = runKey({ id: "wi_1" as WorkItemId, loop_count: 2, restart_count: 0 }, "implement");
+    const a1 = retryKey(first);
+    const a2 = retryKey(a1);
+    expect(a1).toBe(`${first}:a1`);
+    expect(a2).toBe(`${first}:a2`);
+    expect(retryKey(first)).toBe(a1); // deterministic: applying the same run twice asks for the same key
+    expect(sameStep(first, a2)).toBe(true);
+    expect(sameStep(first, runKey({ id: "wi_1" as WorkItemId, loop_count: 2, restart_count: 1 }, "implement"))).toBe(false);
+  });
+
+  it("classifies failures: rate limit, infra, task", () => {
+    const failed = (error_code: string, infra: boolean) => ({ status: "failed" as const, error_code, detail: "", infra });
+    expect(failureClass(failed("rate_limited", false))).toBe("rate_limited");
+    expect(failureClass(failed("lease_lost", true))).toBe("infra");
+    expect(failureClass(failed("agent_timed_out", true))).toBe("infra");
+    expect(failureClass(failed("invalid_output", false))).toBe("task");
+    expect(failureClass(failed("no_commits", false))).toBe("task");
+    expect(failureClass(null)).toBe("task");
   });
 
   it("maps factory branches back to work items", () => {

@@ -171,6 +171,7 @@ export function rowToRun(r: Row): Run {
     acknowledged_at: r.acknowledged_at as Timestamp | null,
     started_at: (r.started_at as Timestamp | null | undefined) ?? null,
     finished_at: (r.finished_at as Timestamp | null | undefined) ?? null,
+    not_before: (r.not_before as Timestamp | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
