@@ -88,6 +88,7 @@ The factory removes only these eight names (under the current prefix) when it ch
 | When | Command |
 |---|---|
 | Check that everything still works | `npm run factory -- doctor` |
+| Check that the configured LLM provider answers (two small real calls) | `npm run factory -- llm-check` (or `doctor --llm`) |
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
