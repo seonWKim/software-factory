@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig, workerCount } from "../src/compose.js";
+import { WORKER_INDEX_BASE_ENV, build, loadConfig, workerCount, workerIndexBase } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
 import type { RunKind } from "../src/core/types.js";
@@ -49,7 +49,7 @@ function gatedRunner(events: string[]) {
   return { runner, gates, started: () => started };
 }
 
-async function setup(opts: { workers: number; queued: number; awake?: (events: string[]) => KeepAwake; log?: Logger }) {
+async function setup(opts: { workers: number; queued: number; awake?: (events: string[]) => KeepAwake; log?: Logger; indexBase?: number }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   for (let i = 1; i <= opts.queued; i++) {
@@ -64,6 +64,7 @@ async function setup(opts: { workers: number; queued: number; awake?: (events: s
     id_prefix: "host:42", store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config: cfg, prompts, log: opts.log ?? silent, scanner: cleanScanner, toolEnv: {},
     awake: opts.awake ? opts.awake(events) : new NoKeepAwake(),
+    ...(opts.indexBase !== undefined ? { index_base: opts.indexBase } : {}),
   });
   const running = async () => store.listRunsByStatus(["running"], 100);
   return { store, pool, runner, gates, started, events, running, claimRun, completeRun };
@@ -101,6 +102,24 @@ describe("workers config", () => {
     expect((await loadConfig(root({ workers: undefined }))).config.workers).toBe(1);
     expect((await loadConfig(root({ workers: 3 }))).config.workers).toBe(3);
     await expect(loadConfig(root({ workers: 0 }))).rejects.toThrow("workers must be an integer of 1 or more");
+  });
+
+  it("build() numbers its workers from SF_WORKER_INDEX_BASE (set by the supervisor; unset: 0)", async () => {
+    vi.stubEnv(WORKER_INDEX_BASE_ENV, "6");
+    const built = await build(await loadConfig(root({ workers: 3 })), { clock: new FakeClock() });
+    try {
+      expect(built.worker.workers.map((w) => w.id)).toEqual([6, 7, 8].map((n) => `${hostname()}:${process.pid}:${n}`));
+    } finally {
+      await built.close();
+    }
+  });
+
+  it("SF_WORKER_INDEX_BASE: a non-negative integer is used; unset, empty or anything else is 0", () => {
+    expect(workerIndexBase(undefined)).toBe(0);
+    expect(workerIndexBase("")).toBe(0);
+    expect(workerIndexBase("3")).toBe(3);
+    expect(workerIndexBase(" 12 ")).toBe(12);
+    for (const bad of ["-1", "1.5", "x", "2e3"]) expect(workerIndexBase(bad)).toBe(0);
   });
 
   it("build() starts `workers` workers in one pool, each with id <host>:<pid>:<n>", async () => {
@@ -219,6 +238,26 @@ describe("worker pool", () => {
   });
 });
 
+describe("worker pool: index base", () => {
+  it("numbers its workers from the base, so every index falls inside the child's block", async () => {
+    const s = await setup({ workers: 3, queued: 3, indexBase: 3 });
+    expect(s.pool.workers.map((w) => w.id)).toEqual(["host:42:3", "host:42:4", "host:42:5"]);
+    const stop = new AbortController();
+    const loops = s.pool.run(stop.signal);
+    await waitFor(() => s.started() === 3, "three runs in flight");
+    const owners = (await s.running()).map((r) => r.lease!.owner);
+    expect(new Set(owners)).toEqual(new Set(["host:42:3", "host:42:4", "host:42:5"]));
+    stop.abort();
+    s.gates.forEach((g) => g());
+    await loops;
+  });
+
+  it("without a base the indexes start at 0, as before", async () => {
+    const s = await setup({ workers: 2, queued: 0 });
+    expect(s.pool.workers.map((w) => w.id)).toEqual(["host:42:0", "host:42:1"]);
+  });
+});
+
 describe("SF_WORKER_INDEX", () => {
   /** Answers the update run's git calls so the merge is clean, and records the test command's env. */
   class UpdateSandbox extends FakeSandbox {
@@ -235,7 +274,7 @@ describe("SF_WORKER_INDEX", () => {
     }
   }
 
-  async function poolWith(kind: RunKind, workers: number) {
+  async function poolWith(kind: RunKind, workers: number, indexBase?: number) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(1), system);
@@ -249,6 +288,7 @@ describe("SF_WORKER_INDEX", () => {
       id_prefix: "host:42", store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock,
       config: { ...config, workers }, prompts, log: silent, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" },
       awake: new NoKeepAwake(),
+      ...(indexBase !== undefined ? { index_base: indexBase } : {}),
     });
     return { pool, sandbox, runner, store, item };
   }
@@ -259,6 +299,12 @@ describe("SF_WORKER_INDEX", () => {
     expect(await pool.workers[2]!.tick()).toBe(true);
     expect(runner.specs).toHaveLength(1);
     expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_WORKER_INDEX: "2" });
+  });
+
+  it("is the base plus the worker's position in the pool", async () => {
+    const { pool, runner } = await poolWith("triage", 3, 6);
+    expect(await pool.workers[1]!.tick()).toBe(true);
+    expect(runner.specs[0]!.env_allowlist).toMatchObject({ SF_WORKER_INDEX: "7" });
   });
 
   it("reaches the test command's environment in the update run, next to the tool env", async () => {
