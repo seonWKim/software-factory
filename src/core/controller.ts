@@ -1245,6 +1245,7 @@ const FAILURES: Record<string, string> = {
   no_commits: "the implementer made no commits",
   scope_violation: "the branch changed files outside the allowed paths",
   diff_too_large: "the branch diff is over max_diff_lines or max_diff_files",
+  merge_conflict: "the branch conflicts with the base branch and the conflict could not be resolved; nothing was pushed",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",

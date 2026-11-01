@@ -299,10 +299,56 @@ describe("one issue to one merged PR", () => {
     expect(args.body).toContain("- `package.json`");
     expect(args.marker).toBe(`<!-- factory:scope:${run.id} -->`);
 
-    // The diff was taken against the base SHA resolved before the agent ran, over the whole branch.
+    // The diff was taken against the base SHA fetched after the agent ran (sync before push), over the whole branch.
+    const fetched = f.sandbox.gitCalls.findIndex((c) => c.startsWith("fetch "));
     const resolve = f.sandbox.gitCalls.indexOf("rev-parse --verify --end-of-options origin/main^{commit}");
-    expect(resolve).toBeGreaterThanOrEqual(0);
+    expect(fetched).toBeGreaterThanOrEqual(0);
+    expect(resolve).toBeGreaterThan(fetched);
     expect(f.sandbox.gitCalls).toContain("diff --name-only -z --no-renames basesha...HEAD");
+  });
+
+  it("a review-fix push on an open PR fetches and merges the base before its pre-push checks", async () => {
+    let reviews = 0;
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: () => review(reviews++ === 0 ? "bug" : "pass")(),
+    });
+    const f = await factory(runner);
+    // The base moved: the branch does not contain it yet, and the merge is clean.
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, o) => {
+      const r = await exec(h, cmd, o);
+      return cmd.slice(1).join(" ").startsWith("merge-base --is-ancestor") ? { ...r, exit_code: 1 } : r;
+    };
+    f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    f.source.queue.push({ kind: "item_requested", source: issueRef(16), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(16), comment_id: "116", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#16"))!;
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42, loop_count: 1 });
+
+    // Both implement runs (the first, and the review fix on PR 42) sync, then gate, then push.
+    const calls = f.sandbox.gitCalls;
+    const runs: string[][] = [];
+    for (const c of calls) {
+      if (c === "rev-parse HEAD" && (runs.length === 0 || runs.at(-1)!.some((x) => x.startsWith("diff --name-only")))) runs.push([]);
+      runs.at(-1)?.push(c);
+    }
+    const implementRuns = runs.filter((r) => r.some((c) => c.startsWith("diff --name-only")));
+    expect(implementRuns).toHaveLength(2);
+    for (const r of implementRuns) {
+      const fetch = r.indexOf("fetch --quiet --no-tags origin +refs/heads/main:refs/remotes/origin/main");
+      const merge = r.findIndex((c) => c.startsWith("-c core.hooksPath=/dev/null merge --no-ff --no-edit"));
+      const scope = r.indexOf("diff --name-only -z --no-renames basesha...HEAD");
+      expect(fetch).toBeGreaterThanOrEqual(0);
+      expect(merge).toBeGreaterThan(fetch);
+      expect(scope).toBeGreaterThan(merge);
+      expect(r.some((c) => c.startsWith("rebase") || c.includes("--force"))).toBe(false);
+    }
+    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(2);
+    expect(runner.specs.filter((s) => s.role === "implement")).toHaveLength(2); // a clean merge needs no agent step
   });
 
   it("a scope violation whose issue comment fails still fails the run with scope_violation", async () => {
