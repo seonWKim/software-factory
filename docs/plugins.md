@@ -155,7 +155,7 @@ Plugins:
   - Enable: `"plugins": { "llm": "claude-cli", ... }`.
   - Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`). Settings: `models`; the `claude` CLI on `PATH`.
 
-**Not wired in yet:** the name is checked at startup and resolves, but nothing in `build()` consumes an `LLMProvider` today, so no instance is created.
+Smoke-test with `npm run factory -- llm-check` (`--model strong` for the strong class): it builds the configured provider through the registry (`Plugins.llm()`) and makes two small real calls, one plain and one with an output schema, every printed line egress-scanned first. `npm run factory -- doctor --llm` runs the same check as one doctor line; plain `doctor` makes no model call. No factory workflow step calls the provider.
 
 Switch back / disable: `"llm": "claude-cli"`.
 

@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
 import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
@@ -194,8 +195,13 @@ export async function createLabels(
   }
 }
 
-export async function doctor(loaded: Loaded): Promise<number> {
+/** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
+export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Promise<number> {
   const checks = await doctorChecks(loaded);
+  if (opts.llm) {
+    const r = await llmCheckFromPlugins(new Plugins(loaded), "cheap");
+    checks.push({ ok: r.ok, msg: r.summary });
+  }
   for (const c of checks) console.log(`${c.ok ? "ok  " : c.warn ? "warn" : "FAIL"}  ${c.msg}`);
   return checks.every((c) => c.ok || c.warn) ? 0 : 1;
 }
