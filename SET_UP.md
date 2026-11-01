@@ -25,8 +25,8 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 | 2. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
 | 3. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
 | 4. Database | Creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks |
-| 5. Label | Creates the `factory` label on the repository | — |
-| 6. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, label; warns on a token that never expires | Fix any `FAIL` line and rerun |
+| 5. Labels | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create | — |
+| 6. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label | Fix any `FAIL` line and rerun |
 | 7. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
@@ -64,6 +64,23 @@ Then on GitHub:
 
 Only users with write permission on the repository can approve or retry.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
+
+### Status labels
+
+Each work item's issue carries exactly one status label, and so does its PR once there is one. The factory sets it on every change of state, and again for every open item when it starts. Names are `status_label_prefix` (in `factory.config.json`, default `sf: `) plus the name below. The factory creates a missing one on first use; `doctor` only warns about a missing one.
+
+| Label | Meaning |
+|---|---|
+| `sf: triaging` | Taken in; the triage agent is writing the spec |
+| `sf: needs approval` | The spec is posted; reply `/approve` or `/reject <reason>` |
+| `sf: implementing` | The implementer agent is working on the branch |
+| `sf: in review` | The PR is open and the reviewer agent is checking it |
+| `sf: ready to merge` | The PR passed review; a human merges it |
+| `sf: needs human` | Stuck: a run failed (reply `/retry`), review hit the loop limit, or the PR has a conflict. The comments say which |
+| `sf: done` | The PR was merged |
+| `sf: rejected` | Closed without a merge: spec rejected, or PR closed unmerged |
+
+The factory removes only these eight names (under the current prefix) when it changes the status. Other labels, including your own labels that start with `sf: `, are never touched. Changing a label by hand does nothing; the factory does not read them.
 
 ## Routine
 
