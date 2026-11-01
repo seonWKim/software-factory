@@ -49,7 +49,20 @@ export interface AgentRunResult {
   output: unknown;
   /** Raw harness output. Not yet egress-scanned: the caller scans it before storing anywhere (G5). */
   transcript: string;
-  usage: { input_tokens: number; output_tokens: number; cost_usd: number | null };
+  /**
+   * What the call used, from the harness's own report. Filled for every status when the harness printed one
+   * (also on timeout and abort); zeros and a null cost when it printed none. The cache counts and model are
+   * optional so older test doubles still compile; absent counts as 0 and null.
+   */
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+    /** The harness's cost figure in USD; null when it gave none. */
+    cost_usd: number | null;
+    model?: string | null;
+  };
   error?: string;
   /** For `rate_limited`: when the limit resets (ISO-8601 UTC), if the runner could tell. */
   reset_at?: string;
