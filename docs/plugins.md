@@ -137,6 +137,9 @@ Why it cannot be disabled: without the broker the only way to push or comment wo
 
 What it does: where an agent run happens: create a workspace for a branch, run commands in it, destroy it.
 
+
+`updateBase(repo, base_ref)` is trusted like `create`: it fetches `origin` in the factory repo and returns its `origin/<base_ref>` commit. Sync before push copies that commit into the clone from the factory repo, never from the clone's own remote.
+
 Plugins:
 
 - `noop`: `NoOpSandbox`. One clone of the factory repo per run, in its own folder under `worktrees_dir` on the host, no OS isolation (design §5: keep it on test environments only).

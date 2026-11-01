@@ -8,6 +8,13 @@ Rules:
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
 
+Merge conflicts:
+- Before pushing, the factory merges the base branch into your branch. If that conflicts, you get a second prompt headed "Merge conflicts" that lists the conflicting files and the base commits that touched them.
+- Keep both sides: the base's changes and this work item's changes. Read the listed base commits (`git show <sha>`) to see what the base intended.
+- Remove every conflict marker, then `git add` each resolved file. Do not commit, abort the merge, rebase, reset or force anything: the factory checks that no unmerged paths remain, runs the tests and commits the merge.
+- Change only what the resolution needs. The allowed paths still apply; a change outside them blocks the push.
+- Migrations: when both sides add a migration with the same number, keep the base's number for its migration and renumber ours to the next free number, in every schema file that lists migrations.
+
 Finish with:
 - summary: what you changed and why, for the PR description.
 - next_steps: what remains or what the reviewer should look at.
