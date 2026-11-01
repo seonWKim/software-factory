@@ -151,6 +151,9 @@ export class GitHubIssueSource implements SourceAdapter {
         events.push({ kind: "spec_rejected", source, comment_id, approver: identity(cm.user), reason });
       } else if (command === "/retry") {
         events.push({ kind: "retry_requested", source, comment_id, requester: identity(cm.user) });
+      } else if (command === "/budget" || /^\/budget\s/.test(command)) {
+        const amount = command.slice("/budget".length).trim();
+        events.push({ kind: "budget_continue", source, comment_id, approver: identity(cm.user), amount: amount === "" ? null : amount });
       } else if (command === "/verdict" || /^\/verdict\s/.test(command)) {
         const args = [command.slice("/verdict".length).trim(), ...rest].join("\n").trim();
         const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
