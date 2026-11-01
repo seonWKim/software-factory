@@ -9,13 +9,13 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import {
-  type FacetCounts, type FilterRow, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts,
-  isFiltered, runKindOf, searchKeys,
+  type FacetCounts, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts, isFiltered,
 } from "./filters.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
 import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
-import { type Level, NEEDS_YOU, type PriorityInput, rank } from "./priority.js";
+import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
+import { NEEDS_YOU } from "./priority.js";
 import { Withholder } from "./withhold.js";
 
 export { STAGES } from "./filters.js";
@@ -35,10 +35,11 @@ export interface UiDeps {
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
   factoryStatus?: () => Promise<FactoryStatus | null>;
+  /** The built app served under /app/; absent: web/dist in this checkout. */
+  appDir?: string;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LIST_LIMIT = 200;
 
 /** Days the cost section covers, today (UTC) included. */
 const COST_DAYS = 7;
@@ -118,7 +119,7 @@ class Ctx {
 export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefresh = false): Promise<string> {
   const c = new Ctx(d);
   const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
-  const rows = await listRows(c, f);
+  const rows = await listRows({ store: d.store, w: c.w, now: c.now, lease_ms: d.lease_ms }, f);
   const sections = [
     await factorySection(c),
     await totalsSection(c),
@@ -182,71 +183,6 @@ async function factorySection(c: Ctx): Promise<string> {
     case "build_failed":
       return `${open("bad", `Revision ${esc(short(s.target_rev))} failed to build.`)} Still running <code>${esc(short(s.rev))}</code>; its settings stay in effect until main builds.</p></section>`;
   }
-}
-
-/** One ranked row of the list, with what the filters read. */
-interface ListRow extends FilterRow {
-  item: WorkItem;
-  input: PriorityInput;
-  badges: string[];
-  /** Escaped title HTML (withheld marker when withheld; source id when untitled). */
-  titleHtml: string;
-  /** The full title as shown, for the title attribute; null when withheld or untitled. */
-  titlePlain: string | null;
-  runStatus: "queued" | "running" | null;
-  /** Merge conflicts resolved automatically and those that needed a person, from the item's history. */
-  conflicts: ConflictCounts;
-}
-
-/** Every listed item, ranked (closed items too when the filters may show them). */
-async function listRows(c: Ctx, f: Filters): Promise<ListRow[]> {
-  const withClosed = f.closed || f.state === "closed" || f.stage === "CLOSED";
-  const items = await c.d.store.listWorkItemsWhere({ exclude_closed: !withClosed, limit: LIST_LIMIT });
-  const active = new Map<WorkItemId, Run>();
-  for (const r of await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT)) if (!active.has(r.work_item_id)) active.set(r.work_item_id, r);
-  for (const r of await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)) active.set(r.work_item_id, r); // running wins
-
-  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts })[] = [];
-  for (const it of items) {
-    const run = active.get(it.id);
-    const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
-    const changes = await c.d.store.listStateChanges(it.id);
-    inputs.push({
-      item: it,
-      stage: it.stage,
-      blocked_on: it.blocked_on,
-      blocked_reason: it.blocked_reason,
-      close_reason: it.close_reason,
-      tier: it.tier,
-      since: blocked && it.stage !== "CLOSED" ? waitingSince(it, changes) : it.updated_at,
-      run: run && (run.status === "queued" || run.status === "running") ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at } : null,
-      dependents: 0,
-      waiting_on: 0,
-      conflicts: conflictCounts(await c.d.store.listRuns(it.id), changes),
-    });
-  }
-
-  const out: ListRow[] = [];
-  for (const r of rank(inputs, c.now, c.d.lease_ms)) {
-    const it = r.input.item;
-    const t = it.title ? await c.w.shown(it.title, { max: 120 }) : { html: esc(it.source.id), plain: null };
-    out.push({
-      item: it,
-      input: r.input,
-      level: r.level,
-      badges: r.badges,
-      stage: it.stage,
-      tier: it.tier,
-      kind: runKindOf(it.blocked_reason, r.input.run?.kind ?? null),
-      dependents: r.input.dependents,
-      search: searchKeys(it.source.id, it.title ? t.plain : null),
-      titleHtml: t.html,
-      titlePlain: t.plain,
-      runStatus: r.input.run?.status ?? null,
-      conflicts: r.input.conflicts,
-    });
-  }
-  return out;
 }
 
 function option(value: string, label: string, n: number, selected: boolean): string {
@@ -343,15 +279,6 @@ const PLAIN_REASONS: Record<string, string> = {
   max_loops: "review found bugs too many times",
   merge_conflict_pending: "merge conflict",
 };
-
-/**
- * When the item started waiting: the latest state change that set its blocked_on or blocked_reason
- * (created_at if none did).
- */
-function waitingSince(it: WorkItem, changes: readonly StateChange[]): string {
-  const set = changes.filter((sc) => sc.changes.blocked_on !== undefined || sc.changes.blocked_reason !== undefined).at(-1);
-  return set?.at ?? it.created_at;
-}
 
 async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
   const issue = { url: it.source.link, label: "issue" };

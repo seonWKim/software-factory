@@ -24,10 +24,14 @@ const BUILT_MARKER = ".factory-built-rev";
 export const PID_FILE = ".factory-pid";
 const TAIL = 2000;
 
-/** Files whose change needs a build and a restart. Anything else (docs) only moves the newest folder. */
+/**
+ * Files whose change needs a build and a restart. Anything else (docs) only moves the newest folder.
+ * web/ is the status app that `npm run build` builds into web/dist (design §9).
+ */
 export function isCodePath(file: string): boolean {
   return (
     file.startsWith("src/") ||
+    file.startsWith("web/") ||
     file.startsWith("prompts/") ||
     file === "package.json" ||
     file === "package-lock.json" ||
