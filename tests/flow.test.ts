@@ -59,7 +59,7 @@ describe("one issue to one merged PR", () => {
     await f.step();
     let item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     expect(item).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 });
-    expect(f.source.comments[0]!.body).toContain("Reply `/approve`");
+    expect(f.source.comments[0]!.body).toContain("- `/approve [notes]`");
     expect(f.source.comments[0]!.body).toContain(
       "### Files\nAllowed to change:\n- `.github/workflows/`\n\nExpected to change:\n- `.github/workflows/scope.yml`",
     );
@@ -915,5 +915,213 @@ describe("pre-push diff gates: size limit and floor check", () => {
     const runs = (await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement");
     expect(runs.map((r) => r.status)).toEqual(["succeeded", "queued"]);
     expect((await f.store.listStateChanges(f.item.id)).filter((c) => c.reason === "floor_tier_approved")).toHaveLength(1);
+  });
+});
+
+describe("approval notes, unknown commands, /help and footers", () => {
+  const SECRET = "known-secret-value-0123456789";
+  const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
+  async function atSpecGate(n: number, opts: { review?: "pass" | "bug" } = {}) {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: implementOk,
+      review: review(opts.review ?? "pass"),
+    });
+    const f = await factory(runner, [SECRET]);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    return { ...f, runner, src, item };
+  }
+  type F = Awaited<ReturnType<typeof atSpecGate>>;
+  const prompts = (f: F, role: string) => f.runner.specs.filter((s) => s.role === role).map((s) => s.prompt);
+  const lastLines = (body: string, n: number) => body.trim().split("\n").slice(-n);
+  const NOTES = "## Notes from the approver";
+
+  it("stores the note on spec_approved and puts it, marked untrusted, in the implement and review prompts", async () => {
+    const f = await atSpecGate(70);
+    const note = "Keep the existing CLI flag.\nDo not touch the config loader.";
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "7001", approver: alice, note });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(row.detail).toMatchObject({ note });
+    for (const role of ["implement", "review"]) {
+      const p = prompts(f, role)[0]!;
+      expect(p).toContain(NOTES);
+      expect(p).toContain(note);
+      const section = p.slice(p.indexOf(NOTES));
+      expect(section.split("\n").slice(0, 4).join("\n")).toMatch(/untrusted/i);
+    }
+  });
+
+  it("with no note, neither prompt has the section, and the row has no note", async () => {
+    const f = await atSpecGate(71);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "7101", approver: alice, note: "   " });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(row.detail?.note).toBeUndefined();
+    expect(prompts(f, "implement")[0]).not.toContain(NOTES);
+    expect(prompts(f, "review")[0]).not.toContain(NOTES);
+  });
+
+  it("caps a stored note at 2000 characters", async () => {
+    const f = await atSpecGate(72);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "7201", approver: alice, note: "x".repeat(5000) });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(row.detail?.note).toBe("x".repeat(2000));
+  });
+
+  it("a note the egress scanner blocks is refused with one reply; nothing is stored and the stage stays", async () => {
+    const f = await atSpecGate(73);
+    const before = (await f.store.getWorkItem(f.item.id))!;
+    const e = { kind: "spec_approved" as const, source: f.src, comment_id: "7301", approver: alice, note: `use ${SECRET}` };
+    f.source.queue.push(e);
+    await f.step();
+    f.source.queue.push(e);
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toEqual(before);
+    expect(JSON.stringify(await f.store.listStateChanges(f.item.id))).not.toContain(SECRET);
+    const refusals = f.source.comments.filter((c) => c.marker === "<!-- factory:refused:7301 -->");
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.body).toContain("`/approve` was not applied");
+    expect(refusals[0]!.body).toMatch(/note/);
+    expect(refusals[0]!.body).not.toContain(SECRET);
+    expect(f.runner.specs.some((s) => s.prompt.includes(SECRET))).toBe(false);
+  });
+
+  it("a refused approval (no write permission) stores no note and writes no state change", async () => {
+    const f = await atSpecGate(74);
+    const changes = (await f.store.listStateChanges(f.item.id)).length;
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "7401", approver: mallory, note: "do it my way" });
+    await f.step();
+    expect(await f.store.listStateChanges(f.item.id)).toHaveLength(changes);
+    expect(JSON.stringify(await f.store.listStateChanges(f.item.id))).not.toContain("do it my way");
+    expect(f.source.comments.filter((c) => c.marker === "<!-- factory:refused:7401 -->")).toHaveLength(1);
+  });
+
+  it("the prompts use the latest approval that has a note: a floor approval's note replaces the spec's, a bare one keeps it", async () => {
+    const raised: FactoryConfig = { ...config, floors: [...config.floors, { prefix: ".github/workflows/", tier: 3 }] };
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: implementOk, review: review("pass", 3) });
+    const f = await factory(runner, [], silent, { workerConfig: raised });
+    f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    const src = issueRef(75);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "7501", approver: alice, note: "spec note" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(item.blocked_reason).toBe("floor_tier");
+
+    // Floor block footer.
+    const floor = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:floor:"))!;
+    expect(floor.body).toContain("- `/approve [notes]`");
+    expect(floor.body).toContain("- `/reject <reason>`");
+    expect(lastLines(floor.body, 1)[0]).toMatch(/^- `\/help`/);
+
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "7502", approver: alice, note: "floor note" });
+    await f.step();
+    const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
+    expect(approval.detail).toMatchObject({ note: "floor note", previous_tier: 2, tier: 3 });
+    const impl = runner.specs.filter((s) => s.role === "implement").map((s) => s.prompt);
+    expect(impl[0]).toContain("spec note");
+    expect(impl[1]).toContain("floor note");
+    expect(impl[1]).not.toContain("spec note");
+    expect(runner.specs.find((s) => s.role === "review")!.prompt).toContain("floor note");
+  });
+
+  it("an unknown command on a work item gets one reply with the commands that apply now; a redelivery posts nothing more", async () => {
+    const f = await atSpecGate(76);
+    const e = { kind: "unknown_command" as const, source: f.src, comment_id: "7601", requester: alice, command: "aprove" };
+    f.source.queue.push(e);
+    await f.controller.tickIntake();
+    await f.controller.handleEvent(e);
+    const replies = f.source.comments.filter((c) => c.marker === "<!-- factory:unknown:7601 -->");
+    expect(replies).toHaveLength(1);
+    const lines = replies[0]!.body.split("\n");
+    expect(lines[0]).toBe('Unknown command "/aprove".');
+    expect(replies[0]!.body).toContain("- `/approve [notes]`");
+    expect(replies[0]!.body).toContain("- `/reject <reason>`");
+    expect(replies[0]!.body).not.toContain("`/retry`");
+    expect(lines.at(-1)).toMatch(/^- `\/help`/);
+    expect((await f.store.getWorkItem(f.item.id))!).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect((await f.store.listStateChanges(f.item.id)).map((c) => c.reason)).toEqual(["intake", "triaged"]);
+  });
+
+  it("/help gets one reply listing every command, marking those that apply", async () => {
+    const f = await atSpecGate(77);
+    const e = { kind: "help_requested" as const, source: f.src, comment_id: "7701", requester: alice };
+    f.source.queue.push(e);
+    await f.controller.tickIntake();
+    await f.controller.handleEvent(e);
+    const replies = f.source.comments.filter((c) => c.marker === "<!-- factory:help:7701 -->");
+    expect(replies).toHaveLength(1);
+    for (const usage of ["/approve [notes]", "/reject <reason>", "/revise <feedback>", "/retry", "/help"]) {
+      expect(replies[0]!.body).toContain(`\`${usage}\``);
+    }
+    expect(replies[0]!.body).toContain("`/approve [notes]` **(now)**");
+    expect(replies[0]!.body).not.toContain("`/retry` **(now)**");
+  });
+
+  it("an unknown command or /help on an issue that is not a work item gets no reply and no 👀", async () => {
+    const f = await factory(new FakeRunner({}));
+    f.source.queue.push(
+      { kind: "unknown_command", source: issueRef(78), comment_id: "7801", requester: alice, command: "xyz" },
+      { kind: "help_requested", source: issueRef(78), comment_id: "7802", requester: alice },
+    );
+    await f.controller.tickIntake();
+    expect(f.source.reactions).toEqual([]);
+    expect(f.source.comments).toEqual([]);
+  });
+
+  it("the spec comment ends with the spec-gate commands and /help", async () => {
+    const f = await atSpecGate(79);
+    const spec = f.source.comments.find((c) => c.body.startsWith("## Factory spec"))!;
+    expect(spec.body).toContain("- `/approve [notes]`");
+    expect(spec.body).toContain("- `/reject <reason>`");
+    expect(lastLines(spec.body, 1)[0]).toMatch(/^- `\/help`/);
+  });
+
+  it("the max-loops and merge comments end with /help and a line saying no command changes the state", async () => {
+    const f = await atSpecGate(80, { review: "bug" });
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "8001", approver: alice });
+    await f.step();
+    const max = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:max-loops:"))!;
+    expect(lastLines(max.body, 2)[0]).toMatch(/^- `\/help`/);
+    expect(lastLines(max.body, 1)[0]).toBe("No command changes this item's state now.");
+
+    const g = await atSpecGate(81);
+    g.source.queue.push({ kind: "spec_approved", source: g.src, comment_id: "8101", approver: alice });
+    await g.step();
+    const merge = g.source.comments.find((c) => c.marker.startsWith("<!-- factory:merge:"))!;
+    expect(merge.body).toContain("human merge is required");
+    expect(lastLines(merge.body, 2)[0]).toMatch(/^- `\/help`/);
+    expect(lastLines(merge.body, 1)[0]).toBe("No command changes this item's state now.");
+  });
+
+  it("failure comments that wait for a human end with /retry and /help", async () => {
+    // Dead letter.
+    const runner = new FakeRunner({ triage: () => ({ status: "failed", error: "boom" }) });
+    const f = await factory(runner);
+    f.source.queue.push({ kind: "item_requested", source: issueRef(82), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.clock.advance(config.retry_max_ms);
+    await f.step();
+    f.clock.advance(config.retry_max_ms);
+    await f.step();
+    const dead = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:run-failed:"))!;
+    expect(dead.body).toContain("- `/retry`");
+    expect(lastLines(dead.body, 1)[0]).toMatch(/^- `\/help`/);
+
+    // Diff too large.
+    const g = await atSpecGate(83);
+    g.sandbox.numstat = [[1000, 501, ".github/workflows/scope.yml"]].map(([a, d, p]) => `${a}\t${d}\t${p}\0`).join("");
+    g.source.queue.push({ kind: "spec_approved", source: g.src, comment_id: "8301", approver: alice });
+    await g.step();
+    const big = g.source.comments.find((c) => c.marker.startsWith("<!-- factory:run-failed:"))!;
+    expect(big.body).toContain("max_diff_lines");
+    expect(big.body).toContain("- `/retry`");
+    expect(lastLines(big.body, 1)[0]).toMatch(/^- `\/help`/);
   });
 });

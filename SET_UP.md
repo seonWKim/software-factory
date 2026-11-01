@@ -58,13 +58,28 @@ To run your working tree instead (as before), set `"updater": "none"` in the `pl
 Then on GitHub:
 
 1. Label an issue `factory`.
-2. The factory posts a spec on the issue. Reply `/approve`, `/reject <reason>`, or `/revise <feedback>`. `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
+2. The factory posts a spec on the issue. Reply `/approve [notes]`, `/reject <reason>`, or `/revise <feedback>`. Notes after `/approve` (on the same line or the lines below) go to the implementer and the reviewer; `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, and comments when a human merge is needed. Merge it yourself.
 4. If a step fails, it comments; reply `/retry`.
 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the reason. A verdict is only recorded; it does not move the item. It needs a PR to exist and is refused once the item is closed.
 
 Only users with write permission on the repository can approve, reject, revise, retry or record a verdict.
 The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
+
+### Commands
+
+A command is the first line of a comment: `/` and the command name (any case), then a space, the end of the line, or one of `.,:;!?`. Every comment where the factory waits for you ends with the commands that apply at that point. `/help` replies with the full list, marking those. A mistyped command (say `/aprove`) gets one reply naming it, with the commands that apply now. On an issue that is not a factory work item, commands get no reaction and no reply.
+
+| Command | What it does | Applies when |
+|---|---|---|
+| `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
+| `/retry` | Run the failed run again | blocked by a failed run |
+| `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
+| `/help` | List every command and which ones apply now | any time |
+
+Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
 
 ### Status labels
 
