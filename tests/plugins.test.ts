@@ -41,8 +41,12 @@ import {
   REGISTRY,
   type Registry,
   createPlugin,
+  declaredSecrets,
+  selectPlugins,
+  selectedSources,
   withPlugin,
 } from "../src/plugins.js";
+import { FakeSlackPollSource, fakeSlackPollRegistry } from "./helpers/fakes.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -486,6 +490,110 @@ describe("plugin registry: existing config keys keep working", () => {
     } finally {
       await built.close();
     }
+  });
+});
+
+describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () => {
+  const registry = fakeSlackPollRegistry();
+  const select = (source: unknown, reg: Registry = registry) =>
+    selectPlugins(reg, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), source } }, { platform: "linux" });
+  const failure = (source: unknown): string | null => {
+    try {
+      select(source);
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  it("a single string selects exactly as today, and is a list of one", () => {
+    const s = select("github-issues");
+    expect(s.source).toBe("github-issues");
+    expect(s.sources).toBeUndefined();
+    expect(selectedSources(s)).toEqual(["github-issues"]);
+  });
+
+  it("a list of one gives the same selection as the string", () => {
+    expect(select(["github-issues"])).toEqual(select("github-issues"));
+    expect(select(["fake-slack-poll"])).toEqual(select("fake-slack-poll"));
+  });
+
+  it("a list of two keeps both names, in order", () => {
+    const s = select(["github-issues", "fake-slack-poll"]);
+    expect(selectedSources(s)).toEqual(["github-issues", "fake-slack-poll"]);
+    expect(s.source).toBe("github-issues");
+  });
+
+  it("an empty list fails, naming plugins.source", () => {
+    expect(failure([])).toMatch(/plugins\.source/);
+  });
+
+  it("an unknown name in the list fails, naming plugins.source and the name", () => {
+    const err = failure(["github-issues", "no-such-source"]);
+    expect(err).toMatch(/plugins\.source/);
+    expect(err).toContain("no-such-source");
+    expect(err).toContain("github-issues");
+  });
+
+  it("a non-string entry fails, naming plugins.source", () => {
+    expect(failure(["github-issues", 3])).toMatch(/plugins\.source/);
+  });
+
+  it("the same name twice fails, naming plugins.source and the name", () => {
+    const err = failure(["github-issues", "github-issues"]);
+    expect(err).toMatch(/plugins\.source/);
+    expect(err).toContain("github-issues");
+  });
+
+  it("loadConfig reports the same failures at startup", async () => {
+    const cfg = (source: unknown) => root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), source } });
+    await expect(loadConfig(cfg([]), { registry })).rejects.toThrow(/plugins\.source/);
+    await expect(loadConfig(cfg(["github-issues", "github-issues"]), { registry })).rejects.toThrow(/plugins\.source/);
+    await expect(loadConfig(cfg(["github-issues", "nope"]), { registry })).rejects.toThrow(/plugins\.source/);
+  });
+
+  it("every listed source's secrets are declared", () => {
+    const reg = withPlugin(registry, "source", "secret-source", () => new FakeSlackPollSource(), [
+      { name: "SLACK_APP_TOKEN" as SecretName, purpose: "the test source's token" },
+    ]);
+    const names = (source: unknown) => declaredSecrets(reg, select(source, reg)).map((d) => d.name);
+    expect(names(["github-issues", "secret-source"])).toContain("SLACK_APP_TOKEN");
+    expect(names("github-issues")).not.toContain("SLACK_APP_TOKEN");
+  });
+
+  it("build() makes one adapter per listed source and hands them all to the controller", async () => {
+    const made: FakeSlackPollSource[] = [];
+    const reg = fakeSlackPollRegistry(REGISTRY, () => {
+      const s = new FakeSlackPollSource();
+      made.push(s);
+      return s;
+    });
+    const dir = root({
+      ...REAL,
+      store: { type: "sqlite" },
+      plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues", "fake-slack-poll"] },
+    });
+    const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock() });
+    try {
+      const sources = (built.controller as unknown as { sources: readonly unknown[] }).sources;
+      expect(sources).toHaveLength(2);
+      expect(sources[0]).toBeInstanceOf(GitHubIssueSource);
+      expect(made).toHaveLength(1);
+      expect(sources[1]).toBe(made[0]);
+    } finally {
+      await built.close();
+    }
+  });
+
+  it("build() refuses two listed sources of the same type, naming plugins.source", async () => {
+    let reg = fakeSlackPollRegistry();
+    reg = withPlugin(reg, "source", "fake-slack-poll-2", () => new FakeSlackPollSource());
+    const dir = root({
+      ...REAL,
+      store: { type: "sqlite" },
+      plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues", "fake-slack-poll", "fake-slack-poll-2"] },
+    });
+    await expect(build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock() })).rejects.toThrow(/plugins\.source.*slack_thread/);
   });
 });
 
