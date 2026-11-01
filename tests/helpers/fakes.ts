@@ -1,5 +1,6 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
+import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
 import type { SourceRef, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
@@ -11,6 +12,7 @@ import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "..
 export const config: FactoryConfig = {
   repo: { owner: "o", name: "r", path: "/repo", base_branch: "main", test_command: ["npm", "test"] },
   intake_label: "factory",
+  status_label_prefix: "sf: ",
   branch_prefix: "factory/",
   dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 },
   floors: [{ prefix: "src/impl/broker/", tier: 4 }],
@@ -69,6 +71,33 @@ export class FakeSource implements SourceAdapter {
     if (this.reactionError) throw this.reactionError;
     this.reactions.push({ source, comment_id: commentId });
   }
+  /** Every setStatus call, in order, including ones that threw. */
+  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
+  /** When set, setStatus records the call, then throws this without changing labels. */
+  statusError: Error | null = null;
+  /**
+   * Labels per target (`labelTarget`). Status labels are the WorkStatus names themselves; anything else
+   * in a set stands for a label the factory does not own.
+   */
+  labels = new Map<string, Set<string>>();
+  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    this.statusCalls.push({ source, status, pr_number });
+    if (this.statusError) throw this.statusError;
+    const key = labelTarget(source, pr_number);
+    const set = this.labels.get(key) ?? new Set<string>();
+    for (const s of WORK_STATUSES) if (s !== status) set.delete(s);
+    set.add(status);
+    this.labels.set(key, set);
+  }
+  /** The status labels on a target. */
+  statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
+    const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
+    return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
+  }
+}
+
+export function labelTarget(source: SourceRef, pr_number: number | null): string {
+  return pr_number === null ? source.id : `${source.id}:pr#${pr_number}`;
 }
 
 /** Only subject "1" may approve. */

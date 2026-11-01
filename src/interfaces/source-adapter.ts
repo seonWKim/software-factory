@@ -1,3 +1,4 @@
+import type { WorkStatus } from "../core/status-label.js";
 import type { SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
@@ -50,4 +51,13 @@ export interface SourceAdapter {
    * Idempotent. Failures are the caller's to log; they must not block a transition.
    */
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
+  /**
+   * Shows the work item's status on the source (GitHub: one status label). `pr_number` null means the item
+   * itself (the issue); non-null means label that PR instead of the issue, so a caller that wants both
+   * calls twice. Afterwards the target carries exactly one of the factory's status markers; markers the
+   * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
+   * failures are the caller's to log and must not block a transition. Sources with no such surface may
+   * do nothing.
+   */
+  setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void>;
 }
