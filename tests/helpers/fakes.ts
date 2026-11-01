@@ -7,7 +7,7 @@ import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scann
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
-import type { PollResult, PollSource, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
+import type { PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource } from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -117,6 +117,17 @@ export class FakeSource implements PollSource {
     for (const s of WORK_STATUSES) if (s !== status) set.delete(s);
     set.add(status);
     this.labels.set(key, set);
+  }
+  /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
+  checkResults: PrChecks[] = [];
+  /** Every PR number prChecks was asked about, in order. */
+  checkCalls: number[] = [];
+  /** When set, prChecks records the call, then throws this. */
+  checksError: Error | null = null;
+  async prChecks(pr_number: number): Promise<PrChecks> {
+    this.checkCalls.push(pr_number);
+    if (this.checksError) throw this.checksError;
+    return this.checkResults.shift() ?? { state: "passed" };
   }
   /** The status labels on a target. */
   statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
