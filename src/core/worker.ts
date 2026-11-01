@@ -9,7 +9,7 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
+import { AUTO_RESOLVE_LIMIT, RATE_LIMITED, branchFor, scopeViolations } from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import type { Run, RunKind, RunOutcome, Timestamp, WorkItem, WorkerId } from "./types.js";
@@ -313,7 +313,7 @@ export class Worker {
     // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in.
     const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha);
     const tokens = tokensOf(result) + sync.tokens;
-    const floor = await this.prePush(run, item, handle, ctx, sync.baseSha);
+    const floor = await this.prePush(run, item, handle, ctx, sync.baseSha, sync.conflicts);
     if (floor) {
       // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
       return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor, tokens };
@@ -343,15 +343,20 @@ export class Worker {
     });
     if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
     const content = pr.content as { number: number };
-    return { pr_number: content.number, commits: commits.length, tokens };
+    // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict).
+    return { pr_number: content.number, commits: commits.length, tokens, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
   }
 
   /**
    * Sync before push (design §4, decided 2026-11-01): fetches origin/<base> after the implementer exited and
    * merges that commit into the branch with a merge commit (never a rebase, never a force push). A conflict
-   * gets one agent step in the same run to resolve the files; the worker, not the agent, then decides: no
-   * unmerged paths, a working tree that matches what will be committed, and a passing test command, or the run fails with `merge_conflict` (nothing pushed, an
-   * issue comment). Returns the merged-in base SHA, the one every pre-push check diffs against.
+   * gets an agent step in the same run to resolve the files; the worker, not the agent, then decides: no
+   * unmerged paths, a working tree that matches what will be committed, no conflict markers, a passing test
+   * command and HEAD unmoved by it. A failed step is retried once in the same run as a resolve step
+   * (decision changed 2026-11-02): the worker puts the branch back on the implementer's last commit, merges
+   * again and runs the resolve prompt, under the same checks. Both failing: `merge_conflict` (nothing pushed,
+   * an issue comment). Returns the merged-in base SHA, the one every pre-push check diffs against, and the
+   * conflicting files, which the scope gate lets through.
    * Git hooks are off for the merge and the commit: the agent's writable git dir could have planted one.
    */
   private async syncBase(
@@ -363,7 +368,7 @@ export class Worker {
     gitDir: string,
     dirs: string,
     trustedBaseSha: string,
-  ): Promise<{ baseSha: string; merged: boolean; tokens: number }> {
+  ): Promise<{ baseSha: string; merged: boolean; tokens: number; conflicts: string[] }> {
     const { repo } = this.d.config;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
@@ -378,23 +383,26 @@ export class Worker {
     }
 
     const ancestor = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
-    if (ancestor.exit_code === 0) return { baseSha, merged: false, tokens: 0 };
+    if (ancestor.exit_code === 0) return { baseSha, merged: false, tokens: 0, conflicts: [] };
     if (ancestor.exit_code !== 1) throw new RunFailure("git_failed", `git merge-base: ${ancestor.stderr.trim()}`, true);
     const fork = (await this.git(handle, ["merge-base", "HEAD", baseSha])).trim();
+    // The implementer's last commit: a failed conflict step is retried from here.
+    const tip = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
 
     const identity = gitIdentity(this.d.config.agent_git_identity);
     const branch = branchFor(item, this.d.config.branch_prefix);
     const message = `Merge ${baseRef} (${baseSha.slice(0, 8)}) into ${branch}`;
     const merge = await this.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
-    if (merge.exit_code === 0) return { baseSha, merged: true, tokens: 0 };
+    if (merge.exit_code === 0) return { baseSha, merged: true, tokens: 0, conflicts: [] };
 
     const conflicts = await this.unmerged(handle);
     if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
     const touched = (await this.git(handle, [
       "log", "--no-merges", `--max-count=${MAX_CONFLICT_COMMITS}`, "--format=%H %s", `${fork}..${baseSha}`, "--", ...conflicts,
     ])).split("\n").filter(Boolean).map((l) => `- ${l.slice(0, 8)} ${l.slice(41)}`);
+    const step = { run, item, handle, signal, gitDir, dirs, baseSha, conflicts, identity };
 
-    const result = await this.agent(run, item, handle, signal, {
+    const first = await this.conflictStep(step, "merge", {
       system_prompt: this.d.prompts.implement,
       prompt: [
         renderWorkItem(item, { includeSpec: true }),
@@ -408,33 +416,118 @@ export class Worker {
         `Base commits since this branch forked that touched them${touched.length === MAX_CONFLICT_COMMITS ? ` (newest ${MAX_CONFLICT_COMMITS})` : ""}:`,
         ...(touched.length ? touched : ["- (none found)"]),
       ].join("\n"),
+      output_schema: IMPLEMENT_SCHEMA,
+    });
+    let tokens = first.tokens;
+    if (first.failure === null) return this.commitSync(handle, baseSha, conflicts, tokens, first.pending, identity);
+
+    // Retry as a resolve step (decision changed 2026-11-02): same run, nothing pushed in between.
+    const resolvePrompt = this.d.prompts.resolve;
+    if (!resolvePrompt) return this.mergeConflict(run, item, ctx, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
+    await this.restartMerge(handle, tip, branch);
+    const again = await this.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
+    if (again.exit_code === 0) return { baseSha, merged: true, tokens, conflicts: [] };
+    const left = await this.unmerged(handle);
+    if (left.length === 0) throw new RunFailure("git_failed", `git merge: ${again.stderr.trim()}`, true);
+    const files: ConflictFile[] = [];
+    for (const path of left) {
+      const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
+      files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
+    }
+    const second = await this.conflictStep({ ...step, conflicts: left }, "resolve", {
+      system_prompt: resolvePrompt,
+      prompt: [
+        renderResolvePrompt(item, baseRef, files, ""),
+        "",
+        "## Earlier attempt in this run",
+        "",
+        `A first resolution step failed the factory's checks: ${first.failure}. The branch was put back on the work item's last commit and the base merged again, so the conflicts above are fresh. You do not need to stage or commit; the factory stages the conflicting files and tracked changes, then checks and commits the merge.`,
+      ].join("\n"),
+      output_schema: IMPLEMENT_SCHEMA,
+    });
+    tokens += second.tokens;
+    if (second.failure !== null) {
+      return this.mergeConflict(run, item, ctx, left, `${first.failure}; the retry as a resolve step failed too: ${second.failure}`, second.transcript);
+    }
+    return this.commitSync(handle, baseSha, left, tokens, second.pending, identity);
+  }
+
+  /** Commits a resolved, checked merge that is still pending (the agent may have committed it already). */
+  private async commitSync(
+    handle: SandboxHandle,
+    baseSha: string,
+    conflicts: string[],
+    tokens: number,
+    pending: boolean,
+    identity: Record<string, string>,
+  ): Promise<{ baseSha: string; merged: boolean; tokens: number; conflicts: string[] }> {
+    if (pending) await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-edit"], identity);
+    return { baseSha, merged: true, tokens, conflicts };
+  }
+
+  /**
+   * Puts the branch back on the implementer's last commit with a clean index and working tree, whatever the
+   * failed conflict step did (staged, committed, aborted, switched branch, set index bits). Ignored files stay.
+   */
+  private async restartMerge(handle: SandboxHandle, tip: string, branch: string): Promise<void> {
+    await this.git(handle, ["read-tree", tip]);
+    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, tip]);
+    await this.git(handle, [...NO_HOOKS, "reset", "--quiet", "--hard", tip]);
+    await this.git(handle, [...NO_HOOKS, "clean", "-ffdq"]);
+  }
+
+  /**
+   * One agent step on a conflicted merge, then the worker's checks. `merge` (the implement prompt): the agent
+   * stages its resolution. `resolve` (the retry): the worker stages the conflicting files and tracked changes.
+   * Checks: no unmerged paths, the merge not aborted, nothing unstaged or uncommitted, no conflict markers in the
+   * conflicting files, the test command passes and HEAD did not move during it. Returns the first failed
+   * check in words, or null; `pending` says whether the merge still needs its commit.
+   */
+  private async conflictStep(
+    s: {
+      run: Run; item: WorkItem; handle: SandboxHandle; signal: AbortSignal; gitDir: string; dirs: string;
+      baseSha: string; conflicts: string[]; identity: Record<string, string>;
+    },
+    name: "merge" | "resolve",
+    spec: Pick<AgentRunSpec, "system_prompt" | "prompt" | "output_schema">,
+  ): Promise<{ failure: string | null; pending: boolean; tokens: number; transcript: string }> {
+    const { run, item, handle, signal, conflicts } = s;
+    const result = await this.agent(run, item, handle, signal, {
+      ...spec,
+      ...(name === "resolve" ? { role: "resolve" as const } : {}),
       tools: WRITE_TOOLS,
       model_class: "strong",
-      output_schema: IMPLEMENT_SCHEMA,
-      writable_paths: [gitDir],
-      env_allowlist: identity,
-    }, "merge");
-    await this.distrustAgentGit(handle, dirs);
-    const tokens = tokensOf(result);
-    const fail = (why: string) => this.mergeConflict(run, item, ctx, conflicts, why, result.transcript);
+      writable_paths: [s.gitDir],
+      env_allowlist: s.identity,
+    }, name);
+    await this.distrustAgentGit(handle, s.dirs);
+    const done = (failure: string | null, pending = false) => ({ failure, pending, tokens: tokensOf(result), transcript: result.transcript });
 
+    const pending = (await this.gitRaw(handle, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"])).exit_code === 0;
+    if (name === "resolve" && pending) {
+      await this.git(handle, ["add", "-u"]);
+      await this.git(handle, ["add", "-A", "--", ...conflicts]);
+    }
     const left = await this.unmerged(handle);
-    if (left.length > 0) return fail(`unmerged paths remain after the resolution step: ${left.join(", ")}`);
-    const pending = await this.gitRaw(handle, ["rev-parse", "--verify", "--quiet", "MERGE_HEAD"]);
-    if (pending.exit_code !== 0) {
+    if (left.length > 0) return done(`unmerged paths remain after the resolution step: ${left.join(", ")}`);
+    if (!pending) {
       // The agent committed or aborted the merge itself; only a branch that contains the base may go on.
-      const has = await this.gitRaw(handle, ["merge-base", "--is-ancestor", baseSha, "HEAD"]);
-      if (has.exit_code !== 0) return fail("the merge was aborted during the resolution step");
+      const has = await this.gitRaw(handle, ["merge-base", "--is-ancestor", s.baseSha, "HEAD"]);
+      if (has.exit_code !== 0) return done("the merge was aborted during the resolution step");
     }
     // The tests run on the working tree but the commit takes the index (or the agent already committed): both
     // must match the working tree for tracked files, or the push could carry content the tests never saw.
     const unstaged = await this.differs(handle, ["diff", "--quiet"]);
-    const uncommitted = pending.exit_code !== 0 && (await this.differs(handle, ["diff", "--cached", "--quiet"]));
+    const uncommitted = !pending && (await this.differs(handle, ["diff", "--cached", "--quiet"]));
     if (unstaged || uncommitted) {
-      return fail(`the resolution left changes ${unstaged ? "not staged" : "not committed"}, so the tests would not see what is pushed`);
+      return done(`the resolution left changes ${unstaged ? "not staged" : "not committed"}, so the tests would not see what is pushed`);
     }
+    const markers = await this.gitRaw(handle, ["grep", "--cached", "-l", "-E", "^(<<<<<<<|>>>>>>>)( |$)", "--", ...conflicts]);
+    if (markers.exit_code === 0) return done(`conflict markers left in: ${markers.stdout.trim().split("\n").join(", ")}`);
+    if (markers.exit_code !== 1) throw new RunFailure("git_failed", `git grep: ${markers.stderr.trim()}`, true);
 
-    const cmd = repo.test_command;
+    const cmd = this.d.config.repo.test_command;
+    const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const tests = await this.d.sandbox
       .exec(handle, cmd, { env: { ...this.d.toolEnv, ...this.indexEnv() }, timeout_ms: this.d.config.run_timeout_ms, signal })
       .catch((err: unknown) => {
@@ -443,10 +536,12 @@ export class Worker {
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     if (tests.exit_code !== 0) {
       const how = tests.timed_out ? "timed out" : `exited ${tests.exit_code ?? tests.signal ?? "abnormally"}`;
-      return fail(`tests failed after the resolution (\`${cmd.join(" ")}\` ${how})`);
+      return done(`tests failed after the resolution (\`${cmd.join(" ")}\` ${how})`);
     }
-    if (pending.exit_code === 0) await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-edit"], identity);
-    return { baseSha, merged: true, tokens };
+    // The test command runs repo code: it must not have moved HEAD or finished the merge itself.
+    const now = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    if (now !== head) return done(`HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the tests`);
+    return done(null, pending);
   }
 
   /** The `merge_conflict` failure: an issue comment with the conflicting files, then a task failure. */
@@ -462,7 +557,7 @@ export class Worker {
     const body = [
       "## Factory sync check: push blocked",
       "",
-      `Before pushing, the implement run merged \`origin/${base}\` into the branch and the merge conflicted. The conflict could not be resolved: ${why}.`,
+      `Before pushing, the implement run merged \`origin/${base}\` into the branch and the merge conflicted. The conflict could not be resolved, also after a retry as a resolve step: ${why}.`,
       "",
       "Nothing was pushed. Conflicting files:",
       "",
@@ -506,8 +601,9 @@ export class Worker {
     handle: SandboxHandle,
     ctx: ToolCallContext,
     baseSha: string,
+    conflicts: readonly string[] = [],
   ): Promise<FloorHit[] | null> {
-    await this.scopeGate(run, item, handle, ctx, baseSha);
+    await this.scopeGate(run, item, handle, ctx, baseSha, conflicts);
     const numstat = await this.git(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...HEAD`]);
     let stat;
     try {
@@ -521,10 +617,20 @@ export class Worker {
     return hits.length > 0 ? hits : null;
   }
 
-  /** Scope gate: the files the branch changes against allowed_paths, with the same coverage rule as triage. */
-  private async scopeGate(run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, baseSha: string) {
+  /**
+   * Scope gate: the files the branch changes against allowed_paths, with the same coverage rule as triage.
+   * A file the base merge conflicted in (both sides changed it) passes (decision changed 2026-11-02).
+   */
+  private async scopeGate(
+    run: Run,
+    item: WorkItem,
+    handle: SandboxHandle,
+    ctx: ToolCallContext,
+    baseSha: string,
+    conflicts: readonly string[],
+  ) {
     const diff = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`]);
-    const outside = scopeViolations(diff, item.allowed_paths);
+    const outside = scopeViolations(diff, item.allowed_paths, conflicts);
     if (outside.length === 0) return;
     const body = [
       "## Factory scope check: push blocked",
@@ -622,7 +728,7 @@ export class Worker {
         if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
         await comment([
           `PR #${item.pr_number} could not be updated with ${repo.base_branch}: merging \`${baseRef}\` conflicts in these files.`,
-          "Nothing was pushed. A human needs to resolve them.",
+          `Nothing was pushed. The factory starts an automatic resolve run (at most ${AUTO_RESOLVE_LIMIT} per base commit); past that, a human needs to resolve them or comment \`/resolve\`.`,
           "",
           ...conflicts.map((f) => `- \`${f}\``),
         ].join("\n"));
@@ -810,7 +916,7 @@ export class Worker {
     handle: SandboxHandle,
     signal: AbortSignal,
     role: Pick<AgentRunSpec, "system_prompt" | "prompt" | "tools" | "model_class" | "output_schema"> &
-      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist">>,
+      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role">>,
     /** Second agent step in one run (the conflict resolution): its own transcript, `<run>.<step>.json`. */
     step?: string,
   ): Promise<AgentRunResult> {

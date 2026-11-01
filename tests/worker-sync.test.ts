@@ -98,6 +98,10 @@ type AgentStep = (workdir: string, spec: AgentRunSpec) => void;
 async function setup(opts: {
   moveMain?: (dev: string) => void;
   resolve?: AgentStep;
+  /** The retry of a failed conflict step, as a resolve step (role `resolve`). Absent: it changes nothing. */
+  retry?: AgentStep;
+  /** Extra commits the implementer makes after editing src/a.txt. */
+  implementExtra?: (workdir: string) => void;
   testCommand?: string[];
   review?: () => "pass" | "bug";
   /** Move main during every implement run, not only the first. */
@@ -123,6 +127,7 @@ async function setup(opts: {
   };
   let implementCount = 0;
   const conflictSteps: AgentRunSpec[] = [];
+  const resolveSteps: AgentRunSpec[] = [];
   const reply = (): Partial<AgentRunResult> => ({ output: { summary: "changed a", next_steps: "none" } });
   const runner = new FakeRunner({
     triage: () => ({ output: spec }),
@@ -134,10 +139,16 @@ async function setup(opts: {
       }
       implementCount++;
       commitFile(s.sandbox.workdir, "src/a.txt", `a from the implementer, run ${implementCount}\n`, `implementer edits a (${implementCount})`);
+      opts.implementExtra?.(s.sandbox.workdir);
       if (implementCount === 1 || opts.review || opts.moveEveryRun) opts.moveMain?.(dev);
       return reply();
     },
     review: () => ({ output: { verdict: opts.review?.() ?? "pass", tier: 2, findings: ["fix it"], summary: "s" } }),
+    resolve: (s) => {
+      resolveSteps.push(s);
+      opts.retry?.(s.sandbox.workdir, s);
+      return reply();
+    },
   });
   const source = new FakeSource();
   const sandbox = new RecordingSandbox(join(repo, ".worktrees"));
@@ -147,7 +158,7 @@ async function setup(opts: {
   const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
-    prompts: { triage: "T", implement: "I", review: "R" }, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
+    prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
   });
   const step = async () => {
     await controller.tickIntake();
@@ -184,7 +195,7 @@ async function setup(opts: {
   const implementRuns = async (id: string) => (await store.listRuns(id as WorkItem["id"])).filter((r) => r.kind === "implement");
   return {
     store, storage, source, sandbox, broker, runner, controller, worker, clock, step, approveAndImplement, dev, origin, root,
-    remote, remoteHas, contains, implementRuns, conflictSteps, cfg,
+    remote, remoteHas, contains, implementRuns, conflictSteps, resolveSteps, cfg, implementCount: () => implementCount,
   };
 }
 
@@ -305,8 +316,12 @@ describe("implement run: sync with base before push", () => {
     const item = await f.approveAndImplement();
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
-    if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("tests failed");
+    if (run.outcome?.status === "failed") {
+      expect(run.outcome.detail).toContain("tests failed");
+      expect(run.outcome.detail).toContain("retry as a resolve step failed too");
+    }
     expect(f.conflictSteps).toHaveLength(1);
+    expect(f.resolveSteps).toHaveLength(1);
     expect(f.broker.names()).not.toContain("github.push_branch");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
     expect(f.broker.comments()[0]!.body).toContain("Nothing was pushed");
@@ -402,5 +417,115 @@ describe("implement run: sync with base before push", () => {
     expect(f.contains(branch, mains[1]!)).toBe(true);
     expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
     expect(f.broker.names().filter((n) => n === "github.push_branch")).toHaveLength(2);
+  });
+  it("a failed conflict step is retried as a resolve step in the same run; the merge is pushed, no new implement run", async () => {
+    const f = await setup({
+      moveMain: MAIN_EDITS_A,
+      resolve: () => undefined, // the first step leaves the conflict
+      retry: (wd) => write(wd, "src/a.txt", "a merged by the retry\n"), // resolves without staging
+    });
+    const item = await f.approveAndImplement();
+    const branch = `refs/heads/factory/${item.id}`;
+
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    const runs = await f.implementRuns(item.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["src/a.txt"] } });
+    expect(f.implementCount()).toBe(1); // the work was not rebuilt
+    expect(f.conflictSteps).toHaveLength(1);
+    expect(f.resolveSteps).toHaveLength(1);
+    const retry = f.resolveSteps[0]!;
+    expect(retry.system_prompt).toBe("S");
+    expect(retry.prompt).toContain("# Resolve merge conflicts");
+    expect(retry.prompt).toContain("### `src/a.txt`");
+    expect(retry.prompt).toContain("## Earlier attempt in this run");
+    expect(retry.prompt).toContain("unmerged paths remain");
+    expect(retry.writable_paths).toEqual(f.conflictSteps[0]!.writable_paths);
+
+    expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a merged by the retry");
+    expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
+    expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect((await f.storage.list(`transcripts/${item.id}/${runs[0]!.id}`)).sort()).toEqual([
+      `transcripts/${item.id}/${runs[0]!.id}.json`,
+      `transcripts/${item.id}/${runs[0]!.id}.merge.json`,
+      `transcripts/${item.id}/${runs[0]!.id}.resolve.json`,
+    ]);
+  });
+
+  it("the resolve-step retry keeps the gates: markers left fail merge_conflict and push nothing", async () => {
+    const f = await setup({ moveMain: MAIN_EDITS_A, resolve: () => undefined, retry: () => undefined });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict", infra: false });
+    if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("conflict markers left in: src/a.txt");
+    expect(f.sandbox.execs.some((c) => c.startsWith("sh -c"))).toBe(false);
+    expect(f.broker.names()).not.toContain("github.push_branch");
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
+    expect(await f.store.listHandoffs(item.id)).toEqual([]);
+  });
+
+  it("a failed conflict step and a failed retry on an open PR push nothing: the PR branch is unchanged", async () => {
+    let moves = 0;
+    let reviews = 0;
+    const f = await setup({
+      review: () => (reviews++ === 0 ? "bug" : "pass"),
+      // The first implement run sees an unrelated base change; the review fix sees one that conflicts.
+      moveMain: (dev) => (moves++ === 0 ? (git(dev, "pull", "--quiet", "--ff-only", "origin", "main"),
+        commitFile(dev, "docs/m.txt", "m\n", "main moves"), git(dev, "push", "--quiet", "origin", "main")) : MAIN_EDITS_A(dev)),
+      resolve: () => undefined,
+      retry: () => undefined,
+    });
+    const item = await f.approveAndImplement();
+    const branch = `refs/heads/factory/${item.id}`;
+    const runs = await f.implementRuns(item.id);
+    expect(runs.map((r) => r.status)).toEqual(["succeeded", "failed", "queued"]);
+    expect(runs[1]!.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
+    expect(f.resolveSteps).toHaveLength(1);
+    // One push only: the first run's. The PR branch is what that push left.
+    expect(f.broker.names().filter((n) => n === "github.push_branch")).toHaveLength(1);
+    expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a from the implementer, run 1");
+    expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
+    expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(false);
+  });
+
+  it("a conflict in a file outside allowed_paths that both sides changed: merges, passes the gates and pushes", async () => {
+    const f = await setup({
+      implementExtra: (wd) => commitFile(wd, "docs/x.txt", "x from the implementer\n", "implementer edits x"),
+      moveMain: (dev) => {
+        git(dev, "pull", "--quiet", "--ff-only", "origin", "main");
+        commitFile(dev, "docs/x.txt", "x from main\n", "main edits x");
+        git(dev, "push", "--quiet", "origin", "main");
+      },
+      resolve: (wd) => {
+        write(wd, "docs/x.txt", "x merged\n");
+        git(wd, "add", "--", "docs/x.txt");
+      },
+    });
+    const item = await f.approveAndImplement();
+    const branch = `refs/heads/factory/${item.id}`;
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["docs/x.txt"] } });
+    expect(git(f.origin, "show", `${branch}:docs/x.txt`)).toBe("x merged");
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.comments().some((c) => c.marker.startsWith("<!-- factory:scope:"))).toBe(false);
+  });
+
+  it("an unrelated file outside allowed_paths still fails scope_violation and pushes nothing, conflict or not", async () => {
+    const f = await setup({
+      implementExtra: (wd) => commitFile(wd, "README.md", "readme from the implementer\n", "implementer edits README"),
+      moveMain: MAIN_EDITS_A,
+      resolve: resolveA,
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation", infra: false });
+    if (run.outcome?.status === "failed") {
+      expect(run.outcome.detail).toContain("README.md");
+      expect(run.outcome.detail).not.toContain("src/a.txt");
+    }
+    expect(f.broker.names()).not.toContain("github.push_branch");
+    expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
   });
 });
