@@ -17,6 +17,8 @@ import type {
   StateChangeId,
   Tier,
   Timestamp,
+  UnreviewedMerge,
+  UnreviewedMergeId,
   Verdict,
   VerdictId,
   VerdictSeverity,
@@ -38,8 +40,11 @@ import type {
   ListenerLeaseResult,
   NewInboxEvent,
   NewRun,
+  NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
+  RecordPrHeadInput,
+  RecordPrHeadResult,
   RecordVerdictInput,
   RecordVerdictResult,
   SchemaVersion,
@@ -58,6 +63,7 @@ import {
   rowToHandoff,
   rowToRun,
   rowToStateChange,
+  rowToUnreviewedMerge,
   rowToVerdict,
   rowToWorkItem,
   workItemValues,
@@ -107,7 +113,14 @@ export class SqlFactoryStore implements FactoryStore {
       // A concurrent intake of the same source committed first.
       if (!inserted) return { item: (await this.selectItemBySource(tx, input.source.type, input.source.id))!, created: false };
 
-      await this.insertStateChange(tx, item.id, 1, actor, "intake", { stage: { from: null as never, to: "NEW" } });
+      if (input.adopted) {
+        await this.insertStateChange(tx, item.id, 1, actor, "pr_adopted", {
+          stage: { from: null as never, to: "REVIEW" },
+          pr_number: { from: null, to: input.adopted.pr_number },
+        });
+      } else {
+        await this.insertStateChange(tx, item.id, 1, actor, "intake", { stage: { from: null as never, to: "NEW" } });
+      }
       if (opts?.enqueue) await this.insertRun(tx, { ...opts.enqueue, work_item_id: item.id });
       return { item, created: true };
     });
@@ -337,7 +350,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]> {
     const { seq } = this.db.dialect;
     // Three plain reads, no transaction: a read-only command takes no write lock (SQLite) and no row lock.
-    const items = await this.db.all(`SELECT id, tier, stage, token_cost FROM work_items ORDER BY created_at, ${seq}`);
+    const items = await this.db.all(`SELECT id, tier, stage, token_cost, origin FROM work_items ORDER BY created_at, ${seq}`);
     const records = new Map<string, StatsRecord>();
     for (const r of items) {
       records.set(r.id as string, {
@@ -347,6 +360,7 @@ export class SqlFactoryStore implements FactoryStore {
         token_cost: Number(r.token_cost),
         reasons: [],
         severities: [],
+        origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
       });
     }
     if (reasons.length > 0) {
@@ -537,6 +551,75 @@ export class SqlFactoryStore implements FactoryStore {
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
+  }
+
+  // PR heads
+
+  async recordPushedHead(runId: RunId, token: number, head_sha: string): Promise<{ ok: true } | { ok: false; reason: "lease_lost" }> {
+    const { forShare } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      // FOR SHARE, as appendHandoff: the run stays `running` with this token until this commits.
+      const [held] = await tx.all(
+        `SELECT work_item_id FROM runs WHERE id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        [runId, token],
+      );
+      if (!held) return { ok: false, reason: "lease_lost" };
+      await tx.run("UPDATE work_items SET last_head_sha = ? WHERE id = ?", [head_sha, held.work_item_id as string]);
+      return { ok: true };
+    });
+  }
+
+  async recordPrHead(input: RecordPrHeadInput): Promise<RecordPrHeadResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<RecordPrHeadResult> => {
+      const current = await this.selectItem(tx, input.id, forUpdate);
+      if (!current) return { ok: false, reason: "not_found" };
+      if (current.last_head_sha !== input.expected_head) return { ok: false, reason: "head_moved", current };
+      const moved = await tx.run(
+        `UPDATE work_items SET last_head_sha = ? WHERE id = ? AND ${input.expected_head === null ? "last_head_sha IS NULL" : "last_head_sha = ?"}`,
+        input.expected_head === null ? [input.head_sha, input.id] : [input.head_sha, input.id, input.expected_head],
+      );
+      if (moved !== 1) return { ok: false, reason: "head_moved", current };
+      let run: Run | null = null;
+      if (input.manual && input.expected_head !== null) {
+        const now = this.now();
+        const outcome: RunOutcome = {
+          status: "succeeded",
+          summary: "a person pushed to the PR branch",
+          data: { actor: input.manual.actor, from_sha: input.expected_head, to_sha: input.head_sha, pr_number: input.manual.pr_number },
+        };
+        const id = newId("run") as RunId;
+        // Written finished and acknowledged: never queued, so no claim returns it and the controller applies nothing.
+        const inserted = await this.insertOnce(
+          tx,
+          `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, outcome, acknowledged_at,
+             started_at, finished_at, created_at, updated_at)
+           VALUES (?, ?, 'manual', ?, 'succeeded', 0, 0, ?, ?, ?, ?, ?, ?)`,
+          [id, input.id, `${input.id}:manual:${input.expected_head}..${input.head_sha}`, JSON.stringify(outcome), now, now, now, now, now],
+        );
+        run = inserted ? await this.selectRun(tx, id) : null;
+      }
+      return { ok: true, item: (await this.selectItem(tx, input.id))!, run };
+    });
+  }
+
+  // Unreviewed merges
+
+  async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO unreviewed_merges (id, project, pr_number, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, input.merge_sha, input.merger_id, this.now()],
+      );
+      const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, input.pr_number]);
+      return { merge: rowToUnreviewedMerge(row!), created };
+    });
+  }
+
+  async listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]> {
+    const rows = await this.db.all(`SELECT * FROM unreviewed_merges ORDER BY at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [limit]);
+    return rows.map(rowToUnreviewedMerge);
   }
 
   // Handoffs

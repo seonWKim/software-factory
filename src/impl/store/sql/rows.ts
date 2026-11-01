@@ -13,6 +13,9 @@ import type {
   StateChange,
   StateChangeId,
   Timestamp,
+  UnreviewedMerge,
+  UnreviewedMergeId,
+  UserId,
   Verdict,
   VerdictId,
   VerdictKind,
@@ -57,6 +60,7 @@ export function newId(prefix: string): string {
 }
 
 export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
+  const a = input.adopted;
   return {
     id: newId("wi") as WorkItemId,
     version: 1,
@@ -69,16 +73,16 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     done_criteria: null,
     desired_output: null,
     scope: null,
-    allowed_paths: [],
-    tier: null,
-    stage: "NEW",
+    allowed_paths: a ? a.allowed_paths : [],
+    tier: a ? a.tier : null,
+    stage: a ? "REVIEW" : "NEW",
     blocked_on: "none",
     blocked_reason: null,
     close_reason: null,
     loop_count: 0,
     restart_count: 0,
     token_cost: 0,
-    pr_number: null,
+    pr_number: a ? a.pr_number : null,
     merge_sha: null,
     fixes_pr: null,
     spec_comment_url: null,
@@ -87,6 +91,9 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     issue_text: input.problem,
     revision_count: 0,
     spec_feedback: null,
+    origin: a ? "adopted" : "factory",
+    head_branch: a ? a.head_branch : null,
+    last_head_sha: a ? a.head_sha : null,
     created_at: now,
     updated_at: now,
   };
@@ -97,7 +104,7 @@ export const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
   "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
-  "failure_comment_url, issue_text, revision_count, spec_feedback";
+  "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha";
 
 export function workItemValues(i: WorkItem): SqlValue[] {
   return [
@@ -106,7 +113,7 @@ export function workItemValues(i: WorkItem): SqlValue[] {
     JSON.stringify(i.allowed_paths), i.tier, i.stage, i.blocked_on, i.blocked_reason, i.close_reason, i.loop_count,
     i.restart_count, i.token_cost, i.pr_number, i.merge_sha, i.fixes_pr, i.created_at, i.updated_at, i.title,
     i.spec_comment_url, i.failure_comment_url,
-    i.issue_text, i.revision_count, i.spec_feedback,
+    i.issue_text, i.revision_count, i.spec_feedback, i.origin, i.head_branch, i.last_head_sha,
   ];
 }
 
@@ -171,6 +178,9 @@ export function rowToWorkItem(r: Row): WorkItem {
     issue_text: (r.issue_text as string | null | undefined) ?? null,
     revision_count: Number(r.revision_count ?? 0),
     spec_feedback: (r.spec_feedback as string | null | undefined) ?? null,
+    origin: (r.origin as WorkItem["origin"] | null | undefined) ?? "factory",
+    head_branch: (r.head_branch as string | null | undefined) ?? null,
+    last_head_sha: (r.last_head_sha as string | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
@@ -258,5 +268,16 @@ export function rowToBudgetCheckpoint(r: Row): BudgetCheckpoint {
     outcome: (r.outcome as BudgetCheckpoint["outcome"] | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     answered_at: (r.answered_at as Timestamp | null | undefined) ?? null,
+  };
+}
+
+export function rowToUnreviewedMerge(r: Row): UnreviewedMerge {
+  return {
+    id: r.id as UnreviewedMergeId,
+    project: r.project as string,
+    pr_number: Number(r.pr_number),
+    merge_sha: r.merge_sha as string,
+    merger_id: (r.merger_id as UserId | null | undefined) ?? null,
+    at: r.at as Timestamp,
   };
 }

@@ -177,4 +177,21 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE runs ADD COLUMN input TEXT;
   `,
+  // 12: pull requests the factory did not open (design 2026-11-01). Old items are origin 'factory' with no head
+  // branch or recorded head. One unreviewed_merges row per PR that merged with no work item.
+  `
+  ALTER TABLE work_items ADD COLUMN origin TEXT NOT NULL DEFAULT 'factory';
+  ALTER TABLE work_items ADD COLUMN head_branch TEXT;
+  ALTER TABLE work_items ADD COLUMN last_head_sha TEXT;
+  CREATE TABLE unreviewed_merges (
+    id          TEXT PRIMARY KEY,
+    project     TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL,
+    merge_sha   TEXT NOT NULL,
+    merger_id   TEXT,
+    at          TEXT NOT NULL,
+    UNIQUE (project, pr_number)
+  );
+  CREATE INDEX unreviewed_merges_at ON unreviewed_merges (at);
+  `,
 ];

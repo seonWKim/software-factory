@@ -19,6 +19,7 @@ import type {
   StateChangeDetail,
   Stage,
   Timestamp,
+  UnreviewedMerge,
   UserId,
   Verdict,
   VerdictKind,
@@ -46,6 +47,52 @@ export interface NewWorkItem {
   project: string;
   problem: string;
   resources: string[];
+  /**
+   * Adoption of a pull request a person opened (design 2026-11-01). Present: the item starts at REVIEW with
+   * origin `adopted`, these fields set, done_criteria null, and the state change reason `pr_adopted`.
+   */
+  adopted?: AdoptedPr;
+}
+
+export interface AdoptedPr {
+  pr_number: number;
+  head_branch: string;
+  /** The PR's head at adoption: recorded as last_head_sha, so only later pushes count as a person's. */
+  head_sha: string;
+  /** The files the PR changes, so the scope rules and floor tiers apply to them. */
+  allowed_paths: string[];
+  /** The floor tier of those files, or null when none applies. */
+  tier: Tier | null;
+}
+
+/**
+ * The head of an open PR as a poll saw it, against the item's last recorded head (design 2026-11-01).
+ * Applies only while the item's last_head_sha still equals `expected_head`.
+ */
+export interface RecordPrHeadInput {
+  id: WorkItemId;
+  expected_head: string | null;
+  head_sha: string;
+  /**
+   * A person's push: writes one run of kind `manual`, status succeeded and already acknowledged, with this
+   * actor and the range expected_head..head_sha in its outcome. Null: only records the head (a baseline for
+   * an item that had none). Ignored when `expected_head` is null, as there is no range to name.
+   */
+  manual: { actor: Actor; pr_number: number } | null;
+}
+
+export type RecordPrHeadResult =
+  /** `run`: the manual run written, or null for a baseline. */
+  | { ok: true; item: WorkItem; run: Run | null }
+  | { ok: false; reason: "not_found" }
+  /** last_head_sha is no longer `expected_head` (another poll or a factory push recorded first). Nothing written. */
+  | { ok: false; reason: "head_moved"; current: WorkItem };
+
+export interface NewUnreviewedMerge {
+  project: string;
+  pr_number: number;
+  merge_sha: string;
+  merger_id: UserId | null;
 }
 
 export interface NewRun {
@@ -184,7 +231,7 @@ export interface FactoryStore {
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
-  /** The item whose factory PR in `project` has this number (oldest if several). */
+  /** The item in `project` whose PR (factory or adopted) has this number (oldest if several). */
   getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
@@ -273,6 +320,27 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+
+  // PR heads (design 2026-11-01)
+
+  /**
+   * The head sha a run just pushed to its item's PR branch, recorded as the item's last_head_sha. Accepted only
+   * while the run is `running` with this `token` (as appendHandoff). Bumps no version: the field is store-owned.
+   */
+  recordPushedHead(runId: RunId, token: number, head_sha: string): Promise<{ ok: true } | { ok: false; reason: "lease_lost" }>;
+  /**
+   * Sets last_head_sha to `head_sha` if it still equals `expected_head`, and with `manual` writes the `manual`
+   * run, in one transaction. Changes no stage, blocked field or version. Idempotent: a repeat finds the head
+   * already moved and writes nothing.
+   */
+  recordPrHead(input: RecordPrHeadInput): Promise<RecordPrHeadResult>;
+
+  // Unreviewed merges (design 2026-11-01)
+
+  /** Idempotent on (project, pr_number): a second call returns the first row with created false. */
+  recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }>;
+  /** Newest first. Read-only. */
+  listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>;
 
   // Handoffs
 

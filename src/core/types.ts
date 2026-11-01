@@ -21,6 +21,12 @@ export type Tier = 1 | 2 | 3 | 4 | 5;
 
 export type SourceType = "github_issue" | "slack_thread";
 
+/**
+ * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the
+ * PR. `adopted`: a pull request a person opened, taken in at REVIEW; its source is that pull request.
+ */
+export type WorkItemOrigin = "factory" | "adopted";
+
 export interface SourceRef {
   type: SourceType;
   /** Stable id within the source, e.g. "owner/repo#12". Unique with `type` (idempotent intake). */
@@ -70,16 +76,32 @@ export interface WorkItem {
   revision_count: number;
   /** The text of the latest `/revise <feedback>` or `/reject <reason>` on the spec. Untrusted human text. */
   spec_feedback: string | null;
+  /** `factory` on every item from before adoption existed. Set at intake, never changed. */
+  origin: WorkItemOrigin;
+  /**
+   * The PR's head branch when it is not the factory branch (`adopted` items); null for factory items, whose
+   * branch is `${branch_prefix}${id}`. Set at intake, never changed.
+   */
+  head_branch: string | null;
+  /**
+   * The PR head sha the factory last recorded: its own push (written by the run that pushed, under its lease),
+   * the head at adoption, or a person's push already recorded as a `manual` run. Null until the first of these.
+   */
+  last_head_sha: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
 
 /**
- * Fields a transition may change. id, source, title, issue_text, requester, version and timestamps are
- * store-owned.
+ * Fields a transition may change. id, source, title, issue_text, requester, origin, head_branch,
+ * last_head_sha, version and timestamps are store-owned.
  */
 export type WorkItemPatch = Partial<
-  Omit<WorkItem, "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "created_at" | "updated_at">
+  Omit<
+    WorkItem,
+    | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
+    | "created_at" | "updated_at"
+  >
 >;
 
 export type Actor =
@@ -111,8 +133,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
 /**
  * `update` runs no agent: the worker merges the base branch into a factory PR branch (design §5).
  * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
+ * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written
+ * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual";
 
 /** What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. */
 export interface RunInput {
@@ -235,4 +259,20 @@ export interface BudgetCheckpoint {
   outcome: BudgetOutcome | null;
   created_at: Timestamp;
   answered_at: Timestamp | null;
+}
+
+export type UnreviewedMergeId = Brand<string, "UnreviewedMergeId">;
+
+/**
+ * A pull request that merged with no work item (design 2026-11-01): skipped with `factory: skip`, from a fork,
+ * never adopted, or merged before the first poll. One row per (project, pr_number).
+ */
+export interface UnreviewedMerge {
+  id: UnreviewedMergeId;
+  project: string;
+  pr_number: number;
+  merge_sha: string;
+  /** The merger's user ID; null when the forge did not name one or it did not resolve to a user. */
+  merger_id: UserId | null;
+  at: Timestamp;
 }
