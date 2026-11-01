@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { allowedPathsOverlap } from "../src/core/policy.js";
 import type { Run, WorkerId } from "../src/core/types.js";
 import { SystemClock } from "../src/impl/clock/system-clock.js";
 import { MYSQL_URL, issue, newMysqlDatabase, system } from "./helpers/store.js";
@@ -33,19 +32,21 @@ describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
     expect(await store.listUnacknowledgedRuns(RUNS + 1)).toHaveLength(RUNS);
   }, 30_000);
 
-  it("several claimers at once never hand out two overlapping implement-type runs", async () => {
+  it("several claimers at once never hand out two implement-type runs of one item", async () => {
     const { store, open } = await newMysqlDatabase(new SystemClock());
-    // Overlapping groups: everything under src/ overlaps; docs/ items overlap only docs/ items.
+    // Overlapping paths on purpose: they no longer hold runs back; only a second run of the same item does.
     const shapes = [["src/"], ["src/core/a.ts"], ["src/core/"], ["docs/"], ["docs/x.md"], ["tests/a.ts"], ["src/impl/b.ts"]];
-    const paths = new Map<string, string[]>();
     const ITEMS = 21;
     for (let i = 0; i < ITEMS; i++) {
       const { item } = await store.createWorkItem(issue(i), system);
       const allowed_paths = shapes[i % shapes.length]!;
-      paths.set(item.id, allowed_paths);
       await store.transition({
         id: item.id, expected_version: 1, patch: { allowed_paths }, actor: system, reason: "x",
-        enqueue: { kind: i % 3 === 0 ? "update" : "implement", idempotency_key: `k${i}` },
+        enqueue: { kind: "implement", idempotency_key: `k${i}` },
+      });
+      await store.transition({
+        id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x",
+        enqueue: { kind: "update", idempotency_key: `u${i}` },
       });
     }
 
@@ -67,7 +68,7 @@ describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
         }
         idle = 0;
         for (const other of running.values()) {
-          if (other.work_item_id === run.work_item_id || allowedPathsOverlap(paths.get(other.work_item_id)!, paths.get(run.work_item_id)!)) {
+          if (other.work_item_id === run.work_item_id) {
             violations.push(`${run.work_item_id} with ${other.work_item_id}`);
           }
         }
@@ -81,8 +82,8 @@ describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
     };
     await Promise.all(Array.from({ length: WORKERS }, (_, w) => work(w)));
     expect(violations).toEqual([]);
-    expect(await store.listUnacknowledgedRuns(ITEMS + 1)).toHaveLength(ITEMS);
-    // Non-overlapping groups (src/, docs/, tests/) did run side by side.
+    expect(await store.listUnacknowledgedRuns(2 * ITEMS + 1)).toHaveLength(2 * ITEMS);
+    // Items with overlapping paths ran side by side.
     expect(maxAtOnce).toBeGreaterThan(1);
   }, 30_000);
 

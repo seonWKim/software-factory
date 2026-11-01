@@ -852,7 +852,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
-  describe("overlap rule: implement-type runs of overlapping items never run at once", () => {
+  describe("one branch writer per item: overlapping paths do not hold runs back", () => {
     const ALL: RunKind[] = ["triage", "implement", "review", "update"];
     const ok = { status: "succeeded" as const, summary: "", data: {} };
 
@@ -871,81 +871,53 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     }
     const claim = (store: FactoryStore, worker_id = w1) => store.claimRun({ worker_id, kinds: ALL, lease_ms: LEASE });
 
-    it("two items with overlapping allowed_paths never have implement-type runs running at once", async () => {
+    it("two items with overlapping allowed_paths have implement-type runs running at the same time", async () => {
       const { store } = await make();
-      const a = await item(store, 1, ["src/"], ["implement"]);
-      const b = await item(store, 2, ["src/core/x.ts"], ["implement"]);
-      const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
-      const claimed = [first, second].filter((r) => r !== null);
-      expect(claimed.map((r) => r!.work_item_id)).toEqual([a]);
-      expect(await claim(store)).toBeNull();
-      expect((await store.listRuns(b))[0]!.status).toBe("queued");
-      expect(await store.listRunsByStatus(["running"], 10)).toHaveLength(1);
-    });
-
-    it("an update overlaps an implement, and an item overlaps itself even with no allowed_paths", async () => {
-      const { store } = await make();
-      await item(store, 1, ["docs/a.md"], ["implement"]);
-      await item(store, 2, ["docs/a.md"], ["update"]);
-      expect((await claim(store))?.kind).toBe("implement");
-      expect(await claim(store)).toBeNull();
-
-      const other = await make();
-      const self = await item(other.store, 3, [], ["update", "implement"]);
-      expect((await claim(other.store))?.kind).toBe("update");
-      expect(await claim(other.store)).toBeNull();
-      expect((await other.store.listRuns(self)).map((r) => r.status)).toEqual(["running", "queued"]);
-    });
-
-    it("two items with no overlap have runs running at the same time", async () => {
-      const { store } = await make();
-      const a = await item(store, 1, ["docs/"], ["implement"]);
-      const b = await item(store, 2, ["src/", "docs"], ["update"]);
+      const a = await item(store, 1, ["src/", "docs/design.md"], ["implement"]);
+      const b = await item(store, 2, ["src/core/x.ts", "docs/design.md"], ["update"]);
       const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
       expect(new Set([first?.work_item_id, second?.work_item_id])).toEqual(new Set([a, b]));
       expect(await store.listRunsByStatus(["running"], 10)).toHaveLength(2);
     });
 
-    it("the skipped run stays queued and is claimed once the overlapping run completes", async () => {
+    it("an item never has two implement-type runs running at once, even with no allowed_paths", async () => {
       const { store } = await make();
-      await item(store, 1, ["src/"], ["implement"]);
-      const b = await item(store, 2, ["src/a.ts"], ["implement"]);
+      const self = await item(store, 3, [], ["update", "implement"]);
+      const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
+      expect([first, second].filter((r) => r !== null).map((r) => r!.kind)).toEqual(["update"]);
+      expect(await claim(store)).toBeNull();
+      expect((await store.listRuns(self)).map((r) => r.status)).toEqual(["running", "queued"]);
+    });
+
+    it("the held run stays queued and is claimed once its item's run completes", async () => {
+      const { store } = await make();
+      const a = await item(store, 1, ["src/"], ["update", "implement"]);
       const first = (await claim(store))!;
       expect(await claim(store, w2)).toBeNull();
-      expect((await store.listRuns(b))[0]).toMatchObject({ status: "queued", attempt: 0 });
-
       await store.completeRun(first.id, first.lease!.token, ok);
-      const next = await claim(store, w2);
-      expect(next).toMatchObject({ work_item_id: b, kind: "implement", status: "running", attempt: 1 });
+      expect(await claim(store, w2)).toMatchObject({ work_item_id: a, kind: "implement", status: "running", attempt: 1 });
     });
 
-    it("a skipped run does not hold up a later run that does not overlap (FIFO among eligible runs)", async () => {
+    it("a held run does not hold up a later run of another item (FIFO among eligible runs)", async () => {
       const { store } = await make();
-      await item(store, 1, ["src/"], ["implement"]);
-      const b = await item(store, 2, ["src/core/"], ["implement"]);
-      const c = await item(store, 3, ["docs/"], ["implement"]);
-      await claim(store);
-      expect((await claim(store))?.work_item_id).toBe(c);
-      expect((await store.listRuns(b))[0]!.status).toBe("queued");
-    });
-
-    it("triage and review runs are never skipped by the overlap rule", async () => {
-      const { store } = await make();
-      await item(store, 1, ["src/"], ["implement"]);
-      const b = await item(store, 2, ["src/"], ["review", "triage", "implement"]);
-      expect((await claim(store))?.kind).toBe("implement");
-      const kinds = [(await claim(store))?.kind, (await claim(store))?.kind];
-      expect(kinds).toEqual(["review", "triage"]);
-      expect(await claim(store)).toBeNull();
-      expect((await store.listRuns(b)).find((r) => r.kind === "implement")!.status).toBe("queued");
-    });
-
-    it("a running triage or review does not hold back an overlapping implement", async () => {
-      const { store } = await make();
-      await item(store, 1, ["src/"], ["review"]);
+      const a = await item(store, 1, ["src/"], ["update", "implement"]);
       const b = await item(store, 2, ["src/"], ["implement"]);
-      expect((await claim(store))?.kind).toBe("review");
+      await claim(store);
       expect((await claim(store))?.work_item_id).toBe(b);
+      expect((await store.listRuns(a)).find((r) => r.kind === "implement")!.status).toBe("queued");
+    });
+
+    it("triage and review runs are never held back, and do not hold back an implement", async () => {
+      const { store } = await make();
+      const a = await item(store, 1, ["src/"], ["implement", "review", "triage"]);
+      expect((await claim(store))?.kind).toBe("implement");
+      expect([(await claim(store))?.kind, (await claim(store))?.kind]).toEqual(["review", "triage"]);
+
+      const other = await make();
+      await item(other.store, 2, ["src/"], ["review", "implement"]);
+      expect((await claim(other.store))?.kind).toBe("review");
+      expect((await claim(other.store))?.kind).toBe("implement");
+      expect(a).toBeTruthy();
     });
   });
 
