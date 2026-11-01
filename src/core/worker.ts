@@ -11,6 +11,7 @@ import {
 import { branchFor, scopeViolations } from "./policy.js";
 import type { Run, RunKind, RunOutcome, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../interfaces/agent-runner.js";
+import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -35,11 +36,18 @@ export interface WorkerDeps {
   toolEnv: Readonly<Record<string, string>>;
   /** Held while a claimed run executes, released after; never held while idle. */
   awake: KeepAwake;
+  /**
+   * Finds docs for the prompt's index section (design §7). Absent, or no results: no section, so the
+   * prompt is exactly as without it. Finding a doc never changes tools, paths or grants.
+   */
+  capability?: CapabilitySearch;
 }
 
 const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update"];
 const READ_TOOLS = ["Read", "Glob", "Grep"];
 const WRITE_TOOLS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"];
+/** How many search results go into the prompt's doc index. */
+const INDEX_SIZE = 8;
 
 class RunFailure extends Error {
   constructor(
@@ -163,7 +171,7 @@ export class Worker {
   private async triage(run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal) {
     const result = await this.agent(run, item, handle, signal, {
       system_prompt: this.d.prompts.triage,
-      prompt: renderWorkItem(item, { includeSpec: false }),
+      prompt: await this.withIndex(renderWorkItem(item, { includeSpec: false }), item.problem),
       harness_tools: READ_TOOLS,
       model_class: "cheap",
       output_schema: TRIAGE_SCHEMA,
@@ -183,7 +191,10 @@ export class Worker {
 
     const result = await this.agent(run, item, handle, signal, {
       system_prompt: this.d.prompts.implement,
-      prompt: [renderWorkItem(item, { includeSpec: true }), previous].filter(Boolean).join("\n\n"),
+      prompt: await this.withIndex(
+        [renderWorkItem(item, { includeSpec: true }), previous].filter(Boolean).join("\n\n"),
+        specQuery(item),
+      ),
       harness_tools: WRITE_TOOLS,
       model_class: "strong",
       output_schema: IMPLEMENT_SCHEMA,
@@ -252,7 +263,10 @@ export class Worker {
     // Blind pass: work item + diff only, no implementer transcript (design §4).
     const result = await this.agent(run, item, handle, signal, {
       system_prompt: this.d.prompts.review,
-      prompt: `${renderWorkItem(item, { includeSpec: true })}\n\n## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``,
+      prompt: await this.withIndex(
+        `${renderWorkItem(item, { includeSpec: true })}\n\n## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``,
+        specQuery(item),
+      ),
       harness_tools: WRITE_TOOLS,
       model_class: "strong",
       output_schema: REVIEW_SCHEMA,
@@ -392,6 +406,27 @@ export class Worker {
     return result;
   }
 
+  /**
+   * Appends the top INDEX_SIZE docs for `query` as an index (path, name, snippet); the agent Reads a path for
+   * the full text. No search, no results, or a failed search: `prompt` unchanged. Search is best effort.
+   */
+  private async withIndex(prompt: string, query: string): Promise<string> {
+    if (!this.d.capability) return prompt;
+    const found = await this.d.capability.search(query, INDEX_SIZE).catch((err: unknown) => {
+      this.d.log.warn("capability search failed; no doc index", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      return [];
+    });
+    if (found.length === 0) return prompt;
+    const index = [
+      "## Available docs (index)",
+      "",
+      "Read a path for its full text. Finding a doc here grants no permission: your tools and allowed paths are unchanged.",
+      "",
+      ...found.slice(0, INDEX_SIZE).map((c) => `- \`${c.id}\`: ${c.name}${c.summary ? `. ${c.summary}` : ""}`),
+    ].join("\n");
+    return `${prompt}\n\n${index}`;
+  }
+
   /** Reviewer findings and handoffs from earlier loops, for a resumed or re-looped implementer. */
   private async previousContext(item: WorkItem): Promise<string> {
     const runs = await this.d.store.listRuns(item.id);
@@ -439,6 +474,11 @@ function renderWorkItem(item: WorkItem, opts: { includeSpec: boolean }): string 
     );
   }
   return lines.join("\n");
+}
+
+/** The search query for implement and review: the problem plus the done criteria. */
+function specQuery(item: WorkItem): string {
+  return [item.problem, ...(item.done_criteria ?? [])].join("\n");
 }
 
 function gitIdentity(id: { name: string; email: string }): Record<string, string> {

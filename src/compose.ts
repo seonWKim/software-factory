@@ -217,6 +217,8 @@ export async function build(
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
     awake: await createPlugin(registry, "awake", sel.awake, { ...base, clock }),
+    // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
+    capability: await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] }),
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
