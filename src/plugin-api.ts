@@ -135,8 +135,17 @@ export interface InterfaceEntry<K extends PluginKind> {
 
 export type Registry = { readonly [K in PluginKind]: InterfaceEntry<K> };
 
-/** One plugin name per interface, as selected by config. */
-export type Selection = { [K in PluginKind]: string };
+/**
+ * One plugin name per interface, as selected by config. `plugins.source` may list several sources (design
+ * 2026-11-01): then `sources` holds them all, in config order, and `source` is the first. A single name, or a
+ * list of one, leaves `sources` out, so the selection is exactly what one name always gave.
+ */
+export type Selection = { [K in PluginKind]: string } & { sources?: readonly string[] };
+
+/** Every selected SourceAdapter plugin name, in config order: `sources`, or `[source]` when one is selected. */
+export function selectedSources(selection: Selection): readonly string[] {
+  return selection.sources ?? [selection.source];
+}
 
 /**
  * Every secret the selected plugins declare, one entry per name (in interface order; purposes of a
@@ -145,7 +154,8 @@ export type Selection = { [K in PluginKind]: string };
 export function declaredSecrets(registry: Registry, selection: Selection): SecretDeclaration[] {
   const byName = new Map<SecretName, SecretDeclaration>();
   for (const kind of Object.keys(registry) as PluginKind[]) {
-    for (const d of registry[kind].secrets[selection[kind]] ?? []) {
+    const names = kind === "source" ? selectedSources(selection) : [selection[kind]];
+    for (const d of names.flatMap((n) => registry[kind].secrets[n] ?? [])) {
       const seen = byName.get(d.name);
       if (!seen) byName.set(d.name, { ...d });
       else if (!seen.purpose.includes(d.purpose)) seen.purpose = `${seen.purpose}; ${d.purpose}`;

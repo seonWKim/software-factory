@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RunId, WorkItemId } from "../src/core/types.js";
+import { Read } from "../src/core/tools/index.js";
 import { ClaudeCodeRunner, parseRateLimitReset } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
@@ -49,7 +50,7 @@ const spec = (): AgentRunSpec => ({
   sandbox: { id: "s", workdir: "/w" },
   system_prompt: "s",
   prompt: "p",
-  harness_tools: ["Read"],
+  tools: [Read],
   tool_grants: [],
   lease_token: 1,
   env_allowlist: {},

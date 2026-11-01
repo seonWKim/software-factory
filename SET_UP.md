@@ -92,9 +92,9 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | Command | What it does | Applies when |
 |---|---|---|
 | `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint |
-| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval |
-| `/retry` | Run the failed run again | blocked by a failed run |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run |
+| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run |
+| `/retry` | Run the failed run again | blocked by a failed run, blocked: the change was too large, blocked by a failed implement run |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |

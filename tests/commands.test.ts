@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, commandFooter, commandPhase, commandState,
-  commandTableMarkdown, helpReply, parseComment, unknownCommandReply,
+  COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, commandFooter, commandPhase, commandState, commandsFor,
+  commandTableMarkdown, helpReply, parseComment, phaseLabel, unknownCommandReply,
 } from "../src/core/commands.js";
 import { Controller } from "../src/core/controller.js";
 import type { WorkItemPatch } from "../src/core/types.js";
@@ -86,6 +86,41 @@ describe("command table", () => {
     expect(r).not.toContain("`/retry` **(now)**");
   });
 
+  it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
+    const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
+      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+    expect(at("RUNNING", "run_failed:implement:diff_too_large")).toBe("too_large");
+    expect(at("RUNNING", "run_failed:implement:no_commits")).toBe("failed_implement");
+    expect(at("RUNNING", "max_attempts")).toBe("failed_implement");
+    expect(at("RUNNING", "max_restart")).toBe("failed_implement");
+    expect(at("NEW", "max_attempts")).toBe("failed_run");
+    expect(at("NEW", "run_failed:triage:invalid_output")).toBe("failed_run");
+    expect(at("REVIEW", "max_restart")).toBe("failed_run");
+    expect(at("REVIEW", "run_failed:update:invalid_output")).toBe("failed_run");
+  });
+
+  it("/revise and /retry apply at both failed-implement phases; /revise not at a failed triage, review or update run", () => {
+    const names = (phase: CommandPhase) => commandsFor(s(phase)).map((c) => c.name);
+    for (const phase of ["too_large", "failed_implement"] as const) {
+      expect(names(phase)).toEqual(expect.arrayContaining(["revise", "retry", "reject"]));
+      expect(commandFooter(s(phase))).toContain("`/revise <feedback>`");
+    }
+    expect(names("failed_run")).toContain("retry");
+    expect(names("failed_run")).not.toContain("revise");
+    expect(names("floor_tier")).not.toContain("revise");
+    expect(phaseLabel("too_large")).toBe("blocked: the change was too large");
+    expect(phaseLabel("failed_implement")).toBe("blocked by a failed implement run");
+    expect(phaseLabel("failed_run")).toBe("blocked by a failed run");
+  });
+
+  it("/help names the state by its label, not its phase id", () => {
+    expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
+    expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");
+    expect(helpReply(s("too_large"))).toContain("(blocked: the change was too large)");
+    expect(helpReply(s("too_large"))).toContain("`/revise <feedback>` **(now)**");
+    expect(helpReply(s("failed_implement"))).not.toContain("failed_implement");
+  });
+
   it("SET_UP.md has the command table from code", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(commandTableMarkdown());
@@ -101,7 +136,9 @@ describe("footers match what the controller accepts", () => {
     max_revisions: { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" },
     implementing: { stage: "RUNNING" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
-    failed_run: { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" },
+    failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
+    too_large: { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" },
+    failed_implement: { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" },
     reviewing: { stage: "REVIEW" },
     merge_pending: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },
@@ -123,11 +160,38 @@ describe("footers match what the controller accepts", () => {
     }
   }
 
-  it("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", async () => {
+  async function harness() {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const actor = { kind: "system" as const, id: "test" };
+    /** A new work item on issue `n`, put in `phase`, with or without a PR. */
+    const itemIn = async (phase: CommandPhase, pr: number | null, n: number) => {
+      const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] }, actor);
+      const setup = {
+        id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
+        patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },
+        ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
+      };
+      // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.
+      const r = phase === "budget_checkpoint"
+        ? await store.openBudgetCheckpoint({
+            ...setup,
+            reason: "budget_checkpoint",
+            checkpoint: {
+              tier: 2, tokens_spent: 2_000, budget: 1_000, suggested_budget: 3_000,
+              held_run_kind: "implement", held_run_key: `held:${n}`, held_run_not_before: null,
+            },
+          })
+        : await store.transition(setup);
+      if (!r.ok) throw new Error("setup failed");
+      return r.item;
+    };
+    return { store, source, controller, itemIn };
+  }
+
+  it("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", async () => {
+    const { source, controller, itemIn } = await harness();
     let n = 0;
     for (const phase of COMMAND_PHASES) {
       for (const pr of [null, 42]) {
@@ -135,26 +199,9 @@ describe("footers match what the controller accepts", () => {
         const footer = commandFooter(state);
         for (const name of ACTING) {
           n++;
-          const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: "o/r", problem: "p", resources: [] }, actor);
-          const setup = {
-            id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
-            patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },
-            ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
-          };
-          // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.
-          const r = phase === "budget_checkpoint"
-            ? await store.openBudgetCheckpoint({
-                ...setup,
-                reason: "budget_checkpoint",
-                checkpoint: {
-                  tier: 2, tokens_spent: 2_000, budget: 1_000, suggested_budget: 3_000,
-                  held_run_kind: "implement", held_run_key: `held:${n}`, held_run_not_before: null,
-                },
-              })
-            : await store.transition(setup);
-          if (!r.ok) throw new Error("setup failed");
-          expect(commandPhase(r.item)).toBe(phase);
-          expect(commandState(r.item)).toEqual(state);
+          const item = await itemIn(phase, pr, n);
+          expect(commandPhase(item)).toBe(phase);
+          expect(commandState(item)).toEqual(state);
           await controller.handleEvent(event(name, n));
           const refused = source.comments.some((c) => c.marker === `<!-- factory:refused:${n} -->`);
           const spec = COMMANDS.find((c) => c.name === name)!;
@@ -162,6 +209,40 @@ describe("footers match what the controller accepts", () => {
           expect({ phase, pr, name, listed: footer.includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
         }
       }
+    }
+  });
+
+  it("no refusal, /help or unknown-command reply in any state names a raw stage; /help names the state by its label", async () => {
+    const { source, controller, itemIn } = await harness();
+    const RAW = /\b(NEW|READY|RUNNING|REVIEW|CLOSED)\b/;
+    const extra = (n: number): SourceEvent[] => {
+      const base = { source: issueRef(n), comment_id: String(n), requester: alice };
+      // /resolve last: at a merge conflict it applies, and the two replies before it describe the state.
+      return [
+        { kind: "help_requested", ...base, comment_id: `${n}h` },
+        { kind: "unknown_command", ...base, comment_id: `${n}u`, command: "xyz" },
+        { kind: "resolve_requested", ...base, notes: "", pr: null },
+      ];
+    };
+    const stateOf = new Map<string, { phase: CommandPhase; pr: number | null }>();
+    let n = 10_000;
+    for (const phase of COMMAND_PHASES) {
+      for (const pr of [null, 42]) {
+        // One item per command, so each sees the state, not what an earlier command made of it.
+        for (const make of [...ACTING.map((name) => (k: number) => [event(name, k)]), extra]) {
+          n++;
+          await itemIn(phase, pr, n);
+          stateOf.set(issueRef(n).id, { phase, pr });
+          for (const e of make(n)) await controller.handleEvent(e);
+        }
+        const help = source.comments.find((c) => c.marker === `<!-- factory:help:${n}h -->`)!;
+        expect(help.body).toContain(`(${phaseLabel(phase)})`);
+      }
+    }
+    const replies = source.comments.filter((c) => /^<!-- factory:(refused|help|unknown):/.test(c.marker));
+    expect(replies.filter((c) => c.marker.includes(":refused:")).length).toBeGreaterThan(50);
+    for (const c of replies) {
+      expect({ ...stateOf.get(c.source.id), body: c.body, raw: RAW.test(c.body) }).toMatchObject({ raw: false });
     }
   });
 });

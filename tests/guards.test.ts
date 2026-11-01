@@ -2,6 +2,7 @@ import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import { Worker } from "../src/core/worker.js";
+import { Read } from "../src/core/tools/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -63,7 +64,7 @@ describe("G3/G4: harness settings deny secret paths", () => {
 
   it("passes settings inline and isolates user settings and MCP", () => {
     const args = buildClaudeArgs(
-      { deny_paths: [], writable_paths: [], harness_tools: ["Read"], system_prompt: "s" } as unknown as AgentRunSpec,
+      { deny_paths: [], writable_paths: [], tools: [Read], system_prompt: "s" } as unknown as AgentRunSpec,
       "haiku",
     );
     expect(args).toEqual(expect.arrayContaining(["--setting-sources", "project", "--strict-mcp-config", "--allowedTools", "Read"]));

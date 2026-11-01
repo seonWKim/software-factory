@@ -1,3 +1,4 @@
+import type { ToolSpec } from "../core/tools/types.js";
 import type { RunId, RunKind, WorkItemId } from "../core/types.js";
 import type { SandboxHandle } from "./sandbox.js";
 
@@ -10,8 +11,13 @@ export interface AgentRunSpec {
   sandbox: SandboxHandle;
   system_prompt: string;
   prompt: string;
-  /** Harness built-in tools the agent may use, e.g. ["Read", "Grep"]. */
-  harness_tools: readonly string[];
+  /**
+   * The agent's file and shell tools, as specs from the shared module (src/core/tools): the runner exposes
+   * exactly these, in this order, and adds none. Each carries its capability (read, write or exec), so a
+   * read-only role is checkable from the spec alone. Path and env rules come from `guardPolicy` over
+   * deny_paths, writable_paths and env_allowlist, shared by the tools and every runner.
+   */
+  tools: readonly ToolSpec[];
   /** ToolBroker tools granted to the agent. Phase 1: always empty; the worker calls the broker itself. */
   tool_grants: readonly string[];
   lease_token: number;

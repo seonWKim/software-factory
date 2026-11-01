@@ -1,7 +1,7 @@
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
-import type { SourceRef, UserId } from "../../src/core/types.js";
+import type { SourceRef, SourceType, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
@@ -55,9 +55,14 @@ export function issueRef(n: number): SourceRef {
  * high-water mark, and a command event at or below it is not delivered again. Records every markSeen call.
  */
 export class FakeSource implements PollSource {
-  readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
   queue: SourceEvent[] = [];
+  /** Every poll call, failed ones included, with the cursor it was given. */
+  polls: (string | null)[] = [];
+  /** When set, poll throws this instead of returning events. */
+  pollError: Error | null = null;
+
+  constructor(readonly type: SourceType = "github_issue") {}
   /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
   comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
@@ -65,6 +70,8 @@ export class FakeSource implements PollSource {
   reactionError: Error | null = null;
 
   async poll(cursor: string | null): Promise<PollResult> {
+    this.polls.push(cursor);
+    if (this.pollError) throw this.pollError;
     const c = cursor ? (JSON.parse(cursor) as { n: number; last_comment_id: number }) : { n: 0, last_comment_id: 0 };
     let last = c.last_comment_id;
     const events: SourceEvent[] = [];
@@ -134,6 +141,25 @@ export class FakeSource implements PollSource {
     const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
     return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
   }
+}
+
+/**
+ * A second poll source, of type `slack_thread`: FakeSource's replay contract and records, under another
+ * source type. Test-only plugin name `fake-slack-poll` (docs/plugins.md), through `fakeSlackPollRegistry()`.
+ */
+export class FakeSlackPollSource extends FakeSource {
+  constructor() {
+    super("slack_thread");
+  }
+}
+
+/** REGISTRY plus the test-only `fake-slack-poll` source. */
+export function fakeSlackPollRegistry(base: Registry = REGISTRY, make: () => FakeSlackPollSource = () => new FakeSlackPollSource()): Registry {
+  return withPlugin(base, "source", "fake-slack-poll", make);
+}
+
+export function slackRef(n: number): SourceRef {
+  return { type: "slack_thread", id: `C1/${n}`, link: `https://slack.example/archives/C1/p${n}` };
 }
 
 /**
