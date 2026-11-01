@@ -5,7 +5,7 @@
 #   make setup ARGS=--rotate-github  pass flags through to the command
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev controller worker status doctor canary
+.PHONY: help setup dev controller worker ui status doctor canary
 
 FACTORY := npm run factory --
 ID ?=
@@ -31,6 +31,9 @@ controller: ## Intake, run outcomes, reaper
 
 worker: ## Claims and executes agent runs
 	$(call factory,worker)
+
+ui: ## Read-only dashboard at http://127.0.0.1:4310/ (run beside dev)
+	$(call factory,ui)
 
 status: ## Work items, or one item's trail with ID=<work item id>
 	$(call factory,status $(ID))

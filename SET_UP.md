@@ -91,7 +91,7 @@ The factory removes only these eight names (under the current prefix) when it ch
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
-| Watch the factory in a browser (read-only) | `npm run factory -- ui`, then open <http://127.0.0.1:4310/> |
+| Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> |
 | Suspect a leak | Revoke the token on GitHub first, then rotate |
 
 ### Status page
