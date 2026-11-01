@@ -67,6 +67,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   clock: { interface: "Clock", configKey: "plugins.clock", guard: false },
   updater: { interface: "Updater", configKey: "plugins.updater", guard: false },
   awake: { interface: "KeepAwake", configKey: "plugins.awake", guard: false },
+  github_auth: { interface: "GitHubCredentials", configKey: "plugins.github_auth", guard: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

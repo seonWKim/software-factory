@@ -31,7 +31,17 @@ It is safe to run again: it skips what is already done. Two steps need you in a 
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
-### GitHub token settings
+### GitHub App (the bot; `plugins.github_auth: "app"`, the checked-in setting)
+
+The factory acts on GitHub as your GitHub App, so issues, comments, pushes and PRs show the App's bot as author.
+
+- Put the App's ID in the secret file as `GITHUB_APP_ID` (`npm run setup` asks for it) and its private key in `github-app.pem` next to the secret file (`~/.config/software-factory/`, mode 600).
+- Install the App on the repository. **Repository permissions:** Contents, Issues and Pull requests: read and write; Metadata: read. Everything else: no access.
+- After changing the App's permissions, accept them on the installation (Settings → Applications → Installed GitHub Apps → Review request). `npm run factory -- doctor` names any permission still missing.
+
+To use your own account instead, set `plugins.github_auth` to `token` and create the token below.
+
+### GitHub token settings (`plugins.github_auth: "token"`)
 
 GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate new token:
 
@@ -124,7 +134,8 @@ Unknown config keys are rejected at load: a typo in `factory.config.json` (for e
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> |
-| Suspect a leak | Revoke the token on GitHub first, then rotate |
+| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
+| Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
 

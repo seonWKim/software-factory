@@ -21,6 +21,7 @@ import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
+import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
 
 /** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
@@ -39,6 +40,7 @@ export interface Instances {
   clock: Clock;
   updater: Updater;
   awake: KeepAwake;
+  github_auth: GitHubCredentials;
 }
 
 export type PluginKind = keyof Instances;
@@ -60,7 +62,7 @@ export interface Contexts {
   auth: BaseContext & { github: GitHubClient };
   secrets: BaseContext;
   egress: BaseContext & { secrets: SecretStore };
-  broker: BaseContext & { github: GitHubClient; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
+  broker: BaseContext & { github: GitHubClient; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
   storage: BaseContext;
   source: BaseContext & { github: GitHubClient };
   capability: BaseContext & { capabilities: readonly Capability[] };
@@ -68,6 +70,7 @@ export interface Contexts {
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
+  github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;

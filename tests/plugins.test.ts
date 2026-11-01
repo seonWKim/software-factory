@@ -43,6 +43,7 @@ import {
   createPlugin,
   withPlugin,
 } from "../src/plugins.js";
+import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -67,6 +68,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   clock: { system: SystemClock },
   updater: { "git-worktree": GitWorktreeUpdater },
   awake: { caffeinate: CaffeinateKeepAwake },
+  github_auth: { token: TokenCredentials },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -123,7 +125,7 @@ async function context(loaded: Loaded): Promise<Contexts[PluginKind] & Record<st
   const base = new Plugins(loaded).base;
   const secrets = new MapSecrets();
   const clock = new FakeClock();
-  const github = new GitHubClient(secrets);
+  const github = new GitHubClient(new TokenCredentials(secrets));
   mkdirSync(join(loaded.stateDir, "db"), { recursive: true });
   const store = (await createPlugin(loaded.registry, "store", "sqlite", { ...base, secrets, clock })) as FactoryStore;
   const scanner = new PatternEgressScanner(async () => []);
@@ -164,6 +166,7 @@ describe("plugin registry: defaults", () => {
       clock: "system",
       updater: "git-worktree",
       awake: "caffeinate",
+      github_auth: "token",
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
@@ -176,14 +179,16 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the same defaults, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, ...rest } = loaded.plugins;
-      expect(rest).toEqual(defaultPlugins(platform));
+      const { store: _s, auth: _a, github_auth, ...rest } = loaded.plugins;
+      expect(github_auth).toBe("app");
+      const { github_auth: _g, ...defaults } = defaultPlugins(platform);
+      expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual(fixed);
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
@@ -602,7 +607,7 @@ describe("docs/plugins.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 14 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(14);
+  it("covers 15 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(15);
   });
 });

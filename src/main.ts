@@ -174,7 +174,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
     try {
       await store.migrate();
       const { owner, name } = loaded.config.repo;
-      const github = new GitHubClient(secrets);
+      const github = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
       const r = await addCase(
         {
           store,

@@ -78,13 +78,15 @@ describe("registry: each plugin declares its secrets", () => {
   });
 
   it("names the secrets each plugin reads", () => {
-    expect(names("broker", "github")).toEqual(["GITHUB_TOKEN"]);
+    expect(names("broker", "github")).toEqual([]);
+    expect(names("github_auth", "token")).toEqual(["GITHUB_TOKEN"]);
+    expect(names("github_auth", "app")).toEqual(["GITHUB_APP_ID"]);
     expect(names("store", "mysql")).toEqual(["MYSQL_PASSWORD"]);
     expect(names("store", "sqlite")).toEqual([]);
     expect(names("runner", "claude-code")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
     expect(names("llm", "claude-cli")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
-    expect(names("source", "github-issues")).toEqual(["GITHUB_TOKEN"]);
-    expect(names("auth", "github")).toEqual(["GITHUB_TOKEN"]);
+    expect(names("source", "github-issues")).toEqual([]);
+    expect(names("auth", "github")).toEqual([]);
     expect(names("auth", "none")).toEqual([]);
     expect(names("secrets", "env-file")).toEqual([]);
   });
@@ -97,18 +99,18 @@ describe("registry: each plugin declares its secrets", () => {
 });
 
 describe("the secret set is the union of the selected plugins' declarations", () => {
-  it("default config: the model credential, GITHUB_TOKEN and MYSQL_PASSWORD", async () => {
+  it("checked-in config: the model credential, GITHUB_APP_ID and MYSQL_PASSWORD", async () => {
     const loaded = await loadConfig(root(REAL, ""), { platform: "linux" });
     expect(sorted(declaredSecretNames(loaded.registry, loaded.plugins))).toEqual([
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
-      "GITHUB_TOKEN",
+      "GITHUB_APP_ID",
       "MYSQL_PASSWORD",
     ]);
   });
 
   it("switching store.type from mysql to sqlite removes MYSQL_PASSWORD, with no code edit", async () => {
-    const file = "MYSQL_PASSWORD=mysql-pw-value\nGITHUB_TOKEN=gh-value\n";
+    const file = "MYSQL_PASSWORD=mysql-pw-value\nGITHUB_APP_ID=gh-value\n";
     const mysql = await loadConfig(root(REAL, file), { platform: "linux" });
     expect(declaredSecretNames(mysql.registry, mysql.plugins).has(n("MYSQL_PASSWORD"))).toBe(true);
     const mysqlSecrets = await new Plugins(mysql).secrets();
@@ -125,17 +127,17 @@ describe("the secret set is the union of the selected plugins' declarations", ()
 
   it("a name declared by several plugins appears once, with each purpose", () => {
     const sel = selectPlugins(REGISTRY, { store: { type: "sqlite" }, auth: "github" }, { platform: "linux" });
-    const gh = declaredSecrets(REGISTRY, sel).filter((d) => d.name === "GITHUB_TOKEN");
-    expect(gh).toHaveLength(1);
-    for (const plugin of [REGISTRY.broker.secrets.github!, REGISTRY.source.secrets["github-issues"]!, REGISTRY.auth.secrets.github!]) {
-      expect(gh[0]!.purpose).toContain(plugin[0]!.purpose);
+    const cred = declaredSecrets(REGISTRY, sel).filter((d) => d.name === "CLAUDE_CODE_OAUTH_TOKEN");
+    expect(cred).toHaveLength(1);
+    for (const plugin of [REGISTRY.runner.secrets["claude-code"]!, REGISTRY.llm.secrets["claude-cli"]!]) {
+      expect(cred[0]!.purpose).toContain(plugin.find((d) => d.name === "CLAUDE_CODE_OAUTH_TOKEN")!.purpose);
     }
   });
 });
 
 describe("env-file store: only declared names", () => {
   const FILE = [
-    "GITHUB_TOKEN=gh-value",
+    "GITHUB_APP_ID=gh-value",
     "UNDECLARED_TOKEN=undeclared-value",
     "MYSQL_HOST=db.internal",
     "MYSQL_USER=factory",
@@ -184,7 +186,7 @@ describe("a plugin brings its own secret (TEST_GATEWAY_TOKEN)", () => {
   };
 
   it("its value is returned by get and appears in valuesForScan", async () => {
-    const loaded = await loadConfig(root(config, "TEST_GATEWAY_TOKEN=gateway-value-123\nGITHUB_TOKEN=gh-value\n"), { registry });
+    const loaded = await loadConfig(root(config, "TEST_GATEWAY_TOKEN=gateway-value-123\nGITHUB_APP_ID=gh-value\n"), { registry });
     expect(declaredSecretNames(loaded.registry, loaded.plugins).has(n("TEST_GATEWAY_TOKEN"))).toBe(true);
     const secrets = await new Plugins(loaded).secrets();
     expect((await secrets.get(n("TEST_GATEWAY_TOKEN")))?.reveal()).toBe("gateway-value-123");
