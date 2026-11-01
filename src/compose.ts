@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { FactoryConfig, Prompts } from "./core/config.js";
 import type { Tier, WorkerId } from "./core/types.js";
+import { budgetConfig } from "./core/budget.js";
 import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { Worker } from "./core/worker.js";
@@ -64,6 +65,10 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
   ui?: { port?: number };
+  /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by budgetConfig. */
+  budgets?: unknown;
+  /** Finished items a tier needs before suggestions come from history. Absent: 10. */
+  budget_min_sample?: unknown;
 }
 
 export { CODE_ROOT_ENV } from "./interfaces/updater.js";
@@ -106,6 +111,7 @@ export async function loadConfig(
   uiPort(file.ui);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
+  const budget = budgetConfig(file);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
@@ -148,6 +154,8 @@ export async function loadConfig(
       join(home, ".mylogin.cnf"),
     ],
     agent_git_identity: file.agent_git_identity,
+    budgets: budget.budgets,
+    budget_min_sample: budget.budget_min_sample,
   };
   const prompts: Prompts = {
     triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
