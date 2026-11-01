@@ -23,11 +23,14 @@ const CAPTURED_429 = JSON.stringify({
   api_error_status: 429,
 });
 
-function runnerWith(stdout: string, exit_code = 1) {
+function runnerWith(stdout: string, exit_code = 1, argv: string[][] = []) {
   const sandbox: Sandbox = {
     create: async () => ({ id: "s", workdir: "/w" }),
     updateBase: async () => "base",
-    exec: async (): Promise<ExecResult> => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false }),
+    exec: async (_h, cmd): Promise<ExecResult> => {
+      argv.push([...cmd]);
+      return { exit_code, signal: null, stdout, stderr: "", timed_out: false };
+    },
     copyIn: async () => {},
     copyOut: async () => {},
     destroy: async () => {},
@@ -38,7 +41,7 @@ function runnerWith(stdout: string, exit_code = 1) {
     secrets: { get: async () => ({ reveal: () => "x" }) as never, valuesForScan: async () => [] },
     claudeConfigDir: `${homes}/cfg`,
     homesDir: homes,
-    models: { cheap: "haiku", strong: "opus" },
+    models: { cheap: "haiku", standard: "sonnet", strong: "opus" },
     now: () => NOW,
   });
 }
@@ -74,6 +77,15 @@ describe("ClaudeCodeRunner: usage and rate limits", () => {
     const r = await runnerWith(JSON.stringify({ type: "result", is_error: true, result: "rate limited", api_error_status: 429 })).run(spec());
     expect(r.status).toBe("rate_limited");
     expect(r.reset_at).toBeUndefined();
+  });
+
+  it("passes the configured model name for each class, standard included", async () => {
+    for (const [cls, name] of [["cheap", "haiku"], ["standard", "sonnet"], ["strong", "opus"]] as const) {
+      const argv: string[][] = [];
+      await runnerWith(CAPTURED_429, 1, argv).run({ ...spec(), model_class: cls });
+      const args = argv[0]!;
+      expect(args[args.indexOf("--model") + 1]).toBe(name);
+    }
   });
 
   it("any other error stays failed", async () => {

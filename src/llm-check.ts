@@ -40,17 +40,19 @@ export const OUTPUT_SCHEMA: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-/** `[--model cheap|strong]`; default cheap. Anything else is an error with a one-line reason. */
+const CLASSES: readonly ModelClass[] = ["cheap", "standard", "strong"];
+
+/** `[--model cheap|standard|strong]`; default cheap. Anything else is an error with a one-line reason. */
 export function parseLlmCheckArgs(args: readonly string[]): { model: ModelClass } | { error: string } {
   let model: ModelClass = "cheap";
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a !== "--model") return { error: `llm-check: unknown argument "${a}"; usage: llm-check [--model cheap|strong]` };
+    if (a !== "--model") return { error: `llm-check: unknown argument "${a}"; usage: llm-check [--model cheap|standard|strong]` };
     const v = args[++i];
-    if (v !== "cheap" && v !== "strong") {
-      return { error: `llm-check: --model must be cheap or strong, got ${v === undefined ? "nothing" : `"${v}"`}` };
+    if (!CLASSES.includes(v as ModelClass)) {
+      return { error: `llm-check: --model must be cheap, standard or strong, got ${v === undefined ? "nothing" : `"${v}"`}` };
     }
-    model = v;
+    model = v as ModelClass;
   }
   return { model };
 }

@@ -70,7 +70,7 @@ function runnerWith(out: Partial<ExecResult>) {
     secrets: { get: async () => ({ reveal: () => "x" }) as never, valuesForScan: async () => [] },
     claudeConfigDir: `${homes}/cfg`,
     homesDir: homes,
-    models: { cheap: "claude-haiku-5-5", strong: "claude-opus-5-5" },
+    models: { cheap: "claude-haiku-5-5", standard: "claude-sonnet-5-5", strong: "claude-opus-5-5" },
   });
 }
 

@@ -12,7 +12,7 @@ export class ClaudeCliLLMProvider implements LLMProvider {
       secrets: SecretStore;
       claudeConfigDir: string;
       workDir: string;
-      models: { cheap: string; strong: string };
+      models: { cheap: string; standard: string; strong: string };
       claudeBin?: string;
     },
   ) {}
