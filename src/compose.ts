@@ -272,6 +272,8 @@ export async function build(
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
+    // Suggests a command for a plain-language comment; never changes state (design §4).
+    llm: await p.llm(secrets),
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
   });
