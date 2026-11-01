@@ -146,11 +146,29 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
   });
   const remoteSha = () => git(origin, "rev-parse", `refs/heads/${branch}`);
   const updateRuns = async () => (await store.listRuns(id)).filter((r) => r.kind === "update");
+  const resolveRuns = async () => (await store.listRuns(id)).filter((r) => r.kind === "resolve");
+  /** Puts the item back on waiting for a human merge, as after a person's fix. */
+  const waitForMerge = async () => {
+    const cur = (await store.getWorkItem(id))!;
+    const r = await store.transition({
+      id, expected_version: cur.version, actor: system, reason: "test_setup",
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
+    });
+    if (!r.ok) throw new Error("transition failed");
+  };
+  /** A new commit on main that edits `path`; returns its sha. */
+  const moveMain = (path: string, content: string) => {
+    git(dev, "checkout", "--quiet", "main");
+    commitFile(dev, path, content, `main edits ${path}`);
+    git(dev, "push", "--quiet", "origin", "main");
+    git(repo, "fetch", "--quiet", "origin");
+    return git(dev, "rev-parse", "HEAD");
+  };
   const reasons = async () =>
     (await store.listStateChanges(id)).map((c) => c.reason).filter((r) => r.startsWith("update_") || r.startsWith("run_") || r === "retry_requested");
   return {
     store, source, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
-    origin, branchSha, mainSha, remoteSha, updateRuns, reasons, toolEnv,
+    origin, branchSha, mainSha, remoteSha, updateRuns, resolveRuns, reasons, toolEnv, waitForMerge, moveMain,
   };
 }
 
@@ -232,24 +250,126 @@ describe("update run: worker", () => {
     expect(Object.keys(tests[0]!.env)).not.toContain("GITHUB_TOKEN");
   });
 
-  it("conflict: no push, merge_conflict_pending, and a comment listing every conflicting file", async () => {
+  it("conflict: no push, a comment listing every conflicting file, and a resolve run starts on its own", async () => {
     const f = await setup("conflict");
     f.source.queue.push(f.event());
-    await f.step();
+    await f.controller.tickIntake();
+    await f.worker.tick(); // the update run only
+    await f.controller.tickRuns();
 
     expect(f.remoteSha()).toBe(f.branchSha);
     expect(f.broker.pushes()).toHaveLength(0);
-    expect((await f.store.getWorkItem(f.id))!).toMatchObject({
-      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
-    });
+    // No /resolve needed: RUNNING, unblocked, one automatic resolve run keyed on the base commit and attempt 1.
+    expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    const resolves = await f.resolveRuns();
+    expect(resolves.map((r) => [r.idempotency_key, r.status])).toEqual([[`${f.id}:resolve:auto:${f.mainSha}:1`, "queued"]]);
     const [run] = await f.updateRuns();
     const comments = f.broker.comments();
     expect(comments).toHaveLength(1);
     expect(comments[0]!.args.marker).toBe(`<!-- factory:update:${run!.id} -->`);
     const files = String(comments[0]!.args.body).split("\n").flatMap((l) => /^- `(.+)`$/.exec(l)?.[1] ?? []);
     expect(files).toEqual(["a.txt", "src/c.txt"]);
-    expect(await f.reasons()).toEqual(["update_started", "update_conflict"]);
+    expect(String(comments[0]!.args.body)).toContain("automatic resolve run");
+    expect(await f.reasons()).toEqual(["update_started"]);
+    expect((await f.store.listStateChanges(f.id)).at(-1)).toMatchObject({
+      reason: "auto_resolve_started", detail: { base_sha: f.mainSha, attempt: 1, auto_resolve_attempts: 0 },
+    });
     expect(f.runner.specs).toHaveLength(0);
+  });
+
+  it("a failed automatic resolve starts the next one; after 2 for one base commit the item waits on merge_conflict_pending", async () => {
+    const f = await setup("conflict"); // no resolve prompt: every resolve run fails prompt_missing
+    f.source.queue.push(f.event());
+    await f.step();
+
+    const resolves = await f.resolveRuns();
+    expect(resolves.map((r) => [r.idempotency_key, r.status])).toEqual([
+      [`${f.id}:resolve:auto:${f.mainSha}:1`, "failed"],
+      [`${f.id}:resolve:auto:${f.mainSha}:2`, "failed"],
+    ]);
+    expect((await f.store.getWorkItem(f.id))!).toMatchObject({
+      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
+    });
+    const trail = (await f.store.listStateChanges(f.id)).map((c) => c.reason);
+    expect(trail.slice(-4)).toEqual(["update_started", "auto_resolve_started", "auto_resolve_retry", "resolve_failed"]);
+    expect(f.remoteSha()).toBe(f.branchSha);
+    // One comment for the final failure, on the PR, with both counts; none for the first failure.
+    const final = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:run-failed:"));
+    expect(final).toHaveLength(1);
+    expect(final[0]!.source.id).toBe("o/r#42");
+    expect(final[0]!.marker).toBe(`<!-- factory:run-failed:${resolves[1]!.id} -->`);
+    expect(final[0]!.body).toContain("attempt 2 of 2");
+    expect(final[0]!.body).toContain("0 resolved automatically, 1 needed a person");
+  });
+
+  it("a third unmergeable event for the same base commit starts no run; a new base commit gets its own 2 attempts", async () => {
+    const f = await setup("conflict");
+    f.source.queue.push(f.event());
+    await f.step();
+    expect(await f.resolveRuns()).toHaveLength(2);
+
+    // Back to waiting for a merge (say, a person pushed an unrelated fix); the PR conflicts with the same base again.
+    await f.waitForMerge();
+    f.source.queue.push(f.event("h2", "b1"));
+    await f.step();
+    expect(await f.resolveRuns()).toHaveLength(2);
+    expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+    const limit = (await f.store.listStateChanges(f.id)).at(-1)!;
+    expect(limit).toMatchObject({ reason: "update_conflict", detail: { base_sha: f.mainSha, auto_resolve_attempts: 2 } });
+    const note = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:auto-resolve-limit:"))!;
+    expect(note.source.id).toBe("o/r#42");
+    expect(note.body).toContain("0 resolved automatically, 2 needed a person");
+
+    // main moves on: a new base commit, two fresh automatic attempts.
+    const newMain = f.moveMain("a.txt", "main a again\n");
+    await f.waitForMerge();
+    f.source.queue.push(f.event("h3", "b2"));
+    await f.step();
+    const keys = (await f.resolveRuns()).map((r) => r.idempotency_key);
+    expect(keys.slice(2)).toEqual([`${f.id}:resolve:auto:${newMain}:1`, `${f.id}:resolve:auto:${newMain}:2`]);
+  });
+
+  it("applying the same unmergeable update outcome twice enqueues one resolve run", async () => {
+    const f = await setup("conflict");
+    f.source.queue.push(f.event());
+    await f.controller.tickIntake();
+    await f.worker.tick();
+    const [run] = await f.updateRuns();
+    await f.controller.applyRun(run!);
+    await f.controller.applyRun(run!);
+    await f.controller.tickRuns();
+    expect(await f.resolveRuns()).toHaveLength(1);
+    expect((await f.store.listStateChanges(f.id)).filter((c) => c.reason === "auto_resolve_started")).toHaveLength(1);
+  });
+
+  it("applying the same failed automatic resolve twice enqueues one next attempt", async () => {
+    const f = await setup("conflict");
+    f.source.queue.push(f.event());
+    await f.controller.tickIntake();
+    await f.worker.tick();
+    await f.controller.tickRuns();
+    await f.worker.tick(); // resolve attempt 1 fails
+    const failed = (await f.resolveRuns())[0]!;
+    expect(failed.status).toBe("failed");
+    await f.controller.applyRun(failed);
+    await f.controller.applyRun(failed);
+    expect((await f.resolveRuns()).map((r) => r.idempotency_key)).toEqual([
+      `${f.id}:resolve:auto:${f.mainSha}:1`, `${f.id}:resolve:auto:${f.mainSha}:2`,
+    ]);
+  });
+
+  it("a human /resolve still starts a resolve run past the automatic limit, and does not count toward it", async () => {
+    const f = await setup("conflict");
+    f.source.queue.push(f.event());
+    await f.step();
+    const item = (await f.store.getWorkItem(f.id))!;
+    expect(item.blocked_reason).toBe("merge_conflict_pending");
+    f.source.queue.push({ kind: "resolve_requested", source: item.source, comment_id: "901", requester: alice, notes: "", pr: null });
+    await f.controller.tickIntake();
+    const resolves = await f.resolveRuns();
+    expect(resolves).toHaveLength(3);
+    expect(resolves[2]).toMatchObject({ idempotency_key: `${f.id}:resolve:l0:r1`, status: "queued" });
+    expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
   });
 
   it("clean merge but failing tests: no push, merge_conflict_pending, comment says the tests failed", async () => {

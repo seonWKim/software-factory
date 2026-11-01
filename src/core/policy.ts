@@ -97,9 +97,46 @@ export const IMPLEMENT_KINDS: readonly RunKind[] = ["implement", "update"];
  * Scope gate (design §4): given the NUL-separated output of
  * `git diff --name-only -z --no-renames <base>...HEAD` and the item's allowed_paths, returns every changed
  * path that no allowed path covers, sorted and without duplicates. Empty means the branch may be pushed.
+ * `conflicts`: the files the base merge conflicted in (both sides changed them). They pass whatever
+ * allowed_paths says (decision changed 2026-11-02): the base's side of a conflict is not the item's doing.
  * With `--no-renames` a rename shows as a delete of the old path plus an add of the new one, so both are checked.
  */
-export function scopeViolations(nameOnlyZ: string, allowed: readonly string[]): string[] {
+export function scopeViolations(nameOnlyZ: string, allowed: readonly string[], conflicts: readonly string[] = []): string[] {
   const changed = new Set(nameOnlyZ.split("\0").filter((p) => p.length > 0));
-  return [...changed].filter((p) => !isCovered(p, allowed)).sort();
+  const conflicting = new Set(conflicts);
+  return [...changed].filter((p) => !conflicting.has(p) && !isCovered(p, allowed)).sort();
+}
+
+/**
+ * Automatic resolve runs per base commit (design §5 Merge conflict, decided 2026-11-02). A constant, not a
+ * config key. A human `/resolve` does not count toward it.
+ */
+export const AUTO_RESOLVE_LIMIT = 2;
+
+const AUTO_RESOLVE_KEY = /^(.+):resolve:auto:([^:]+):(\d+)$/;
+
+/** The run key of automatic resolve number `attempt` (1-based) of item `id` for base commit `baseSha`. */
+export function autoResolveKey(id: string, baseSha: string, attempt: number): string {
+  return `${id}:resolve:auto:${baseSha}:${attempt}`;
+}
+
+/** The parts of an automatic resolve key; null for any other key (a human `/resolve`, another kind). */
+export function parseAutoResolveKey(key: string): { work_item_id: string; base_sha: string; attempt: number } | null {
+  const m = AUTO_RESOLVE_KEY.exec(key);
+  if (!m) return null;
+  const attempt = Number(m[3]);
+  return attempt >= 1 ? { work_item_id: m[1]!, base_sha: m[2]!, attempt } : null;
+}
+
+/** How many automatic resolve runs of item `id` for base commit `baseSha` the keys hold (distinct keys). */
+export function autoResolveAttempts(keys: readonly string[], id: string, baseSha: string): number {
+  return new Set(keys.filter((k) => {
+    const p = parseAutoResolveKey(k);
+    return p !== null && p.work_item_id === id && p.base_sha === baseSha;
+  })).size;
+}
+
+/** The number of the next automatic resolve after `done` of them for one base commit; null at the limit. */
+export function nextAutoResolveAttempt(done: number): number | null {
+  return done < AUTO_RESOLVE_LIMIT ? done + 1 : null;
 }
