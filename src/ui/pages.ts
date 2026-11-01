@@ -130,6 +130,12 @@ async function factorySection(c: Ctx): Promise<string> {
       );
     case "restarting":
       return `${open("warn", `Starting ${esc(short(s.target_rev))}.`)} New runs start in a moment (since ${since}).</p></section>`;
+    case "crashed":
+      return (
+        `${open("bad", `Factory not running: revision ${esc(short(s.rev))} exits.`)} ` +
+        `${s.error ? `<code>${esc(s.error)}</code>. ` : ""}It is restarted every poll; no runs start until it stays up ` +
+        `(failing for ${esc(c.ago(s.since))}).</p></section>`
+      );
     case "build_failed":
       return `${open("bad", `Revision ${esc(short(s.target_rev))} failed to build.`)} Still running <code>${esc(short(s.rev))}</code>; its settings stay in effect until main builds.</p></section>`;
   }

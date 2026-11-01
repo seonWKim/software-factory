@@ -81,6 +81,7 @@ class Fake {
 
 class FakeChild implements ChildHandle {
   drainAcknowledged = false;
+  lastError: string | null = null;
   alive = true;
   readonly exited: Promise<number | null>;
   private done!: (code: number | null) => void;

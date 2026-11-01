@@ -13,6 +13,8 @@ export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
 /** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
 export const DRAIN_MESSAGE = "factory:drain";
 export const DRAINED_MESSAGE = "factory:drained";
+/** Sent by a child before it exits on an error (e.g. pending migrations), with `error`: the message it prints. */
+export const CHILD_ERROR_MESSAGE = "factory:error";
 
 /** Runs one host command. Same shape as `runProcess`, so tests can pass a fake. */
 export type CommandRunner = (
@@ -37,6 +39,8 @@ export interface ChildHandle {
   requestDrain(): void;
   /** True once the child said it drained (after its worker finished the in-flight run). */
   readonly drainAcknowledged: boolean;
+  /** The error the child sent before exiting on an error, or null. */
+  readonly lastError: string | null;
   /** Resolves with the exit code (null if killed by a signal) when the child exits. */
   readonly exited: Promise<number | null>;
   /** SIGTERM: today's hard stop. SIGKILL: when it did not exit in time. */
@@ -73,15 +77,18 @@ export interface Updater {
 export interface SupervisorStatus {
   /** running: the child claims work. building: a new revision builds beside it. draining: the child takes no
    * new runs and finishes its in-flight ones. restarting: the new revision is starting. build_failed: the
-   * running child stays on `rev`. stopped: no child. */
-  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "stopped";
+   * running child stays on `rev`. crashed: the child exited without being asked to (it is restarted every
+   * poll); `error` says why. stopped: no child. */
+  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "crashed" | "stopped";
   /** The revision the child runs (null before the first start). */
   rev: string | null;
   /** The revision being built or started, when there is one. */
   target_rev: string | null;
   child_pid: number | null;
-  /** ISO time this state began. */
+  /** ISO time this state began. A repeat of the same state keeps it. */
   since: string;
+  /** crashed: the child's error, or its exit code when it sent none. */
+  error?: string | null;
 }
 
 export const SUPERVISOR_STATUS_FILE = "supervisor.json";

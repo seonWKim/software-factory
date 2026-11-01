@@ -294,7 +294,7 @@ Plugins:
 
 Switch back / turn it off: `"plugins": { "updater": "none" }` (add the guards too if you write a `plugins` object, see above). The supervisor itself reads `plugins.updater`, `repo.base_branch`, `poll_interval_ms` and `run_timeout_ms` from the checkout it was started in; restart `dev` after changing them.
 
-The `git-worktree` updater also writes `<state_dir>/supervisor.json` (what it is doing: running, building, draining, restarting, build_failed, stopped) for the status page's banner. `none` writes nothing, and the page then shows no banner state beyond "stopped".
+The `git-worktree` updater also writes `<state_dir>/supervisor.json` (what it is doing: running, building, draining, restarting, build_failed, crashed with the child's error, stopped) for the status page's banner. `none` writes nothing, and the page then shows no banner state beyond "stopped".
 
 ## KeepAwake
 

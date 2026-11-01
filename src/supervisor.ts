@@ -13,6 +13,7 @@ import {
   type CommandRunner,
   DRAINED_MESSAGE,
   DRAIN_MESSAGE,
+  CHILD_ERROR_MESSAGE,
   type Updater,
 } from "./interfaces/updater.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -155,6 +156,7 @@ export class ForkLauncher implements ChildLauncher {
 
 class ForkedChild implements ChildHandle {
   drainAcknowledged = false;
+  lastError: string | null = null;
   readonly exited: Promise<number | null>;
 
   constructor(private readonly c: ChildProcess) {
@@ -166,6 +168,7 @@ class ForkedChild implements ChildHandle {
     });
     c.on("message", (m: unknown) => {
       if (isMessage(m, DRAINED_MESSAGE)) this.drainAcknowledged = true;
+      if (isMessage(m, CHILD_ERROR_MESSAGE)) this.lastError = String((m as { error?: unknown }).error ?? "").slice(0, 500);
     });
   }
 

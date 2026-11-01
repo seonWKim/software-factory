@@ -77,6 +77,10 @@ export class GitWorktreeUpdater implements Updater {
   private readonly abort = new AbortController();
   /** The revision the current child was started from. */
   private runningRev: string | null = null;
+  /** The last status written: a repeat of the same state keeps its `since`. */
+  private lastStatus: SupervisorStatus | null = null;
+  /** The crash loop in progress: its error and when it began. */
+  private crash: { error: string | null; since: string } | null = null;
 
   constructor(private readonly o: GitWorktreeOptions) {}
 
@@ -210,16 +214,23 @@ export class GitWorktreeUpdater implements Updater {
   }
 
   /** Writes the status file (atomically: a temp file, then rename). A failure is logged, never thrown. */
-  private async report(state: SupervisorStatus["state"], target: string | null): Promise<void> {
+  private async report(state: SupervisorStatus["state"], target: string | null, error: string | null = null): Promise<void> {
     const file = this.o.statusFile;
     if (!file) return;
+    const last = this.lastStatus;
+    const now = this.o.clock.now().toISOString();
+    // A crash loop (crash, restart, the same crash) keeps the first crash's time; any other state ends it.
+    if (state === "crashed") this.crash = this.crash?.error === error ? this.crash : { error, since: now };
+    else if (state !== "running") this.crash = null;
     const status: SupervisorStatus = {
       state,
       rev: this.runningRev,
       target_rev: target,
-      child_pid: state === "stopped" ? null : (this.child?.pid ?? null),
-      since: this.o.clock.now().toISOString(),
+      child_pid: state === "stopped" || state === "crashed" ? null : (this.child?.pid ?? null),
+      since: state === "crashed" ? this.crash!.since : last && last.state === state ? last.since : now,
+      error,
     };
+    this.lastStatus = status;
     try {
       await writeFile(`${file}.tmp`, `${JSON.stringify(status)}\n`);
       await rename(`${file}.tmp`, file);
@@ -259,7 +270,7 @@ export class GitWorktreeUpdater implements Updater {
     void child.exited.then((code) => {
       if (this.child === child) {
         this.child = null;
-        if (!this.closed && !this.stopping.has(child)) void this.report("stopped", null);
+        if (!this.closed && !this.stopping.has(child)) void this.report("crashed", null, child.lastError ?? `exit code ${code}`);
       }
       if (!this.stopping.has(child)) log.warn("child exited unexpectedly; restarting on the next poll", { pid: child.pid, exit_code: code });
     });

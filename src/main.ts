@@ -15,7 +15,7 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { readFactoryStatus } from "./ui/factory-status.js";
-import { SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
+import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
 
@@ -250,7 +250,11 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
 main(process.argv[2], process.argv.slice(3)).then(
   (code) => process.exit(code),
   (err: unknown) => {
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(message);
+    // A supervised child tells the supervisor why, so the status page can show it; then exits.
+    if (process.env[SUPERVISED_ENV] === "1" && process.send && process.connected) {
+      process.send({ type: CHILD_ERROR_MESSAGE, error: message }, undefined, {}, () => process.exit(1));
+    } else process.exit(1);
   },
 );

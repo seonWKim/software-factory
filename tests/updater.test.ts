@@ -129,6 +129,7 @@ type DrainMode = "ack" | "hold" | "ignore";
 
 class FakeChild implements ChildHandle {
   drainAcknowledged = false;
+  lastError: string | null = null;
   readonly exited: Promise<number | null>;
   alive = true;
   kills: string[] = [];
@@ -426,6 +427,33 @@ describe("updater: git-worktree status file", () => {
 
     await updater.shutdown();
     expect(read()).toMatchObject({ state: "stopped", child_pid: null });
+  });
+  it("a child that exits on its own is crashed with its error; repeated crashes keep the first time", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; error: string | null; since: string; child_pid: number | null };
+    const { launcher, clock, updater } = setup({ statusFile: file });
+    await updater.start();
+    const pending = "1 schema step pending (state none, latest 11): run `npm run migrate`";
+    const crash = async (i: number) => {
+      launcher.children[i]!.lastError = pending;
+      launcher.children[i]!.exit(1);
+      await waitFor(() => read().state === "crashed", "crashed status");
+    };
+    await crash(0);
+    const first = read();
+    expect(first).toMatchObject({ state: "crashed", error: pending, child_pid: null });
+
+    clock.advance(30_000);
+    await updater.poll(); // restarts the child, which fails the same way
+    expect(read().state).toBe("running");
+    await crash(1);
+    expect(read()).toMatchObject({ state: "crashed", error: pending, since: first.since });
+
+    clock.advance(30_000);
+    await updater.poll();
+    launcher.children[2]!.exit(1); // no error sent: the exit code stands in
+    await waitFor(() => read().error === "exit code 1", "exit code error");
+    await updater.shutdown();
   });
 });
 

@@ -659,6 +659,12 @@ describe("ui: factory status banner", () => {
     expect(running).toContain("10 workers");
     const failed = section((await get(await startOn(store, clock, async () => status({ state: "build_failed", target_rev: "ccccccc" })), "/")).body, "factory");
     expect(failed).toContain("failed to build");
+    const crashed = section(
+      (await get(await startOn(store, clock, async () => status({ state: "crashed", child_pid: null, error: "1 schema step pending: run `npm run migrate`" })), "/")).body,
+      "factory",
+    );
+    expect(crashed).toContain("Factory not running");
+    expect(crashed).toContain("run `npm run migrate`");
     expect(section((await get(await startOn(store, clock, async () => null), "/")).body, "factory")).toContain("Factory stopped.");
     expect((await get(await startOn(store, clock), "/")).body).not.toContain('<section id="factory">');
   });
