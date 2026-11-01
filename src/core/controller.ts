@@ -1,3 +1,13 @@
+import {
+  BUDGET_CHECKPOINT,
+  DEFAULT_BUDGET_MIN_SAMPLE,
+  checkpointComment,
+  currentBudget,
+  overBudget,
+  parseBudgetAmount,
+  suggestBudget,
+  tierBudget,
+} from "./budget.js";
 import type { FactoryConfig } from "./config.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
@@ -21,7 +31,7 @@ import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, TransitionInput } from "../interfaces/factory-store.js";
+import type { FactoryStore, NewBudgetCheckpoint, TransitionInput } from "../interfaces/factory-store.js";
 import type { SourceAdapter, SourceEvent } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
@@ -36,9 +46,12 @@ export interface ControllerDeps {
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
+/** A decision whose implement or review run is held at a budget checkpoint instead of queued. */
+type Hold = Omit<TransitionInput, "id" | "expected_version" | "enqueue"> & { checkpoint: NewBudgetCheckpoint };
 /** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
 type Refusal = { refuse: string };
-type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" }>;
+type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "retry_requested" | "budget_continue" }>;
+type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 
@@ -46,7 +59,10 @@ const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
   spec_rejected: "/reject",
   retry_requested: "/retry",
+  budget_continue: "/budget",
 };
+/** Tells applyCommand to re-read the item and try again (a version conflict or a concurrent answer). */
+const RETRY = Symbol("retry");
 
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
 /** Records reverts and fix-forwards (design §6). */
@@ -169,6 +185,7 @@ export class Controller {
       case "spec_approved":
       case "spec_rejected":
       case "retry_requested":
+      case "budget_continue":
         return this.handleCommand(e);
       case "verdict_submitted":
         return this.handleVerdict(e);
@@ -223,8 +240,7 @@ export class Controller {
     const principal = await this.authorize(e.kind === "retry_requested" ? e.requester : e.approver, "approve_spec", item.id);
     const refusal = "refuse" in principal
       ? principal.refuse
-      : await this.decide(item.id, async (it) =>
-          command(e, it, { kind: "user", id: principal.user_id }, await this.floorTierNeeded(it)));
+      : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id });
     await this.markSeen(e.source, e.comment_id);
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
@@ -233,6 +249,79 @@ export class Controller {
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * `/budget` and `/reject` at a budget checkpoint answer it (design §6); every other command, and `/reject`
+   * elsewhere, goes through `command`. Returns the refusal reason, else null.
+   */
+  private async applyCommand(id: WorkItemId, e: CommandEvent, actor: Extract<Actor, { kind: "user" }>): Promise<string | null> {
+    for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
+      const it = await this.d.store.getWorkItem(id);
+      if (!it) return null;
+      const atCheckpoint = it.stage !== "CLOSED" && it.blocked_reason === BUDGET_CHECKPOINT;
+      if (atCheckpoint && (e.kind === "budget_continue" || e.kind === "spec_rejected")) {
+        const r = await this.answerCheckpoint(it, e, actor);
+        if (r === RETRY) continue;
+        return r;
+      }
+      if (e.kind === "budget_continue") {
+        return it.stage === "CLOSED" ? "the work item is closed" : "the work item is not at a budget checkpoint";
+      }
+      return this.decide(id, async (x) => command(e, x, actor, await this.floorTierNeeded(x)));
+    }
+    this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
+    return null;
+  }
+
+  /**
+   * The answer to the item's pending checkpoint, with the checkpoint row and its state change in one store
+   * transaction. `/budget` grants the suggestion, or a whole number above the checkpoint's budget, and queues
+   * the held run with its kind, key and not_before, unchecked. `/reject` closes the item and leaves the
+   * branch and the PR as they are.
+   */
+  private async answerCheckpoint(
+    it: WorkItem,
+    e: Extract<CommandEvent, { kind: "budget_continue" | "spec_rejected" }>,
+    actor: Extract<Actor, { kind: "user" }>,
+  ): Promise<string | null | typeof RETRY> {
+    const cp = (await this.d.store.listBudgetCheckpoints(it.id)).filter((c) => c.answer === "pending").at(-1);
+    if (!cp) return "the budget checkpoint has no pending record";
+    const common = { id: it.id, expected_version: it.version, actor, checkpoint_id: cp.id };
+    let input: Parameters<FactoryStore["answerBudgetCheckpoint"]>[0];
+    if (e.kind === "spec_rejected") {
+      input = {
+        ...common,
+        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+        reason: "budget_rejected",
+        answer: "rejected",
+        granted_budget: null,
+        detail: { checkpoint_id: cp.id, held_run_key: cp.held_run_key },
+      };
+    } else {
+      const amount = parseBudgetAmount(e.amount, cp.budget);
+      if (!amount.ok) return amount.refuse;
+      const granted = amount.value ?? cp.suggested_budget;
+      const answer = amount.value === null ? "continued_suggested" : "continued_custom";
+      input = {
+        ...common,
+        patch: { blocked_on: "none", blocked_reason: null },
+        reason: "budget_continued",
+        answer,
+        granted_budget: granted,
+        detail: { checkpoint_id: cp.id, answer, previous_budget: cp.budget, granted_budget: granted, held_run_key: cp.held_run_key },
+        enqueue: { kind: cp.held_run_kind, idempotency_key: cp.held_run_key, not_before: cp.held_run_not_before },
+      };
+    }
+    const r = await this.d.store.answerBudgetCheckpoint(input);
+    if (r.ok) {
+      this.d.log.info("transition", { work_item_id: it.id, reason: input.reason, version: r.item.version });
+      await this.showStatus(r.item);
+      return null;
+    }
+    if (r.reason === "version_conflict" || r.reason === "checkpoint_not_pending") return RETRY;
+    this.d.log.warn("transition refused", { work_item_id: it.id, reason: r.reason });
+    return null;
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -646,10 +735,16 @@ export class Controller {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const item = await this.d.store.getWorkItem(id);
       if (!item) return null;
-      const decision = await fn(item);
-      if (!decision) return null;
-      if ("refuse" in decision) return decision.refuse;
-      const r = await this.d.store.transition({ ...decision, id, expected_version: item.version });
+      const wanted = await fn(item);
+      if (!wanted) return null;
+      if ("refuse" in wanted) return wanted.refuse;
+      // The one budget check: every implement or review run the factory would queue passes here (design §6).
+      const hold = await this.budgetHold(item, wanted);
+      const decision = hold ?? wanted;
+      const at = { id, expected_version: item.version };
+      const r = hold
+        ? await this.d.store.openBudgetCheckpoint({ ...hold, ...at })
+        : await this.d.store.transition({ ...wanted, ...at });
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
         if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.showStatus(r.item);
@@ -662,6 +757,67 @@ export class Controller {
     }
     this.d.log.warn("transition gave up after conflicts", { work_item_id: id });
     return null;
+  }
+
+  /**
+   * A token-budget checkpoint in place of `d`, when `d` queues an implement or review run and the item, after
+   * `d`'s patch, is at or over its current budget; else null. The rest of `d` (the outcome it applies, the
+   * run it acks) stands; the run is not queued but kept on the checkpoint row. Posts the one checkpoint
+   * comment first, keyed on the held run's key, so a re-decide after a conflict posts nothing new.
+   */
+  private async budgetHold(it: WorkItem, d: NonNullable<Decision>): Promise<Hold | null> {
+    const run = d.enqueue;
+    if (!run || (run.kind !== "implement" && run.kind !== "review")) return null;
+    const next = { ...it, ...d.patch };
+    if (next.tier === null) return null;
+    const base = tierBudget(this.d.config.budgets, next.tier);
+    if (base === null) return null;
+    const budget = currentBudget(base, await this.d.store.listBudgetCheckpoints(it.id));
+    if (!overBudget(next.token_cost, budget)) return null;
+
+    const suggestion = suggestBudget({
+      current: budget,
+      base,
+      history: await this.d.store.getTierHistory(it.project, next.tier),
+      min_sample: this.d.config.budget_min_sample ?? DEFAULT_BUDGET_MIN_SAMPLE,
+    });
+    const runs = (await this.d.store.listRuns(it.id)).length;
+    await this.comment(it, `budget:${run.idempotency_key}`, checkpointComment({
+      tier: next.tier,
+      stage: next.stage,
+      pr_number: next.pr_number,
+      runs,
+      tokens: next.token_cost,
+      budget,
+      held_run_kind: run.kind,
+      suggestion,
+    }));
+    const { enqueue: _held, ...rest } = d;
+    return {
+      ...rest,
+      patch: { ...d.patch, blocked_on: "budget", blocked_reason: BUDGET_CHECKPOINT },
+      reason: BUDGET_CHECKPOINT,
+      detail: {
+        ...d.detail,
+        held_reason: d.reason,
+        held_run_kind: run.kind,
+        held_run_key: run.idempotency_key,
+        tokens_spent: next.token_cost,
+        budget,
+        suggested_budget: suggestion.budget,
+        suggestion_method: suggestion.method,
+        merged_sample: suggestion.merged_sample,
+      },
+      checkpoint: {
+        tier: next.tier,
+        tokens_spent: next.token_cost,
+        budget,
+        suggested_budget: suggestion.budget,
+        held_run_kind: run.kind,
+        held_run_key: run.idempotency_key,
+        held_run_not_before: run.not_before ?? null,
+      },
+    };
   }
 
   private async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
@@ -723,8 +879,11 @@ export class Controller {
 }
 
 /** The transition a command asks for, or why the item's current state cannot take it. */
-function command(e: CommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Decision | Refusal {
+function command(e: ItemCommandEvent, it: WorkItem, actor: Actor, floorNeed: number | null): Decision | Refusal {
   if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
+  if (it.blocked_reason === BUDGET_CHECKPOINT) {
+    return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
+  }
   if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed);
   if (e.kind === "retry_requested") {
     const kind = failedRunKind(it);
@@ -765,7 +924,7 @@ function command(e: CommandEvent, it: WorkItem, actor: Actor, floorNeed: number 
  * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
  * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
  */
-function floorCommand(e: CommandEvent, it: WorkItem, actor: Actor, need: number | null): Decision | Refusal {
+function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
     return { refuse: "the item is blocked by the floor check (`floor_tier`), which is not a failed run; reply `/approve` to raise its tier" };
   }
