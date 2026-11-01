@@ -254,7 +254,11 @@ describe("the broker in a run folder", () => {
 
 describe("the worker's implement run in a real clone", () => {
   /** One implement run through the real NoOpSandbox and GitHubToolBroker; `agent` acts in the run folder. */
-  async function implement(agent: (workdir: string, root: string) => void, cfgPatch: Partial<FactoryConfig> = {}) {
+  async function implement(
+    agent: (workdir: string, root: string) => void,
+    cfgPatch: Partial<FactoryConfig> = {},
+    Sbx: typeof NoOpSandbox = NoOpSandbox,
+  ) {
     const f = factoryRepo();
     const clock = new FakeClock();
     const { store } = await newStore(clock);
@@ -274,7 +278,7 @@ describe("the worker's implement run in a real clone", () => {
       },
     });
     const worker = new Worker({
-      id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(f.worktrees), runner, broker: brokerFor(f.repo, store, clock),
+      id: "w1" as WorkerId, store, sandbox: new Sbx(f.worktrees), runner, broker: brokerFor(f.repo, store, clock),
       storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent, scanner: cleanScanner, awake: new NoKeepAwake(),
       toolEnv: { PATH: process.env.PATH ?? "", HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
     });
@@ -331,6 +335,21 @@ describe("the worker's implement run in a real clone", () => {
     expect(r.run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
     if (r.run.outcome?.status === "failed") expect(r.run.outcome.detail).toContain("README.md");
     expect(r.remote(r.f.origin)).toBe("");
+  });
+
+  it("takes the base from the factory repo (the sandbox's base_sha), even when the run folder's ref differs from the start", async () => {
+    /** A run folder whose origin/main already points past the factory repo's when the worker first looks. */
+    class SkewedSandbox extends NoOpSandbox {
+      override async create(spec: Parameters<NoOpSandbox["create"]>[0]) {
+        const h = await super.create(spec);
+        commit(h.workdir, "README.md", "outside allowed paths\n", "readme");
+        git(h.workdir, "update-ref", "refs/remotes/origin/main", "HEAD");
+        return h;
+      }
+    }
+    const r = await implement(agentCommits, {}, SkewedSandbox);
+    expect(r.run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
+    if (r.run.outcome?.status === "failed") expect(r.run.outcome.detail).toContain("README.md");
   });
 
   it("the size gate also counts from the trusted base", async () => {
