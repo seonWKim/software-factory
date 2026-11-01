@@ -29,6 +29,7 @@ export const config: FactoryConfig = {
   tick_ms: 1000,
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
+  workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
 };

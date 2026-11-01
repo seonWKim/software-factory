@@ -5,11 +5,11 @@ import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { FactoryConfig, Prompts, StatsConfig } from "./core/config.js";
-import type { Tier, VerdictSeverity, WorkerId } from "./core/types.js";
+import type { Tier, VerdictSeverity } from "./core/types.js";
 import { Controller } from "./core/controller.js";
 import { DIFF_LIMIT_DEFAULTS } from "./core/diff-gate.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
-import { Worker } from "./core/worker.js";
+import { WorkerPool } from "./core/worker-pool.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
@@ -61,6 +61,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
+  workers?: unknown;
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
@@ -110,6 +112,7 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
   uiPort(file.ui);
+  const workers = workerCount(file.workers);
   const retry = retryConfig(file);
   const diff = diffLimits(file);
   const stats = statsConfig(file.stats);
@@ -140,6 +143,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    workers,
     deny_paths: [
       dirname(secretsFile),
       join(stateDir, "db"),
@@ -170,7 +174,8 @@ export interface Built {
   store: FactoryStore;
   secrets: SecretStore;
   controller: Controller;
-  worker: Worker;
+  /** `config.workers` worker loops; `run(signal)` runs them all. */
+  worker: WorkerPool;
   close(): Promise<void>;
 }
 
@@ -239,8 +244,8 @@ export async function build(
     scanner,
   });
 
-  const worker = new Worker({
-    id: `${hostname()}:${process.pid}` as WorkerId,
+  const worker = new WorkerPool({
+    id_prefix: `${hostname()}:${process.pid}`,
     store,
     sandbox,
     runner: await p.runner(sandbox, secrets),
@@ -258,6 +263,15 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, controller, worker, close: () => store.close() };
+}
+
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+export function workerCount(value: unknown): number {
+  if (value === undefined) return 1;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  return value;
 }
 
 export const DEFAULT_UI_PORT = 4310;

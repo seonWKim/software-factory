@@ -18,6 +18,7 @@ import type {
   WorkItem,
   WorkItemId,
 } from "../../../core/types.js";
+import { IMPLEMENT_KINDS, allowedPathsOverlap } from "../../../core/policy.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
@@ -277,29 +278,52 @@ export class SqlFactoryStore implements FactoryStore {
 
   async claimRun(input: ClaimInput): Promise<Run | null> {
     if (input.kinds.length === 0) return null;
-    const { seq, forUpdateSkipLocked } = this.db.dialect;
+    const { seq, forUpdate } = this.db.dialect;
+    const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
+      // The lock row first: claimers run the overlap check below one at a time, so two of them can never both
+      // see "nothing overlapping is running" and claim overlapping runs. Only a claim moves a run to 'running',
+      // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
+      // serializes; the select is a no-op.)
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica (design §5 Restarts).
       const [pause] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [RATE_LIMIT_PAUSE]);
       if (pause && (pause.resume_at as string) > now) return null;
-      // SKIP LOCKED: concurrent workers each take a different candidate instead of queueing on one.
-      // not_before: a retry waits out its backoff, whichever worker looks.
-      const [next] = await tx.all(
-        `SELECT id FROM runs WHERE status = 'queued' AND kind IN (${placeholders(input.kinds.length)})
-           AND (not_before IS NULL OR not_before <= ?)
-         ORDER BY created_at, ${seq} LIMIT 1${forUpdateSkipLocked}`,
+
+      // Implement-type runs in progress, with their items' allowed_paths (architecture §4, overlap rule).
+      const busy = (
+        await tx.all(
+          `SELECT r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+           WHERE r.status = 'running' AND r.kind IN (${writeKinds})`,
+          [...IMPLEMENT_KINDS],
+        )
+      ).map((r) => ({ item: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+
+      // Queued runs in FIFO order. not_before: a retry waits out its backoff, whichever worker looks.
+      const queued = await tx.all(
+        `SELECT r.id, r.kind, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+         WHERE r.status = 'queued' AND r.kind IN (${placeholders(input.kinds.length)})
+           AND (r.not_before IS NULL OR r.not_before <= ?)
+         ORDER BY r.created_at, r.${seq}`,
         [...input.kinds, now],
       );
-      if (!next) return null;
-      const id = next.id as RunId;
-      const claimed = await tx.run(
-        `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
-           lease_expires_at = ?, started_at = ?, updated_at = ?
-         WHERE id = ? AND status = 'queued'`,
-        [input.worker_id, this.after(input.lease_ms), now, now, id],
-      );
-      return claimed === 1 ? this.selectRun(tx, id) : null;
+      for (const next of queued) {
+        // An implement-type run waits while an overlapping one runs; it stays queued. Triage and review never wait.
+        if ((IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string)) {
+          const paths = parseList(next.allowed_paths);
+          if (busy.some((b) => b.item === next.work_item_id || allowedPathsOverlap(b.paths, paths))) continue;
+        }
+        const id = next.id as RunId;
+        const claimed = await tx.run(
+          `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
+             lease_expires_at = ?, started_at = ?, updated_at = ?
+           WHERE id = ? AND status = 'queued'`,
+          [input.worker_id, this.after(input.lease_ms), now, now, id],
+        );
+        if (claimed === 1) return this.selectRun(tx, id);
+      }
+      return null;
     });
   }
 
@@ -558,6 +582,14 @@ class DuplicateVerdict extends Error {}
 
 /** The one claim pause today: a usage or rate limit on the agent harness. */
 const RATE_LIMIT_PAUSE = "rate_limit";
+
+/** The one row in `claim_locks`: every claim takes it first (migration 6). */
+const CLAIM_LOCK = "claim";
+
+/** A JSON string array column (allowed_paths). */
+function parseList(value: unknown): string[] {
+  return typeof value === "string" ? (JSON.parse(value) as string[]) : [];
+}
 
 function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");
