@@ -311,7 +311,7 @@ describe("ui: config and intake", () => {
 
 const HOUR = 60 * 60 * 1000;
 
-/** The cells of each row of the work item list: state, number, title, stage, tier, next step, PR, waiting. */
+/** The cells of each row of the work item list: state, number, title, stage, tier, next step, PR, waiting, conflicts. */
 function rows(body: string): string[][] {
   const list = section(body, "items");
   const tbody = list.indexOf("<tbody>");
