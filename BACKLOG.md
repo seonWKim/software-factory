@@ -4,9 +4,7 @@ Each line becomes a GitHub issue labeled `factory` once Phase 1 works. Order mat
 
 ## Phase 1 PoC (before the exit criterion)
 
-Built by hand, not by the factory.
-
-- P1. `/revise <feedback>` on a pending spec: keep the item open, re-run triage with the feedback, post a new spec. `/reject` comments on and closes the source issue. Found on issue #4: `/reject <reason>` closed the item and dropped the reason. Update `docs/design.md` (gate commands) in the same change.
+Built by hand, not by the factory. Nothing open.
 
 ## Phase 2 seed issues
 

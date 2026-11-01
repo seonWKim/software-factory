@@ -77,11 +77,22 @@ export class FakeSource implements PollSource {
     return { events, next_cursor: JSON.stringify({ n: c.n + 1, last_comment_id: last }) };
   }
   async postComment(source: SourceRef, body: string, marker: string): Promise<void> {
+    if (this.commentError) throw this.commentError;
     if (!this.comments.some((c) => c.marker === marker)) this.comments.push({ source, body, marker });
   }
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     if (this.reactionError) throw this.reactionError;
     this.reactions.push({ source, comment_id: commentId });
+  }
+  /** Every closeIssue call that succeeded, in order. */
+  closed: SourceRef[] = [];
+  /** When set, closeIssue throws this instead of recording. */
+  closeError: Error | null = null;
+  /** When set, postComment throws this instead of recording. */
+  commentError: Error | null = null;
+  async closeIssue(source: SourceRef): Promise<void> {
+    if (this.closeError) throw this.closeError;
+    this.closed.push(source);
   }
   /** Every setStatus call, in order, including ones that threw. */
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
@@ -130,6 +141,11 @@ export class FakeStreamSource implements StreamSource {
   /** Runs inside ack(), before the ack is recorded: lets a test look at the store at that moment. */
   onAck: ((dedupe_key: string) => void | Promise<void>) | null = null;
   comments: { source: SourceRef; body: string; marker: string }[] = [];
+  /** Every closeIssue call, in order. */
+  closed: SourceRef[] = [];
+  async closeIssue(source: SourceRef): Promise<void> {
+    this.closed.push(source);
+  }
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
   private wake: (() => void)[] = [];

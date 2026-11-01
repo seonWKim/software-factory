@@ -11,6 +11,7 @@ import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { buildAgentEnv, buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
 import { EnvFileSecretStore, parseEnvFile } from "../src/impl/secrets/env-file-secret-store.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import { secretName } from "../src/interfaces/secret-store.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
@@ -70,20 +71,23 @@ describe("G3/G4: harness settings deny secret paths", () => {
 });
 
 describe("Secret store", () => {
+  /** What the default plugin selection declares (src/plugins.ts); the store loads only declared names. */
+  const DECLARED = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MYSQL_PASSWORD"].map(secretName);
+
   it("parses only known names and keeps values opaque", async () => {
-    const m = parseEnvFile("# c\nGITHUB_TOKEN=ghp_x\nexport CLAUDE_CODE_OAUTH_TOKEN='tok'\nOTHER=1\n");
+    const m = parseEnvFile("# c\nGITHUB_TOKEN=ghp_x\nexport CLAUDE_CODE_OAUTH_TOKEN='tok'\nOTHER=1\n", DECLARED);
     expect([...m.keys()].sort()).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN"]);
   });
 
   it("scans the MySQL password but not connection settings like the host (they would block normal output)", () => {
-    const m = parseEnvFile("MYSQL_HOST=localhost\nMYSQL_USER=factory\nMYSQL_PASSWORD=pw-value\n");
+    const m = parseEnvFile("MYSQL_HOST=localhost\nMYSQL_USER=factory\nMYSQL_PASSWORD=pw-value\n", DECLARED);
     expect([...m.keys()]).toEqual(["MYSQL_PASSWORD"]);
   });
 
   it("a Secret never stringifies to its value", async () => {
     const store = new EnvFileSecretStore("/nonexistent");
     (store as unknown as { loaded: Promise<Map<string, string>> }).loaded = Promise.resolve(new Map([["GITHUB_TOKEN", "ghp_value"]]));
-    const s = (await store.get("GITHUB_TOKEN"))!;
+    const s = (await store.get(secretName("GITHUB_TOKEN")))!;
     expect(String(s)).not.toContain("ghp_value");
     expect(JSON.stringify({ s })).not.toContain("ghp_value");
     expect(inspect(s)).not.toContain("ghp_value");

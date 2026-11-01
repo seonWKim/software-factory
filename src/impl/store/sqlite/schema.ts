@@ -113,7 +113,13 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX verdicts_work_item ON verdicts (work_item_id, at);
   `,
-  // 6: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  `
+  ALTER TABLE work_items ADD COLUMN issue_text TEXT;
+  ALTER TABLE work_items ADD COLUMN revision_count INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE work_items ADD COLUMN spec_feedback TEXT;
+  `,
+  // 7: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
   // AUTOINCREMENT: a seq is never reused, even after cleanup deletes the newest rows, so a cursor never
   // skips an event. One listener lease row per source type.
   `

@@ -126,7 +126,13 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
       FOREIGN KEY (state_change_id) REFERENCES state_changes (id)
     ) ${TABLE}`,
   ],
-  // 6: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
+  // 6: spec revisions (design §4, gate commands). Old rows keep issue_text and spec_feedback NULL.
+  [
+    "ALTER TABLE work_items ADD COLUMN issue_text MEDIUMTEXT NULL",
+    "ALTER TABLE work_items ADD COLUMN revision_count INT NOT NULL DEFAULT 0",
+    "ALTER TABLE work_items ADD COLUMN spec_feedback MEDIUMTEXT NULL",
+  ],
+  // 7: stream intake (docs/architecture.md, Intake). Pushed events are stored here before they are acked.
   // InnoDB keeps the AUTO_INCREMENT counter across restarts (MySQL 8), so a seq is never reused after cleanup.
   // One listener lease row per source type.
   [

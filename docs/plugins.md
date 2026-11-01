@@ -50,6 +50,8 @@ To switch back to the defaults, set the key back to the default name above, or d
 
 **Adding an implementation:** in the same change, add its registry entry in `src/plugins.ts`, its section below, and an entry in the class table in `tests/plugins.test.ts`. The tests fail if a registered name is missing from this file.
 
+**Declared secrets.** Each registry entry lists, per plugin, the secret names that plugin reads, each with a one-line purpose (`secrets` in `src/plugins.ts`; `withPlugin` takes the same list as an optional last argument). A name is checked by `secretName()`: upper-case letters, digits and `_`, starting with a letter. The secret set is the union of the names the **selected** plugins declare (`declaredSecretNames`): the `SecretStore` loads, returns and scans exactly those, so switching a plugin in config changes the set with no code edit (for example `store.type` `sqlite` drops `MYSQL_PASSWORD`). Any other key in the secret file, a plain setting such as `MYSQL_HOST` or a secret no selected plugin declares, is never returned and never scanned. A declared secret missing from the file does not stop startup; `npm run factory -- doctor` reports it as FAIL and `npm run setup` asks for it. Declarations that share a `oneOf` label are alternatives (the model credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Each plugin's **Secrets:** line below lists exactly its declared names; `tests/secret-names.test.ts` fails when they drift, and checks that `.env.example` lists every name the default selection declares.
+
 ## FactoryStore
 
 What it does: the factory's state (work items, runs, state changes, handoffs, leases). Every transition is a conditional update, so any number of controllers and workers can share it (architecture §4). The logic exists once in `SqlFactoryStore`; a backend is a `SqlDriver`.
@@ -85,7 +87,8 @@ Plugins:
 
 - `env-file`: `EnvFileSecretStore`. Reads `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env` (or `SOFTWARE_FACTORY_SECRETS_FILE`), lazily, once.
   - Enable: `"plugins": { "secrets": "env-file", ... }`, or no `plugins` object.
-  - Secrets: the file itself (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `MYSQL_PASSWORD`); see `docs/setup.md`. Settings: none.
+  - Loads only the names the selected plugins declare (see "Declared secrets" above); every other key in the file is ignored.
+  - Secrets: none of its own; it holds the ones the other selected plugins declare (`docs/setup.md`). Settings: none.
 
 Switch back: `"secrets": "env-file"`.
 
@@ -152,7 +155,7 @@ Plugins:
   - Enable: `"plugins": { "llm": "claude-cli", ... }`.
   - Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`). Settings: `models`; the `claude` CLI on `PATH`.
 
-**Not wired in yet:** the name is checked at startup and resolves, but nothing in `build()` consumes an `LLMProvider` today, so no instance is created.
+Smoke-test with `npm run factory -- llm-check` (`--model strong` for the strong class): it builds the configured provider through the registry (`Plugins.llm()`) and makes two small real calls, one plain and one with an output schema, every printed line egress-scanned first. `npm run factory -- doctor --llm` runs the same check as one doctor line; plain `doctor` makes no model call. No factory workflow step calls the provider.
 
 Switch back / disable: `"llm": "claude-cli"`.
 

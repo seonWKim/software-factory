@@ -3,7 +3,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/core/worker.js";
-import type { WorkerId } from "../src/core/types.js";
+import type { UserId, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -400,6 +400,245 @@ describe("one issue to one merged PR", () => {
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#6"))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
   });
+
+  it("the PR title is `factory: <issue title>`, full length, not cut from the spec", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, problem: "Add a CI scope gate. It should fail fast." } }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const title = "Add a CI job that fails when a pull request changes files outside the work item's allowed paths";
+    expect(title.length).toBeGreaterThan(80);
+    f.source.queue.push({ kind: "item_requested", source: issueRef(15), requester: alice, title, body: "please" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(15), comment_id: "115", approver: alice });
+    await f.step();
+    const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
+    expect(pr.title).toBe(`factory: ${title}`);
+  });
+
+  it("an item with no stored title (from before titles) keeps the old PR title rule", async () => {
+    const runner = new FakeRunner({ implement: () => ({ output: { summary: "s", next_steps: "n" } }), review: review("pass") });
+    const f = await factory(runner);
+    const problem = `${"A very long first line of the spec that goes on and on past the eighty character cut".repeat(2)}\nsecond`;
+    const { item } = await f.store.createWorkItem(
+      { source: issueRef(16), requester_id: "github:1" as UserId, project: "o/r", problem: "old", resources: [] },
+      { kind: "system", id: "test" },
+    );
+    expect(item.title).toBeNull();
+    await f.store.transition({
+      id: item.id, expected_version: item.version, actor: { kind: "system", id: "test" }, reason: "test",
+      patch: { problem, stage: "RUNNING", allowed_paths: [".github/workflows/"], done_criteria: ["x"] },
+      enqueue: { kind: "implement", idempotency_key: `${item.id}:implement` },
+    });
+    await f.step();
+    const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
+    expect(pr.title).toBe(`factory: ${problem.split("\n")[0]!.slice(0, 80)}`);
+  });
+});
+
+describe("spec gate: /revise and /reject", () => {
+  const ISSUE_BODY = "The CI does not check allowed paths.";
+  /** An item at the spec gate. Each triage run returns the next problem text, so specs can be told apart. */
+  async function atSpecGate(n: number) {
+    let triages = 0;
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, problem: `Spec version ${++triages}.` } }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "CI gate", body: ISSUE_BODY });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    let comment = 1000 * n;
+    const next = () => String(++comment);
+    return { ...f, runner, src, item, next };
+  }
+  type Gate = Awaited<ReturnType<typeof atSpecGate>>;
+  const specs = (f: Gate) => f.source.comments.filter((c) => c.body.startsWith("## Factory spec"));
+  const refusals = (f: Gate) => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+  const triageRuns = async (f: Gate) => (await f.store.listRuns(f.item.id)).filter((r) => r.kind === "triage");
+  const reasons = async (f: Gate) => (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
+  const revise = (f: Gate, feedback: string, who = alice) =>
+    f.source.queue.push({ kind: "revise_requested", source: f.src, comment_id: f.next(), requester: who, feedback });
+
+  it("revise → second triage with issue, previous spec and feedback → second spec → approve → implement", async () => {
+    const f = await atSpecGate(30);
+    expect(specs(f)).toHaveLength(1);
+    expect(f.item).toMatchObject({ problem: "Spec version 1.", issue_text: `CI gate\n\n${ISSUE_BODY}` });
+
+    revise(f, "Also cover renamed files.");
+    await f.controller.tickIntake();
+    let item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "NEW", blocked_on: "none", close_reason: null, revision_count: 1 });
+    const change = (await f.store.listStateChanges(f.item.id)).at(-1)!;
+    expect(change).toMatchObject({ reason: "spec_revision_requested", actor: { kind: "user", id: "github:1" } });
+
+    await f.step();
+    const prompt = f.runner.specs.filter((s) => s.role === "triage")[1]!.prompt;
+    expect(prompt).toContain(ISSUE_BODY);
+    expect(prompt).toContain("Spec version 1.");
+    expect(prompt).toContain("Also cover renamed files.");
+    expect(prompt).toMatch(/untrusted/i);
+    // The feedback sits after the untrusted label.
+    expect(prompt.indexOf("Also cover renamed files.")).toBeGreaterThan(prompt.search(/untrusted/i));
+
+    item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", problem: "Spec version 2." });
+    expect(specs(f)).toHaveLength(2);
+    expect(specs(f)[1]!.body).toContain("Spec version 2.");
+    expect(specs(f)[1]!.body).toContain("`/revise <feedback>`");
+    expect(item.issue_text).toBe(`CI gate\n\n${ISSUE_BODY}`);
+
+    const keys = (await triageRuns(f)).map((r) => r.idempotency_key);
+    expect(new Set(keys).size).toBe(2);
+
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: f.next(), approver: alice });
+    await f.step();
+    item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await reasons(f)).toEqual([
+      "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "review_passed",
+    ]);
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("each revision has its own triage key; past max_loops a /revise blocks on max_revisions with one comment", async () => {
+    const f = await atSpecGate(31);
+    for (let i = 1; i <= config.max_loops; i++) {
+      revise(f, `round ${i}`);
+      await f.step();
+      expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", revision_count: i });
+    }
+    const keys = (await triageRuns(f)).map((r) => r.idempotency_key);
+    expect(keys).toHaveLength(config.max_loops + 1);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(specs(f)).toHaveLength(config.max_loops + 1);
+
+    revise(f, "one more");
+    await f.step();
+    const item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "max_revisions", revision_count: config.max_loops });
+    expect(await triageRuns(f)).toHaveLength(config.max_loops + 1);
+    const limit = f.source.comments.filter((c) => c.body.includes("max_revisions"));
+    expect(limit).toHaveLength(1);
+    expect((await reasons(f)).at(-1)).toBe("max_revisions");
+
+    // A further /revise is refused and still starts nothing.
+    revise(f, "and another");
+    await f.step();
+    expect(await triageRuns(f)).toHaveLength(config.max_loops + 1);
+    expect(refusals(f)).toHaveLength(1);
+
+    // /approve still applies.
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: f.next(), approver: alice });
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+  });
+
+  it("/reject still applies while blocked on max_revisions", async () => {
+    const f = await atSpecGate(32);
+    for (let i = 0; i <= config.max_loops; i++) {
+      revise(f, `round ${i}`);
+      await f.step();
+    }
+    expect((await f.store.getWorkItem(f.item.id))!.blocked_reason).toBe("max_revisions");
+    f.source.queue.push({ kind: "spec_rejected", source: f.src, comment_id: f.next(), approver: alice, reason: "give up" });
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect(f.source.closed).toEqual([f.src]);
+  });
+
+  it("/revise from a user without write permission changes nothing but the usual refusal", async () => {
+    const f = await atSpecGate(33);
+    const before = (await f.store.getWorkItem(f.item.id))!;
+    const comments = f.source.comments.length;
+    revise(f, "make it bigger", mallory);
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toEqual(before);
+    expect(await triageRuns(f)).toHaveLength(1);
+    expect(f.source.comments).toHaveLength(comments + 1);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("`/revise` was not applied");
+    expect(refusals(f)[0]!.body).toContain("write permission");
+  });
+
+  it("/revise with no feedback is refused with a reply and changes nothing", async () => {
+    const f = await atSpecGate(34);
+    const before = (await f.store.getWorkItem(f.item.id))!;
+    revise(f, "  ");
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toEqual(before);
+    expect(await triageRuns(f)).toHaveLength(1);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("feedback");
+  });
+
+  it("/revise on an item that is not waiting for spec approval is refused, naming the stage", async () => {
+    const f = await atSpecGate(35);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: f.next(), approver: alice });
+    await f.controller.tickIntake();
+    revise(f, "change it");
+    await f.controller.tickIntake();
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("RUNNING");
+    expect((await f.store.getWorkItem(f.item.id))!.revision_count).toBe(0);
+  });
+
+  it("/reject <reason> posts one comment quoting the reason and closes the issue as not planned", async () => {
+    const f = await atSpecGate(36);
+    f.source.queue.push({
+      kind: "spec_rejected", source: f.src, comment_id: f.next(), approver: alice, reason: "Too big.\nSplit it in two.",
+    });
+    await f.step();
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({
+      stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null,
+    });
+    const rejected = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"));
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.body).toContain("> Too big.\n> Split it in two.");
+    expect(f.source.closed).toEqual([f.src]);
+  });
+
+  it("/reject with no reason still closes the item and the issue", async () => {
+    const f = await atSpecGate(37);
+    f.source.queue.push({ kind: "spec_rejected", source: f.src, comment_id: f.next(), approver: alice, reason: "" });
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected", blocked_on: "none" });
+    expect(f.source.closed).toEqual([f.src]);
+    expect(f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
+  });
+
+  it("a reject recorded before a stop gets its comment and close on the next tick, the comment once", async () => {
+    const f = await atSpecGate(38);
+    f.source.closeError = new Error("GitHub PATCH issue → 502");
+    f.source.queue.push({ kind: "spec_rejected", source: f.src, comment_id: f.next(), approver: alice, reason: "no" });
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect(f.source.closed).toEqual([]);
+
+    f.source.closeError = null;
+    await f.step();
+    await f.step();
+    expect(f.source.closed).toEqual([f.src]);
+    expect(f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+
+    // Comment failed first time round, too.
+    const g = await atSpecGate(39);
+    g.source.commentError = new Error("GitHub POST comment → 502");
+    g.source.queue.push({ kind: "spec_rejected", source: g.src, comment_id: g.next(), approver: alice, reason: "no" });
+    await g.step();
+    expect(g.source.closed).toEqual([]);
+    g.source.commentError = null;
+    await g.step();
+    expect(g.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
+    expect(g.source.closed).toEqual([g.src]);
+  });
 });
 
 describe("acknowledging commands and intake", () => {
@@ -649,6 +888,19 @@ describe("pre-push diff gates: size limit and floor check", () => {
     expect(f.item).toMatchObject({ stage: "REVIEW", tier: 3, pr_number: 42 });
     expect(names(f)).toContain("github.open_pr");
     expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:floor:"))).toBe(false);
+  });
+
+  it("/revise on a floor block is refused and changes nothing", async () => {
+    const f = await implemented(65, (f) => {
+      f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    }, { workerConfig: raised });
+    f.source.queue.push({ kind: "revise_requested", source: f.src, comment_id: "6501", requester: alice, feedback: "smaller change" });
+    await f.step();
+    const refusals = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]!.body).toContain("floor check");
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "RUNNING", blocked_reason: "floor_tier", tier: 2, revision_count: 0 });
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(1);
   });
 
   it("/approve delivered twice on a floor block enqueues one implement run", async () => {
