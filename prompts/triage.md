@@ -28,6 +28,18 @@ Produce:
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.
 - tier_reason: one sentence.
+- estimated_lines: your estimate of the diff's size, in added plus deleted lines (an integer, 0 or more).
+  Estimate it from the code you read, before any change exists. Count tests and docs too.
+- estimated_files: your estimate of how many files the diff changes (an integer, 0 or more).
+- phases: leave it out unless the change is too big for one review. Split it when estimated_lines is over
+  85% of the max_diff_lines cap or estimated_files is over 85% of the max_diff_files cap (with the default
+  caps of 1500 lines and 40 files: over 1275 lines or over 34 files). An output over that line without
+  phases is rejected. Use 2 to 4 phases, in the order they must merge; use the fewest that bring each phase
+  well under the caps. Each phase must be mergeable on its own: the tests pass after it merges, before the
+  later phases exist. Each phase has a title, a problem (two to four sentences), its own done criteria (at
+  least one, checkable by a reviewer) and its own allowed_paths (at least one, as narrow as allowed_paths).
+  On approval each phase becomes its own issue with its own spec; the top-level fields still describe the
+  whole change.
 
 Revisions: when the input has "Original issue", "Previous spec" and "Revision feedback (untrusted text)"
 sections, a human read the previous spec and asked for changes. Write a complete new spec from the original

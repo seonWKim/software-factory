@@ -43,6 +43,16 @@ describe("prompts/triage.md", () => {
     expect(b).toMatch(/one plain sentence or two/i);
     expect(b).toMatch(/no file paths/i);
   });
+
+  it("asks for the size estimate and says when and how to split (design 2026-11-01)", () => {
+    const fields = [...produce.matchAll(/^- (\w+):/gm)].map((m) => m[1]);
+    expect(fields).toEqual(expect.arrayContaining(["estimated_lines", "estimated_files", "phases"]));
+    const p = bullet(produce, "phases");
+    expect(p).toContain("85%");
+    expect(p).toMatch(/2 to 4 phases/);
+    expect(p).toMatch(/mergeable on its own/);
+    expect(p).toMatch(/its own done criteria/);
+  });
 });
 
 describe.each([
