@@ -574,10 +574,10 @@ export class SqlFactoryStore implements FactoryStore {
     // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
     if (!it || it.pr_number !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
-    const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, c.holders,
+    // Holders named relative to this item, so one of the same repository is "#N".
+    const holders = c.holders.map((h) => (h.work_item_id ? { ...h, ref: this.refFor(c, h.work_item_id, it) } : h));
+    const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, holders,
       c.conflicts.get(it.project) ?? new Map(), s);
-    // Relative to this item, so a holder of the same repository is named "#N".
-    for (const h of holds) if (h.holder.kind !== "pr" && h.holder.work_item_id) h.holder.ref = this.refFor(c, h.holder.work_item_id, it);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
     if (existing?.approved_by) {
