@@ -31,6 +31,7 @@ import type {
   WorkItemPatch,
   WorkerId,
 } from "../core/types.js";
+import type { LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
 
@@ -401,7 +402,35 @@ export interface FactoryStore {
   renewListenerLease(source_type: SourceType, token: number, lease_ms: number): Promise<ListenerLeaseResult>;
   /** Ends the lease now if `token` is still current, so another replica can take it at once. */
   releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
+
+  // Identity links (design 2026-11-01, issue #107)
+
+  /** The factory user `(provider, subject)` is linked to, or null. Found by provider and subject only. */
+  resolveLink(provider: LinkedAccount["provider"], subject: string): Promise<UserId | null>;
+  /** Every account linked to `user_id`, oldest first. */
+  listLinks(user_id: UserId): Promise<LinkedAccount[]>;
+  /**
+   * Stores a one-time code that links an account to `user_id`, valid for LINK_CODE_TTL_MS. Only a hash of
+   * `code` is stored; the caller shows the code once and keeps it nowhere.
+   */
+  createLinkCode(user_id: UserId, code: string): Promise<{ expires_at: Timestamp }>;
+  /**
+   * Links `account` to the code's user and uses the code up, in one transaction. A code that matches no live
+   * code is a failed attempt: every live code's failure count goes up by one, and one with
+   * LINK_CODE_MAX_FAILURES failures is locked. A redelivery by the account that used the code reports the same
+   * link and changes nothing. An account linked to another user is refused and the code stays live.
+   */
+  redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult>;
 }
+
+/** How long a link code works (design 2026-11-01). */
+export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
+/** Wrong codes after which every live code is locked. */
+export const LINK_CODE_MAX_FAILURES = 5;
+
+export type RedeemLinkResult =
+  | { ok: true; user_id: UserId }
+  | { ok: false; reason: "invalid" | "expired" | "used" | "locked" | "already_linked" };
 
 export interface NewInboxEvent {
   source_type: SourceType;
