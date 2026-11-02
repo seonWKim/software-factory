@@ -92,6 +92,8 @@ const spec = {
   files_to_change: ["src/a.txt"],
   tier: 2,
   tier_reason: "small",
+  estimated_lines: 10,
+  estimated_files: 1,
 };
 
 type AgentStep = (workdir: string, spec: AgentRunSpec) => void;

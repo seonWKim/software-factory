@@ -1,4 +1,4 @@
-// MySQL schema steps: one numbered file per step in migrations/mysql/, run only by `npm run migrate`.
+// MySQL schema steps: one numbered file per step in migrations/mysql/ (plus INLINE_STEPS), run only by `npm run migrate`.
 // The schema state is one number in `schema_state`. Step NNNN moves the state from NNNN-1 to NNNN.
 // State 11 is the frozen baseline (BASELINE in schema.ts): it builds an empty database, and an existing
 // database (legacy `schema_migrations` at 11) is only stamped 11. Nothing here runs when the store opens;
@@ -45,6 +45,40 @@ export interface StepFile {
   name: string;
   file: string;
   kind: "sql" | "ts";
+  /** An inline step's statements (INLINE_STEPS); absent for a step read from a file. */
+  sql?: string;
+}
+
+/** A `.sql` step kept in code instead of a file in migrations/mysql/. Same numbering rules as a file. */
+export interface InlineStep {
+  number: number;
+  name: string;
+  sql: string;
+}
+
+/**
+ * Steps kept here because the change that added them could not add files under migrations/mysql/. They are
+ * numbered, checked and applied exactly like a `.sql` file named `inlineStepName(step)`, and only with the
+ * repo's own STEPS_DIR (a caller that passes its own `dir` gets only that dir's files). Moving one into a
+ * file of the same name changes nothing for a database that already ran it. Never edit one that has shipped.
+ */
+export const INLINE_STEPS: readonly InlineStep[] = [
+  {
+    number: 13,
+    name: "work-item-phases",
+    // Split specs (design 2026-11-01, issue #102): a phase's parent item and its place in merge order.
+    // Every item that is not a phase, old rows included, keeps both NULL.
+    sql: [
+      "ALTER TABLE work_items ADD COLUMN parent_id VARCHAR(64) NULL;",
+      "ALTER TABLE work_items ADD COLUMN phase INT NULL;",
+      "CREATE INDEX work_items_parent ON work_items (parent_id, phase);",
+    ].join("\n"),
+  },
+];
+
+/** The file name an inline step stands for: `NNNN-<name>.sql`. */
+export function inlineStepName(step: InlineStep): string {
+  return `${pad(step.number)}-${step.name}.sql`;
 }
 
 export interface PendingStep {
@@ -105,19 +139,27 @@ export function stepProblems(files: readonly string[]): string[] {
   return problems;
 }
 
-/** The step files in `dir`, in number order. Throws when the names are invalid. */
-export function readSteps(dir: string = STEPS_DIR): StepFile[] {
+/** The step files in `dir` plus `inline` steps, in number order. Throws when the names are invalid. */
+export function readSteps(dir: string = STEPS_DIR, inline: readonly InlineStep[] = []): StepFile[] {
   const files = existsSync(dir) ? readdirSync(dir) : [];
-  const problems = stepProblems(files);
+  const sqlOf = new Map(inline.map((s) => [inlineStepName(s), s.sql]));
+  const names = [...files, ...sqlOf.keys()];
+  const problems = stepProblems(names);
   if (problems.length > 0) throw new Error(`invalid step files in ${dir}:\n  ${problems.join("\n  ")}`);
-  return files
+  return names
     .filter((f) => !IGNORED.has(f))
     .map((file) => {
       const m = STEP_FILE.exec(file)!;
       const number = Number(m[1]);
-      return { number, from: number - 1, name: m[2]!, file, kind: m[3] as "sql" | "ts" };
+      const sql = sqlOf.get(file);
+      return { number, from: number - 1, name: m[2]!, file, kind: m[3] as "sql" | "ts", ...(sql === undefined ? {} : { sql }) };
     })
     .sort((a, b) => a.number - b.number);
+}
+
+/** A `.sql` step's statements: the inline text, or the file's. */
+function stepSql(dir: string, step: StepFile): string[] {
+  return splitSql(step.sql ?? readFileSync(join(dir, step.file), "utf8"));
 }
 
 /**
@@ -179,12 +221,15 @@ export function pendingMessage(s: MigrationStatus): string {
 
 export class MysqlMigrations {
   private readonly dir: string;
+  /** INLINE_STEPS with the repo's own steps dir; none with a caller's `dir` (tests build their own trees). */
+  private readonly inline: readonly InlineStep[];
 
   constructor(
     private readonly db: Queryable,
     opts: { dir?: string } = {},
   ) {
     this.dir = opts.dir ?? STEPS_DIR;
+    this.inline = opts.dir === undefined ? INLINE_STEPS : [];
   }
 
   private async all(sql: string, params: readonly Value[] = []): Promise<Row[]> {
@@ -203,7 +248,7 @@ export class MysqlMigrations {
 
   /** Read-only: one look at the tables and the recorded state. Creates nothing. */
   async status(): Promise<MigrationStatus> {
-    const steps = readSteps(this.dir);
+    const steps = readSteps(this.dir, this.inline);
     const latest = steps.at(-1)?.number ?? BASELINE_STATE;
     const tables = new Set(
       (await this.all("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()")).map((r) => String(r.name)),
@@ -254,7 +299,7 @@ export class MysqlMigrations {
         print(`-- records state ${BASELINE_STATE}`);
         blocked = (p.statements ?? []).length > 0;
       } else if (p.kind === "sql") {
-        for (const st of splitSql(readFileSync(join(this.dir, p.step!.file), "utf8"))) print(`${st};`);
+        for (const st of stepSql(this.dir, p.step!)) print(`${st};`);
         print(`-- records state ${p.number}`);
         blocked = true;
       } else {
@@ -288,7 +333,7 @@ export class MysqlMigrations {
         print(`applying ${pad(p.number)}: ${p.label}`);
         if (p.kind === "baseline") await this.baseline();
         else if (p.kind === "sql") {
-          for (const st of splitSql(readFileSync(join(this.dir, p.step!.file), "utf8"))) await this.run(st);
+          for (const st of stepSql(this.dir, p.step!)) await this.run(st);
           await this.record(p.number);
         } else {
           const step = await loadDataStep(this.dir, p.step!);

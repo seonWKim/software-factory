@@ -54,6 +54,14 @@ export interface NewWorkItem {
    * origin `adopted`, these fields set, done_criteria null, and the state change reason `pr_adopted`.
    */
   adopted?: AdoptedPr;
+  /**
+   * The item starts held (design 2026-11-01, split specs): `NEW` with this blocker instead of `blocked_on:
+   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with
+   * `adopted`.
+   */
+  hold?: { blocked_on: "upstream"; blocked_reason: string };
+  /** A phase of a split spec (design 2026-11-01): its parent and its place in merge order (1-based). */
+  parent?: { id: WorkItemId; phase: number };
 }
 
 export interface AdoptedPr {
@@ -230,13 +238,13 @@ export interface FactoryStore {
   // Work items
 
   /**
-   * Idempotent on (source.type, source.id). Writes the "intake" state change and enqueues `enqueue`
-   * in the same transaction, only when created.
+   * Idempotent on (source.type, source.id). Writes the "intake" state change (with `detail`, e.g. a phase's
+   * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
     input: NewWorkItem,
     actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id"> },
+    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
@@ -244,6 +252,8 @@ export interface FactoryStore {
   getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
+  /** The phases of split parent `parentId`, in phase order (design 2026-11-01). Empty for any other item. Read-only. */
+  listPhases(parentId: WorkItemId): Promise<WorkItem[]>;
   /** Newest first. */
   listWorkItems(limit: number): Promise<WorkItem[]>;
   /** Items matching `filter`, most recently updated first. Read-only. */

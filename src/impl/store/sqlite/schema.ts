@@ -194,7 +194,14 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX unreviewed_merges_at ON unreviewed_merges (at);
   `,
-  // 13: identity links and one-time link codes (design 2026-11-01, issue #107). Links are keyed by provider and
+  // 13: split specs (design 2026-11-01, issue #102). A phase's parent item and its place in merge order. Old
+  // rows and every item that is not a phase keep both NULL.
+  `
+  ALTER TABLE work_items ADD COLUMN parent_id TEXT;
+  ALTER TABLE work_items ADD COLUMN phase INTEGER;
+  CREATE INDEX work_items_parent ON work_items (parent_id, phase);
+  `,
+  // 14: identity links and one-time link codes (design 2026-11-01, issue #107). Links are keyed by provider and
   // subject only. A code is stored as its SHA-256 hash, never in plain text.
   `
   CREATE TABLE user_links (
