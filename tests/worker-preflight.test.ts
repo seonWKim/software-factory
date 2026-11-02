@@ -113,11 +113,10 @@ describe("github.preflight in the broker", () => {
     expect(b.broker.listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
   });
 
-  it("no push permission fails push_access", async () => {
+  it("push: false is reported, not a failure: an App installation token says so even when it can push", async () => {
     const b = await brokerFor((_m, path) => (path.includes("/pulls") ? [] : { permissions: { push: false, pull: true } }));
     const r = await b.preflight();
-    expect(r).toMatchObject({ ok: false, error_code: "preflight_failed" });
-    expect(!r.ok && r.message).toMatch(/^push_access: /);
+    expect(r).toMatchObject({ ok: true, content: { push: false, open_prs: 0 } });
   });
 
   it("a failing PR list fails pr_api", async () => {
