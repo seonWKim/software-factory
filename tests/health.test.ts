@@ -145,7 +145,7 @@ describe("health: one implementation behind doctor and the page", () => {
     const { port } = await uiFor(loaded);
     const health = section((await get(port, "/")).body, "health");
     expect(health).toContain(`setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
-    expect(health).toContain(`setting for ${owner}/${name}: max_diff_lines = 3000 (defaults)`);
+    expect(health).toContain(`setting for ${owner}/${name}: max_diff_lines = 5000 (defaults)`);
   });
 
   it("doctor prints one line per check in the same format, and exits 1 only on FAIL", async () => {

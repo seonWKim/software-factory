@@ -156,8 +156,8 @@ describe("diff limit config keys", () => {
   it("factory.config.json sets both, and loadConfig carries them into FactoryConfig", async () => {
     const root = new URL("..", import.meta.url).pathname;
     const file = JSON.parse(readFileSync(`${root}factory.config.json`, "utf8")) as Record<string, unknown>;
-    expect(file).toMatchObject({ max_diff_lines: 3000, max_diff_files: 60 });
+    expect(file).toMatchObject({ max_diff_lines: 5000, max_diff_files: 80 });
     const { config } = await loadConfig(root);
-    expect(settingValues("seonWKim/software-factory", config.settings)).toMatchObject({ max_diff_lines: 3000, max_diff_files: 60 });
+    expect(settingValues("seonWKim/software-factory", config.settings)).toMatchObject({ max_diff_lines: 5000, max_diff_files: 80 });
   });
 });
