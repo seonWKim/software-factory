@@ -14,7 +14,7 @@ import { type LearnedSettingsSource, type ProjectSettings, settingValues } from 
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
-import { parseReview, parseTriage } from "./outputs.js";
+import { type TriagePhase, parseReview, parseTriage } from "./outputs.js";
 import {
   AUTO_RESOLVE_LIMIT,
   type FailureClass,
@@ -37,6 +37,10 @@ import {
 } from "./policy.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import {
+  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parsePhaseLink, parseSizeDetail, parseSubIssues, phaseIssueBody,
+  phaseLinkDetail, phaseMarker, phaseTitle, suggestSplit,
+} from "./split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
@@ -154,6 +158,8 @@ const MAX_CHECK_NAMES = 20;
 const MAX_CHECK_NAME_CHARS = 100;
 /** Rejected items finished per intake tick. */
 const CLOSE_BATCH = 50;
+/** Held phases and open split parents looked at per intake tick (design 2026-11-01). */
+const PHASE_BATCH = 50;
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
@@ -270,6 +276,8 @@ export class Controller {
       }
     }
     if (polled) await this.guard("source closes", () => this.tickSourceCloses());
+    // Phases are GitHub sub-issues, so their holds and parents move once per poll, after its closes are applied.
+    if (polled) await this.guard("phases", () => this.tickPhases());
   }
 
   /** One poll of one source, through its own cursor `intake:<type>`. */
@@ -368,6 +376,8 @@ export class Controller {
   async handleEvent(e: SourceEvent): Promise<void> {
     switch (e.kind) {
       case "item_requested": {
+        // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
+        if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
         if ("refuse" in principal) return;
         const { item, created } = await this.d.store.createWorkItem(
@@ -1005,7 +1015,9 @@ export class Controller {
           enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
         };
       }
-      case "spec_approved":
+      case "spec_approved": {
+        const phases = await this.specPhases(it);
+        if (phases) return this.approveSplit(it, phases, actor, note);
         return {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
           actor,
@@ -1013,7 +1025,159 @@ export class Controller {
           ...(note ? { detail: { note } } : {}),
           enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
         };
+      }
     }
+  }
+
+  /** The phases of the spec waiting at the gate: those of the latest succeeded triage run, or null for no split. */
+  private async specPhases(it: WorkItem): Promise<TriagePhase[] | null> {
+    const run = (await this.d.store.listRuns(it.id))
+      .filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null)
+      .at(-1);
+    if (run?.outcome?.status !== "succeeded") return null;
+    const parsed = parseTriage(run.outcome.data.spec);
+    return parsed.ok && parsed.value.phases ? parsed.value.phases : null;
+  }
+
+  /**
+   * `/approve` on a split spec (design 2026-11-01): one sub-issue per phase, in order, each with the intake label
+   * and linked to the parent, and one work item per phase, requested by the approver. The first phase is queued
+   * for triage; each later one starts held (`phase_hold`) until the phase before it closes as completed
+   * (tickPhases). Filing and intake are idempotent (a marker per phase, intake keyed on the source), so a retry
+   * after a partial failure files no duplicates. A failure refuses the approval and keeps the spec waiting, so
+   * `/approve` again files the rest. On success the parent waits on its phases (`phases_open`); it is never
+   * implemented itself.
+   */
+  private async approveSplit(it: WorkItem, phases: TriagePhase[], actor: Actor, note: string | null): Promise<Decision | Refusal> {
+    const adapter = this.adapterFor(it.source, "fileSubIssue");
+    if (!adapter?.fileSubIssue) {
+      return { refuse: "this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases" };
+    }
+    const requester = actor.kind === "user" ? actor.id : it.requester_id;
+    const refs: SourceRef[] = [];
+    try {
+      for (const [i, phase] of phases.entries()) {
+        const index = i + 1;
+        const prev = refs[i - 1] ?? null;
+        const title = phaseTitle(index, phases.length, phase.title);
+        const body = phaseIssueBody({ parent: it.source, phase, index, total: phases.length, depends_on: prev });
+        const ref = await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
+        const { item, created } = await this.d.store.createWorkItem(
+          {
+            source: ref,
+            title,
+            requester_id: requester,
+            project: it.project,
+            problem: `${title}\n\n${body}`,
+            resources: [ref.link, it.source.link],
+            ...(prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {}),
+          },
+          actor,
+          {
+            detail: phaseLinkDetail({ parent_work_item_id: it.id, phase: index, phases: phases.length, depends_on: prev?.id ?? null }),
+            // The intake key, so a later delivery of the same issue is a no-op.
+            ...(prev ? {} : { enqueue: { kind: "triage" as const, idempotency_key: `${ref.type}:${ref.id}:triage` } }),
+          },
+        );
+        refs.push(ref);
+        if (created) {
+          this.d.log.info("phase filed", { work_item_id: item.id, parent_work_item_id: it.id, phase: index, held: prev !== null });
+          await this.showStatus(item);
+        }
+      }
+    } catch (err) {
+      this.d.log.warn("filing split phases failed; /approve again files the rest", {
+        work_item_id: it.id,
+        filed: refs.length,
+        phases: phases.length,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return {
+        refuse: `filing the phase sub-issues stopped after ${refs.length} of ${phases.length}; reply \`/approve\` again to file the rest (none is filed twice)`,
+      };
+    }
+    const patch = { blocked_on: "upstream" as const, blocked_reason: PHASES_OPEN };
+    await this.comment(it, `split:${it.id}`, [
+      `The split spec was approved, so the factory filed ${phases.length} phases as sub-issues of this issue:`,
+      "",
+      ...refs.map((r, i) => `${i + 1}. ${r.link}${i === 0 ? " (starts now)" : " (waits for the phase before it)"}`),
+      "",
+      "Each phase gets its own spec and its own `/approve`. This issue closes as completed when the last phase does.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return {
+      patch,
+      actor,
+      reason: SPLIT_APPROVED,
+      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}) },
+    };
+  }
+
+  /**
+   * Moves split specs along (design 2026-11-01). A held phase whose previous phase is CLOSED / completed is
+   * released into triage. A split parent whose phases are all CLOSED / completed gets one comment, is closed as
+   * completed on its source, then CLOSED / completed in the store. A phase closed any other way keeps the next
+   * phase held and the parent open. Safe on any replica and safe to repeat: every step re-reads the store, the
+   * comment is keyed, closing a closed issue changes nothing, and each transition is conditional.
+   */
+  async tickPhases(): Promise<void> {
+    const held = await this.d.store.listWorkItemsWhere({ stage: "NEW", blocked_on: "upstream", limit: PHASE_BATCH });
+    for (const h of held) if (phaseHeld(h)) await this.guard("phase release", () => this.releasePhase(h.id));
+    const parents = await this.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "upstream", limit: PHASE_BATCH });
+    for (const p of parents) if (splitOpen(p)) await this.guard("split close", () => this.closeSplitIfDone(p.id));
+  }
+
+  private async releasePhase(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || !phaseHeld(it)) return;
+    const link = parsePhaseLink((await this.d.store.listStateChanges(id)).find((c) => c.reason === "intake")?.detail);
+    if (!link) {
+      this.d.log.warn("held phase has no phase link; left held", { work_item_id: id });
+      return;
+    }
+    if (link.depends_on !== null) {
+      const prev = await this.d.store.getWorkItemBySource(it.source.type, link.depends_on);
+      if (!prev || prev.stage !== "CLOSED" || prev.close_reason !== "completed") return;
+    }
+    await this.decide(id, (cur) =>
+      phaseHeld(cur)
+        ? {
+            patch: { blocked_on: "none", blocked_reason: null },
+            actor: SYSTEM,
+            reason: "phase_released",
+            detail: { parent_work_item_id: link.parent_work_item_id, phase: link.phase, depends_on: link.depends_on },
+            enqueue: { kind: "triage", idempotency_key: `${cur.source.type}:${cur.source.id}:triage` },
+          }
+        : null,
+    );
+  }
+
+  private async closeSplitIfDone(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || !splitOpen(it)) return;
+    const approved = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
+    const ids = parseSubIssues(approved?.detail);
+    if (!ids) return;
+    for (const sid of ids) {
+      const phase = await this.d.store.getWorkItemBySource(it.source.type, sid);
+      if (!phase || phase.stage !== "CLOSED" || phase.close_reason !== "completed") return;
+    }
+    const adapter = this.adapterFor(it.source, "closeIssue");
+    if (!adapter) return;
+    await this.comment(it, `split-done:${it.id}`,
+      `All ${ids.length} phases of this split were closed as completed, so the factory closed this issue as completed.`);
+    await adapter.closeIssue(it.source, "completed");
+    await this.decide(id, (cur) =>
+      splitOpen(cur)
+        ? {
+            patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null },
+            actor: SYSTEM,
+            reason: "split_completed",
+            detail: { phases: ids.length },
+          }
+        : null,
+    );
   }
 
   /**
@@ -1160,7 +1324,9 @@ export class Controller {
 
       switch (run.kind) {
         case "triage": {
-          const parsed = parseTriage(data.spec);
+          // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
+          const { max_diff_lines, max_diff_files } = this.settings(it.project);
+          const parsed = parseTriage(data.spec, { max_diff_lines, max_diff_files });
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, this.settings(it.project).floors);
@@ -1174,7 +1340,8 @@ export class Controller {
             tier,
             token_cost: tokens,
           };
-          if (!needsSpecApproval(tier, this.d.config.dials)) {
+          // A split spec always waits for a human: its /approve files issues on the source.
+          if (!spec.phases && !needsSpecApproval(tier, this.d.config.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -1601,6 +1768,7 @@ export class Controller {
           "",
           "Comment `/revise <feedback>` to get a new, smaller spec written with your feedback, or `/retry` to run the implementer again on the same spec; it must make a smaller change.",
           "",
+          ...suggestedSplit(detail, it.allowed_paths, { max_diff_lines, max_diff_files }),
           footerAfter(it, patch),
         ].join("\n");
       }
@@ -1925,6 +2093,46 @@ function retry(it: WorkItem, actor: Actor): Decision | Refusal {
     reason: "retry_requested",
     enqueue: { kind, idempotency_key: runKey(next, kind) },
   };
+}
+
+/** A later phase of a split, waiting for the phase before it (design 2026-11-01). */
+function phaseHeld(it: WorkItem): boolean {
+  return it.stage === "NEW" && it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD;
+}
+
+/** A split parent whose phases are filed and not all closed as completed. */
+function splitOpen(it: WorkItem): boolean {
+  return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
+}
+
+/**
+ * The size checkpoint's suggested split (design 2026-11-01): built from the diff size in the size gate's detail
+ * and the paths the item may change, never the code; no agent runs. Empty when the detail has no counts or
+ * there is nothing to split. Ends with a blank line, so the footer follows.
+ */
+function suggestedSplit(detail: string, paths: readonly string[], limits: { max_diff_lines: number; max_diff_files: number }): string[] {
+  const size = parseSizeDetail(detail);
+  const phases = size ? suggestSplit({ ...size, paths }, limits) : [];
+  if (!size || phases.length === 0) return [];
+  const out = [
+    "### Suggested split",
+    `Built from the diff size (${size.lines} lines in ${size.files} files) and the item's allowed paths, not from the code, so treat it as a starting point. To use it, reply \`/revise <feedback>\` and ask for these phases; the new spec then files one sub-issue per phase on \`/approve\`.`,
+  ];
+  phases.forEach((p, i) => {
+    out.push(
+      "",
+      `#### Phase ${i + 1} of ${phases.length}: ${p.title}`,
+      p.problem,
+      "",
+      "Done when:",
+      ...p.done_criteria.map((c) => `- ${c}`),
+      "",
+      "Allowed to change:",
+      ...p.allowed_paths.map((a) => `- \`${a}\``),
+    );
+  });
+  out.push("");
+  return out;
 }
 
 /** A reviewed PR whose checks have not finished (design §5 CI gate). */
