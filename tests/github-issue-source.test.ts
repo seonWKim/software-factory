@@ -911,3 +911,74 @@ describe("GitHubIssueSource: pull requests the factory did not open (design 2026
     expect(await source.commitAuthor("def")).toBeNull();
   });
 });
+
+describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
+  /** Answers POST /issues with a new issue and GETs from `responses`; the sub-issue link can be made to fail. */
+  class SubIssueClient extends FakeClient {
+    nextNumber = 20;
+    linkError: GitHubError | null = null;
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      if (method === "POST" && path === "/repos/o/r/issues") {
+        this.calls.push({ method, path, body });
+        const n = this.nextNumber++;
+        return { id: 9000 + n, number: n, body: (body as { body: string }).body } as T;
+      }
+      if (method === "POST" && path.endsWith("/sub_issues") && this.linkError) {
+        this.calls.push({ method, path, body });
+        throw this.linkError;
+      }
+      return super.request<T>(method, path, body);
+    }
+  }
+  const make = () => {
+    const client = new SubIssueClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    return { client, source };
+  };
+  const input = { parent: issueRef(5), title: "Phase 1/2: core", body: "the phase text", marker: "<!-- factory:phase:wi_p:1 -->" };
+  const writes = (c: FakeClient) => c.calls.filter((x) => x.method !== "GET");
+
+  it("files the issue with the factory label and the marker, then links it to the parent as a sub-issue", async () => {
+    const { client, source } = make();
+    expect(await source.fileSubIssue(input)).toEqual(issueRef(20));
+    expect(writes(client)).toEqual([
+      {
+        method: "POST",
+        path: "/repos/o/r/issues",
+        body: { title: "Phase 1/2: core", body: "the phase text\n\n<!-- factory:phase:wi_p:1 -->", labels: ["factory"] },
+      },
+      { method: "POST", path: "/repos/o/r/issues/5/sub_issues", body: { sub_issue_id: 9020 } },
+    ]);
+  });
+
+  it("an issue already linked with the marker is returned with nothing filed", async () => {
+    const { client, source } = make();
+    client.responses["/repos/o/r/issues/5/sub_issues"] = [{ id: 9011, number: 11, body: `text\n\n${input.marker}` }];
+    expect(await source.fileSubIssue(input)).toEqual(issueRef(11));
+    expect(writes(client)).toEqual([]);
+  });
+
+  it("an issue filed earlier but never linked is linked, not filed again", async () => {
+    const { client, source } = make();
+    client.responses["/repos/o/r/issues"] = [
+      { id: 9012, number: 12, body: "another issue" },
+      { id: 9013, number: 13, body: `text\n\n${input.marker}` },
+    ];
+    expect(await source.fileSubIssue(input)).toEqual(issueRef(13));
+    expect(writes(client)).toEqual([{ method: "POST", path: "/repos/o/r/issues/5/sub_issues", body: { sub_issue_id: 9013 } }]);
+  });
+
+  it("a failed link is thrown, so the caller retries", async () => {
+    const { client, source } = make();
+    client.linkError = new GitHubError(500, "boom");
+    await expect(source.fileSubIssue(input)).rejects.toThrow("boom");
+  });
+
+  it("closes an issue as completed when asked", async () => {
+    const { client, source } = make();
+    await source.closeIssue(issueRef(5), "completed");
+    expect(client.calls).toEqual([
+      { method: "PATCH", path: "/repos/o/r/issues/5", body: { state: "closed", state_reason: "completed" } },
+    ]);
+  });
+});

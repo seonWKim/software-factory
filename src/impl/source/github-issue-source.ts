@@ -3,7 +3,7 @@ import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, SourceCloseReason, SourceEvent, VerdictEventTarget,
+  ClosePrInput, PollResult, PollSource, PrChecks, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
@@ -18,6 +18,13 @@ interface GhIssue {
   body: string | null;
   user: GhUser;
   updated_at: string;
+  pull_request?: unknown;
+}
+/** An issue as the sub-issue calls need it: `id` (not the number) is what the sub-issues API takes. */
+interface GhIssueRef {
+  id: number;
+  number: number;
+  body?: string | null;
   pull_request?: unknown;
 }
 interface GhIssueFull extends GhIssue {
@@ -409,12 +416,41 @@ export class GitHubIssueSource implements PollSource {
     return { url };
   }
 
-  /** Closes the issue as "not planned". GitHub accepts the same PATCH on an issue that is already closed. */
-  async closeIssue(source: SourceRef): Promise<void> {
+  /** Closes the issue as "not planned" (or `reason`). GitHub accepts the same PATCH on an issue that is already closed. */
+  async closeIssue(source: SourceRef, reason: SourceCloseReason = "not_planned"): Promise<void> {
     await this.client.request("PATCH", `/repos/${this.repo.owner}/${this.repo.name}/issues/${issueNumberFromSourceId(source.id)}`, {
       state: "closed",
-      state_reason: "not_planned",
+      state_reason: reason,
     });
+  }
+
+  /**
+   * One phase as a factory-labelled issue linked under the parent. The marker is looked up first among the
+   * parent's sub-issues, then among the newest 300 factory-labelled issues (open or closed; one filed by a
+   * try that failed before its link), so a retry never files a second issue. A link GitHub refuses with 422
+   * (already linked by a concurrent try) counts once the parent lists it.
+   */
+  async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const parent = issueNumberFromSourceId(input.parent.id);
+    const subs = `${base}/issues/${parent}/sub_issues`;
+    const has = (i: GhIssueRef) => !i.pull_request && (i.body ?? "").includes(input.marker);
+    const linked = (await this.client.list<GhIssueRef>(subs, 1)).find(has);
+    if (linked) return this.ref(linked.number);
+    const filed = (await this.client.list<GhIssueRef>(
+      `${base}/issues?state=all&labels=${encodeURIComponent(this.label)}&sort=created&direction=desc`, 3)).find(has);
+    const issue = filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
+      title: input.title,
+      body: `${input.body}\n\n${input.marker}`,
+      labels: [this.label],
+    });
+    try {
+      await this.client.request("POST", subs, { sub_issue_id: issue.id });
+    } catch (err) {
+      if (!(err instanceof GitHubError && err.status === 422)) throw err;
+      if (!(await this.client.list<GhIssueRef>(subs, 1)).some((i) => i.number === issue.number)) throw err;
+    }
+    return this.ref(issue.number);
   }
 
   /**

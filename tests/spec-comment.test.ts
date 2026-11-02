@@ -16,6 +16,8 @@ const spec: TriageOutput = {
   files_to_change: [".github/workflows/scope.yml", "docs/ci.md"],
   tier: 2,
   tier_reason: "A small CI change.",
+  estimated_lines: 60,
+  estimated_files: 2,
 };
 
 const HEADINGS = ["### In short (AS-IS → TO-BE)", "### What changes", "### Done when", "### Not included", "### Files", "### Risk"];
