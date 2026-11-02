@@ -94,6 +94,8 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     origin: a ? "adopted" : "factory",
     head_branch: a ? a.head_branch : null,
     last_head_sha: a ? a.head_sha : null,
+    parent_id: !a && input.parent ? input.parent.id : null,
+    phase: !a && input.parent ? input.parent.phase : null,
     created_at: now,
     updated_at: now,
   };
@@ -104,7 +106,7 @@ export const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
   "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
-  "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha";
+  "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha, parent_id, phase";
 
 export function workItemValues(i: WorkItem): SqlValue[] {
   return [
@@ -114,6 +116,7 @@ export function workItemValues(i: WorkItem): SqlValue[] {
     i.restart_count, i.token_cost, i.pr_number, i.merge_sha, i.fixes_pr, i.created_at, i.updated_at, i.title,
     i.spec_comment_url, i.failure_comment_url,
     i.issue_text, i.revision_count, i.spec_feedback, i.origin, i.head_branch, i.last_head_sha,
+    i.parent_id, i.phase,
   ];
 }
 
@@ -181,6 +184,8 @@ export function rowToWorkItem(r: Row): WorkItem {
     origin: (r.origin as WorkItem["origin"] | null | undefined) ?? "factory",
     head_branch: (r.head_branch as string | null | undefined) ?? null,
     last_head_sha: (r.last_head_sha as string | null | undefined) ?? null,
+    parent_id: (r.parent_id as WorkItemId | null | undefined) ?? null,
+    phase: r.phase === null || r.phase === undefined ? null : Number(r.phase),
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };

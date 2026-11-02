@@ -38,7 +38,7 @@ import {
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
 import {
-  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parsePhaseLink, parseSizeDetail, parseSubIssues, phaseIssueBody,
+  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parseSizeDetail, parseSubIssues, phaseIssueBody,
   phaseLinkDetail, phaseMarker, phaseTitle, suggestSplit,
 } from "./split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
@@ -1070,6 +1070,7 @@ export class Controller {
             project: it.project,
             problem: `${title}\n\n${body}`,
             resources: [ref.link, it.source.link],
+            parent: { id: it.id, phase: index },
             ...(prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {}),
           },
           actor,
@@ -1128,25 +1129,25 @@ export class Controller {
     for (const p of parents) if (splitOpen(p)) await this.guard("split close", () => this.closeSplitIfDone(p.id));
   }
 
+  /** Releases held phase `id` once the phase before it (by the store's parent link and phase number) closed as completed. */
   private async releasePhase(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !phaseHeld(it)) return;
-    const link = parsePhaseLink((await this.d.store.listStateChanges(id)).find((c) => c.reason === "intake")?.detail);
-    if (!link) {
-      this.d.log.warn("held phase has no phase link; left held", { work_item_id: id });
+    if (it.parent_id === null || it.phase === null) {
+      this.d.log.warn("held phase has no parent link; left held", { work_item_id: id });
       return;
     }
-    if (link.depends_on !== null) {
-      const prev = await this.d.store.getWorkItemBySource(it.source.type, link.depends_on);
-      if (!prev || prev.stage !== "CLOSED" || prev.close_reason !== "completed") return;
-    }
+    const parentId = it.parent_id;
+    const phase = it.phase;
+    const prev = phase > 1 ? (await this.d.store.listPhases(parentId)).find((p) => p.phase === phase - 1) : null;
+    if (phase > 1 && !completed(prev)) return;
     await this.decide(id, (cur) =>
       phaseHeld(cur)
         ? {
             patch: { blocked_on: "none", blocked_reason: null },
             actor: SYSTEM,
             reason: "phase_released",
-            detail: { parent_work_item_id: link.parent_work_item_id, phase: link.phase, depends_on: link.depends_on },
+            detail: { parent_work_item_id: parentId, phase, depends_on: prev?.source.id ?? null },
             enqueue: { kind: "triage", idempotency_key: `${cur.source.type}:${cur.source.id}:triage` },
           }
         : null,
@@ -1156,13 +1157,12 @@ export class Controller {
   private async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !splitOpen(it)) return;
+    // How many phases the approval filed: the store's phase rows must all exist and all be closed as completed.
     const approved = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
     const ids = parseSubIssues(approved?.detail);
     if (!ids) return;
-    for (const sid of ids) {
-      const phase = await this.d.store.getWorkItemBySource(it.source.type, sid);
-      if (!phase || phase.stage !== "CLOSED" || phase.close_reason !== "completed") return;
-    }
+    const phases = await this.d.store.listPhases(id);
+    if (phases.length < ids.length || !phases.every(completed)) return;
     const adapter = this.adapterFor(it.source, "closeIssue");
     if (!adapter) return;
     await this.comment(it, `split-done:${it.id}`,
@@ -2098,6 +2098,11 @@ function retry(it: WorkItem, actor: Actor): Decision | Refusal {
 /** A later phase of a split, waiting for the phase before it (design 2026-11-01). */
 function phaseHeld(it: WorkItem): boolean {
   return it.stage === "NEW" && it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD;
+}
+
+/** Closed as completed: the only close that releases the next phase or counts toward closing the parent. */
+function completed(it: WorkItem | null | undefined): boolean {
+  return it?.stage === "CLOSED" && it.close_reason === "completed";
 }
 
 /** A split parent whose phases are filed and not all closed as completed. */

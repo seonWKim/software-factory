@@ -59,6 +59,8 @@ export interface NewWorkItem {
    * `adopted`.
    */
   hold?: { blocked_on: "upstream"; blocked_reason: string };
+  /** A phase of a split spec (design 2026-11-01): its parent and its place in merge order (1-based). */
+  parent?: { id: WorkItemId; phase: number };
 }
 
 export interface AdoptedPr {
@@ -249,6 +251,8 @@ export interface FactoryStore {
   getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
+  /** The phases of split parent `parentId`, in phase order (design 2026-11-01). Empty for any other item. Read-only. */
+  listPhases(parentId: WorkItemId): Promise<WorkItem[]>;
   /** Newest first. */
   listWorkItems(limit: number): Promise<WorkItem[]>;
   /** Items matching `filter`, most recently updated first. Read-only. */

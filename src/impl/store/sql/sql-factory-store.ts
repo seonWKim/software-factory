@@ -168,6 +168,11 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToWorkItem(row) : null;
   }
 
+  async listPhases(parentId: WorkItemId): Promise<WorkItem[]> {
+    const rows = await this.db.all(`SELECT * FROM work_items WHERE parent_id = ? ORDER BY phase, ${this.db.dialect.seq}`, [parentId]);
+    return rows.map(rowToWorkItem);
+  }
+
   async listWorkItems(limit: number): Promise<WorkItem[]> {
     const rows = await this.db.all(`SELECT * FROM work_items ORDER BY created_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [
       limit,

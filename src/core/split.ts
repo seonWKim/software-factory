@@ -98,7 +98,10 @@ export function phaseTitle(index: number, total: number, title: string): string 
   return `Phase ${index}/${total}: ${title}`;
 }
 
-/** What a phase's intake row records (state change detail): its parent, its place, the phase it waits for. */
+/**
+ * What a phase's intake row records (state change detail), for the audit trail: its parent, its place, the phase
+ * it waits for. The controller reads the link from the work item's own `parent_id` and `phase` columns.
+ */
 export interface PhaseLink {
   parent_work_item_id: string;
   phase: number;
@@ -109,13 +112,6 @@ export interface PhaseLink {
 
 export function phaseLinkDetail(l: PhaseLink): StateChangeDetail {
   return { parent_work_item_id: l.parent_work_item_id, phase: l.phase, phases: l.phases, depends_on: l.depends_on };
-}
-
-export function parsePhaseLink(d: StateChangeDetail | null | undefined): PhaseLink | null {
-  if (!d || typeof d.parent_work_item_id !== "string" || typeof d.phase !== "number" || typeof d.phases !== "number") return null;
-  const dep = d.depends_on;
-  if (dep !== null && typeof dep !== "string") return null;
-  return { parent_work_item_id: d.parent_work_item_id, phase: d.phase, phases: d.phases, depends_on: dep ?? null };
 }
 
 /** The source ids of a split parent's phases, in order, from its `split_approved` detail. */

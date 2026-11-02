@@ -96,7 +96,10 @@ describe("split spec flow", () => {
       expect(p).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: PHASE_HOLD });
       expect(await f.runsOf(p)).toEqual([]);
     }
-    // Each phase records its parent, its place and the phase it waits for.
+    // The store holds each phase's parent link and place; listPhases returns them in order.
+    expect([p1, p2, p3].map((p) => [p!.parent_id, p!.phase])).toEqual([[parent.id, 1], [parent.id, 2], [parent.id, 3]]);
+    expect((await f.store.listPhases(parent.id)).map((p) => p.id)).toEqual([p1!.id, p2!.id, p3!.id]);
+    // Each phase's intake row also records its parent, its place and the phase it waits for (audit trail).
     const link = (await f.store.listStateChanges(p2!.id))[0]!;
     expect(link).toMatchObject({
       reason: "intake",

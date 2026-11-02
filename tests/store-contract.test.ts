@@ -43,6 +43,24 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.listStateChanges(c.item.id))[0]!.detail).toBeNull();
     });
 
+    it("a phase stores its parent link and phase number; listPhases returns a parent's phases in phase order", async () => {
+      const { store } = await make();
+      const parent = (await store.createWorkItem(issue(20), system)).item;
+      expect(parent).toMatchObject({ parent_id: null, phase: null });
+      // Filed out of order on purpose: listPhases sorts by phase, not by intake.
+      const p2 = (await store.createWorkItem({ ...issue(22), parent: { id: parent.id, phase: 2 } }, system)).item;
+      const p1 = (await store.createWorkItem({ ...issue(21), parent: { id: parent.id, phase: 1 } }, system)).item;
+      const other = (await store.createWorkItem(issue(30), system)).item;
+      await store.createWorkItem({ ...issue(31), parent: { id: other.id, phase: 1 } }, system);
+      expect(p1).toMatchObject({ parent_id: parent.id, phase: 1 });
+      expect((await store.getWorkItem(p2.id))!).toMatchObject({ parent_id: parent.id, phase: 2 });
+      expect((await store.listPhases(parent.id)).map((p) => [p.id, p.phase])).toEqual([[p1.id, 1], [p2.id, 2]]);
+      expect(await store.listPhases(p1.id)).toEqual([]);
+      // The link is store-owned: a transition keeps it.
+      const r = await store.transition({ id: p2.id, expected_version: p2.version, patch: { blocked_on: "human" }, actor: system, reason: "t" });
+      expect(r.ok && r.item).toMatchObject({ parent_id: parent.id, phase: 2 });
+    });
+
     it("transition applies only on the expected version; the loser gets version_conflict", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);
