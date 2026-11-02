@@ -79,7 +79,7 @@ describe("settings: config shape", () => {
     const { config } = await load(REAL);
     const s = settingsFor(ID, config.settings);
     expect(s.max_attempts).toEqual({ value: 3, layer: "defaults" });
-    expect(s.max_diff_lines).toEqual({ value: 3000, layer: "defaults" });
+    expect(s.max_diff_lines).toEqual({ value: 5000, layer: "defaults" });
     expect(s.floors.value).toEqual(GLOBAL_FLOORS);
   });
 
@@ -279,7 +279,7 @@ describe("settings: doctor and status page", () => {
     expect(settingsChecks(loaded).every((c) => c.ok)).toBe(true);
     expect(lines).toHaveLength(PROJECT_SETTING_KEYS.length);
     expect(lines).toContain(`setting for ${ID}: max_attempts = 2 (project)`);
-    expect(lines).toContain(`setting for ${ID}: max_diff_lines = 3000 (defaults)`);
+    expect(lines).toContain(`setting for ${ID}: max_diff_lines = 5000 (defaults)`);
     expect(lines).toContain(`setting for ${ID}: budgets = no limits (built-in)`);
     expect(lines.find((l) => l.includes("floors ="))).toContain("src/impl/broker/≥4");
   });
