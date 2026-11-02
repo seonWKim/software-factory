@@ -188,3 +188,28 @@ describe("config keys: doctor output", () => {
     expect(configFailLines(new Error("tiers must be integers 1–5"))).toEqual(["FAIL  tiers must be integers 1–5"]);
   });
 });
+
+describe("coordination config (design §5, 2026-11-03)", () => {
+  it("max_coordination_cost is read from factory.config.json: the checked-in value is 2.5, the default", async () => {
+    const { coordinationConfig } = await import("../src/core/config.js");
+    expect(REAL.max_coordination_cost).toBe(2.5);
+    expect(coordinationConfig(REAL)).toMatchObject({ max_cost: 2.5, hotspot_weight: 3 });
+    expect(coordinationConfig({ ...REAL, max_coordination_cost: 4 }).max_cost).toBe(4);
+    expect(coordinationConfig({}).max_cost).toBe(2.5);
+  });
+
+  it.each([0, -1, "2.5", null, true])("max_coordination_cost %j fails at startup, like other numeric keys", async (value) => {
+    const err = await loadError({ ...SQLITE, max_coordination_cost: value });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("max_coordination_cost must be a number above 0");
+  });
+
+  it("hotspot_weight and hotspot_paths are checked at startup too", async () => {
+    expect((await loadError({ ...SQLITE, hotspot_weight: 0 })).message).toContain("hotspot_weight must be a number above 0");
+    expect((await loadError({ ...SQLITE, hotspot_paths: ["ok", ""] })).message).toContain("hotspot_paths must be a list of non-empty paths");
+  });
+
+  it("the checked-in config loads with the coordination keys", async () => {
+    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
+  });
+});

@@ -16,7 +16,7 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
 
@@ -270,6 +270,8 @@ describe("update run: worker", () => {
     const files = String(comments[0]!.args.body).split("\n").flatMap((l) => /^- `(.+)`$/.exec(l)?.[1] ?? []);
     expect(files).toEqual(["a.txt", "src/c.txt"]);
     expect(String(comments[0]!.args.body)).toContain("automatic resolve run");
+    // Each conflicting file is recorded once, raising its coordination weight (design §5, 2026-11-03).
+    expect(await f.store.conflictCounts(PROJECT_KEY)).toEqual(new Map([["a.txt", 1], ["src/c.txt", 1]]));
     expect(await f.reasons()).toEqual(["update_started"]);
     expect((await f.store.listStateChanges(f.id)).at(-1)).toMatchObject({
       reason: "auto_resolve_started", detail: { base_sha: f.mainSha, attempt: 1, auto_resolve_attempts: 0 },
