@@ -5,7 +5,10 @@ import type {
   BudgetCheckpoint,
   BudgetCheckpointId,
   BudgetOutcome,
+  ClaimDecision,
   CloseReason,
+  DependencyEdge,
+  DependencyState,
   Handoff,
   Run,
   RunId,
@@ -29,6 +32,16 @@ import type {
   WorkItemId,
   ClaimPauseName,
 } from "../../../core/types.js";
+import {
+  type CoordinationSettings,
+  type DependencyLink,
+  type Hold,
+  type Holder,
+  DEFAULT_COORDINATION,
+  claimDecision,
+  holdsOn,
+  shortRef,
+} from "../../../core/coordination.js";
 import { IMPLEMENT_KINDS } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -37,6 +50,8 @@ import type { Clock } from "../../../interfaces/clock.js";
 import type {
   AppendInboxResult,
   AnswerBudgetCheckpointInput,
+  ApproveClaimHoldInput,
+  ApproveClaimHoldResult,
   BudgetCheckpointResult,
   ClaimInput,
   FactoryStore,
@@ -49,6 +64,7 @@ import type {
   NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
+  RecordConflictsInput,
   RecordPrHeadInput,
   RecordPrHeadResult,
   RecordVerdictInput,
@@ -69,6 +85,8 @@ import {
   newId,
   newWorkItem,
   rowToBudgetCheckpoint,
+  rowToClaimDecision,
+  rowToDependencyEdge,
   rowToHandoff,
   rowToRun,
   rowToStateChange,
@@ -448,11 +466,20 @@ export class SqlFactoryStore implements FactoryStore {
          ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
         [...input.kinds, now, ...CLAIM_ORDER],
       );
+      // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
+      const coord = queued.some((q) => q.kind === "implement")
+        ? await this.coordinationContext(tx, queued, busy)
+        : null;
+      const settings = input.coordination ?? DEFAULT_COORDINATION;
       for (const next of queued) {
         // An implement-type run waits while its own item has one running, or while the forge refuses the
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
+        if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
+          continue;
+        }
         const id = next.id as RunId;
         const claimed = await tx.run(
           `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
@@ -464,6 +491,147 @@ export class SqlFactoryStore implements FactoryStore {
       }
       return null;
     });
+  }
+
+  /**
+   * What the claim needs for coordination, read under the claim lock: the queued implement runs' items, the
+   * items with an implement-type run running, every open PR's item, the queued items' dependency edges (with
+   * the state of the work item each points to), recorded conflicts and the stored claim decisions.
+   */
+  private async coordinationContext(tx: SqlExecutor, queued: Row[], busy: ReadonlySet<string>): Promise<CoordContext> {
+    const runs = queued.filter((q) => q.kind === "implement");
+    const ids = [...new Set([...runs.map((q) => q.work_item_id as string), ...busy])];
+    const items = new Map<string, WorkItem>();
+    for (const r of await tx.all(`SELECT * FROM work_items WHERE id IN (${placeholders(ids.length)})`, ids)) {
+      items.set(r.id as string, rowToWorkItem(r));
+    }
+    const openPrs = (await tx.all("SELECT * FROM work_items WHERE pr_number IS NOT NULL AND stage <> 'CLOSED'")).map(rowToWorkItem);
+    for (const it of openPrs) items.set(it.id, it);
+    const queuedIds = [...new Set(runs.map((q) => q.work_item_id as string))];
+    const edges = await tx.all(
+      `SELECT e.work_item_id, e.state, w.stage, w.close_reason, w.merge_sha FROM dependency_edges e
+       LEFT JOIN work_items w ON w.source_type = 'github_issue' AND w.source_id = e.depends_on
+       WHERE e.work_item_id IN (${placeholders(queuedIds.length)})`,
+      queuedIds,
+    );
+    const unmet = new Set<string>();
+    for (const e of edges) {
+      const merged = e.state === "merged" || (e.stage === "CLOSED" && e.close_reason === "completed" && e.merge_sha !== null);
+      if (!merged) unmet.add(e.work_item_id as string);
+    }
+    const projects = [...new Set([...items.values()].map((it) => it.project))];
+    const conflicts = new Map<string, Map<string, number>>();
+    if (projects.length > 0) {
+      const rows = await tx.all(
+        `SELECT project_key, path, COUNT(*) AS n FROM file_conflicts WHERE project_key IN (${placeholders(projects.length)})
+         GROUP BY project_key, path`,
+        projects,
+      );
+      for (const r of rows) {
+        const m = conflicts.get(r.project_key as string) ?? new Map<string, number>();
+        m.set(r.path as string, Number(r.n));
+        conflicts.set(r.project_key as string, m);
+      }
+    }
+    const runIds = runs.map((q) => q.id as string);
+    const decisions = new Map<string, ClaimDecision>();
+    for (const r of await tx.all(`SELECT * FROM claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
+      decisions.set(r.run_id as string, rowToClaimDecision(r));
+    }
+    const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
+    // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
+    const holders: Holder[] = [];
+    const ref = (it: WorkItem, self: string) => (it.pr_number !== null ? `#${it.pr_number}` : shortRef(it.source.id, self));
+    const holderOf = (it: WorkItem, kind: Holder["kind"]): Holder => ({
+      work_item_id: it.id,
+      project: it.project,
+      ref: ref(it, it.source.id),
+      kind,
+      files: it.pr_files ?? (it.pr_number === null ? it.files_to_change : null) ?? it.allowed_paths,
+      fallback: kind === "pr" && it.pr_files === null,
+    });
+    for (const id of busy) {
+      const it = items.get(id);
+      if (it) holders.push(holderOf(it, "running"));
+    }
+    for (const it of openPrs) if (!busy.has(it.id)) holders.push(holderOf(it, "pr"));
+    for (const id of queuedIds) {
+      const it = items.get(id);
+      if (it && it.pr_number === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
+    }
+    return { items, holders, conflicts, decisions, depHeld };
+  }
+
+  /**
+   * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
+   * decision when the cost rule decided it and the decision changed.
+   */
+  private async coordinate(
+    tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
+  ): Promise<boolean> {
+    if (c.depHeld(itemId)) return false;
+    const it = c.items.get(itemId);
+    // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
+    if (!it || it.pr_number !== null) return true;
+    const existing = c.decisions.get(runId) ?? null;
+    const holds = holdsOn({ work_item_id: it.id, project: it.project, files: it.files_to_change ?? it.allowed_paths }, c.holders,
+      c.conflicts.get(it.project) ?? new Map(), s);
+    // Relative to this item, so a holder of the same repository is named "#N".
+    for (const h of holds) if (h.holder.kind !== "pr" && h.holder.work_item_id) h.holder.ref = this.refFor(c, h.holder.work_item_id, it);
+    const verdict = claimDecision(holds);
+    if (verdict === "free") return true;
+    if (existing?.approved_by) {
+      await this.writeDecision(tx, it, runId, "approved", holds[0]!, s.max_cost, existing);
+      return true;
+    }
+    await this.writeDecision(tx, it, runId, verdict === "deadlock" ? "deadlock" : "held", holds[0]!, s.max_cost, existing);
+    return verdict === "deadlock";
+  }
+
+  private refFor(c: CoordContext, holderId: string, self: WorkItem): string {
+    const h = c.items.get(holderId);
+    if (!h) return holderId;
+    return h.pr_number !== null ? `#${h.pr_number}` : shortRef(h.source.id, self.source.id);
+  }
+
+  /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
+  private async writeDecision(
+    tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
+    existing: ClaimDecision | null,
+  ): Promise<void> {
+    const row = {
+      decision,
+      holder_work_item_id: hold.holder.work_item_id,
+      holder_ref: hold.holder.ref,
+      holder_kind: hold.holder.kind,
+      shared: JSON.stringify(hold.shared),
+      cost: hold.cost,
+      threshold,
+      fallback: hold.holder.fallback ? 1 : 0,
+    };
+    if (
+      existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
+      existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
+      JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
+      (existing.fallback ? 1 : 0) === row.fallback
+    ) {
+      return;
+    }
+    const values = [row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback];
+    const now = this.now();
+    const updated = await tx.run(
+      `UPDATE claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
+         threshold = ?, fallback = ?, at = ? WHERE run_id = ?`,
+      [...values, now, runId],
+    );
+    if (updated === 0) {
+      await this.insertOnce(
+        tx,
+        `INSERT INTO claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
+           threshold, fallback, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        [runId, it.id, ...values, now],
+      );
+    }
   }
 
   async pauseClaims(
@@ -604,6 +772,111 @@ export class SqlFactoryStore implements FactoryStore {
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
+  }
+
+  // Coordination (design §5, 2026-11-03)
+
+  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const wanted = new Map<string, DependencyLink>();
+      for (const l of links) if (!wanted.has(l.depends_on)) wanted.set(l.depends_on, l);
+      const current = (await tx.all("SELECT depends_on FROM dependency_edges WHERE work_item_id = ?", [id])).map((r) => r.depends_on as string);
+      for (const d of current) {
+        if (!wanted.has(d)) await tx.run("DELETE FROM dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, d]);
+      }
+      for (const l of wanted.values()) {
+        await this.insertOnce(
+          tx,
+          "INSERT INTO dependency_edges (work_item_id, depends_on, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)",
+          [id, l.depends_on, l.kind, now, now],
+        );
+      }
+      const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
+      return rows.map(rowToDependencyEdge);
+    });
+  }
+
+  async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {
+    const where: string[] = [];
+    const params: SqlValue[] = [];
+    if (filter.work_item_id !== undefined) {
+      where.push("work_item_id = ?");
+      params.push(filter.work_item_id);
+    }
+    if (filter.depends_on !== undefined) {
+      where.push("depends_on = ?");
+      params.push(filter.depends_on);
+    }
+    const rows = await this.db.all(
+      `SELECT * FROM dependency_edges${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, ${this.db.dialect.seq}`,
+      params,
+    );
+    return rows.map(rowToDependencyEdge);
+  }
+
+  async setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all("SELECT state FROM dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, depends_on]);
+      if (!row) return false;
+      if (row.state !== state) {
+        await tx.run("UPDATE dependency_edges SET state = ?, updated_at = ? WHERE work_item_id = ? AND depends_on = ?", [
+          state, this.now(), id, depends_on,
+        ]);
+      }
+      return true;
+    });
+  }
+
+  async recordConflicts(input: RecordConflictsInput): Promise<number> {
+    assertProjectKey(input.project);
+    const paths = [...new Set(input.paths.filter((p) => p.length > 0))];
+    if (paths.length === 0) return 0;
+    return this.db.transaction(async (tx) => {
+      let n = 0;
+      for (const path of paths) {
+        const inserted = await this.insertOnce(tx, "INSERT INTO file_conflicts (project_key, path, event_key, at) VALUES (?, ?, ?, ?)", [
+          input.project, path, input.event_key, this.now(),
+        ]);
+        if (inserted) n++;
+      }
+      return n;
+    });
+  }
+
+  async conflictCounts(project: string): Promise<Map<string, number>> {
+    const rows = await this.db.all("SELECT path, COUNT(*) AS n FROM file_conflicts WHERE project_key = ? GROUP BY path", [project]);
+    return new Map(rows.map((r) => [r.path as string, Number(r.n)]));
+  }
+
+  async listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> {
+    const rows = await this.db.all(`SELECT * FROM claim_decisions WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
+    return rows.map(rowToClaimDecision);
+  }
+
+  async approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<ApproveClaimHoldResult> => {
+      const [row] = await tx.all(
+        `SELECT d.* FROM claim_decisions d JOIN runs r ON r.id = d.run_id
+         WHERE d.run_id = ? AND d.work_item_id = ? AND d.decision = 'held' AND d.approved_by IS NULL AND r.status = 'queued'${forUpdate}`,
+        [input.run_id, input.id],
+      );
+      if (!row) return { ok: false, reason: "not_held" };
+      const held = rowToClaimDecision(row);
+      const r = await this.applyTransition(tx, {
+        id: input.id,
+        expected_version: input.expected_version,
+        patch: {},
+        actor: input.actor,
+        reason: "coordination_approved",
+        detail: { run_id: input.run_id, holder: held.holder_ref, cost: held.cost, threshold: held.threshold },
+      });
+      if (!r.ok) return r;
+      await tx.run("UPDATE claim_decisions SET approved_by = ? WHERE run_id = ?", [input.actor.id, input.run_id]);
+      const [after] = await tx.all("SELECT * FROM claim_decisions WHERE run_id = ?", [input.run_id]);
+      return { ok: true, item: r.item, state_change: r.state_change, decision: rowToClaimDecision(after!) };
+    });
   }
 
   // PR heads
@@ -1024,6 +1297,17 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     params.push(filter.blocked_on);
   }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
+}
+
+/** What claimRun reads once for the coordination check (design §5, 2026-11-03). */
+interface CoordContext {
+  items: Map<string, WorkItem>;
+  holders: Holder[];
+  /** Recorded conflicts per project, then per path. */
+  conflicts: Map<string, Map<string, number>>;
+  decisions: Map<string, ClaimDecision>;
+  /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
+  depHeld: (id: string) => boolean;
 }
 
 /** The one row in `claim_locks`: every claim takes it first (migration 7). */

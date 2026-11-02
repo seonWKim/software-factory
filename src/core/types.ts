@@ -15,7 +15,11 @@ export type WorkerId = Brand<string, "WorkerId">;
 export type Timestamp = Brand<string, "Timestamp">;
 
 export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
-export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget";
+/**
+ * `dependency` (design 2026-11-03): the item's implement run waits for a linked item (`Depends on: #N`, a
+ * sub-issue, a blocked-by link) to merge. Its status label is "implementing", never "needs human".
+ */
+export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency";
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
@@ -95,6 +99,16 @@ export interface WorkItem {
    */
   parent_id: WorkItemId | null;
   phase: number | null;
+  /**
+   * The files the approved spec expects to change (triage's `files_to_change`), the coordination cost's input
+   * for an item without a PR (design 2026-11-03). Null before triage, and on items from before it was stored.
+   */
+  files_to_change: string[] | null;
+  /**
+   * The files the item's PR changes, as its last implement run pushed them (design 2026-11-03). Null with no
+   * PR, and on PRs opened before it was stored: the coordination cost then falls back to `allowed_paths`.
+   */
+  pr_files: string[] | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -355,5 +369,58 @@ export interface UnreviewedMerge {
   merge_sha: string;
   /** The merger's user ID; null when the forge did not name one or it did not resolve to a user. */
   merger_id: UserId | null;
+  at: Timestamp;
+}
+
+/** How a dependency edge was found (design 2026-11-03). Each kind is the same edge to the scheduler. */
+export type DependencyKind = "depends_on" | "sub_issue" | "blocked_by";
+/**
+ * What the controller last read of the item an edge points to. `merged`: its change is on the base branch (a
+ * factory item closed by its PR's merge, or another issue closed as completed or a PR merged). `closed_unmerged`:
+ * closed without that. Written by the controller outside the claim lock; the claim only reads it.
+ */
+export type DependencyState = "open" | "merged" | "closed_unmerged";
+
+/** One edge: work item `work_item_id` waits for source item `depends_on` (e.g. "owner/repo#92") to merge. */
+export interface DependencyEdge {
+  work_item_id: WorkItemId;
+  depends_on: string;
+  kind: DependencyKind;
+  state: DependencyState;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+/** One shared path of a coordination cost, with its weight and why it weighs that much. */
+export interface SharedPath {
+  path: string;
+  weight: number;
+  /** Conflicts recorded on the path (the most among the files under it, for a folder). */
+  conflicts: number;
+  hotspot: boolean;
+}
+
+/**
+ * The latest claim decision on a held implement run (design 2026-11-03): one row per run, rewritten when the
+ * decision changes. `held`: the run stays queued; `deadlock`: claimed by the deadlock rule although held by
+ * waiting items; `approved`: claimed past the hold after a human's `/approve`.
+ */
+export interface ClaimDecision {
+  run_id: RunId;
+  work_item_id: WorkItemId;
+  decision: "held" | "deadlock" | "approved";
+  /** The holding item, or null for a PR with no work item. */
+  holder_work_item_id: WorkItemId | null;
+  /** How the holder is named: "#92" (its issue or PR number). */
+  holder_ref: string;
+  /** `running`, `pr` (an open PR) or `waiting` (another queued run). */
+  holder_kind: "running" | "pr" | "waiting";
+  shared: SharedPath[];
+  cost: number;
+  threshold: number;
+  /** The holder's files are its allowed_paths: an open PR from before PR file lists were stored. */
+  fallback: boolean;
+  /** The user whose `/approve` lifted the hold; null until then. */
+  approved_by: UserId | null;
   at: Timestamp;
 }

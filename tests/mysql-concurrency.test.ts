@@ -34,8 +34,9 @@ describe.skipIf(!MYSQL_URL)("SqlFactoryStore on MySQL across workers", () => {
 
   it("several claimers at once never hand out two implement-type runs of one item", async () => {
     const { store, open } = await newMysqlDatabase(new SystemClock());
-    // Overlapping paths on purpose: they no longer hold runs back; only a second run of the same item does.
-    const shapes = [["src/"], ["src/core/a.ts"], ["src/core/"], ["docs/"], ["docs/x.md"], ["tests/a.ts"], ["src/impl/b.ts"]];
+    // Overlapping paths on purpose, each pair under max_coordination_cost (no hotspot, one shared path at most):
+    // they do not hold runs back; only a second run of the same item does.
+    const shapes = [["lib/"], ["lib/core/a.ts"], ["lib/core/"], ["notes/"], ["notes/x.md"], ["tests/a.ts"], ["lib/impl/b.ts"]];
     const ITEMS = 21;
     for (let i = 0; i < ITEMS; i++) {
       const { item } = await store.createWorkItem(issue(i), system);

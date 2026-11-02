@@ -10,6 +10,14 @@ import {
 } from "./budget.js";
 import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
+import {
+  type DependencyVerdict,
+  dependencyReason,
+  dependencyVerdict,
+  holdReason,
+  isDependencySource,
+  shortRef,
+} from "./coordination.js";
 import { type LearnedSettingsSource, type ProjectSettings, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
@@ -44,8 +52,8 @@ import {
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
-  type Actor, type CloseReason, type Run, type RunId, type RunKind, type SourceRef, type SourceType, type StateChangeDetail, type Tier,
-  type Timestamp, type WorkItem, type WorkItemId, outcomeTokens,
+  type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
+  type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens,
 } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
@@ -168,6 +176,11 @@ const MAX_CHECK_NAME_CHARS = 100;
 const CLOSE_BATCH = 50;
 /** Held phases and open split parents looked at per intake tick (design 2026-11-01). */
 const PHASE_BATCH = 50;
+/** Queued implement runs and dependency-held items looked at per coordination tick (design §5, 2026-11-03). */
+const COORDINATION_BATCH = 50;
+/** blocked_reason prefixes (with `blocked_on: human`) of a dependency closed unmerged, and of a dependency cycle. */
+const DEPENDENCY_CLOSED = "dependency_closed";
+const DEPENDENCY_CYCLE = "dependency_cycle";
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
@@ -245,6 +258,8 @@ export class Controller {
       if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
       // PR checks are read from the forge, so on the poll interval like a poll source.
       if (due) await this.guard("checks", () => this.tickChecks());
+      // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
+      if (due) await this.guard("coordination", () => this.tickCoordination());
       await this.guard("runs", () => this.tickRuns());
       await this.guard("reaper", () => this.tickReaper());
       await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
@@ -403,6 +418,8 @@ export class Controller {
         if (created) {
           this.d.log.info("intake", { work_item_id: item.id });
           await this.setStatus(item.source, "triaging", null);
+          // Edges first, so a claim holds the implement run even before the next coordination tick.
+          await this.guard("dependencies", async () => void (await this.refreshEdges(item)));
         }
         await this.markSeen(e.source, null);
         // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
@@ -477,6 +494,8 @@ export class Controller {
             reason: "pr_closed_unmerged",
           };
     });
+    // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
+    await this.guard("dependents", () => this.releaseDependents(item.source.id));
   }
 
   /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
@@ -674,6 +693,12 @@ export class Controller {
       }
       if (e.kind === "budget_continue") {
         return it.stage === "CLOSED" ? "the work item is closed" : "the work item is not at a budget checkpoint";
+      }
+      // `/approve` while implementing: lifts a coordination-cost hold on the queued implement run (design §5).
+      if (e.kind === "spec_approved" && it.stage === "RUNNING" && it.blocked_on === "none") {
+        const r = await this.approveHold(it, actor);
+        if (r === RETRY) continue;
+        return r;
       }
       return this.decide(id, async (x) => this.command(e, x, actor, await this.floorTierNeeded(x), note));
     }
@@ -994,6 +1019,12 @@ export class Controller {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor);
+    if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
+      return {
+        refuse: `the item is ${phaseLabel("dependency_hold")} (${it.blocked_reason ?? "a dependency"}), and \`/approve\` does not lift a ` +
+          "dependency hold: the implement run starts on its own once the dependency merges",
+      };
+    }
     const phase = commandPhase(it);
     const afterFailure = phase === "too_large" || phase === "failed_implement";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
@@ -1337,6 +1368,173 @@ export class Controller {
     return settingValues(project, this.d.config.settings, this.d.learned);
   }
 
+  /**
+   * `/approve` on an implementing item (design §5, 2026-11-03): its queued implement run's latest claim decision
+   * is `held` by coordination cost, so the approval is recorded (state change `coordination_approved`, the
+   * approver as actor) and the next claim takes the run. Without such a hold it is refused as before.
+   */
+  private async approveHold(it: WorkItem, actor: Extract<Actor, { kind: "user" }>): Promise<string | null | typeof RETRY> {
+    const queued = new Set((await this.d.store.listRuns(it.id)).filter((r) => r.kind === "implement" && r.status === "queued").map((r) => r.id));
+    const held = (await this.d.store.listClaimDecisions(it.id))
+      .filter((d) => d.decision === "held" && d.approved_by === null && queued.has(d.run_id))
+      .at(-1);
+    if (!held) {
+      return `the spec is not waiting for approval and no implement run is held by coordination cost (the item is ${phaseLabel(commandPhase(it))})`;
+    }
+    const r = await this.d.store.approveClaimHold({ id: it.id, expected_version: it.version, actor, run_id: held.run_id });
+    if (r.ok) {
+      this.d.log.info("transition", { work_item_id: it.id, reason: "coordination_approved", version: r.item.version, run_id: held.run_id });
+      return null;
+    }
+    if (r.reason === "version_conflict") return RETRY;
+    return r.reason === "not_held" ? "the implement run is no longer held by coordination cost" : null;
+  }
+
+  // Coordination (design §5, decided 2026-11-03)
+
+  /**
+   * Once per poll: for each item with a queued implement run and each item held by a dependency, refresh its
+   * dependency edges and their states from the store and the forge, then hold, release or block it; and post one
+   * comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
+   * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
+   */
+  async tickCoordination(): Promise<void> {
+    const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
+      .filter((r) => r.kind === "implement")
+      .slice(0, COORDINATION_BATCH);
+    const held = await this.d.store.listWorkItemsWhere({ blocked_on: "dependency", limit: COORDINATION_BATCH });
+    const ids = [...new Set([...queued.map((r) => r.work_item_id), ...held.map((i) => i.id)])];
+    for (const id of ids) {
+      await this.guard("coordination item", async () => {
+        await this.coordinateItem(id, true);
+        await this.holdComment(id);
+      });
+    }
+  }
+
+  /**
+   * Re-reads the item's edges (from its source when `network`), records each edge's state, and applies what they
+   * mean: hold on `blocked_on: dependency`, release, or block on a human for a dependency closed unmerged or a
+   * cycle (queued runs cancelled, one comment). Only an implementing item without a PR is changed.
+   */
+  private async coordinateItem(id: WorkItemId, network: boolean): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || it.stage !== "RUNNING" || it.pr_number !== null) return;
+    if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
+    const edges = network ? await this.refreshEdges(it) : await this.d.store.listDependencyEdges({ work_item_id: id });
+    for (const e of edges) {
+      const state = await this.dependencyStateOf(e.depends_on, network);
+      if (state !== null && state !== e.state) await this.d.store.setDependencyState(id, e.depends_on, state);
+    }
+    const fresh = await this.d.store.listDependencyEdges({ work_item_id: id });
+    await this.applyDependencies(it.id, dependencyVerdict(it.source.id, fresh, await this.dependencyGraph()));
+  }
+
+  /** The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored; else the stored ones. */
+  private async refreshEdges(it: WorkItem): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
+    const adapter = this.byType.get(it.source.type);
+    if (!adapter || !isDependencySource(adapter)) return this.d.store.listDependencyEdges({ work_item_id: it.id });
+    const links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
+    return this.d.store.replaceDependencyEdges(it.id, links);
+  }
+
+  /**
+   * What a dependency's state is now: a work item's from the store (merged = closed `completed` with a merge
+   * sha), else, with `network`, the source's answer. Null when unknown (no item, no network or no capability).
+   */
+  private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
+    const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
+    if (dep) {
+      if (dep.stage !== "CLOSED") return "open";
+      return dep.close_reason === "completed" && dep.merge_sha !== null ? "merged" : "closed_unmerged";
+    }
+    if (!network) return null;
+    const adapter = this.byType.get(PR_SOURCE_TYPE);
+    return adapter && isDependencySource(adapter) ? adapter.dependencyState(dependsOn) : null;
+  }
+
+  /** Source id → the source ids it waits for, over every edge not yet merged, for the cycle check. */
+  private async dependencyGraph(): Promise<Map<string, string[]>> {
+    const graph = new Map<string, string[]>();
+    const sourceOf = new Map<string, string | null>();
+    for (const e of await this.d.store.listDependencyEdges()) {
+      if (e.state === "merged") continue;
+      if (!sourceOf.has(e.work_item_id)) sourceOf.set(e.work_item_id, (await this.d.store.getWorkItem(e.work_item_id))?.source.id ?? null);
+      const from = sourceOf.get(e.work_item_id);
+      if (from) graph.set(from, [...(graph.get(from) ?? []), e.depends_on]);
+    }
+    return graph;
+  }
+
+  /** The transition (and comment) a dependency verdict asks for; nothing when the item already shows it. */
+  private async applyDependencies(id: WorkItemId, v: DependencyVerdict): Promise<void> {
+    await this.decide(id, async (it) => {
+      if (it.stage !== "RUNNING" || it.pr_number !== null || (it.blocked_on !== "none" && it.blocked_on !== "dependency")) return null;
+      const short = (d: string) => shortRef(d, it.source.id);
+      switch (v.kind) {
+        case "clear":
+          return it.blocked_on === "dependency"
+            ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "dependency_released" }
+            : null;
+        case "wait": {
+          const reason = dependencyReason(v.open, it.source.id);
+          if (it.blocked_on === "dependency" && it.blocked_reason === reason) return null;
+          const patch = { blocked_on: "dependency" as const, blocked_reason: reason };
+          await this.comment(it, `dependency-hold:${it.id}:${v.open.join(",")}`, [
+            `The implement run waits: ${reason}. It starts on its own once ${v.open.length === 1 ? "it merges" : "they merge"}; \`/approve\` does not lift a dependency hold.`,
+            "",
+            footerAfter(it, patch),
+          ].join("\n"));
+          return { patch, actor: SYSTEM, reason: "dependency_hold", detail: { depends_on: v.open.join(",") } };
+        }
+        case "closed": {
+          const patch = { blocked_on: "human" as const, blocked_reason: `${DEPENDENCY_CLOSED}:${short(v.dependency)}` };
+          await this.comment(it, `dependency-closed:${it.id}:${v.dependency}`, [
+            `${short(v.dependency)}, which this item depends on, was closed without a merge, so the factory queued no implement run. A human decides how this item goes on.`,
+            "",
+            footerAfter(it, patch),
+          ].join("\n"));
+          return { patch, actor: SYSTEM, reason: DEPENDENCY_CLOSED, detail: { depends_on: v.dependency }, cancel_queued_runs: true };
+        }
+        case "cycle": {
+          const cycle = v.cycle.map(short).join(" → ");
+          const patch = { blocked_on: "human" as const, blocked_reason: `${DEPENDENCY_CYCLE}: ${cycle}`.slice(0, 500) };
+          await this.comment(it, `dependency-cycle:${it.id}`, [
+            `The dependencies of this item form a cycle, so the factory refused it and queued no implement run: ${cycle}. Remove one of the links, then a human decides how this item goes on.`,
+            "",
+            footerAfter(it, patch),
+          ].join("\n"));
+          return { patch, actor: SYSTEM, reason: DEPENDENCY_CYCLE, detail: { cycle: v.cycle.join(",") }, cancel_queued_runs: true };
+        }
+      }
+    });
+  }
+
+  /** After `sourceId`'s item closed: every item waiting on it is re-checked from the store (no forge call). */
+  private async releaseDependents(sourceId: string): Promise<void> {
+    for (const e of await this.d.store.listDependencyEdges({ depends_on: sourceId })) {
+      await this.guard("dependent", () => this.coordinateItem(e.work_item_id, false));
+    }
+  }
+
+  /**
+   * One comment per coordination-cost hold (run, holder) the claim recorded on the item's queued implement run,
+   * naming the hold reason, e.g. `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times),
+   * cost 4.0 > 2.5`. The status stays implementing.
+   */
+  private async holdComment(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || it.stage !== "RUNNING" || it.blocked_on !== "none") return;
+    const queued = new Set((await this.d.store.listRuns(id)).filter((r) => r.kind === "implement" && r.status === "queued").map((r) => r.id));
+    const d = (await this.d.store.listClaimDecisions(id)).filter((x) => queued.has(x.run_id) && x.decision === "held" && !x.approved_by).at(-1);
+    if (!d) return;
+    await this.comment(it, `coordination-hold:${d.run_id}:${d.holder_ref}`, [
+      `The implement run is held: ${holdReason(d)}. It starts on its own when that work merges or no longer overlaps.`,
+      "",
+      `Reply \`/approve\` to start it now anyway (threshold \`max_coordination_cost\` = ${d.threshold}).`,
+    ].join("\n"));
+  }
+
   // Run outcomes
 
   async applyRun(run: Run): Promise<void> {
@@ -1363,6 +1561,8 @@ export class Controller {
             desired_output: spec.desired_output,
             scope: spec.scope,
             allowed_paths: spec.allowed_paths,
+            // The coordination cost's input until the PR exists (design §5, 2026-11-03).
+            files_to_change: spec.files_to_change,
             tier,
             token_cost: tokens,
           };
@@ -1390,8 +1590,16 @@ export class Controller {
         case "implement": {
           if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
           const pr = Number(data.pr_number);
+          // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
+          const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
           return {
-            patch: { stage: "REVIEW", pr_number: pr, token_cost: tokens },
+            patch: {
+              stage: "REVIEW",
+              pr_number: pr,
+              token_cost: tokens,
+              ...(files ? { pr_files: files } : {}),
+              ...(it.blocked_on === "dependency" ? { blocked_on: "none" as const, blocked_reason: null } : {}),
+            },
             actor: SYSTEM,
             reason: "implemented",
             ack_run: run.id,
@@ -1904,6 +2112,8 @@ export class Controller {
     // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout.
     if (kind === "update") return awaitingMerge(it);
     if (kind === "manual") return false;
+    // A dependency hold is lifted by the claim reading the store; the controller may clear the field after it.
+    if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
     if (kind === "implement" || kind === "resolve") return it.stage === "RUNNING";
