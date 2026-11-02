@@ -558,6 +558,8 @@ export const triageSpec = {
   files_to_change: [".github/workflows/scope.yml"],
   tier: 2,
   tier_reason: "CI config",
+  estimated_lines: 40,
+  estimated_files: 2,
 };
 
 /**
