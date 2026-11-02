@@ -62,13 +62,20 @@ describe("G3/G4: harness settings deny secret paths", () => {
 
   /**
    * Whether a `Tool(**\/<glob>)` rule matches a file name the way Claude Code's bundled `ignore` package does:
-   * `?` is one character, `*` any run, matched case-insensitively against the basename. `[` has no negation
-   * there (`^` is escaped, `!` is literal), so the rules may not use classes at all.
+   * `?` is one character but `/`, `*` any run without `/`, `[...]` passes to the regex as a class (ranges kept,
+   * `^` escaped so there is no negation), matched case-insensitively against the basename.
    */
   const ruleMatches = (rule: string, tool: string, name: string) => {
     const m = /^(\w+)\(\*\*\/([^/()]+)\)$/.exec(rule);
     if (!m || m[1] !== tool) return false;
-    const re = m[2]!.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\?/g, "[^/]").replace(/\*/g, "[^/]*");
+    const re = m[2]!
+      .split(/(\[[^\]/]*\])/)
+      .map((part, i) =>
+        i % 2 === 1
+          ? part.replace(/\^/g, "\\^")
+          : part.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\?/g, "[^/]").replace(/\*/g, "[^/]*"),
+      )
+      .join("");
     return new RegExp(`^${re}$`, "i").test(name);
   };
   const deniedFor = (tool: string, name: string) => settings.permissions.deny.some((r) => ruleMatches(r, tool, name));
@@ -77,13 +84,19 @@ describe("G3/G4: harness settings deny secret paths", () => {
     for (const tool of ["Read", "Edit"]) expect(deniedFor(tool, ".env.example"), tool).toBe(false);
     const envRules = settings.permissions.deny.filter((r) => r.includes(".env"));
     expect(envRules.length).toBeGreaterThan(0);
-    for (const r of envRules) expect(r, "no character classes: Claude Code cannot negate them").not.toMatch(/\[/);
+    for (const r of envRules) {
+      expect(r, "no negated class: Claude Code reads [! and [^ literally").not.toMatch(/\[[!^]/);
+      expect(r, "no control characters in the settings file").not.toMatch(/[\u0000-\u001f]/);
+    }
   });
 
-  it("still denies reading and editing .env, .env.local and the other .env.* names", () => {
+  it("still denies reading and editing .env, .env.local and every other .env.* name", () => {
     const names = [
       ".env", ".env.local", ".env.", ".env.e", ".env.prod", ".env.production", ".env.development.local", ".env.example.local",
       ".env.staging", ".env.testing", ".env.secrets", ".env.private", ".env.release", ".env.develop", ".env.preview",
+      // any 7-character suffix but `example`, not only the common ones:
+      ".env.foobarx", ".env.xample0", ".env.examplf", ".env.exampl", ".env.examples", ".env.ex-mple", ".env.ex]mple",
+      ".env.exämple", ".env.e\u{1F600}ample", ".env.zzzzzzz", ".env.1234567",
     ];
     for (const tool of ["Read", "Edit"]) {
       for (const name of names) expect(deniedFor(tool, name), `${tool} ${name}`).toBe(true);
