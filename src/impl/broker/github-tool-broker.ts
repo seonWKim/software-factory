@@ -1,12 +1,15 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { ENV_EXAMPLE } from "../../core/tools/guard.js";
 import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
+import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, PREFLIGHT_FAILED } from "../../core/policy.js";
+import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
 import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
@@ -194,6 +197,8 @@ export class GitHubToolBroker implements ToolBroker {
       const scan = await this.deps.scanner.scan(channel, content);
       if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
     }
+    const envExample = await this.checkEnvExample(git);
+    if (envExample) return envExample;
 
     const token = await this.deps.credentials.token();
     if (!token) return { ok: false, error_code: "no_credential", message: "GitHub credentials missing" };
@@ -209,6 +214,34 @@ export class GitHubToolBroker implements ToolBroker {
     }
     const head = await git(["rev-parse", "HEAD"]);
     return { ok: true, content: { sha: head.stdout.trim() } };
+  }
+
+  /**
+   * The value check for `.env.example` (architecture §5): agents may edit it, so before a push every
+   * `.env.example` in HEAD's tree must hold names only. The egress scan sees text without file names, so this
+   * runs here, where the name is known. It checks HEAD, not the diff: a value in the pushed tree is refused
+   * wherever it came from. A committed symlink is refused too: on checkout it could point anywhere. Findings
+   * name the file and line numbers, never the text.
+   */
+  private async checkEnvExample(git: (args: string[]) => Promise<ExecResult>): Promise<ToolResult | null> {
+    const tree = await git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
+    if (tree.exit_code !== 0) return { ok: false, error_code: "git_failed", message: tree.stderr.trim().slice(0, 500) };
+    for (const entry of tree.stdout.split("\0")) {
+      const tab = entry.indexOf("\t");
+      if (tab === -1) continue;
+      const path = entry.slice(tab + 1);
+      if (path.slice(path.lastIndexOf("/") + 1) !== ENV_EXAMPLE) continue;
+      const [mode, type, sha] = entry.slice(0, tab).split(" ");
+      if (mode === "120000") return { ok: false, error_code: "egress_blocked", message: `env_example_symlink:${path}` };
+      if (type !== "blob" || !sha) continue;
+      const blob = await git(["cat-file", "blob", sha]);
+      if (blob.exit_code !== 0) return { ok: false, error_code: "git_failed", message: blob.stderr.trim().slice(0, 500) };
+      const lines = envExampleValueLines(blob.stdout);
+      if (lines.length > 0) {
+        return { ok: false, error_code: "egress_blocked", message: `env_example_value:${path}:${lines.join(",")}`.slice(0, 500) };
+      }
+    }
+    return null;
   }
 
   private async openPr(a: PrArgs): Promise<ToolResult> {

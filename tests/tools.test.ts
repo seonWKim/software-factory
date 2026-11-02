@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -317,6 +317,59 @@ describe("Edit", () => {
   it("refuses a missing file and a bad input", async () => {
     refused(await call("Edit", { file_path: "nope.txt", old_string: "a", new_string: "b" }));
     refused(await call("Edit", { file_path: "edit.txt" }));
+  });
+});
+
+describe(".env.example: the one .env.* file tools may open", () => {
+  // Its own workdir, so the Glob and Grep tests on the main one see no .env* names.
+  let envWd: string;
+  const EXAMPLE = "# secret names only\nGITHUB_TOKEN=\nMYSQL_PASSWORD=\n";
+  let c: ToolContext;
+
+  beforeAll(() => {
+    envWd = join(root, "env-wd");
+    mkdirSync(join(envWd, "other"), { recursive: true });
+    writeFileSync(join(envWd, ".env.example"), EXAMPLE);
+    writeFileSync(join(envWd, ".env"), `GITHUB_TOKEN=${SECRET}\n`);
+    writeFileSync(join(envWd, ".env.local"), `GITHUB_TOKEN=${SECRET}\n`);
+    // A symlink named .env.example that points at .env, one at .env.local, and a hard link to .env.
+    symlinkSync(join(envWd, ".env"), join(envWd, "other", ".env.example"));
+    mkdirSync(join(envWd, "local-link"));
+    symlinkSync(join(envWd, ".env.local"), join(envWd, "local-link", ".env.example"));
+    mkdirSync(join(envWd, "hard"));
+    linkSync(join(envWd, ".env"), join(envWd, "hard", ".env.example"));
+    c = ctx({ workdir: envWd, writable_paths: [] });
+  });
+
+  it("an agent can read, write and edit .env.example in the workdir", async () => {
+    expect(content(await call("Read", { file_path: ".env.example" }, c))).toContain("GITHUB_TOKEN=");
+    expect(content(await call("Read", { file_path: join(envWd, ".env.example") }, c))).toContain("MYSQL_PASSWORD=");
+    expect((await call("Edit", { file_path: ".env.example", old_string: "MYSQL_PASSWORD=", new_string: "MYSQL_PASSWORD=\nNEW_TOKEN=" }, c)).ok).toBe(true);
+    expect(readFileSync(join(envWd, ".env.example"), "utf8")).toBe(`${EXAMPLE}NEW_TOKEN=\n`);
+    expect((await call("Write", { file_path: ".env.example", content: EXAMPLE }, c)).ok).toBe(true);
+    expect(readFileSync(join(envWd, ".env.example"), "utf8")).toBe(EXAMPLE);
+    expect((await call("Write", { file_path: "sub/.env.example", content: "A_TOKEN=\n" }, c)).ok).toBe(true);
+  });
+
+  it(".env and .env.local are still refused for Read, Write and Edit, and stay unchanged", async () => {
+    for (const file_path of [".env", ".env.local", join(envWd, ".env"), join(envWd, ".env.local"), ".env.example.local", ".env.EXAMPLE"]) {
+      expect(JSON.stringify(refused(await call("Read", { file_path }, c)))).not.toContain(SECRET);
+      refused(await call("Write", { file_path, content: "GITHUB_TOKEN=\n" }, c));
+      expect(JSON.stringify(refused(await call("Edit", { file_path, old_string: "GITHUB_TOKEN", new_string: "X" }, c)))).not.toContain(SECRET);
+    }
+    expect(readFileSync(join(envWd, ".env"), "utf8")).toBe(`GITHUB_TOKEN=${SECRET}\n`);
+    expect(readFileSync(join(envWd, ".env.local"), "utf8")).toBe(`GITHUB_TOKEN=${SECRET}\n`);
+    expect(existsSync(join(envWd, ".env.example.local"))).toBe(false);
+  });
+
+  it("refuses a symlink named .env.example that points at .env or .env.local, and a hard link to .env", async () => {
+    for (const file_path of ["other/.env.example", "local-link/.env.example", "hard/.env.example"]) {
+      expect(JSON.stringify(refused(await call("Read", { file_path }, c)))).not.toContain(SECRET);
+      refused(await call("Write", { file_path, content: "GITHUB_TOKEN=\n" }, c));
+      expect(JSON.stringify(refused(await call("Edit", { file_path, old_string: "GITHUB_TOKEN", new_string: "X" }, c)))).not.toContain(SECRET);
+    }
+    expect(readFileSync(join(envWd, ".env"), "utf8")).toBe(`GITHUB_TOKEN=${SECRET}\n`);
+    expect(readFileSync(join(envWd, ".env.local"), "utf8")).toBe(`GITHUB_TOKEN=${SECRET}\n`);
   });
 });
 

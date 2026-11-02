@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { READ_TOOLS, WRITE_TOOLS } from "../src/core/worker.js";
 import { Glob, Read, TOOLS } from "../src/core/tools/index.js";
-import { buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
+import { ENV_FILE_DENY, buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 
 // Snapshot of the Claude Code runner's tool flags and settings: moving them onto the shared tool specs and
@@ -65,8 +65,7 @@ describe("buildHarnessSettings (snapshot)", () => {
           "Read(//home/op/.config/software-factory/**)",
           "Read(//repo/.factory/db)",
           "Read(//repo/.factory/db/**)",
-          "Read(**/.env)",
-          "Read(**/.env.*)",
+          ...ENV_FILE_DENY,
           "Bash(gh:*)",
           "Bash(security:*)",
           "Bash(git push:*)",
@@ -95,13 +94,20 @@ describe("buildHarnessSettings (snapshot)", () => {
     });
   });
 
+  it("the .env rules (#103): .env and .env.* globs for Read and Edit; what they match is in tests/guards.test.ts", () => {
+    expect(ENV_FILE_DENY.slice(0, 2)).toEqual(["Read(**/.env)", "Read(**/.env.)"]);
+    expect(ENV_FILE_DENY).toContain("Read(**/.env.????????*)");
+    expect(ENV_FILE_DENY).toContain("Edit(**/.env)");
+    expect(ENV_FILE_DENY.filter((r) => r.startsWith("Read("))).toHaveLength(ENV_FILE_DENY.length / 2);
+  });
+
   it("empty deny_paths and writable_paths", () => {
     const s = buildHarnessSettings({ deny_paths: [], writable_paths: [] }) as {
       permissions: { deny: string[] };
       sandbox: { filesystem: unknown };
     };
     expect(s.permissions.deny[0]).toBe("Read(**/.env)");
-    expect(s.permissions.deny).toHaveLength(13);
+    expect(s.permissions.deny).toHaveLength(11 + ENV_FILE_DENY.length);
     expect(s.sandbox.filesystem).toEqual({ denyRead: [], allowWrite: [] });
   });
 });

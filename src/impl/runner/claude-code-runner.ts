@@ -74,8 +74,35 @@ const HARNESS_ONLY_DENY: readonly string[] = [
   "WebSearch",
 ];
 
-/** The shared guard's `.env` rule (src/core/tools/guard.ts) as Claude Code permission rules. */
-const ENV_FILE_DENY: readonly string[] = ["Read(**/.env)", "Read(**/.env.*)"];
+/**
+ * The shared guard's `.env` rule (src/core/tools/guard.ts) as Claude Code permission rules: `.env` and every
+ * `.env.*` name except `.env.example`. Deny beats allow in Claude Code, so the exception has to be left out of
+ * the deny globs. Claude Code matches them with the `ignore` package (2.1.316, case-insensitive), which has no
+ * negated character class (`[!x]` and `[^x]` match `!`/`^` literally) but passes `[a-z]` ranges to the regex:
+ *  - `.env.` plus a suffix of 0 to 6 characters, or of 8 or more;
+ *  - a 7-character suffix (the length of `example`) that differs from `example` at position i: one glob per
+ *    position, with a class of every character but that letter (both cases), `/` and control characters.
+ * Left out: only `example` and its case variants (the same name to a case-insensitive matcher), and 7-character
+ * suffixes holding a control character. The shared guard refuses all but the exact name `.env.example`.
+ */
+const allCharsBut = (letter: string): string => {
+  const skip = [...new Set([0x2f, letter.toLowerCase().charCodeAt(0), letter.toUpperCase().charCodeAt(0)])].sort((a, b) => a - b);
+  let cls = "";
+  let from = 0x20;
+  for (const code of skip) {
+    if (from <= code - 1) cls += `${String.fromCharCode(from)}-${String.fromCharCode(code - 1)}`;
+    from = code + 1;
+  }
+  return `[${cls}${String.fromCharCode(from)}-￿]`;
+};
+const ENV_EXAMPLE_SUFFIX = "example";
+const ENV_FILE_GLOBS: readonly string[] = [
+  ".env",
+  ...[0, 1, 2, 3, 4, 5, 6].map((n) => `.env.${"?".repeat(n)}`),
+  `.env.${"?".repeat(8)}*`,
+  ...[...ENV_EXAMPLE_SUFFIX].map((c, i) => `.env.${"?".repeat(i)}${allCharsBut(c)}${"?".repeat(ENV_EXAMPLE_SUFFIX.length - 1 - i)}`),
+];
+export const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) => ENV_FILE_GLOBS.map((g) => `${tool}(**/${g})`));
 
 /**
  * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
