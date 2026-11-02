@@ -100,6 +100,17 @@ export type SourceEvent =
 /** How a person closed a source item: done, or not going to be done. */
 export type SourceCloseReason = "completed" | "not_planned";
 
+/** What `fileSubIssue` needs: one phase of a split spec (design 2026-11-01). */
+export interface SubIssueInput {
+  /** The split parent's source item. */
+  parent: SourceRef;
+  title: string;
+  /** The issue text; the source appends `marker`. Control-plane text built from the approved spec. */
+  body: string;
+  /** Unique per (parent, phase). Filing again finds the issue that carries it instead of filing another. */
+  marker: string;
+}
+
 /** What `closePr` needs. */
 export interface ClosePrInput {
   pr_number: number;
@@ -187,10 +198,18 @@ interface SourceAdapterBase {
    */
   setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void>;
   /**
-   * Closes the item on the source as "not planned" (GitHub: the issue, `state_reason: not_planned`). Used
-   * when a human rejects the spec. Idempotent: closing a closed item changes nothing. Agents never call this.
+   * Closes the item on the source, as "not planned" by default (GitHub: the issue, `state_reason`). Used with
+   * `not_planned` when a human rejects the spec, and with `completed` when every phase of a split closed as
+   * completed (design 2026-11-01). Idempotent: closing a closed item changes nothing. Agents never call this.
    */
-  closeIssue(source: SourceRef): Promise<void>;
+  closeIssue(source: SourceRef, reason?: SourceCloseReason): Promise<void>;
+  /**
+   * Files one phase of a split spec as a new item carrying the intake label, linked to `input.parent` as a
+   * sub-issue (GitHub: the sub-issues API), and returns its ref. Idempotent: an item already carrying
+   * `input.marker` is returned (and linked if it is not yet), never filed twice. Throws on a source failure;
+   * the caller retries. Agents never call this. Absent on sources that cannot file items.
+   */
+  fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
   /**
    * Closes factory PR `pr_number` without merging it, after one comment on it (`input.body`, carrying
    * `input.marker`). Used when a person closes the source item (design §4). A PR that is already merged or
