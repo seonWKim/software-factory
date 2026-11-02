@@ -102,7 +102,7 @@ const ENV_FILE_GLOBS: readonly string[] = [
   `.env.${"?".repeat(8)}*`,
   ...[...ENV_EXAMPLE_SUFFIX].map((c, i) => `.env.${"?".repeat(i)}${allCharsBut(c)}${"?".repeat(ENV_EXAMPLE_SUFFIX.length - 1 - i)}`),
 ];
-const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) => ENV_FILE_GLOBS.map((g) => `${tool}(**/${g})`));
+export const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) => ENV_FILE_GLOBS.map((g) => `${tool}(**/${g})`));
 
 /**
  * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
