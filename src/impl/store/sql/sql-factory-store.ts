@@ -108,7 +108,7 @@ export class SqlFactoryStore implements FactoryStore {
   async createWorkItem(
     input: NewWorkItem,
     actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id"> },
+    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }> {
     // A project column holds only project keys (design 2026-11-01), never `owner/name`.
     assertProjectKey(input.project);
@@ -132,7 +132,12 @@ export class SqlFactoryStore implements FactoryStore {
           pr_number: { from: null, to: input.adopted.pr_number },
         });
       } else {
-        await this.insertStateChange(tx, item.id, 1, actor, "intake", { stage: { from: null as never, to: "NEW" } });
+        const held = item.blocked_on !== "none"
+          ? { blocked_on: { from: "none" as const, to: item.blocked_on }, blocked_reason: { from: null, to: item.blocked_reason } }
+          : {};
+        await this.insertStateChange(
+          tx, item.id, 1, actor, "intake", { stage: { from: null as never, to: "NEW" }, ...held }, opts?.detail ?? null,
+        );
       }
       if (opts?.enqueue) await this.insertRun(tx, { ...opts.enqueue, work_item_id: item.id });
       return { item, created: true };

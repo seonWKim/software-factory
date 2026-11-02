@@ -53,6 +53,12 @@ export interface NewWorkItem {
    * origin `adopted`, these fields set, done_criteria null, and the state change reason `pr_adopted`.
    */
   adopted?: AdoptedPr;
+  /**
+   * The item starts held (design 2026-11-01, split specs): `NEW` with this blocker instead of `blocked_on:
+   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with
+   * `adopted`.
+   */
+  hold?: { blocked_on: "upstream"; blocked_reason: string };
 }
 
 export interface AdoptedPr {
@@ -229,13 +235,13 @@ export interface FactoryStore {
   // Work items
 
   /**
-   * Idempotent on (source.type, source.id). Writes the "intake" state change and enqueues `enqueue`
-   * in the same transaction, only when created.
+   * Idempotent on (source.type, source.id). Writes the "intake" state change (with `detail`, e.g. a phase's
+   * parent link) and enqueues `enqueue` in the same transaction, only when created.
    */
   createWorkItem(
     input: NewWorkItem,
     actor: Actor,
-    opts?: { enqueue?: Omit<NewRun, "work_item_id"> },
+    opts?: { enqueue?: Omit<NewRun, "work_item_id">; detail?: StateChangeDetail },
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
