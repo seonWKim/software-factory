@@ -10,7 +10,7 @@ import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "..
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceEvent, StreamSource,
+  ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
@@ -140,9 +140,34 @@ export class FakeSource implements PollSource {
   closeError: Error | null = null;
   /** When set, postComment throws this instead of recording. */
   commentError: Error | null = null;
-  async closeIssue(source: SourceRef): Promise<void> {
+  /** The reason of each closeIssue call that succeeded, in the order of `closed`. */
+  closeReasons: SourceCloseReason[] = [];
+  async closeIssue(source: SourceRef, reason: SourceCloseReason = "not_planned"): Promise<void> {
     if (this.closeError) throw this.closeError;
     this.closed.push(source);
+    this.closeReasons.push(reason);
+  }
+  /**
+   * Issues fileSubIssue filed, in order, numbered from 100. Like GitHub, a marker already filed is returned,
+   * not filed again; `linked` says whether the sub-issue link was made.
+   */
+  subIssues: { ref: SourceRef; parent: SourceRef; title: string; body: string; marker: string; linked: boolean }[] = [];
+  /** Every fileSubIssue call, failed ones included. */
+  subIssueCalls = 0;
+  /** When set, the call with this 1-based number files the issue, then throws before linking it. */
+  subIssueFailAt: number | null = null;
+  async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
+    this.subIssueCalls++;
+    let issue = this.subIssues.find((i) => i.marker === input.marker);
+    if (!issue) {
+      const n = 100 + this.subIssues.length;
+      const ref = { type: this.type, id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` };
+      issue = { ref, parent: input.parent, title: input.title, body: input.body, marker: input.marker, linked: false };
+      this.subIssues.push(issue);
+    }
+    if (this.subIssueCalls === this.subIssueFailAt) throw new Error("sub-issue link failed");
+    issue.linked = true;
+    return issue.ref;
   }
   /** Who closed each source item, by source id, as the last delivered source_closed said. */
   closers = new Map<string, ExternalIdentity | null>();
@@ -558,6 +583,8 @@ export const triageSpec = {
   files_to_change: [".github/workflows/scope.yml"],
   tier: 2,
   tier_reason: "CI config",
+  estimated_lines: 40,
+  estimated_files: 2,
 };
 
 /**

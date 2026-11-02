@@ -89,19 +89,25 @@ export interface WorkItem {
    * the head at adoption, or a person's push already recorded as a `manual` run. Null until the first of these.
    */
   last_head_sha: string | null;
+  /**
+   * A phase of a split spec (design 2026-11-01): the split parent's id and this phase's place in merge order
+   * (1-based). Both null on every other item. Set at intake, never changed.
+   */
+  parent_id: WorkItemId | null;
+  phase: number | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
 
 /**
  * Fields a transition may change. id, source, title, issue_text, requester, origin, head_branch,
- * last_head_sha, version and timestamps are store-owned.
+ * last_head_sha, parent_id, phase, version and timestamps are store-owned.
  */
 export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "created_at" | "updated_at"
   >
 >;
 

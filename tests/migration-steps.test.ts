@@ -6,7 +6,9 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   BASELINE_STATE,
+  INLINE_STEPS,
   STEPS_DIR,
+  inlineStepName,
   compiledStepPath,
   isDataStep,
   readSteps,
@@ -21,6 +23,26 @@ describe("migrations/mysql step files", () => {
     const files = readdirSync(STEPS_DIR).filter((f) => f !== "README.md");
     expect(stepProblems(files)).toEqual([]);
     expect(() => readSteps(STEPS_DIR)).not.toThrow();
+  });
+
+  it("the repo's steps (files plus inline steps) are contiguous; inline 0013 adds the phase columns", () => {
+    const files = readdirSync(STEPS_DIR).filter((f) => f !== "README.md");
+    expect(stepProblems([...files, ...INLINE_STEPS.map(inlineStepName)])).toEqual([]);
+    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
+    expect(steps.map((s) => s.number)).toEqual(steps.map((_, i) => BASELINE_STATE + 1 + i));
+    const phases = steps.find((s) => s.name === "work-item-phases")!;
+    expect(phases).toMatchObject({ number: 13, from: 12, kind: "sql", file: "0013-work-item-phases.sql" });
+    expect(splitSql(phases.sql!)).toEqual([
+      expect.stringContaining("ADD COLUMN parent_id VARCHAR(64) NULL"),
+      expect.stringContaining("ADD COLUMN phase INT NULL"),
+      expect.stringContaining("CREATE INDEX work_items_parent ON work_items (parent_id, phase)"),
+    ]);
+  });
+
+  it("an inline step whose number a file already uses is a duplicate", () => {
+    const dir = stepsDir({ "0012-a.sql": "SELECT 1;", "0013-b.sql": "SELECT 1;" });
+    expect(() => readSteps(dir, [{ number: 13, name: "c", sql: "SELECT 2;" }])).toThrow(/share number 0013/);
+    expect(readSteps(dir).map((s) => s.number)).toEqual([12, 13]);
   });
 
   it("the first step starts at the baseline state", () => {

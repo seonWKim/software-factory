@@ -21,6 +21,46 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.listStateChanges(a.item.id)).toHaveLength(1);
     });
 
+    it("intake can start held on upstream, with a detail on its intake row and no run", async () => {
+      const { store } = await make();
+      const detail = { parent_work_item_id: "wi_parent", phase: 2, phases: 3, depends_on: "o/r#10" };
+      const a = await store.createWorkItem(
+        { ...issue(11), hold: { blocked_on: "upstream", blocked_reason: "phase_hold" } },
+        system,
+        { detail },
+      );
+      expect(a.item).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: "phase_hold" });
+      expect(await store.listRuns(a.item.id)).toHaveLength(0);
+      const [row] = await store.listStateChanges(a.item.id);
+      expect(row).toMatchObject({ reason: "intake", detail });
+      expect(row!.changes).toMatchObject({ blocked_on: { from: "none", to: "upstream" }, blocked_reason: { from: null, to: "phase_hold" } });
+      // A repeat is the same item, still held.
+      const b = await store.createWorkItem({ ...issue(11), hold: { blocked_on: "upstream", blocked_reason: "phase_hold" } }, system, { detail });
+      expect(b).toMatchObject({ created: false, item: { id: a.item.id, blocked_reason: "phase_hold" } });
+      // Without hold or detail, intake is as before.
+      const c = await store.createWorkItem(issue(12), system);
+      expect(c.item).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      expect((await store.listStateChanges(c.item.id))[0]!.detail).toBeNull();
+    });
+
+    it("a phase stores its parent link and phase number; listPhases returns a parent's phases in phase order", async () => {
+      const { store } = await make();
+      const parent = (await store.createWorkItem(issue(20), system)).item;
+      expect(parent).toMatchObject({ parent_id: null, phase: null });
+      // Filed out of order on purpose: listPhases sorts by phase, not by intake.
+      const p2 = (await store.createWorkItem({ ...issue(22), parent: { id: parent.id, phase: 2 } }, system)).item;
+      const p1 = (await store.createWorkItem({ ...issue(21), parent: { id: parent.id, phase: 1 } }, system)).item;
+      const other = (await store.createWorkItem(issue(30), system)).item;
+      await store.createWorkItem({ ...issue(31), parent: { id: other.id, phase: 1 } }, system);
+      expect(p1).toMatchObject({ parent_id: parent.id, phase: 1 });
+      expect((await store.getWorkItem(p2.id))!).toMatchObject({ parent_id: parent.id, phase: 2 });
+      expect((await store.listPhases(parent.id)).map((p) => [p.id, p.phase])).toEqual([[p1.id, 1], [p2.id, 2]]);
+      expect(await store.listPhases(p1.id)).toEqual([]);
+      // The link is store-owned: a transition keeps it.
+      const r = await store.transition({ id: p2.id, expected_version: p2.version, patch: { blocked_on: "human" }, actor: system, reason: "t" });
+      expect(r.ok && r.item).toMatchObject({ parent_id: parent.id, phase: 2 });
+    });
+
     it("transition applies only on the expected version; the loser gets version_conflict", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);

@@ -1,4 +1,4 @@
-import type { TriageOutput } from "./outputs.js";
+import type { TriageOutput, TriagePhase } from "./outputs.js";
 import type { Tier } from "./types.js";
 
 /** What else fed the effective tier, so a raise above the agent's tier can be explained. */
@@ -22,6 +22,29 @@ function raiseReason(tier: Tier, from: TriageOutput["tier"], why: TierSources): 
 
 const code = (p: string): string => `- \`${p}\``;
 
+/** The phases of a split spec, in order (design 2026-11-01). Only a spec with phases has this section. */
+function splitSection(spec: TriageOutput, phases: TriagePhase[]): string[] {
+  const out = [
+    "### Split into phases",
+    `Triage estimates this change at about ${spec.estimated_lines} lines in ${spec.estimated_files} files, too close to the size limits to review in one pull request.`,
+    `\`/approve\` files one sub-issue per phase, in this order, each linked to this issue. Each phase after the first waits until the one before it is closed as completed. Each phase gets its own spec and its own \`/approve\`. This issue closes as completed when the last phase does.`,
+  ];
+  phases.forEach((p, i) => {
+    out.push(
+      "",
+      `#### Phase ${i + 1} of ${phases.length}: ${p.title}`,
+      p.problem,
+      "",
+      "Done when:",
+      ...p.done_criteria.map((c) => `- ${c}`),
+      "",
+      "Allowed to change:",
+      ...p.allowed_paths.map(code),
+    );
+  });
+  return out;
+}
+
 /**
  * The triage spec comment a human reads before typing /approve, /reject or /revise. `footer` replaces the
  * default last line; the controller passes the command footer for the spec gate (`commandFooter`).
@@ -44,6 +67,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   if (spec.files_to_change.length > 0) out.push("", "Expected to change:", ...spec.files_to_change.map(code));
   out.push("");
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
+  if (spec.phases?.length) out.push(...splitSection(spec, spec.phases), "");
   out.push(footer);
   return out.join("\n");
 }
