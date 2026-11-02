@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeRepoLookup } from "./helpers/fakes.js";
 import { Plugins, build, loadConfig } from "../src/compose.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { envExampleValueLines } from "../src/impl/egress/pattern-egress-scanner.js";
 import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js";
 import { type Secret, type SecretName, type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
@@ -317,6 +318,11 @@ describe("docs and template follow the declarations", () => {
     expect(docSecrets("- `x`: X.\n  - Secrets: `A_TOKEN`. Settings: `B_HOST`.")).toEqual(["A_TOKEN"]);
     expect(docSecrets("- `x`: X. Secrets: none.")).toEqual([]);
     expect(docSecrets("- `x`: X.")).toBeNull();
+  });
+
+  it(".env.example holds names only: the value check finds no value in it", () => {
+    // Agents may edit this file (architecture §5); the push path refuses it with a value, and so does this test.
+    expect(envExampleValueLines(readFileSync(join(REPO_ROOT, ".env.example"), "utf8"))).toEqual([]);
   });
 
   it(".env.example lists every secret the default selection declares", () => {
