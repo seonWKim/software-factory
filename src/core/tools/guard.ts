@@ -112,10 +112,25 @@ export async function resolveGuard(ctx: ToolContext, target: string): Promise<{ 
   return { guard: { roots, denies }, canonical };
 }
 
-/** `.env` and `.env.*` files are denied wherever they are, as the runner's rules do. */
+/**
+ * The one `.env.*` name file tools may open: it lists secret names and must hold no values (architecture §5;
+ * the push path checks that). Exact name only: `.env.example.local` or `.env.EXAMPLE` stay denied.
+ */
+export const ENV_EXAMPLE = ".env.example";
+
+/** `.env` and `.env.*` files, except `.env.example`, are denied wherever they are, as the runner's rules do. */
 function isEnvFile(p: string): boolean {
   const b = basename(p);
-  return b === ".env" || b.startsWith(".env.");
+  return b === ".env" || (b.startsWith(".env.") && b !== ENV_EXAMPLE);
+}
+
+/**
+ * True if `path` (canonical) is a regular file with more than one hard link. A hard link has no target to
+ * resolve, so `.env.example` hard-linked to `.env` would pass the name check; it is refused instead.
+ */
+async function isHardLinked(ctx: ToolContext, path: string): Promise<boolean> {
+  const r = await helper(ctx, ["find", path, "-maxdepth", "0", "-type", "f", "-links", "+1"]);
+  return r.stdout.trim() !== "";
 }
 
 export function isDenied(guard: ResolvedGuard, path: string): boolean {
@@ -136,6 +151,10 @@ export async function checkPath(ctx: ToolContext, input: string): Promise<{ path
   if (isDenied(guard, lexical) || isDenied(guard, canonical)) throw new Refusal(`refused: ${input} is a denied path`);
   if (!guard.roots.some((r) => isUnder(canonical, r))) {
     throw new Refusal(`refused: ${input} is outside the workdir and writable paths`);
+  }
+  // `.env.example` passed the name check; a symlink to a secret file was refused above by its canonical name.
+  if ((basename(lexical) === ENV_EXAMPLE || basename(canonical) === ENV_EXAMPLE) && (await isHardLinked(ctx, canonical))) {
+    throw new Refusal(`refused: ${input} is a hard-linked ${ENV_EXAMPLE}`);
   }
   return { path: canonical, guard };
 }

@@ -269,6 +269,8 @@ graph LR
 
 **Run folder rule (2026-11-01):** an agent may write only to its own run folder, never to the owner's checkout or its `.git`. Every run gets its own clone with its own git folder inside the run folder (`NoOpSandbox`: objects borrowed from the factory repo through an alternates link), so the agent's branches, index, `HEAD`, refs, config and hooks stay in that folder. No run gets a writable path outside it (`AgentRunSpec.writable_paths` is empty for implement runs). The clone's `core.hooksPath` is an empty, read-only folder beside the run folders, outside every agent writable path. Trusted code treats the run folder's git state as agent-written: the worker and the GitHub broker run git there with `TRUSTED_GIT_ENV` (no hooks, no fsmonitor, no signing program, no replace refs or grafts). After an agent exits, the worker checks that the git folder is still the clone's own and removes every config key that is not plain data (`untrustedGitConfig`), and the broker refuses to push from a folder that still has one. The trusted values come from the factory repo, never from the run folder: the base commit the gates and the broker's scan diff from (the factory repo's `origin/<base>`, `SandboxHandle.base_sha`), and the remote the broker pushes to (the factory repo's `origin` URL, not the run folder's `origin`). Any later sandbox follows the same rule.
 
+**`.env.example`, the one exception (2026-11-02):** file tools deny `.env` and every `.env.*` file, wherever it is, with one exact-name exception: `.env.example`. It lists the secret names the plugins declare (`tests/secret-names.test.ts`) and must hold **no values**, only `NAME=` lines, blanks and `#` comments. Agents may read and edit it so they can keep it in sync with the code. The shared guard (`src/core/tools/guard.ts`) allows that exact name only: `.env.example.local` or `.env.EXAMPLE` stay denied, a `.env.example` symlink is checked by the name it resolves to (one pointing at `.env` is refused), and a hard-linked `.env.example` is refused. The value check (`envExampleValueLines`) runs in two places: the GitHub broker runs it on every `.env.example` in HEAD's tree before `git push` and refuses with `egress_blocked` (also for a committed `.env.example` symlink), and `tests/secret-names.test.ts` runs it on the repository's own file. It runs on the push path rather than in the egress scanner because the scanner sees text without file names. The scanner's known-value rule still applies to the whole diff.
+
 **Declared secret names:** a `SecretStore` loads and scans only the secret names the selected plugins declare in `src/plugins.ts` (no closed list), so a new plugin brings its own secret without touching guarded code, and plain settings in the same file are never treated as secrets.
 
 **Secret file location:** `${XDG_CONFIG_HOME:-~/.config}/software-factory/.env`, never inside the repository (setup: `docs/setup.md`). With `NoOpSandbox` the agent runs as the host user, so G3 relies on Claude Code's OS-level sandbox denying that directory (below). A container sandbox later makes G3 hard independently of the harness.
@@ -285,7 +287,14 @@ The runner writes a per-run Claude Code settings file into the agent's run direc
 {
   "env": { "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1" },          // G1: strip credentials from Bash, hooks, stdio MCP children
   "permissions": {
-    "deny": ["Read(~/.config/software-factory/**)", "Read(**/.env)", "Read(**/.env.*)"],   // G4: file tools + recognized Bash file commands
+    "deny": [                                                    // G4: file tools + recognized Bash file commands
+      "Read(~/.config/software-factory/**)",
+      // .env and every .env.* except .env.example, for Read and for Edit (Edit rules also cover Write):
+      "Read(**/.env)", "Read(**/.env.)", "Read(**/.env.?)", "Read(**/.env.??)", /* … up to 6 */ "Read(**/.env.??????)",
+      "Read(**/.env.????????*)",                                 // suffix of 8 or more characters
+      "Read(**/.env.staging)", "Read(**/.env.testing)", /* … the 7-character suffixes in common use */
+      "Edit(**/.env)", /* … the same globs as Edit(…) */
+    ],
     "blockReadsOutsideWorkingDirectories": true
   },
   "sandbox": {                                                   // G3 at OS level, even under NoOpSandbox
@@ -299,4 +308,5 @@ The runner writes a per-run Claude Code settings file into the agent's run direc
 What the docs say, and the gaps the canary test (G6) must cover:
 - `Read(...)` deny rules cover the file tools and Bash commands Claude Code recognizes (`cat`, `head`, `tail`, `sed`, `tee`, redirections), **not** `grep -r` or scripts that open files themselves. OS-level `sandbox.filesystem.denyRead` covers Bash and its children but **not** the Read tool, so both are needed.
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps the harness's own credential for model calls and strips credentials from subprocesses. `GITHUB_TOKEN` / `GH_TOKEN` are **not** stripped by it (hence the `credentials.envVars` deny, and G1 never passes them in). Whether `CLAUDE_CODE_OAUTH_TOKEN` is stripped is not stated explicitly: G6 checks it with `env` inside a run.
+- `.env.example` cannot be opened with an allow rule on top of `Read(**/.env.*)`: deny beats allow. So the `.env` deny globs leave it out. Claude Code (2.1.316) matches these globs with the `ignore` package, which has no negated character class (`[!x]` and `[^x]` match `!` or `^` literally), so they use only `?` and `*`. A suffix of 0–6 characters or of 8 or more is denied by length; 7-character suffixes (the length of `example`) are denied by name for the common ones (`SEVEN_CHAR_ENV_SUFFIXES` in `claude-code-runner.ts`). Known gap: an unlisted 7-character suffix (`.env.foobarx`) is not denied by these rules. Runners that use the shared tools still refuse it. Under `ClaudeCodeRunner`, Claude Code's own tools serve the call, so G3 is what covers it: a run folder is a fresh clone, and `.env*` files are gitignored.
 - Exact keys and semantics: verify against the installed Claude Code version when implementing (the subprocess scrub list changed in v2.1.251).

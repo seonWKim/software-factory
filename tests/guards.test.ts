@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { inspect } from "node:util";
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
@@ -9,7 +11,7 @@ import type { WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { PatternEgressScanner, envExampleValueLines } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { buildAgentEnv, buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
 import { EnvFileSecretStore, parseEnvFile } from "../src/impl/secrets/env-file-secret-store.js";
@@ -56,6 +58,38 @@ describe("G3/G4: harness settings deny secret paths", () => {
     expect(settings.sandbox.filesystem.denyRead).toContain("/home/u/.config/software-factory");
     expect(settings.sandbox.enabled).toBe(true);
     expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
+  });
+
+  /**
+   * Whether a `Tool(**\/<glob>)` rule matches a file name the way Claude Code's bundled `ignore` package does:
+   * `?` is one character, `*` any run, matched case-insensitively against the basename. `[` has no negation
+   * there (`^` is escaped, `!` is literal), so the rules may not use classes at all.
+   */
+  const ruleMatches = (rule: string, tool: string, name: string) => {
+    const m = /^(\w+)\(\*\*\/([^/()]+)\)$/.exec(rule);
+    if (!m || m[1] !== tool) return false;
+    const re = m[2]!.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\?/g, "[^/]").replace(/\*/g, "[^/]*");
+    return new RegExp(`^${re}$`, "i").test(name);
+  };
+  const deniedFor = (tool: string, name: string) => settings.permissions.deny.some((r) => ruleMatches(r, tool, name));
+
+  it("does not deny reading or editing .env.example", () => {
+    for (const tool of ["Read", "Edit"]) expect(deniedFor(tool, ".env.example"), tool).toBe(false);
+    const envRules = settings.permissions.deny.filter((r) => r.includes(".env"));
+    expect(envRules.length).toBeGreaterThan(0);
+    for (const r of envRules) expect(r, "no character classes: Claude Code cannot negate them").not.toMatch(/\[/);
+  });
+
+  it("still denies reading and editing .env, .env.local and the other .env.* names", () => {
+    const names = [
+      ".env", ".env.local", ".env.", ".env.e", ".env.prod", ".env.production", ".env.development.local", ".env.example.local",
+      ".env.staging", ".env.testing", ".env.secrets", ".env.private", ".env.release", ".env.develop", ".env.preview",
+    ];
+    for (const tool of ["Read", "Edit"]) {
+      for (const name of names) expect(deniedFor(tool, name), `${tool} ${name}`).toBe(true);
+    }
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(**/.env)", "Edit(**/.env)"]));
+    expect(settings.permissions.deny).not.toContain("Read(**/.env.*)");
   });
 
   it("blocks credentialed shell paths around the broker (G2)", () => {
@@ -127,6 +161,26 @@ describe("G5: egress scan", () => {
       if (!(await patternsOnly.scan("pr", text)).clean) flagged.push(f);
     }
     expect(flagged).toEqual([]);
+  });
+});
+
+describe(".env.example value check", () => {
+  it("passes blank values and comment lines", () => {
+    const text = [
+      "# Secret names only.", "", "   ", "GITHUB_TOKEN=", "export MYSQL_PASSWORD=", 'CLAUDE_CODE_OAUTH_TOKEN=""', "ANTHROPIC_API_KEY=''",
+      "SLACK_BOT_TOKEN= # xoxb-, from the Slack app", "  # indented comment", "SLACK_APP_TOKEN =  ", "WINDOWS_LINE=\r", "",
+    ].join("\n");
+    expect(envExampleValueLines(text)).toEqual([]);
+  });
+
+  it("rejects every line that assigns a non-empty value, plain, exported or quoted, and reports line numbers only", () => {
+    const text = [
+      "# ok", "A_TOKEN=value", "export B_TOKEN=value", 'C_TOKEN="value"', "D_TOKEN='value'", "E_TOKEN = value",
+      "F_TOKEN=#value", "G_TOKEN=\"\"value", "not an assignment", "H_TOKEN: value", "OK_TOKEN=",
+    ].join("\n");
+    const bad = envExampleValueLines(text);
+    expect(bad).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(JSON.stringify(bad)).not.toContain("value");
   });
 });
 
@@ -221,6 +275,94 @@ describe("Tool broker", () => {
     const r = await broker.call(ctx, "github.comment", { number: 1, body: "leaky-secret-value", marker: "m" });
     expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
     expect(posted).toHaveLength(0);
+  });
+});
+
+describe("Tool broker push: .env.example at HEAD must hold no values", () => {
+  const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
+  const commit = (dir: string, files: Record<string, string>, msg: string) => {
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
+    git(dir, "add", "-A");
+    git(dir, "-c", "user.name=bot", "-c", "user.email=bot@example.com", "commit", "--quiet", "-m", msg);
+  };
+  // Built at runtime: no scanner pattern or known value matches it, so only the value check can stop it.
+  const VALUE = ["plain", "looking", "value", "42"].join("-");
+
+  async function setup() {
+    const root = mkdtempSync(join(tmpdir(), "sf-env-example-push-"));
+    const origin = join(root, "origin.git");
+    const repo = join(root, "repo");
+    const workdir = join(root, "run");
+    git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+    git(root, "clone", "--quiet", origin, repo);
+    commit(repo, { "README.md": "hi\n", ".env.example": "# names only\nGITHUB_TOKEN=\n" }, "init");
+    git(repo, "push", "--quiet", "origin", "main");
+    git(repo, "fetch", "--quiet", "origin");
+    git(root, "clone", "--quiet", origin, workdir);
+    git(workdir, "checkout", "--quiet", "-b", "factory/wi_env");
+
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
+    const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
+    const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
+    const broker = new GitHubToolBroker({
+      client: {} as GitHubClient, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/", repoPath: repo,
+      credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) } as unknown as GitHubCredentials,
+      scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
+    });
+    const push = () => broker.call(ctx, "github.push_branch", { workdir, branch: "factory/wi_env", base_ref: "main" });
+    const pushed = () => git(origin, "for-each-ref", "refs/heads/factory/wi_env") !== "";
+    return { workdir, push, pushed };
+  }
+
+  it("pushes when .env.example has names and blank values only", async () => {
+    const { workdir, push, pushed } = await setup();
+    commit(workdir, { ".env.example": "# names only\nGITHUB_TOKEN=\nexport MYSQL_PASSWORD=\nSLACK_BOT_TOKEN=\"\"\n" }, "add a name");
+    expect(await push()).toMatchObject({ ok: true });
+    expect(pushed()).toBe(true);
+  });
+
+  it("refuses with egress_blocked, and runs no git push, when .env.example assigns a value", async () => {
+    for (const line of [`GITHUB_TOKEN=${VALUE}`, `export GITHUB_TOKEN=${VALUE}`, `GITHUB_TOKEN="${VALUE}"`]) {
+      const { workdir, push, pushed } = await setup();
+      commit(workdir, { ".env.example": `# names only\n${line}\n` }, "leak");
+      const r = await push();
+      expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
+      expect(JSON.stringify(r)).not.toContain(VALUE);
+      expect(pushed()).toBe(false);
+    }
+  });
+
+  it("checks HEAD, not only the diff: a value fixed in a later commit passes, one added in an earlier commit does not", async () => {
+    const a = await setup();
+    commit(a.workdir, { ".env.example": `GITHUB_TOKEN=${VALUE}\n` }, "leak");
+    commit(a.workdir, { "src/x.txt": "x\n" }, "unrelated");
+    expect(await a.push()).toMatchObject({ ok: false, error_code: "egress_blocked" });
+    expect(a.pushed()).toBe(false);
+
+    const b = await setup();
+    commit(b.workdir, { ".env.example": `GITHUB_TOKEN=${VALUE}\n` }, "leak");
+    commit(b.workdir, { ".env.example": "GITHUB_TOKEN=\n" }, "fix");
+    expect(await b.push()).toMatchObject({ ok: true });
+  });
+
+  it("refuses a value in a .env.example in a subfolder, and a committed .env.example symlink", async () => {
+    const a = await setup();
+    commit(a.workdir, { "pkg/.env.example": `A_TOKEN=${VALUE}\n` }, "leak");
+    expect(await a.push()).toMatchObject({ ok: false, error_code: "egress_blocked" });
+    expect(a.pushed()).toBe(false);
+
+    const b = await setup();
+    rmSync(join(b.workdir, ".env.example"));
+    symlinkSync("README.md", join(b.workdir, ".env.example"));
+    commit(b.workdir, {}, "link");
+    expect(await b.push()).toMatchObject({ ok: false, error_code: "egress_blocked" });
+    expect(b.pushed()).toBe(false);
   });
 });
 
