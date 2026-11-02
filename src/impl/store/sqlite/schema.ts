@@ -194,4 +194,27 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX unreviewed_merges_at ON unreviewed_merges (at);
   `,
+  // 13: identity links and one-time link codes (design 2026-11-01, issue #107). Links are keyed by provider and
+  // subject only. A code is stored as its SHA-256 hash, never in plain text.
+  `
+  CREATE TABLE user_links (
+    provider    TEXT NOT NULL,
+    subject     TEXT NOT NULL,
+    user_id     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (provider, subject)
+  );
+  CREATE INDEX user_links_user ON user_links (user_id);
+  CREATE TABLE link_codes (
+    code_hash      TEXT PRIMARY KEY,
+    user_id        TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    failures       INTEGER NOT NULL DEFAULT 0,
+    used_at        TEXT,
+    used_provider  TEXT,
+    used_subject   TEXT,
+    created_at     TEXT NOT NULL
+  );
+  CREATE INDEX link_codes_live ON link_codes (used_at, expires_at);
+  `,
 ];

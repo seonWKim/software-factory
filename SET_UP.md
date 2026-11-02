@@ -98,9 +98,12 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
+| `/link <code>` | Link the account you post from to a factory user, with a code from `factory link-code <user_id>` | any time |
 | `/help` | List every command and which ones apply now | any time |
 
 Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
+
+Who may act is decided by the grant plugins in `permissions.grants` (default: write access on the repository; docs/plugins.md, GrantSource). To act from another account as the same factory user (your GitHub user is `github:<numeric id>`), run `npm run --silent factory -- link-code github:<id>` and post the printed `/link <code>` as a comment on any issue from the other account. The code works once, for 10 minutes, and 5 wrong codes lock it. `/link` is the one command read on any issue, work item or not; it is never listed in an item's footer.
 
 If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
 

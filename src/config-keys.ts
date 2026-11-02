@@ -23,6 +23,7 @@ export const TOP_LEVEL_KEYS = [
   "dials",
   "floors",
   "auth",
+  "permissions",
   "plugins",
   "models",
   "model_by",

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
   Actor,
@@ -20,6 +21,7 @@ import type {
   Timestamp,
   UnreviewedMerge,
   UnreviewedMergeId,
+  UserId,
   Verdict,
   VerdictId,
   VerdictSeverity,
@@ -30,6 +32,7 @@ import type {
 import { IMPLEMENT_KINDS } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
+import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
   AppendInboxResult,
@@ -50,11 +53,13 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   RecordVerdictResult,
+  RedeemLinkResult,
   SchemaVersion,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
 } from "../../../interfaces/factory-store.js";
+import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
@@ -781,6 +786,60 @@ export class SqlFactoryStore implements FactoryStore {
     );
   }
 
+  // Identity links (design 2026-11-01)
+
+  async resolveLink(provider: LinkedAccount["provider"], subject: string): Promise<UserId | null> {
+    const [row] = await this.db.all("SELECT user_id FROM user_links WHERE provider = ? AND subject = ?", [provider, subject]);
+    return row ? (String(row.user_id) as UserId) : null;
+  }
+
+  async listLinks(user_id: UserId): Promise<LinkedAccount[]> {
+    const rows = await this.db.all(
+      `SELECT provider, subject FROM user_links WHERE user_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
+      [user_id],
+    );
+    return rows.map((r) => ({ provider: String(r.provider) as LinkedAccount["provider"], subject: String(r.subject) }));
+  }
+
+  async createLinkCode(user_id: UserId, code: string): Promise<{ expires_at: Timestamp }> {
+    const expires_at = this.after(LINK_CODE_TTL_MS);
+    await this.db.transaction((tx) =>
+      tx.run("INSERT INTO link_codes (code_hash, user_id, expires_at, failures, created_at) VALUES (?, ?, ?, 0, ?)", [
+        hashCode(code), user_id, expires_at, this.now(),
+      ]),
+    );
+    return { expires_at };
+  }
+
+  async redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult> {
+    const now = this.now();
+    return this.db.transaction(async (tx): Promise<RedeemLinkResult> => {
+      const [row] = await tx.all(`SELECT * FROM link_codes WHERE code_hash = ?${this.db.dialect.forUpdate}`, [hashCode(code)]);
+      const user_id = row ? (String(row.user_id) as UserId) : null;
+      if (row && row.used_at !== null && row.used_provider === account.provider && row.used_subject === account.subject) {
+        return { ok: true, user_id: user_id! };
+      }
+      const reason = !row ? "invalid" : row.used_at !== null ? "used" : String(row.expires_at) <= now ? "expired"
+        : Number(row.failures) >= LINK_CODE_MAX_FAILURES ? "locked" : null;
+      if (reason !== null) {
+        // A failed attempt counts against every live code, so guessing cannot outlast the lock.
+        await tx.run("UPDATE link_codes SET failures = failures + 1 WHERE used_at IS NULL AND expires_at > ?", [now]);
+        return { ok: false, reason };
+      }
+      const [linked] = await tx.all("SELECT user_id FROM user_links WHERE provider = ? AND subject = ?", [account.provider, account.subject]);
+      if (linked && linked.user_id !== user_id) return { ok: false, reason: "already_linked" };
+      if (!linked) {
+        await tx.run("INSERT INTO user_links (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)", [
+          account.provider, account.subject, user_id, now,
+        ]);
+      }
+      await tx.run("UPDATE link_codes SET used_at = ?, used_provider = ?, used_subject = ? WHERE code_hash = ?", [
+        now, account.provider, account.subject, row!.code_hash as string,
+      ]);
+      return { ok: true, user_id: user_id! };
+    });
+  }
+
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
@@ -974,4 +1033,9 @@ function parseList(value: unknown): string[] {
 
 function placeholders(n: number): string {
   return Array.from({ length: n }, () => "?").join(", ");
+}
+
+/** Link codes are stored only as this hash (design 2026-11-01). */
+function hashCode(code: string): string {
+  return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
 }

@@ -13,8 +13,11 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
+import type { GrantSource } from "./interfaces/auth-provider.js";
 import type {
   Contexts,
+  GrantContext,
+  GrantDescriptor,
   Instances,
   InterfaceEntry,
   KindDefaults,
@@ -29,6 +32,8 @@ import type {
 export type {
   BaseContext,
   Contexts,
+  GrantContext,
+  GrantDescriptor,
   InterfaceEntry,
   Instances,
   KindDefaults,
@@ -40,7 +45,7 @@ export type {
   SecretDeclaration,
   Selection,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, definePlugin, selectedSources } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedSources } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -87,14 +92,17 @@ export const IMPL_DIR = join(import.meta.dirname, "impl");
 /** `*.plugin.ts` (source) or `*.plugin.js` (built); never a `*.d.ts`. */
 const DESCRIPTOR_FILE = /\.plugin\.(?:ts|js)$/;
 
+/** `*.grant.ts` (source) or `*.grant.js` (built): grant plugins (design 2026-11-01). */
+const GRANT_FILE = /\.grant\.(?:ts|js)$/;
+
 /** Every descriptor file under `dirs`, recursively, sorted by path so registration order is stable. */
-export function findPluginFiles(dirs: readonly string[]): string[] {
+export function findPluginFiles(dirs: readonly string[], pattern: RegExp = DESCRIPTOR_FILE): string[] {
   const out: string[] = [];
   const walk = (dir: string): void => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const path = join(dir, e.name);
       if (e.isDirectory()) walk(path);
-      else if (e.isFile() && DESCRIPTOR_FILE.test(e.name) && !e.name.endsWith(".d.ts")) out.push(path);
+      else if (e.isFile() && pattern.test(e.name) && !e.name.endsWith(".d.ts")) out.push(path);
     }
   };
   for (const dir of dirs) walk(dir);
@@ -195,6 +203,62 @@ function registryOf(found: readonly Found[]): Registry {
 
 /** The built-in registry: every descriptor under IMPL_DIR, loaded once at startup. */
 export const REGISTRY: Registry = await loadRegistry([IMPL_DIR]);
+
+/** Grant plugins by name (design 2026-11-01): one `*.grant.ts` descriptor each, apart from REGISTRY. */
+export type GrantRegistry = Readonly<Record<string, GrantDescriptor>>;
+
+/** Imports every grant descriptor under `dirs`. A bad descriptor or a repeated name fails startup. */
+export async function loadGrants(dirs: readonly string[]): Promise<GrantRegistry> {
+  const out: Record<string, GrantDescriptor> = {};
+  for (const file of findPluginFiles(dirs, GRANT_FILE)) {
+    const d = ((await import(pathToFileURL(file).href)) as { default?: Partial<GrantDescriptor> }).default;
+    if (!d || typeof d.name !== "string" || d.name === "" || typeof d.create !== "function") {
+      throw new Error(`grant descriptor ${file}: write \`export default defineGrant({ name, create })\``);
+    }
+    if (Object.hasOwn(out, d.name)) throw new Error(`grant descriptor ${file}: a second grant named "${d.name}"`);
+    out[d.name] = d as GrantDescriptor;
+  }
+  return out;
+}
+
+/** The built-in grant plugins under IMPL_DIR, loaded once at startup. */
+export const GRANTS: GrantRegistry = await loadGrants([IMPL_DIR]);
+
+/**
+ * `permissions` from factory.config.json: `grants` is a list of grant names, each once, in the order they are
+ * asked (local before remote whatever the order; src/core/authorize.ts). Absent: the default grants
+ * (`github-permission`). Unknown keys, an empty list or an unknown name fail at startup.
+ */
+export function selectGrants(grants: GrantRegistry, permissions: unknown): string[] {
+  const names = Object.keys(grants);
+  if (permissions !== undefined && (permissions === null || typeof permissions !== "object" || Array.isArray(permissions))) {
+    throw new Error("permissions must be an object with `grants` (a list of grant names) and grant settings such as `static`");
+  }
+  const p = (permissions ?? {}) as Record<string, unknown>;
+  for (const key of Object.keys(p)) {
+    if (key !== "grants" && key !== "static") throw new ConfigKeyError([`unknown key permissions.${key}; known keys: grants, static${suggestion(key, ["grants", "static"])}`]);
+  }
+  if (p.grants === undefined) return names.filter((n) => grants[n]!.default === true);
+  if (!Array.isArray(p.grants) || p.grants.length === 0) {
+    throw new Error(`permissions.grants must be a non-empty list of grant names; available: ${names.join(", ")}`);
+  }
+  const out: string[] = [];
+  for (const v of p.grants) {
+    if (typeof v !== "string" || !Object.hasOwn(grants, v)) {
+      throw new Error(`unknown grant ${JSON.stringify(v)} at permissions.grants; available: ${names.join(", ")}${typeof v === "string" ? suggestion(v, names) : ""}`);
+    }
+    if (out.includes(v)) throw new Error(`permissions.grants lists ${JSON.stringify(v)} twice; name each grant once`);
+    out.push(v);
+  }
+  return out;
+}
+
+/** Builds the selected grants, in order. */
+export async function createGrants(grants: GrantRegistry, names: readonly string[], ctx: GrantContext): Promise<GrantSource[]> {
+  const out: GrantSource[] = [];
+  for (const n of names) out.push(await grants[n]!.create(ctx));
+  return out;
+}
 
 /**
  * The plugin each `plugins` key falls back to when config leaves it out (or all of them when there is no
