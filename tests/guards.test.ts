@@ -58,6 +58,38 @@ describe("G3/G4: harness settings deny secret paths", () => {
     expect(settings.sandbox.allowUnsandboxedCommands).toBe(false);
   });
 
+  /**
+   * Whether a `Tool(**\/<glob>)` rule matches a file name the way Claude Code's bundled `ignore` package does:
+   * `?` is one character, `*` any run, matched case-insensitively against the basename. `[` has no negation
+   * there (`^` is escaped, `!` is literal), so the rules may not use classes at all.
+   */
+  const ruleMatches = (rule: string, tool: string, name: string) => {
+    const m = /^(\w+)\(\*\*\/([^/()]+)\)$/.exec(rule);
+    if (!m || m[1] !== tool) return false;
+    const re = m[2]!.replace(/[.+^${}()|\\]/g, "\\$&").replace(/\?/g, "[^/]").replace(/\*/g, "[^/]*");
+    return new RegExp(`^${re}$`, "i").test(name);
+  };
+  const deniedFor = (tool: string, name: string) => settings.permissions.deny.some((r) => ruleMatches(r, tool, name));
+
+  it("does not deny reading or editing .env.example", () => {
+    for (const tool of ["Read", "Edit"]) expect(deniedFor(tool, ".env.example"), tool).toBe(false);
+    const envRules = settings.permissions.deny.filter((r) => r.includes(".env"));
+    expect(envRules.length).toBeGreaterThan(0);
+    for (const r of envRules) expect(r, "no character classes: Claude Code cannot negate them").not.toMatch(/\[/);
+  });
+
+  it("still denies reading and editing .env, .env.local and the other .env.* names", () => {
+    const names = [
+      ".env", ".env.local", ".env.", ".env.e", ".env.prod", ".env.production", ".env.development.local", ".env.example.local",
+      ".env.staging", ".env.testing", ".env.secrets", ".env.private", ".env.release", ".env.develop", ".env.preview",
+    ];
+    for (const tool of ["Read", "Edit"]) {
+      for (const name of names) expect(deniedFor(tool, name), `${tool} ${name}`).toBe(true);
+    }
+    expect(settings.permissions.deny).toEqual(expect.arrayContaining(["Read(**/.env)", "Edit(**/.env)"]));
+    expect(settings.permissions.deny).not.toContain("Read(**/.env.*)");
+  });
+
   it("blocks credentialed shell paths around the broker (G2)", () => {
     for (const rule of ["Bash(gh:*)", "Bash(git push:*)", "Bash(git credential:*)", "Bash(security:*)", "Bash(mysql:*)"]) {
       expect(settings.permissions.deny).toContain(rule);

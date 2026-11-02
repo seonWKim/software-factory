@@ -74,8 +74,23 @@ const HARNESS_ONLY_DENY: readonly string[] = [
   "WebSearch",
 ];
 
-/** The shared guard's `.env` rule (src/core/tools/guard.ts) as Claude Code permission rules. */
-const ENV_FILE_DENY: readonly string[] = ["Read(**/.env)", "Read(**/.env.*)"];
+/**
+ * The shared guard's `.env` rule (src/core/tools/guard.ts) as Claude Code permission rules: `.env` and every
+ * `.env.*` name except `.env.example`. Deny beats allow in Claude Code, so the exception has to be left out of
+ * the deny globs. Claude Code matches them with the `ignore` package (2.1.316), which has no negated character
+ * class (`[!x]` and `[^x]` match `!`/`^` literally), so the globs use `?` and `*` only:
+ *  - `.env.` plus a suffix of 0 to 6 characters, or of 8 or more;
+ *  - 7-character suffixes (the length of `example`) by name, for the variants in common use.
+ * Gap: an unlisted 7-character suffix is not denied here; the shared guard still refuses it.
+ */
+const SEVEN_CHAR_ENV_SUFFIXES = ["staging", "testing", "release", "private", "secrets", "develop", "preview", "default", "current"];
+const ENV_FILE_GLOBS: readonly string[] = [
+  ".env",
+  ...[0, 1, 2, 3, 4, 5, 6].map((n) => `.env.${"?".repeat(n)}`),
+  `.env.${"?".repeat(8)}*`,
+  ...SEVEN_CHAR_ENV_SUFFIXES.map((s) => `.env.${s}`),
+];
+const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) => ENV_FILE_GLOBS.map((g) => `${tool}(**/${g})`));
 
 /**
  * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
