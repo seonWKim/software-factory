@@ -8,7 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
-import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, phaseLabel, unknownCommandReply } from "./commands.js";
+import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply } from "./commands.js";
 import type { FactoryConfig } from "./config.js";
 import { type LearnedSettingsSource, type ProjectSettings, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
@@ -47,7 +47,7 @@ import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, NewBudgetCheckpoint, TransitionInput } from "../interfaces/factory-store.js";
+import type { FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -109,6 +109,14 @@ const COMMAND: Record<CommandEvent["kind"], string> = {
 const RETRY = Symbol("retry");
 
 const SYSTEM: Actor = { kind: "system", id: "system:controller" };
+/** Why a `/link` code was refused, as the reply says it. Never names the code. */
+const LINK_REFUSALS: Record<Exclude<RedeemLinkResult, { ok: true }>["reason"], string> = {
+  invalid: "the code is wrong",
+  expired: "the code has expired (codes work for 10 minutes)",
+  used: "the code was already used",
+  locked: "the code is locked after too many wrong codes",
+  already_linked: "this account is already linked to another factory user",
+};
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
 /** Closes an item whose source was closed by someone the factory cannot name (design §4). */
@@ -831,6 +839,8 @@ export class Controller {
    * and no reply without it), the length and open-item filters, the model call, validation, the egress scan.
    */
   private async handlePlainComment(e: PlainCommentEvent): Promise<void> {
+    const code = parseLink(e.body);
+    if (code !== null) return this.handleLink(e, code);
     const llm = this.d.llm;
     if (!llm) return;
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
@@ -864,6 +874,22 @@ export class Controller {
     }
     this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
     await this.post(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+  }
+
+  /**
+   * `/link <code>` (design 2026-11-01): links the commenter's account to the code's factory user. On any issue,
+   * work item or not. One reply keyed on the comment id; the code is never logged or echoed. A wrong code is a
+   * failed attempt (the store counts it) and links nothing. A redelivery of a used code reports the same link.
+   */
+  private async handleLink(e: PlainCommentEvent, code: string): Promise<void> {
+    const account = { provider: e.author.provider, subject: e.author.subject };
+    const r = code === "" ? ({ ok: false, reason: "invalid" } as const) : await this.d.store.redeemLinkCode(code, account);
+    await this.markSeen(e.source, e.comment_id);
+    this.d.log.info("link attempt", { provider: account.provider, ok: r.ok, ...(r.ok ? { user_id: r.user_id } : { reason: r.reason }) });
+    const body = r.ok
+      ? `This account is now linked to factory user \`${r.user_id}\`. Commands from it act as that user.`
+      : `This account was not linked: ${LINK_REFUSALS[r.reason]}. Ask for a new code with \`factory link-code <user_id>\`.`;
+    await this.post(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -1814,7 +1840,9 @@ export class Controller {
 
   private async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
     const principal = await this.d.auth.resolve(identity);
-    if (!principal) return { refuse: "the factory could not resolve your account" };
+    if (!principal) {
+      return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
+    }
     const decision = await this.d.auth.authorize(principal, action, { kind: "work_item", id: resource });
     if (!decision.allow) {
       this.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });

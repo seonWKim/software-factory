@@ -8,6 +8,7 @@ import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
+import { linkCodeCommand } from "./impl/auth/link-code.js";
 import type { WorkItemId } from "./core/types.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
@@ -33,6 +34,9 @@ const USAGE = `factory <command>
   status [id]  work items, or one item's state_changes trail
   stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
                --json for one JSON object
+  link-code <user_id>
+               prints a one-time code that links another account (e.g. Slack) to a factory user such as
+               github:12345: post /link <code> from that account. Works once, for 10 minutes
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
@@ -123,6 +127,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       try {
         const report = await collectStats(store, loaded.stats);
         console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatStatsText(report));
+      } finally {
+        await store.close();
+      }
+      return 0;
+    }
+    case "link-code": {
+      // Only the code's hash is stored; the code is printed here once and nowhere else (design 2026-11-01).
+      const store = await buildStatsStore(loaded);
+      try {
+        await store.migrate();
+        console.log(await linkCodeCommand(store, args));
       } finally {
         await store.close();
       }
