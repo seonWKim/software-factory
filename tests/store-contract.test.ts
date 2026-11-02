@@ -1317,4 +1317,34 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.acquireListenerLease(slack, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
     });
   });
+
+  describe("identity links", () => {
+    const slack = (subject: string) => ({ provider: "slack" as const, subject });
+    const userA = "github:1" as UserId;
+    const userB = "github:2" as UserId;
+
+    it("a code links once; resolve finds the account by provider and subject; links list oldest first", async () => {
+      const { store } = await make();
+      await store.createLinkCode(userA, "CODEAAAAA1");
+      await store.createLinkCode(userA, "CODEAAAAA2");
+      expect(await store.redeemLinkCode("CODEAAAAA1", slack("U1"))).toEqual({ ok: true, user_id: userA });
+      expect(await store.redeemLinkCode("CODEAAAAA1", slack("U1"))).toEqual({ ok: true, user_id: userA });
+      expect(await store.redeemLinkCode("CODEAAAAA1", slack("U2"))).toEqual({ ok: false, reason: "used" });
+      expect(await store.redeemLinkCode("CODEAAAAA2", slack("U2"))).toEqual({ ok: true, user_id: userA });
+      expect(await store.resolveLink("slack", "U1")).toBe(userA);
+      expect(await store.resolveLink("github", "U1")).toBeNull();
+      expect(await store.listLinks(userA)).toEqual([slack("U1"), slack("U2")]);
+    });
+
+    it("a wrong code links nothing; an account linked to another user is refused and the code stays usable", async () => {
+      const { store } = await make();
+      await store.createLinkCode(userB, "CODEBBBBB1");
+      expect(await store.redeemLinkCode("WRONGCODE1", slack("U1"))).toEqual({ ok: false, reason: "invalid" });
+      expect(await store.redeemLinkCode("CODEBBBBB1", slack("U1"))).toEqual({ ok: true, user_id: userB });
+      await store.createLinkCode(userA, "CODEAAAAA3");
+      expect(await store.redeemLinkCode("CODEAAAAA3", slack("U1"))).toEqual({ ok: false, reason: "already_linked" });
+      expect(await store.redeemLinkCode("CODEAAAAA3", slack("U3"))).toEqual({ ok: true, user_id: userA });
+      expect(await store.resolveLink("slack", "U1")).toBe(userB);
+    });
+  });
 });
