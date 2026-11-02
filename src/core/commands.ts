@@ -37,7 +37,7 @@ export interface CommandState {
   has_pr: boolean;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -111,6 +111,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     changes_state: false,
   },
   {
+    name: "link",
+    usage: "/link <code>",
+    description: "Link the account you post from to a factory user, with a code from `factory link-code <user_id>`",
+    phases: COMMAND_PHASES,
+    needs_pr: false,
+    changes_state: false,
+  },
+  {
     name: "help",
     usage: "/help",
     description: "List every command and which ones apply now",
@@ -168,9 +176,15 @@ export function applies(c: CommandSpec, s: CommandState): boolean {
   return c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr);
 }
 
+/**
+ * Account commands: about the person, not the item. Listed by `/help` and in the SET_UP.md table, never in an
+ * item's footer, and read on any issue, work item or not (design 2026-11-01).
+ */
+const ACCOUNT_COMMANDS: readonly CommandName[] = ["link"];
+
 /** The commands that apply in `s`, in table order; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  return COMMANDS.filter((c) => c.name !== "help" && applies(c, s)).concat(commandSpec("help"));
+  return COMMANDS.filter((c) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && applies(c, s)).concat(commandSpec("help"));
 }
 
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
@@ -255,6 +269,18 @@ export function parseComment(body: string): ParsedComment {
   const word = m[1]!;
   const name = word.toLowerCase();
   if (!BY_NAME.has(name as CommandName)) return { kind: "unknown", word };
+  // An account command is not an item command: sources pass it on as a plain comment, read by parseLink.
+  if (ACCOUNT_COMMANDS.includes(name as CommandName)) return null;
   const same = first.trim().slice(m[0].length).replace(/^[.,:;!?]/, "").trim();
   return { kind: "command", name: name as CommandName, text: [same, ...rest].join("\n").trim() };
+}
+
+/**
+ * `/link <code>` (design 2026-11-01): the code, or "" when the line has none. Null for any other comment. The
+ * code is a secret until used: callers never log or echo it.
+ */
+export function parseLink(body: string): string | null {
+  const first = body.trim().split(/\r?\n/)[0]!.trim();
+  const m = /^\/link(?=$|[\s.,:;!?])[.,:;!?]?\s*(\S*)/i.exec(first);
+  return m ? m[1]! : null;
 }

@@ -8,7 +8,7 @@
 import type { Loaded } from "./compose.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
-import type { AuthProvider } from "./interfaces/auth-provider.js";
+import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
 import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -59,7 +59,8 @@ export interface Contexts {
   sandbox: BaseContext;
   runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore };
   llm: BaseContext & { secrets: SecretStore };
-  auth: BaseContext & { github: GitHubClient };
+  /** `grants`: the selected grant sources (`permissions.grants`), built before the auth plugin. */
+  auth: BaseContext & { github: GitHubClient; store: FactoryStore; grants: readonly GrantSource[] };
   secrets: BaseContext;
   egress: BaseContext & { secrets: SecretStore };
   broker: BaseContext & { github: GitHubClient; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
@@ -167,4 +168,27 @@ export function declaredSecrets(registry: Registry, selection: Selection): Secre
 /** The secret set: the union of the names the selected plugins declare. The SecretStore loads and scans these. */
 export function declaredSecretNames(registry: Registry, selection: Selection): ReadonlySet<SecretName> {
   return new Set(declaredSecrets(registry, selection).map((d) => d.name));
+}
+
+/**
+ * Grant plugins (kind `grant`, design 2026-11-01): sources of roles for the one authorize check
+ * (src/core/authorize.ts). Several are selected at once, by the list `permissions.grants`, and their union
+ * decides, minus denies. Each is a `*.grant.ts` descriptor beside its implementation under src/impl/, kept out
+ * of the one-per-interface Registry above because a kind selected as a list has no single selection.
+ */
+export interface GrantContext extends BaseContext {
+  github: GitHubClient;
+}
+
+export interface GrantDescriptor {
+  /** The name `permissions.grants` lists; unique among grants. */
+  name: string;
+  create: (ctx: GrantContext) => GrantSource | Promise<GrantSource>;
+  /** Selected when `permissions.grants` is absent. */
+  default?: true;
+}
+
+/** Typed identity for a `*.grant.ts` file: `export default defineGrant({...})`. */
+export function defineGrant(descriptor: GrantDescriptor): GrantDescriptor {
+  return descriptor;
 }

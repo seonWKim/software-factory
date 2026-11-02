@@ -4,5 +4,5 @@ import { GitHubAuthProvider } from "./github-auth-provider.js";
 export default definePlugin({
   kind: "auth",
   name: "github",
-  create: (c) => new GitHubAuthProvider(c.github, c.repo),
+  create: (c) => new GitHubAuthProvider(c.store, c.grants),
 });

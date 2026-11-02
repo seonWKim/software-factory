@@ -81,16 +81,29 @@ Switch back / disable: set `store.type` to the other name. A store cannot be dis
 
 ## AuthProvider
 
-What it does: resolves an external identity to a principal and decides whether it may act (submit work, approve, reject, retry). Deny by default.
+What it does: resolves an external identity to a factory user and decides whether it may act (submit work, approve, reject, retry). Deny by default. Since 2026-11-01 (design §8) it decides through the one shared check in `src/core/authorize.ts`, which asks the grant plugins (GrantSource, below); no auth plugin asks GitHub for a permission itself.
 
 Plugins:
 
-- `github`: `GitHubAuthProvider`. Approvals need write permission on the repository.
-  - Enable: `"auth": "github"` (top level). Secrets: none of its own; it calls GitHub through the shared client, whose credential comes from `GitHubCredentials`.
-- `none`: `NoAuthProvider`. Allows everything; local development only.
+- `github`: `GitHubAuthProvider`. An account linked with `/link` resolves to its factory user (looked up by provider and subject only); any other GitHub account is `github:<numeric id>`; an unlinked account of another provider (Slack) resolves to no user and is refused with "not linked". Permission comes from `permissions.grants`; with the default `github-permission` grant, approvals need write permission on the repository, as before.
+  - Enable: `"auth": "github"` (top level). Secrets: none of its own; links live in the store, and the grants it asks are configured under `permissions`.
+- `none`: `NoAuthProvider`. Allows everything and ignores links and grants; local development only.
   - Enable: `"auth": "none"`. Secrets: none.
 
 Switch back / disable: set `auth` to `github`. `none` is the "no checks" choice; there is no way to run without an `AuthProvider`.
+
+## GrantSource
+
+What it does: gives a factory user roles on a project, and may deny one. Kind `grant`, one `*.grant.ts` descriptor beside each implementation under `src/impl/grant/` (`defineGrant` from `src/plugin-api.ts`). Unlike the interfaces above, several are selected at once, by the list `permissions.grants` at the top level of `factory.config.json`, so grants sit outside the one-per-interface registry. The shared authorize check (`src/core/authorize.ts`) takes the union of their roles, minus any deny: a deny from any grant refuses, whatever the others give. Roles map onto the existing actions: `requester` gives `submit_work`; `approver` gives `submit_work`, `approve_spec`, `approve_merge`, `record_verdict` and `use_tool`. `submit_work` stays open to any resolved user unless denied, since the intake label is its gate. Local grants are asked before remote ones, and the search stops at the first role that covers the action, so a user a local grant covers costs no GitHub call. Not a guard.
+
+Plugins:
+
+- `github-permission`: `GitHubPermissionGrant`. Write, maintain or admin on the configured repository gives `approver`; triage or read gives `requester`; no access gives nothing. Asked for every GitHub account of the user (its `github:<id>` and any linked GitHub account). Denies nothing. The default.
+  - Enable: `"permissions": { "grants": ["github-permission"] }`, or leave `permissions` out. Secrets: none of its own; it calls GitHub through the shared client, whose credential comes from `GitHubCredentials`.
+- `static`: `StaticGrant`. Roles and denies written in config, by factory user ID and project key (`*` for every project). No remote call.
+  - Enable: `"permissions": { "grants": ["github-permission", "static"], "static": { "roles": { "github:12345": { "*": ["approver"] } }, "deny": { "github:666": ["*"] } } }`. Secrets: none. A role other than `requester` or `approver`, a key that is not a user ID (`<provider>:<id>`), or an unknown key fails at startup.
+
+Switch back: remove `permissions` (or set `"grants": ["github-permission"]`); permissions are then GitHub write access again. An empty list fails at startup: there is no way to select no grant.
 
 ## SecretStore
 

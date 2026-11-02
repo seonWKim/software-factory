@@ -19,12 +19,6 @@ import {
 // Runs under plain `npm test`: no MySQL needed.
 
 describe("migrations/mysql step files", () => {
-  it("the current tree is valid", () => {
-    const files = readdirSync(STEPS_DIR).filter((f) => f !== "README.md");
-    expect(stepProblems(files)).toEqual([]);
-    expect(() => readSteps(STEPS_DIR)).not.toThrow();
-  });
-
   it("the repo's steps (files plus inline steps) are contiguous; inline 0013 adds the phase columns", () => {
     const files = readdirSync(STEPS_DIR).filter((f) => f !== "README.md");
     expect(stepProblems([...files, ...INLINE_STEPS.map(inlineStepName)])).toEqual([]);

@@ -28,7 +28,9 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
-import { type BaseContext, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins, selectedSources } from "./plugins.js";
+import {
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedSources,
+} from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -49,6 +51,11 @@ export interface FileConfig {
   floors?: { prefix: string; tier: number }[];
   /** AuthProvider plugin name (docs/plugins.md). */
   auth: string;
+  /**
+   * Who may act (design 2026-11-01): `grants`, the grant plugins whose union decides (absent: github-permission),
+   * and grant settings such as `static` (docs/plugins.md, GrantSource). Checked by selectGrants and each grant.
+   */
+  permissions?: { grants?: unknown; static?: unknown };
   /**
    * Plugin name per interface (docs/plugins.md). Absent: today's defaults. Guards can never be disabled.
    * `source` may be a list of names, one adapter each (design 2026-11-01).
@@ -124,6 +131,8 @@ export interface Loaded {
   plugins: Selection;
   /** Where plugin names resolve. The built-in REGISTRY unless a test passes another. */
   registry: Registry;
+  /** The checked `permissions.grants`: grant plugin names, in config order. */
+  grants: readonly string[];
   /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
   stats: StatsConfig;
   /** The checked `models`: a model name for cheap, standard and strong. */
@@ -165,6 +174,7 @@ export async function loadConfig(
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
   const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
+  const grants = selectGrants(GRANTS, file.permissions);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
@@ -220,7 +230,7 @@ export async function loadConfig(
     throw err;
   });
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, stats, models, model_by };
+  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
 /** What startup resolution needs from the GitHub client: one read of the repository. */
@@ -326,7 +336,9 @@ export async function build(
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
   for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github }));
-  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github });
+  // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
+  const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
+  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Suggests a command for a plain-language comment; never changes state (design §4).
   const llm = await p.llm(secrets);
   const runner = await p.runner(sandbox, secrets);
