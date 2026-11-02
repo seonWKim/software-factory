@@ -241,8 +241,8 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   /**
-   * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (push
-   * permission) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
+   * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (it answers;
+   * its push flag is only reported) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
    * or 403 is `forge_auth`; anything else `preflight_failed`. The message starts with the failed check's name and
    * carries the status only: no response body, no header, no credential.
    */
@@ -263,12 +263,10 @@ export class GitHubToolBroker implements ToolBroker {
     };
     const repo = await check<{ permissions?: { push?: boolean } }>("push_access", `/repos/${owner}/${name}`);
     if (!("value" in repo)) return repo;
-    // A user token reports its permissions; an app installation token's answer may not have them, and then the
-    // push itself is the check (its 401/403 still pauses).
+    // Reported, never a failure: a GitHub App installation token's answer says `push: false` even when the app
+    // has contents: write (2026-11-02: every implement run failed this check while pushes worked). The push itself
+    // is the check, and its 401/403 still pauses (forge_auth).
     const push = repo.value?.permissions?.push;
-    if (push === false) {
-      return { ok: false, error_code: PREFLIGHT_FAILED, message: `push_access: the credentials cannot push to ${owner}/${name}` };
-    }
     const prs = await check<unknown[]>(
       "pr_api",
       `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}&per_page=1`,
