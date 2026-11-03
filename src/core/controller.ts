@@ -2267,6 +2267,10 @@ const FAILURES: Record<string, string> = {
   untrusted_base: "the base fetched before pushing does not contain the base the run started from; nothing was pushed",
   out_of_scope: "the resolve run changed files that are neither conflicting nor under the allowed paths",
   tests_failed: "the install or test command failed on the resolved branch",
+  // The implement run's code (design §4, 2026-11-03): a task failure, retried up to max_attempts. Not the
+  // CHECKS_FAILED blocked reason above, which is a failed PR check after review (design §5 CI gate).
+  checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
+  test_database_failed: "the run's test database for the checks could not be created",
   unresolved_conflicts: "conflicts were left unresolved",
   head_moved: "the install or test command moved HEAD off the commit the gates checked",
   prompt_missing: "prompts/resolve.md is missing",

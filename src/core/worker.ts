@@ -408,20 +408,24 @@ export class Worker {
     };
     // The pre-push checks (design §4, decided 2026-11-03): after sync and the gates, before any handoff row or push.
     let checked: { results: CheckResult[]; fixed: boolean };
+    const beforeChecks = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    // The fix step's commits count like the implementer's (handoff rows include them too).
+    const countFixCommits = async () => {
+      work.commits += Number((await this.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
+    };
     try {
-      const before = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model });
-      if (checked.fixed) {
-        // The fix step's commits count like the implementer's (handoff rows include them too).
-        work.commits += Number((await this.git(handle, ["rev-list", "--count", `${before}..HEAD`])).trim()) || 0;
-        // The fix commit goes through every gate again, on the final diff.
-        floor = await this.prePush(run, item, handle, ctx, sync.baseSha, conflicts);
-        if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
-      }
     } catch (err) {
       if (!(err instanceof RunFailure) || err.code !== CHECKS_FAILED_RUN) throw err;
+      await countFixCommits();
       const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       throw await this.keepWip(run, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
+    }
+    if (checked.fixed) {
+      await countFixCommits();
+      // The fix commit goes through every gate again, on the final diff.
+      floor = await this.prePush(run, item, handle, ctx, sync.baseSha, conflicts);
+      if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
     }
     // First parent only: the agent's commits plus our merge commits, not the base commits they brought in.
     const pushedCommits = (await this.git(handle, [
