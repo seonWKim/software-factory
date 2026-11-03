@@ -8,6 +8,10 @@ Rules:
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
 
+Docs:
+- `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic files your change touches.
+- Record a design or plugin change in its topic file (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`): the current decision first, the decision it replaces as a line under the History heading at the bottom. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
+
 Merge conflicts:
 - Before pushing, the factory merges the base branch into your branch. If that conflicts, you get a second prompt headed "Merge conflicts" that lists the conflicting files and the base commits that touched them.
 - Keep both sides: the base's changes and this work item's changes. Read the listed base commits (`git show <sha>`) to see what the base intended.
