@@ -56,17 +56,34 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
 }
 
 /**
- * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt;
- * infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
- * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure.
+ * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt, and
+ * neither is a stall (the model printed nothing for `stall_ms`); infra failures (lease loss, timeout,
+ * exception) count toward `max_restart`; anything else is the task's own failure and counts toward
+ * `max_attempts`. A run with no outcome (cancelled) is a task failure.
  */
-export type FailureClass = "rate_limited" | "infra" | "task";
+export type FailureClass = "rate_limited" | "stalled" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
   if (outcome.error_code === RATE_LIMITED) return "rate_limited";
+  if (outcome.error_code === AGENT_STALLED) return "stalled";
   return outcome.infra ? "infra" : "task";
 }
+
+/**
+ * The error code of a run whose agent printed nothing for `stall_ms` while no tool call was open (design §5
+ * Restarts). Not an attempt; it pauses every claim (`model_stall`) until a probe on the cheap model answers.
+ */
+export const AGENT_STALLED = "agent_stalled";
+
+/**
+ * The claim pause of a stall (design §5 Restarts): its row holds the next probe time, and claims stay paused
+ * past it until a probe answers (`MODEL_ANSWERED`). `MODEL_STALL_SINCE` reads when the pause began.
+ */
+export const MODEL_STALL = "model_stall" as const;
+export const MODEL_STALL_SINCE = "model_stall_since" as const;
+/** The time of the last probe that got an answer: it ends a stall pause whose probe time it is not before. */
+export const MODEL_ANSWERED = "model_answered" as const;
 
 /** The error code of a run stopped by a usage or rate limit. */
 export const RATE_LIMITED = "rate_limited";

@@ -9,7 +9,7 @@ import {
   tierBudget,
 } from "./budget.js";
 import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply } from "./commands.js";
-import type { FactoryConfig } from "./config.js";
+import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyVerdict,
   dependencyReason,
@@ -41,6 +41,8 @@ import {
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
+  MODEL_ANSWERED,
+  MODEL_STALL,
   NO_AUTO_RETRY,
 } from "./policy.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -277,6 +279,7 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
+      await this.guard("model probe", () => this.probeStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
     await listening;
@@ -396,6 +399,48 @@ export class Controller {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
     for (const it of items) if (it.stage !== "CLOSED") await this.showStatus(it);
+  }
+
+  async tickModelProbe(): Promise<void> {
+    await this.live.refresh();
+    await this.probeStep();
+  }
+
+  /**
+   * The stall pause's probe (design §5 Restarts): once its probe time has passed, one short prompt on the cheap
+   * model class through the LLM provider. An answer ends the pause (`model_answered`), so claims resume; no
+   * answer (an error, a refusal, a throw or no reply within stall_ms) moves the pause probe_interval_ms later.
+   * Both are store writes that only move times later, so two replicas probing at once end in the same state.
+   * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
+   */
+  private async probeStep(): Promise<void> {
+    const due = await this.d.store.getClaimPause(MODEL_STALL);
+    if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
+    const answered = this.d.llm ? await this.probe(this.d.llm) : true;
+    const now = this.d.clock.now().getTime();
+    if (answered) {
+      await this.d.store.pauseClaims(iso(now), MODEL_ANSWERED);
+      this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
+      return;
+    }
+    const next = await this.d.store.pauseClaims(iso(now + (this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms)), MODEL_STALL);
+    this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
+  }
+
+  /** One short prompt on the cheap model: true when it answered. Carries no work item data. */
+  private async probe(llm: LLMProvider): Promise<boolean> {
+    try {
+      const res = await llm.complete({
+        model_class: "cheap",
+        messages: [{ role: "user", content: "Reply with the word OK." }],
+        max_tokens: 16,
+        data_env: "test",
+        signal: AbortSignal.timeout(this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms),
+      });
+      return res.stop_reason === "end" || res.stop_reason === "max_tokens";
+    } catch {
+      return false;
+    }
   }
 
   async tickReaper(): Promise<void> {
@@ -1881,7 +1926,8 @@ export class Controller {
     const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
 
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    if (cls !== "rate_limited" && limit) {
+    // Neither a rate limit nor a stall is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -1896,15 +1942,18 @@ export class Controller {
     const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
     // A forge 401/403: the retry also waits for the forge-auth pause to end (design §5 Restarts).
     const authEnd = code === FORGE_AUTH && reset ? Date.parse(reset) : Number.NaN;
+    // A stall: no backoff, the stall pause holds every claim until a probe answers.
     const notBefore = cls === "rate_limited"
       ? (reset ?? iso(failedAt + retry_max_ms))
-      : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
+      : cls === "stalled"
+        ? iso(failedAt)
+        : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
     // A failed push or PR kept the commits on a wip branch: the retry pushes them with no agent run.
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
     return {
       patch: restart,
       actor: SYSTEM,
-      reason: cls === "rate_limited" ? "run_rate_limited" : "run_retry_scheduled",
+      reason: cls === "rate_limited" ? "run_rate_limited" : cls === "stalled" ? "run_stalled" : "run_retry_scheduled",
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
       enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(wip ? { input: { wip } } : {}) },
@@ -2529,6 +2578,7 @@ const FAILURES: Record<string, string> = {
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",
+  agent_stalled: "the model printed nothing for stall_ms with no tool call open; runs are paused until a probe answers",
   lease_lost: "the worker lost its lease on the run (stopped, crashed or slept)",
   lease_expired: "the run's lease expired with no heartbeat (the worker stopped, crashed or slept)",
   exception: "the worker hit an unexpected error",

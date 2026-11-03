@@ -19,7 +19,7 @@ import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
-import { readFactoryStatus } from "./ui/factory-status.js";
+import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
@@ -129,6 +129,9 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const id = args[0] as WorkItemId;
         console.log(JSON.stringify({ item: await app.store.getWorkItem(id), runs: await app.store.listRuns(id), state_changes: await app.store.listStateChanges(id) }, null, 2));
       } else {
+        // While a stall pause is in effect (design §5 Restarts), say so above the table.
+        const stall = await modelStallLine(app.store);
+        if (stall) console.log(stall);
         const items = await app.store.listWorkItems(50);
         console.table(items.map(({ id, source, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version }) =>
           ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version })));
@@ -219,7 +222,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           // `label` is the stored project label (github.com/owner/name), never the key.
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
-          health: new HealthMonitor(() => doctorChecks(loaded), parts.clock),
+          // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
+          health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
         },

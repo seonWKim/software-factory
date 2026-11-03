@@ -58,6 +58,8 @@
   "tick_ms": 2000,
   "poll_interval_ms": 30000,
   "run_timeout_ms": 5400000,
+  "stall_ms": 300000,
+  "probe_interval_ms": 600000,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
   "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
