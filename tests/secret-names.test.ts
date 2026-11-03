@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -273,13 +273,19 @@ describe("doctor and setup follow the declared secrets", () => {
 });
 
 describe("docs and template follow the declarations", () => {
-  const doc = readFileSync(join(REPO_ROOT, "docs", "plugins.md"), "utf8");
+  /** An interface name in kebab-case, the name of its topic file (KeepAwake → keep-awake; "GitHub" is one word). */
+  const kebab = (name: string): string =>
+    name
+      .replace(/GitHub/g, "Github")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .toLowerCase();
 
-  /** The text from an interface's `## Name` heading to the next `## ` heading. */
+  /** An interface's topic file, `docs/plugins/<kebab name>.md`, without its History section. */
   const section = (name: string): string => {
-    const m = doc.match(new RegExp(`^## ${name}\\b[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m"));
-    if (!m) throw new Error(`no ## ${name} section`);
-    return m[1]!;
+    const file = join(REPO_ROOT, "docs", "plugins", `${kebab(name)}.md`);
+    if (!existsSync(file)) throw new Error(`no docs/plugins/${kebab(name)}.md`);
+    return readFileSync(file, "utf8").split(/^## History\b/m)[0]!;
   };
 
   /** A plugin's bullet: its `- \`name\`:` line and the indented lines under it. */
