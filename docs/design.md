@@ -43,7 +43,7 @@ the `05-*` files.
 ## 8. Enterprise
 - [08-plugins.md](design/08-plugins.md): named plugins and the discovered registry, the GitHub login plugin, declared secret names, keep awake.
 - [08-self-update.md](design/08-self-update.md): running from a copy of the base branch, and the start-then-drain update.
-- [08-settings.md](design/08-settings.md): per-project settings resolved in layers that may only tighten a gate.
+- [08-settings.md](design/08-settings.md): per-project settings resolved in layers that may only tighten a gate, and changing settings at runtime (`factory settings`) with no PR.
 - [08-permissions.md](design/08-permissions.md): factory users, linked accounts, grants and roles, and the checked-in size limits.
 - [08-enterprise.md](design/08-enterprise.md): interfaces with local and cloud backends, environments, tools, auth classes, audit and identity.
 

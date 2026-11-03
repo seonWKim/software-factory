@@ -73,7 +73,11 @@ import type {
   RecordVerdictInput,
   RecordVerdictResult,
   RedeemLinkResult,
+  ResetSettingInput,
   SchemaVersion,
+  SetSettingInput,
+  SettingChange,
+  SettingOverride,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
@@ -1188,6 +1192,61 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
+  // Runtime settings overrides (design 2026-11-03)
+
+  async listSettingOverrides(): Promise<SettingOverride[]> {
+    const rows = await this.db.all("SELECT * FROM settings_overrides ORDER BY setting_key, project_key");
+    return rows.map(rowToOverride);
+  }
+
+  async setSettingOverride(input: SetSettingInput): Promise<SettingChange> {
+    const at = this.now();
+    return this.db.transaction(async (tx) => {
+      const old = await this.selectOverride(tx, input.key, input.project);
+      if (old) {
+        await tx.run("UPDATE settings_overrides SET value_json = ?, set_by = ?, set_at = ? WHERE setting_key = ? AND project_key = ?", [
+          input.value, input.actor, at, input.key, input.project,
+        ]);
+      } else {
+        await tx.run("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)", [
+          input.key, input.project, input.value, input.actor, at,
+        ]);
+      }
+      return this.insertSettingChange(tx, input.key, input.project, old?.value ?? null, input.value, input.actor, at);
+    });
+  }
+
+  async resetSettingOverride(input: ResetSettingInput): Promise<SettingChange | null> {
+    const at = this.now();
+    return this.db.transaction(async (tx) => {
+      const old = await this.selectOverride(tx, input.key, input.project);
+      if (!old) return null;
+      const n = await tx.run("DELETE FROM settings_overrides WHERE setting_key = ? AND project_key = ?", [input.key, input.project]);
+      if (n === 0) return null;
+      return this.insertSettingChange(tx, input.key, input.project, old.value, null, input.actor, at);
+    });
+  }
+
+  async listSettingChanges(limit: number): Promise<SettingChange[]> {
+    const rows = await this.db.all(`SELECT * FROM settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
+    return rows.map(rowToSettingChange);
+  }
+
+  private async selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
+    const [row] = await tx.all(`SELECT * FROM settings_overrides WHERE setting_key = ? AND project_key = ?${this.db.dialect.forUpdate}`, [key, project]);
+    return row ? rowToOverride(row) : null;
+  }
+
+  private async insertSettingChange(
+    tx: SqlExecutor, key: string, project: string, old_value: string | null, new_value: string | null, actor: string, at: Timestamp,
+  ): Promise<SettingChange> {
+    await tx.run("INSERT INTO settings_changes (setting_key, project_key, old_value, new_value, actor, at) VALUES (?, ?, ?, ?, ?, ?)", [
+      key, project, old_value, new_value, actor, at,
+    ]);
+    const [row] = await tx.all("SELECT * FROM settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
+    return rowToSettingChange(row!);
+  }
+
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
@@ -1336,6 +1395,28 @@ const RATE_LIMIT_PAUSE: ClaimPauseName = "rate_limit";
  * both backends), so no schema change.
  */
 const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
+
+function rowToOverride(row: Row): SettingOverride {
+  return {
+    key: String(row.setting_key),
+    project: String(row.project_key),
+    value: String(row.value_json),
+    set_by: String(row.set_by),
+    set_at: String(row.set_at) as Timestamp,
+  };
+}
+
+function rowToSettingChange(row: Row): SettingChange {
+  return {
+    seq: Number(row.seq),
+    key: String(row.setting_key),
+    project: String(row.project_key),
+    old_value: row.old_value === null || row.old_value === undefined ? null : String(row.old_value),
+    new_value: row.new_value === null || row.new_value === undefined ? null : String(row.new_value),
+    actor: String(row.actor),
+    at: String(row.at) as Timestamp,
+  };
+}
 
 function rowToInbox(row: Row): InboxRow {
   return {

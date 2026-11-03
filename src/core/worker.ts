@@ -1,5 +1,5 @@
 import type { FactoryConfig, Prompts } from "./config.js";
-import { type LearnedSettingsSource, settingValues } from "./settings.js";
+import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -69,6 +69,14 @@ export interface WorkerDeps {
    * dropped when the run ends. Its env reaches only the check commands. Absent: no database and no skip line.
    */
   testDatabase?: TestDatabase;
+  /**
+   * The live settings (design 2026-11-03): refreshed before each claim and each lease renewal. A run reads the
+   * values it started with, so a diff, timeout or model change applies at the next run. Absent: `config` and
+   * `models`, fixed.
+   */
+  settings?: LiveSettings;
+  /** Whether this loop may claim now. The pool's slot check: false once `workers` drops below this slot. */
+  active?: () => boolean;
   /**
    * The host this worker runs on, recorded on a paused run so only a worker on the same host reattaches its
    * folder and session (design §5 Pause). Absent: the part of `id` before its first `:` (`<host>:<pid>:<n>`).
@@ -221,10 +229,18 @@ export class Worker {
   private readonly meters = new WeakMap<Run, RunUsage>();
   /** The run's test database, once a check asked for it; dropped at the end of execute(). Scratch, like meters. */
   private readonly databases = new WeakMap<Run, Promise<TestDatabaseLease | null>>();
+  private readonly live: LiveSettings;
+  /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
+  private cfg: FactoryConfig;
+  private runModels: { table: ModelTable; names?: ModelNames } | undefined;
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   private readonly scratch = new WeakMap<Run, RunScratch>();
 
-  constructor(private readonly d: WorkerDeps) {}
+  constructor(private readonly d: WorkerDeps) {
+    this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
+    this.cfg = this.live.config();
+    this.runModels = d.settings ? this.live.models() : d.models;
+  }
 
   get id(): WorkerId {
     return this.d.id;
@@ -240,18 +256,22 @@ export class Worker {
         this.d.log.error("worker tick failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
         return false;
       });
-      if (!worked) await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
+      if (!worked) await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
     }
   }
 
   /** Claims and executes at most one run. Returns whether it found one. */
   async tick(): Promise<boolean> {
+    await this.live.refresh();
+    if (this.d.active && !this.d.active()) return false;
+    this.cfg = this.live.config();
+    if (this.d.settings) this.runModels = this.live.models();
     // The coordination threshold and weights (design §5, 2026-11-03); absent from the config: the defaults.
     const run = await this.d.store.claimRun({
       worker_id: this.d.id,
       kinds: KINDS,
-      lease_ms: this.d.config.lease_ms,
-      ...(this.d.config.coordination ? { coordination: this.d.config.coordination } : {}),
+      lease_ms: this.cfg.lease_ms,
+      ...(this.cfg.coordination ? { coordination: this.cfg.coordination } : {}),
     });
     if (!run?.lease) return false;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
@@ -333,7 +353,7 @@ export class Worker {
     }
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
-      const resume = outcome.reset_at ?? this.after(this.d.config.retry_max_ms);
+      const resume = outcome.reset_at ?? this.after(this.cfg.retry_max_ms);
       outcome = { ...outcome, reset_at: resume };
       const pause = await this.d.store.pauseClaims(resume);
       if (pause.extended) {
@@ -346,7 +366,7 @@ export class Worker {
       // controller posts one owner comment for it. Only the code goes in the line, never the forge's answer.
       // `started` comes from the store's conditional write, never a read before it, so two workers refused at
       // the same moment cannot both start the pause.
-      const pause = await this.d.store.pauseClaims(this.after(this.d.config.auth_pause_ms ?? this.d.config.retry_max_ms), "forge_auth");
+      const pause = await this.d.store.pauseClaims(this.after(this.cfg.auth_pause_ms ?? this.cfg.retry_max_ms), "forge_auth");
       const started = pause.started === true;
       outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
       if (started) {
@@ -367,7 +387,7 @@ export class Worker {
   private async watchPause(s: RunScratch, stop: AbortSignal): Promise<void> {
     while (!stop.aborted) {
       try {
-        await this.d.clock.sleep(this.d.config.tick_ms, stop);
+        await this.d.clock.sleep(this.cfg.tick_ms, stop);
       } catch {
         return;
       }
@@ -414,8 +434,9 @@ export class Worker {
    * Timers always fire a little late, so only a gap over 2 * heartbeat_ms is logged as late; renewal is unconditional.
    */
   private async heartbeat(run: Run, token: number, lease: AbortController, stop: AbortSignal): Promise<void> {
-    const { heartbeat_ms, lease_ms } = this.d.config;
     while (!stop.aborted) {
+      // Read each round: a heartbeat_ms or lease_ms change applies at the next renewal (design 2026-11-03).
+      const { heartbeat_ms } = this.live.values();
       const slept = this.d.clock.now().getTime();
       try {
         await this.d.clock.sleep(heartbeat_ms, stop);
@@ -423,6 +444,8 @@ export class Worker {
         return;
       }
       const gap = this.d.clock.now().getTime() - slept;
+      await this.live.refresh();
+      const { lease_ms } = this.live.values();
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
       const r = await this.d.store.heartbeat(run.id, token, lease_ms);
       if (!r.ok) {
@@ -435,19 +458,19 @@ export class Worker {
 
   /** The model class of this run kind for this item (src/core/model-choice.ts). */
   private modelFor(kind: "triage" | "implement" | "review" | "resolve", item: WorkItem): ModelClass {
-    return modelClassFor(this.d.models?.table ?? DEFAULT_MODEL_TABLE, kind, item.tier, item.loop_count);
+    return modelClassFor(this.runModels?.table ?? DEFAULT_MODEL_TABLE, kind, item.tier, item.loop_count);
   }
 
   /** `model_class` and `model` (the configured name; null when the worker has no names) for an outcome. */
   private modelRecord(model: ModelClass): { model_class: ModelClass; model: string | null } {
-    return { model_class: model, model: this.d.models?.names?.[model] ?? null };
+    return { model_class: model, model: this.runModels?.names?.[model] ?? null };
   }
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
-    const { repo } = this.d.config;
-    const branch = run.kind === "triage" ? null : branchFor(item, this.d.config.branch_prefix);
+    const { repo } = this.cfg;
+    const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
     const plan = await this.resumePlan(run);
     const handle = plan?.folder ?? (await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
     // The folder lives until the run ends, whatever the outcome; only a pause keeps it (design §5 Pause).
@@ -524,8 +547,8 @@ export class Worker {
     model: ModelClass,
     plan: ResumePlan | null = null,
   ) {
-    const base = this.d.config.repo.base_branch;
-    const branch = branchFor(item, this.d.config.branch_prefix);
+    const base = this.cfg.repo.base_branch;
+    const branch = branchFor(item, this.cfg.branch_prefix);
     let start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const baseSha = await this.trustedBase(handle);
     await this.preflight(handle, ctx, branch);
@@ -561,7 +584,7 @@ export class Worker {
         output_schema: IMPLEMENT_SCHEMA,
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
         writable_paths: [],
-        env_allowlist: gitIdentity(this.d.config.agent_git_identity),
+        env_allowlist: gitIdentity(this.cfg.agent_git_identity),
       }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null }).catch(async (err: unknown) => {
         if (err instanceof RunPaused) throw await this.pauseImplement(run, item, handle, ctx, start, dirs, err);
         throw err;
@@ -591,7 +614,7 @@ export class Worker {
     // The commits kept on the forge when the run fails from here on (design §5 Restarts). A resumed run that
     // added no commit names its wip branch again; one whose fix step committed keeps the new head on its own.
     const wipAt = (head: string): WipRef => resumed && head === resumed.head ? resumed : {
-      branch: wipBranchFor(item, this.d.config.branch_prefix, run.id),
+      branch: wipBranchFor(item, this.cfg.branch_prefix, run.id),
       head,
       commits: work.commits,
       summary: work.summary.slice(0, WIP_TEXT_CHARS),
@@ -695,7 +718,7 @@ export class Worker {
     const dirty = (await this.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all"])) !== "";
     if (dirty) {
       await this.git(handle, [...NO_HOOKS, "add", "-A"]);
-      await this.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", `wip: paused run ${run.id}`], gitIdentity(this.d.config.agent_git_identity));
+      await this.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", `wip: paused run ${run.id}`], gitIdentity(this.cfg.agent_git_identity));
     }
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const commits = head === start ? 0 : (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
@@ -776,7 +799,7 @@ export class Worker {
    * detail starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
   private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
-    const { repo } = this.d.config;
+    const { repo } = this.cfg;
     const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
     if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
     const baseRef = `origin/${repo.base_branch}`;
@@ -798,7 +821,7 @@ export class Worker {
   private async resumeWip(run: Run, handle: SandboxHandle, branch: string): Promise<WipRef | null> {
     const wip = run.input?.wip;
     if (!wip) return null;
-    const ref = wip.branch.startsWith(this.d.config.branch_prefix)
+    const ref = wip.branch.startsWith(this.cfg.branch_prefix)
       ? await this.gitRaw(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${wip.branch}^{commit}`])
       : null;
     if (!ref || ref.exit_code !== 0 || ref.stdout.trim() !== wip.head) {
@@ -824,7 +847,7 @@ export class Worker {
     let kept = resumed;
     if (!resumed) {
       const pushed = await this.d.broker
-        .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: this.d.config.repo.base_branch })
+        .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: this.cfg.repo.base_branch })
         .catch((e: unknown) => ({ ok: false as const, error_code: "exception", message: e instanceof Error ? e.message : "unknown" }));
       kept = pushed.ok;
       if (!pushed.ok) this.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: pushed.error_code });
@@ -857,7 +880,7 @@ export class Worker {
     /** A resumed run (design §5 Restarts): no agent step, so a conflict fails with merge_conflict at once. */
     noAgent = false,
   ): Promise<{ baseSha: string; merged: boolean; conflicts: string[] }> {
-    const { repo } = this.d.config;
+    const { repo } = this.cfg;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
     const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
@@ -877,8 +900,8 @@ export class Worker {
     // The implementer's last commit: a failed conflict step is retried from here.
     const tip = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
 
-    const identity = gitIdentity(this.d.config.agent_git_identity);
-    const branch = branchFor(item, this.d.config.branch_prefix);
+    const identity = gitIdentity(this.cfg.agent_git_identity);
+    const branch = branchFor(item, this.cfg.branch_prefix);
     const message = `Merge ${baseRef} (${baseSha.slice(0, 8)}) into ${branch}`;
     const merge = await this.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
     if (merge.exit_code === 0) return { baseSha, merged: true, conflicts: [] };
@@ -1037,7 +1060,7 @@ export class Worker {
     transcript: string,
     resumed = false,
   ): Promise<never> {
-    const base = this.d.config.repo.base_branch;
+    const base = this.cfg.repo.base_branch;
     const body = [
       "## Factory sync check: push blocked",
       "",
@@ -1119,7 +1142,7 @@ export class Worker {
       model_class: s.model,
       output_schema: IMPLEMENT_SCHEMA,
       writable_paths: [s.gitDir],
-      env_allowlist: gitIdentity(this.d.config.agent_git_identity),
+      env_allowlist: gitIdentity(this.cfg.agent_git_identity),
     }, "fix");
     const out = parseImplement(result.output);
     if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -1157,9 +1180,9 @@ export class Worker {
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
-      commands: checkCommands(this.d.config.repo),
+      commands: checkCommands(this.cfg.repo),
       env: { ...this.d.toolEnv, ...this.indexEnv(), ...db?.env },
-      timeout_ms: this.d.config.run_timeout_ms,
+      timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
     });
@@ -1242,7 +1265,7 @@ export class Worker {
       throw new RunFailure("git_failed", `git diff --numstat: ${err instanceof Error ? err.message : "unparsable"}`, true);
     }
     // The item's project's gate settings (design 2026-11-01), read only through settingValues.
-    const s = settingValues(item.project, this.d.config.settings, this.d.learned);
+    const s = settingValues(item.project, this.cfg.settings, this.d.learned);
     const limits = { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
     if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
     const hits = floorHits(stat.paths, s.floors, item.tier ?? 1);
@@ -1307,9 +1330,9 @@ export class Worker {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
     // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
     if (item.head_branch !== null) {
-      await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branchFor(item, this.d.config.branch_prefix)}`]);
+      await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branchFor(item, this.cfg.branch_prefix)}`]);
     }
-    const diff = await this.git(handle, ["diff", `origin/${this.d.config.repo.base_branch}...HEAD`]);
+    const diff = await this.git(handle, ["diff", `origin/${this.cfg.repo.base_branch}...HEAD`]);
     const notes = await this.approverNotes(item);
     const subject = item.origin === "adopted" ? renderAdoptedPr(item) : renderWorkItem(item, { includeSpec: true });
     // Blind pass: work item + diff only, no implementer transcript (design §4). A paused review resumes its own
@@ -1325,7 +1348,7 @@ export class Worker {
       tools: WRITE_TOOLS,
       model_class: model,
       output_schema: REVIEW_SCHEMA,
-      env_allowlist: gitIdentity(this.d.config.agent_git_identity),
+      env_allowlist: gitIdentity(this.cfg.agent_git_identity),
     }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null });
     const review = parseReview(result.output);
     if (!review.ok) throw new RunFailure("invalid_output", review.error, false, { output_tail: tail(result.transcript) });
@@ -1355,7 +1378,7 @@ export class Worker {
    */
   private async update(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
-    const { repo, branch_prefix } = this.d.config;
+    const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
@@ -1382,7 +1405,7 @@ export class Worker {
       const merge = await this.gitRaw(
         handle,
         ["merge", "--no-ff", "--no-edit", "-m", `Merge ${baseRef} into ${branch}`, baseRef],
-        gitIdentity(this.d.config.agent_git_identity),
+        gitIdentity(this.cfg.agent_git_identity),
       );
       if (merge.exit_code !== 0) {
         const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
@@ -1445,10 +1468,10 @@ export class Worker {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
     const system_prompt = this.d.prompts.resolve;
     if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
-    const { repo, branch_prefix } = this.d.config;
+    const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
-    const identity = gitIdentity(this.d.config.agent_git_identity);
+    const identity = gitIdentity(this.cfg.agent_git_identity);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
@@ -1572,7 +1595,7 @@ export class Worker {
       handle,
       commands: [cmd],
       env: { ...this.d.toolEnv, ...db?.env },
-      timeout_ms: this.d.config.run_timeout_ms,
+      timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
     });
@@ -1611,9 +1634,9 @@ export class Worker {
       sandbox: handle,
       tool_grants: [],
       lease_token: run.lease!.token,
-      deny_paths: this.d.config.deny_paths,
+      deny_paths: this.cfg.deny_paths,
       writable_paths: [],
-      timeout_ms: this.d.config.run_timeout_ms,
+      timeout_ms: this.cfg.run_timeout_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
@@ -1771,7 +1794,7 @@ export class Worker {
    */
   private async trustedBase(handle: SandboxHandle): Promise<string> {
     if (handle.base_sha) return handle.base_sha;
-    const base = this.d.config.repo.base_branch;
+    const base = this.cfg.repo.base_branch;
     return (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${base}^{commit}`])).trim();
   }
 

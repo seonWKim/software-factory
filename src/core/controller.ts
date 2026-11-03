@@ -18,7 +18,7 @@ import {
   isDependencySource,
   shortRef,
 } from "./coordination.js";
-import { type LearnedSettingsSource, type ProjectSettings, settingValues } from "./settings.js";
+import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
@@ -91,6 +91,12 @@ export interface ControllerDeps {
   llm?: LLMProvider;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
+  /**
+   * The live settings (design 2026-11-03): refreshed at the start of each tick and of each public tick step, so
+   * a retry, attempt or loop change applies at the next decision and a poll, tick or lease change at the next
+   * tick. Absent: `config`, fixed.
+   */
+  settings?: LiveSettings;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -235,45 +241,56 @@ export class Controller {
   /** The configured sources, in config order. Fixed at construction; the same on every replica. */
   private readonly sources: readonly SourceAdapter[];
   private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
+  /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
+  private readonly live: LiveSettings;
 
   constructor(private readonly d: ControllerDeps) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
+    this.live = d.settings ?? LiveSettings.fixed(d.config);
+  }
+
+  /** The config with each settable key at its effective value as of the last refresh. */
+  private get cfg() {
+    return this.live.config();
   }
 
   async run(signal: AbortSignal): Promise<void> {
     // The label, never the key: log lines and comments name a project by its readable path.
-    this.d.log.info("controller started", { project: this.d.config.project.label });
+    this.d.log.info("controller started", { project: this.cfg.project.label });
     const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
     // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
     const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
     await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
+      await this.live.refresh();
       const now = this.d.clock.now().getTime();
-      const due = now - lastPoll >= this.d.config.poll_interval_ms;
+      const due = now - lastPoll >= this.cfg.poll_interval_ms;
       if (due) lastPoll = now;
       // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
       if (due || streams.length > 0) await this.guard("intake", () => this.intake(due));
       if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
       // PR checks are read from the forge, so on the poll interval like a poll source.
-      if (due) await this.guard("checks", () => this.tickChecks());
+      if (due) await this.guard("checks", () => this.checksStep());
       // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
-      if (due) await this.guard("coordination", () => this.tickCoordination());
-      await this.guard("runs", () => this.tickRuns());
-      await this.guard("reaper", () => this.tickReaper());
-      await this.d.clock.sleep(this.d.config.tick_ms, signal).catch(() => undefined);
+      if (due) await this.guard("coordination", () => this.coordinationStep());
+      await this.guard("runs", () => this.runsStep());
+      await this.guard("reaper", () => this.reaperStep());
+      await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
     await listening;
   }
 
   /** The listener for a stream source, owned by this replica. */
   listener(source: StreamSource): Listener {
+    const live = this.live;
     return new Listener({
       store: this.d.store,
       source,
       clock: this.d.clock,
-      config: this.d.config,
+      // Getters: the listener's renewal reads the live values, so a lease change applies at its next renewal.
+      config: { get lease_ms() { return live.config().lease_ms; }, get heartbeat_ms() { return live.config().heartbeat_ms; } },
       log: this.d.log,
       owner: this.d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`,
     });
@@ -281,6 +298,7 @@ export class Controller {
 
   /** One intake step of every source: each poll source is polled, each stream source's inbox is read. */
   async tickIntake(): Promise<void> {
+    await this.live.refresh();
     await this.intake(true);
   }
 
@@ -353,11 +371,16 @@ export class Controller {
   private async cleanupInboxOf(source: StreamSource): Promise<void> {
     const cursor = await this.d.store.getCursor(inboxCursorName(source.type));
     if (cursor === null) return;
-    const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.d.config.inbox_retention_days * DAY_MS);
+    const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.cfg.inbox_retention_days * DAY_MS);
     if (deleted > 0) this.d.log.info("inbox cleanup", { source_type: source.type, deleted });
   }
 
   async tickRuns(): Promise<void> {
+    await this.live.refresh();
+    await this.runsStep();
+  }
+
+  private async runsStep(): Promise<void> {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
       await this.guard(`run:${run.kind}`, () => this.applyRun(run));
     }
@@ -376,17 +399,22 @@ export class Controller {
   }
 
   async tickReaper(): Promise<void> {
+    await this.live.refresh();
+    await this.reaperStep();
+  }
+
+  private async reaperStep(): Promise<void> {
     const now = this.d.clock.now().getTime();
     const previous = this.lastReaperTick;
     this.lastReaperTick = now;
-    if (previous !== null && now - previous > this.d.config.lease_ms) {
+    if (previous !== null && now - previous > this.cfg.lease_ms) {
       // This process slept (or stalled) longer than a lease: every lease looks expired, including those of
       // workers that slept with us and are about to renew. Give them one heartbeat_ms first.
-      this.reaperGraceUntil = now + this.d.config.heartbeat_ms;
+      this.reaperGraceUntil = now + this.cfg.heartbeat_ms;
       this.d.log.warn("reaper woke after a gap; grace before expiring leases", { gap_ms: now - previous });
     }
     if (now < this.reaperGraceUntil) return;
-    const { retry_base_ms, retry_max_ms } = this.d.config;
+    const { retry_base_ms, retry_max_ms } = this.cfg;
     // One repository per factory today, so the configured repo's limit applies to every lease.
     const { max_attempts } = this.settings(this.project());
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
@@ -450,7 +478,7 @@ export class Controller {
       case "pr_open":
         return this.prOpen(e);
       case "pr_unmergeable": {
-        const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+        const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
         if (!id) return;
         const key = `${id}:update:${e.pr_number}:${e.head_sha}:${e.base_sha}`;
         await this.decide(id as WorkItemId, async (it) => {
@@ -501,7 +529,7 @@ export class Controller {
   /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
   private async itemOfFinishedPr(e: PrFinishedEvent): Promise<WorkItem | null> {
     if (e.fork) return null;
-    const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+    const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) return this.d.store.getWorkItem(id as WorkItemId);
     const it = await this.d.store.getWorkItemByPr(this.project(), e.pr_number);
     return it?.origin === "adopted" ? it : null;
@@ -526,7 +554,7 @@ export class Controller {
    * head. Any other PR is adopted, unless a user with write permission put `factory: skip` on it.
    */
   private async prOpen(e: PrOpenEvent): Promise<void> {
-    const id = workItemIdFromBranch(e.head_branch, this.d.config.branch_prefix);
+    const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) {
       const it = await this.d.store.getWorkItem(id as WorkItemId);
       if (it && it.pr_number === e.pr_number) await this.recordHead(it, e);
@@ -666,7 +694,7 @@ export class Controller {
 
   /** The work item of a factory PR, from its head branch; null unless that item's PR is this one. */
   private async itemOfPr(pr: { pr_number: number; head_branch: string }): Promise<WorkItem | null> {
-    const id = workItemIdFromBranch(pr.head_branch, this.d.config.branch_prefix);
+    const id = workItemIdFromBranch(pr.head_branch, this.cfg.branch_prefix);
     if (!id) return null;
     const it = await this.d.store.getWorkItem(id as WorkItemId);
     return it && it.pr_number === pr.pr_number ? it : null;
@@ -965,7 +993,7 @@ export class Controller {
   /** The work item a verdict names: by issue, or by the PR's head branch when that PR is the item's. */
   private async verdictItem(e: VerdictEvent): Promise<WorkItem | null> {
     if (e.target.kind === "issue") return this.d.store.getWorkItemBySource(e.target.source.type, e.target.source.id);
-    const id = workItemIdFromBranch(e.target.head_branch, this.d.config.branch_prefix);
+    const id = workItemIdFromBranch(e.target.head_branch, this.cfg.branch_prefix);
     const item = id ? await this.d.store.getWorkItem(id as WorkItemId) : null;
     return item && (item.pr_number === null || item.pr_number === e.target.pr_number) ? item : null;
   }
@@ -1048,7 +1076,7 @@ export class Controller {
       case "revise_requested": {
         const feedback = e.feedback.trim();
         if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
-        const limit = this.d.config.max_loops;
+        const limit = this.cfg.max_loops;
         if (it.blocked_reason === "max_revisions") {
           return { refuse: `the spec reached the revision limit (\`max_loops\` = ${limit}); reply \`/approve\` or \`/reject <reason>\`` };
         }
@@ -1247,7 +1275,7 @@ export class Controller {
   private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
     const feedback = e.feedback.trim();
     if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
-    const limit = this.d.config.max_loops;
+    const limit = this.cfg.max_loops;
     if (it.revision_count >= limit) {
       return {
         refuse: `the spec was revised ${it.revision_count} times, the revision limit (\`max_loops\` = ${limit}); ` +
@@ -1355,17 +1383,17 @@ export class Controller {
 
   /** The configured repo's project key (design 2026-11-01): what every write and lookup uses. Never shown. */
   private project(): string {
-    return this.d.config.project.key;
+    return this.cfg.project.key;
   }
 
   /** The configured repo's `owner/name`, only to build PR source ids (`owner/name#N`, unchanged by project keys). */
   private repoPath(): string {
-    return `${this.d.config.repo.owner}/${this.d.config.repo.name}`;
+    return `${this.cfg.repo.owner}/${this.cfg.repo.name}`;
   }
 
   /** The per-project gate settings of `project` (design 2026-11-01): the only way core reads them. */
   private settings(project: string): ProjectSettings {
-    return settingValues(project, this.d.config.settings, this.d.learned);
+    return settingValues(project, this.cfg.settings, this.d.learned);
   }
 
   /**
@@ -1399,6 +1427,11 @@ export class Controller {
    * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
    */
   async tickCoordination(): Promise<void> {
+    await this.live.refresh();
+    await this.coordinationStep();
+  }
+
+  private async coordinationStep(): Promise<void> {
     const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
       .filter((r) => r.kind === "implement")
       .slice(0, COORDINATION_BATCH);
@@ -1567,7 +1600,7 @@ export class Controller {
             token_cost: tokens,
           };
           // A split spec always waits for a human: its /approve files issues on the source.
-          if (!spec.phases && !needsSpecApproval(tier, this.d.config.dials)) {
+          if (!spec.phases && !needsSpecApproval(tier, this.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -1621,10 +1654,10 @@ export class Controller {
             };
           }
           if (parsed.value.verdict === "bug") {
-            if (it.loop_count + 1 >= this.d.config.max_loops) {
+            if (it.loop_count + 1 >= this.cfg.max_loops) {
               const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
               await this.comment(it, `max-loops:${run.id}`,
-                `Review found bugs ${it.loop_count + 1} times (limit ${this.d.config.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+                `Review found bugs ${it.loop_count + 1} times (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
               return {
                 patch,
                 actor: SYSTEM,
@@ -1757,15 +1790,15 @@ export class Controller {
         return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
       }
       const loop = it.loop_count + 1;
-      if (loop >= this.d.config.max_loops) {
+      if (loop >= this.cfg.max_loops) {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
         await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
-          `PR #${it.pr_number} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.d.config.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+          `PR #${it.pr_number} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
         return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
       }
       const next = { ...it, loop_count: loop };
       await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-        `PR #${it.pr_number} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.d.config.max_loops}).`);
+        `PR #${it.pr_number} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.cfg.max_loops}).`);
       return {
         patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
         actor: SYSTEM,
@@ -1812,6 +1845,11 @@ export class Controller {
    * replica and safe to repeat: each decision re-reads the item and lands as a conditional transition.
    */
   async tickChecks(): Promise<void> {
+    await this.live.refresh();
+    await this.checksStep();
+  }
+
+  private async checksStep(): Promise<void> {
     const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
     for (const w of waiting) {
       if (!waitingOnChecks(w)) continue;
@@ -1830,7 +1868,7 @@ export class Controller {
    * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
    */
   private async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
-    const { max_restart, retry_base_ms, retry_max_ms } = this.d.config;
+    const { max_restart, retry_base_ms, retry_max_ms } = this.cfg;
     const { max_attempts } = this.settings(it.project);
     const step = (await this.d.store.listRuns(it.id)).filter(
       (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null),
@@ -1919,7 +1957,7 @@ export class Controller {
     if (auto && next !== null) {
       const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
       const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
-      const notBefore = code === "rate_limited" ? (reset ?? iso(failedAt + this.d.config.retry_max_ms)) : null;
+      const notBefore = code === "rate_limited" ? (reset ?? iso(failedAt + this.cfg.retry_max_ms)) : null;
       return {
         patch: {},
         actor: SYSTEM,
@@ -2081,7 +2119,7 @@ export class Controller {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.settings(it.project).max_attempts}), so the factory stopped retrying it.`
-      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.d.config.max_restart}), so the factory stopped restarting it.`;
+      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
     const tail = (out?.output_tail || out?.detail || "").trim();
     const body = [
       what,
@@ -2175,7 +2213,7 @@ export class Controller {
       current: budget,
       base,
       history: await this.d.store.getTierHistory(it.project, next.tier),
-      min_sample: this.d.config.budget_min_sample ?? DEFAULT_BUDGET_MIN_SAMPLE,
+      min_sample: this.cfg.budget_min_sample ?? DEFAULT_BUDGET_MIN_SAMPLE,
     });
     const runs = (await this.d.store.listRuns(it.id)).length;
     await this.comment(it, `budget:${run.idempotency_key}`, checkpointComment({

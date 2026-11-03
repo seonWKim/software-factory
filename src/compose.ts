@@ -12,7 +12,9 @@ import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
-import { settingsLayers } from "./core/settings.js";
+import {
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, settingsLayers, workerCount,
+} from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -166,7 +168,7 @@ export async function loadConfig(
   if (!isTier(file.dials.spec_gate_min_tier)) {
     throw new Error("tiers must be integers 1–5");
   }
-  if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error("heartbeat_ms must be well under lease_ms");
+  if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
   const workers = workerCount(file.workers);
   const retry = retryConfig(file);
@@ -367,6 +369,16 @@ export async function build(
   await saveProjectLabel(store, project);
   const config = resolvedConfig(loaded.config, project);
 
+  // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
+  // controller and the worker pool, refreshed each tick. The file's per-project blocks are keyed by project key.
+  const settings = new LiveSettings({
+    config,
+    base: { ...settingsBase(loaded), layers: config.settings },
+    source: store,
+    log: new ConsoleLogger(clock, "settings"),
+  });
+  await settings.refresh();
+
   const controller = new Controller({
     store,
     sources,
@@ -378,6 +390,7 @@ export async function build(
     llm,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
+    settings,
   });
 
   const worker = new WorkerPool({
@@ -399,18 +412,28 @@ export async function build(
     awake,
     capability,
     testDatabase,
+    settings,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
-export function workerCount(value: unknown): number {
-  if (value === undefined) return 1;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+export { workerCount };
+
+/**
+ * What factory.config.json says about each settable key, before any override (design 2026-11-03): the global keys
+ * as written in the file (absent: not set there), and the checked per-project layers, still keyed by `owner/name`
+ * as the file writes them. build() swaps in the layers re-keyed to the project key.
+ */
+export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsBase {
+  const raw = loaded.file as unknown as Record<string, unknown>;
+  const file: Partial<Record<GlobalSettableKey, unknown>> = {};
+  for (const k of SETTABLE_KEYS) {
+    if (isProjectSettableKey(k)) continue;
+    if (raw[k] !== undefined) file[k] = raw[k];
   }
-  return value;
+  return { file, layers: loaded.config.settings };
 }
 
 /** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
