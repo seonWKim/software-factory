@@ -238,7 +238,46 @@ export const MIGRATIONS: readonly string[] = [
     paused_at   TEXT NOT NULL
   );
   `,
-  // 16: runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project_key` is '' for a
+  // 16: coordination (design §5, 2026-11-03). Triage's files_to_change and a PR's file list on the item (old rows
+  // keep both NULL: the cost falls back to allowed_paths). Dependency edges, recorded conflicts per file (one row
+  // per file and conflict event, so recording twice counts once), and the latest claim decision per held run.
+  `
+  ALTER TABLE work_items ADD COLUMN files_to_change TEXT;
+  ALTER TABLE work_items ADD COLUMN pr_files TEXT;
+  CREATE TABLE dependency_edges (
+    work_item_id  TEXT NOT NULL REFERENCES work_items(id),
+    depends_on    TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (work_item_id, depends_on)
+  );
+  CREATE INDEX dependency_edges_target ON dependency_edges (depends_on);
+  CREATE TABLE file_conflicts (
+    project_key  TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    event_key    TEXT NOT NULL,
+    at           TEXT NOT NULL,
+    PRIMARY KEY (project_key, path, event_key)
+  );
+  CREATE TABLE claim_decisions (
+    run_id               TEXT PRIMARY KEY,
+    work_item_id         TEXT NOT NULL REFERENCES work_items(id),
+    decision             TEXT NOT NULL,
+    holder_work_item_id  TEXT,
+    holder_ref           TEXT NOT NULL,
+    holder_kind          TEXT NOT NULL,
+    shared               TEXT NOT NULL,
+    cost                 REAL NOT NULL,
+    threshold            REAL NOT NULL,
+    fallback             INTEGER NOT NULL,
+    approved_by          TEXT,
+    at                   TEXT NOT NULL
+  );
+  CREATE INDEX claim_decisions_work_item ON claim_decisions (work_item_id, at);
+  `,
+  // 17: runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project_key` is '' for a
   // global override, else a project key. Values are JSON text. AUTOINCREMENT: audit rows keep commit order.
   `
   CREATE TABLE settings_overrides (

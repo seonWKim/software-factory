@@ -75,7 +75,7 @@ export const INLINE_STEPS: readonly InlineStep[] = [
     ].join("\n"),
   },
   {
-    number: 16,
+    number: 17,
     name: "settings-overrides",
     // Runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project_key` is '' for a
     // global override, else a project key. Values are JSON text. `seq` keeps the audit rows in commit order.

@@ -1,11 +1,15 @@
 import type { TierHistory } from "../core/budget.js";
+import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor,
   BlockedOn,
   BudgetAnswer,
   BudgetCheckpoint,
   BudgetCheckpointId,
+  ClaimDecision,
   ClaimPauseName,
+  DependencyEdge,
+  DependencyState,
   Tier,
   Handoff,
   Run,
@@ -218,6 +222,32 @@ export interface ClaimInput {
   worker_id: WorkerId;
   kinds: readonly RunKind[];
   lease_ms: number;
+  /** The coordination threshold and weights (design §5, 2026-11-03). Absent: DEFAULT_COORDINATION. */
+  coordination?: CoordinationSettings;
+}
+
+/** `/approve` on an implement run held by coordination cost (design §5, 2026-11-03). */
+export interface ApproveClaimHoldInput {
+  id: WorkItemId;
+  /** Applies only if the item's current version equals this. */
+  expected_version: number;
+  /** The approver: recorded on the state change and on the claim decision. */
+  actor: Extract<Actor, { kind: "user" }>;
+  run_id: RunId;
+}
+
+export type ApproveClaimHoldResult =
+  | { ok: true; item: WorkItem; state_change: StateChange; decision: ClaimDecision }
+  | Exclude<TransitionResult, { ok: true }>
+  /** The run is not a queued run of this item with a `held` claim decision. Nothing changed. */
+  | { ok: false; reason: "not_held" };
+
+/** A recorded merge conflict (design §5, 2026-11-03): `paths` conflicted in one event, named by `event_key`. */
+export interface RecordConflictsInput {
+  project: string;
+  paths: readonly string[];
+  /** Unique per conflict event (e.g. `<item id>:<base sha>`): recording the same event again counts nothing. */
+  event_key: string;
 }
 
 export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
@@ -311,6 +341,14 @@ export interface FactoryStore {
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
    * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
    * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
+   * Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
+   * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not
+   * satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an
+   * item with no PR, while its coordination cost against a holder is at or above `coordination.max_cost` (see
+   * src/core/coordination.ts; files: pr_files, else files_to_change, else allowed_paths). Holders: items with an
+   * implement-type run running, items with an open PR, other claimable queued implement runs. A run held only
+   * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
+   * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
@@ -370,6 +408,30 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+
+  // Coordination (design §5, 2026-11-03)
+
+  /**
+   * Makes `links` the item's edges: new ones are inserted `open`, kept ones keep their state, others are deleted.
+   * Idempotent. Returns the item's edges.
+   */
+  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]>;
+  /** Edges of one item, or every edge pointing to one source id, or every edge. Read-only. */
+  listDependencyEdges(filter?: { work_item_id?: WorkItemId; depends_on?: string }): Promise<DependencyEdge[]>;
+  /** Sets one edge's state. False when there is no such edge. */
+  setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState): Promise<boolean>;
+  /** Records one conflict on each path; a path already recorded for this event_key counts once. Returns the new rows. */
+  recordConflicts(input: RecordConflictsInput): Promise<number>;
+  /** Recorded conflicts per path in `project`. Read-only. */
+  conflictCounts(project: string): Promise<Map<string, number>>;
+  /** The item's claim decisions, oldest first. Read-only. */
+  listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>;
+  /**
+   * `/approve` on a held run: bumps the version and writes a state change (reason `coordination_approved`, the
+   * approver as actor, detail = run id, holder, cost, threshold) and sets the decision's `approved_by`, in one
+   * transaction. The next claim takes the run whatever its cost.
+   */
+  approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult>;
 
   // PR heads (design 2026-11-01)
 

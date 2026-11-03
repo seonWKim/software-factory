@@ -1028,7 +1028,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
-  describe("one branch writer per item: overlapping paths do not hold runs back", () => {
+  describe("one branch writer per item: overlapping paths below the coordination threshold do not hold runs back", () => {
     const ALL: RunKind[] = ["triage", "implement", "review", "update"];
     const ok = { status: "succeeded" as const, summary: "", data: {} };
 
@@ -1049,8 +1049,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
 
     it("two items with overlapping allowed_paths have implement-type runs running at the same time", async () => {
       const { store } = await make();
-      const a = await item(store, 1, ["src/", "docs/design.md"], ["implement"]);
-      const b = await item(store, 2, ["src/core/x.ts", "docs/design.md"], ["update"]);
+      // Two ordinary shared files: cost 2.0, under the default max_coordination_cost of 2.5 (design §5, 2026-11-03).
+      const a = await item(store, 1, ["lib/", "docs/notes.md"], ["implement"]);
+      const b = await item(store, 2, ["lib/x.ts", "docs/notes.md"], ["update"]);
       const [first, second] = await Promise.all([claim(store, w1), claim(store, w2)]);
       expect(new Set([first?.work_item_id, second?.work_item_id])).toEqual(new Set([a, b]));
       expect(await store.listRunsByStatus(["running"], 10)).toHaveLength(2);
@@ -1076,8 +1077,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
 
     it("a held run does not hold up a later run of another item (FIFO among eligible runs)", async () => {
       const { store } = await make();
-      const a = await item(store, 1, ["src/"], ["update", "implement"]);
-      const b = await item(store, 2, ["src/"], ["implement"]);
+      // `lib/` is one ordinary shared path (cost 1.0), so only the same-item rule holds a's implement run.
+      const a = await item(store, 1, ["lib/"], ["update", "implement"]);
+      const b = await item(store, 2, ["lib/"], ["implement"]);
       await claim(store);
       expect((await claim(store))?.work_item_id).toBe(b);
       expect((await store.listRuns(a)).find((r) => r.kind === "implement")!.status).toBe("queued");
