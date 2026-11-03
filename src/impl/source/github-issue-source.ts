@@ -1,6 +1,7 @@
 import { parseComment } from "../../core/commands.js";
+import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
-import type { SourceRef } from "../../core/types.js";
+import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type {
   ClosePrInput, PollResult, PollSource, PrChecks, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
@@ -32,6 +33,15 @@ interface GhIssueFull extends GhIssue {
   closed_by: GhUser | null;
   /** completed, not_planned, reopened, duplicate, ... ; null when GitHub has none. */
   state_reason?: string | null;
+}
+/** An issue as the sub-issue and dependency lists return it. */
+interface GhLinkedIssue {
+  number: number;
+  /** `https://api.github.com/repos/<owner>/<name>`: the linked issue may live in another repository. */
+  repository_url?: string;
+  state?: string;
+  state_reason?: string | null;
+  pull_request?: { merged_at?: string | null } | null;
 }
 interface GhComment {
   id: number;
@@ -153,7 +163,7 @@ const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
-export class GitHubIssueSource implements PollSource {
+export class GitHubIssueSource implements PollSource, DependencySource {
   readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
 
@@ -454,6 +464,48 @@ export class GitHubIssueSource implements PollSource {
   }
 
   /**
+   * The items an issue waits for (design §5, 2026-11-03), each once, in this order: `Depends on` lines in its
+   * body, its sub-issues (a parent waits for its sub-issues), and its blocked-by links. A list GitHub does not
+   * offer (404 or 410: the feature is off) gives no links. Read-only.
+   */
+  async dependencyLinks(source: SourceRef): Promise<DependencyLink[]> {
+    const repo = `${this.repo.owner}/${this.repo.name}`;
+    const base = `/repos/${repo}/issues/${issueNumberFromSourceId(source.id)}`;
+    const issue = await this.client.request<Pick<GhIssue, "body">>("GET", base);
+    const links: DependencyLink[] = parseDependsOn(issue?.body ?? "", repo).map((d) => ({ depends_on: d, kind: "depends_on" }));
+    const add = (i: GhLinkedIssue, kind: DependencyLink["kind"]) => {
+      const id = `${repoOf(i.repository_url) ?? repo}#${i.number}`;
+      if (Number.isInteger(i.number) && i.number > 0 && !links.some((l) => l.depends_on === id)) links.push({ depends_on: id, kind });
+    };
+    for (const i of await this.optionalList<GhLinkedIssue>(`${base}/sub_issues`)) add(i, "sub_issue");
+    for (const i of await this.optionalList<GhLinkedIssue>(`${base}/dependencies/blocked_by`)) add(i, "blocked_by");
+    return links.filter((l) => l.depends_on !== source.id);
+  }
+
+  /**
+   * An item the store does not track: open; merged (a PR merged, or an issue closed as completed); or closed
+   * without that. Read-only: one GET.
+   */
+  async dependencyState(depends_on: string): Promise<DependencyState> {
+    const [repo, n] = depends_on.split("#");
+    if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !n) throw new Error(`not a GitHub issue source id: ${depends_on}`);
+    const i = await this.client.request<GhLinkedIssue>("GET", `/repos/${repo}/issues/${issueNumberFromSourceId(depends_on)}`);
+    if (i.state === "open") return "open";
+    if (i.pull_request) return i.pull_request.merged_at ? "merged" : "closed_unmerged";
+    return i.state_reason === "completed" ? "merged" : "closed_unmerged";
+  }
+
+  /** A list GET whose endpoint may be off for this repository (404, 410): empty then. */
+  private async optionalList<T>(path: string): Promise<T[]> {
+    try {
+      return await this.client.list<T>(path, 1);
+    } catch (err) {
+      if (err instanceof GitHubError && (err.status === 404 || err.status === 410)) return [];
+      throw err;
+    }
+  }
+
+  /**
    * Reads the PR; if it is still open, posts the comment (once per marker) naming who closed the issue, then
    * closes the PR (state closed, never a merge). A merged or closed PR is left alone.
    */
@@ -572,6 +624,12 @@ export class GitHubIssueSource implements PollSource {
 
 function identity(u: GhUser): ExternalIdentity {
   return { provider: "github", subject: String(u.id), login: u.login };
+}
+
+/** "owner/name" from an API repository URL (`.../repos/<owner>/<name>`), or null. */
+function repoOf(url: string | undefined): string | null {
+  const m = /\/repos\/([^/]+\/[^/]+)\/?$/.exec(url ?? "");
+  return m ? m[1]! : null;
 }
 
 /** GitHub's issue state_reason, as far as the factory reads it. */

@@ -13,6 +13,7 @@ export type CommandPhase =
   | "budget_checkpoint"
   | "max_revisions"
   | "implementing"
+  | "dependency_hold"
   | "floor_tier"
   | "too_large"
   | "failed_implement"
@@ -25,7 +26,7 @@ export type CommandPhase =
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
-  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "floor_tier", "too_large",
+  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "floor_tier", "too_large",
   "failed_implement", "failed_run", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
@@ -57,7 +58,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "approve",
     usage: "/approve [notes]",
-    description: "Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer",
+    description:
+      "Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer",
+    // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03): that hold is not in the
+    // item's fields, so it is no phase here; the hold comment names the command. Never on a dependency hold.
     phases: ["spec_pending", "max_revisions", "floor_tier"],
     needs_pr: false,
     changes_state: true,
@@ -162,6 +166,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending") return "merge_pending";
   if (it.blocked_reason === "max_loops") return "max_loops";
   if (it.blocked_reason === "merge_conflict_pending") return "merge_conflict";
+  if (it.blocked_on === "dependency") return "dependency_hold";
   if (it.blocked_on !== "none") return "other_blocked";
   if (it.stage === "NEW") return "triaging";
   if (it.stage === "REVIEW") return "reviewing";
@@ -219,6 +224,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   budget_checkpoint: "paused at a budget checkpoint",
   max_revisions: "spec at the revision limit",
   implementing: "implementing",
+  dependency_hold: "waiting for a dependency to merge",
   floor_tier: "blocked by the floor check",
   too_large: "blocked: the change was too large",
   failed_implement: "blocked by a failed implement run",

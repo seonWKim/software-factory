@@ -135,6 +135,7 @@ describe("footers match what the controller accepts", () => {
     budget_checkpoint: { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" },
     max_revisions: { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" },
     implementing: { stage: "RUNNING" },
+    dependency_hold: { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #1 to merge" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
     failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
     too_large: { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" },

@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 import type {
   BudgetCheckpoint,
   BudgetCheckpointId,
+  ClaimDecision,
+  DependencyEdge,
   Handoff,
   HandoffId,
   Run,
@@ -29,7 +31,7 @@ import type {
 import type { NewWorkItem } from "../../../interfaces/factory-store.js";
 import type { Row, SqlValue } from "./driver.js";
 
-const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths"]);
+const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files"]);
 const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "project",
   "problem",
@@ -53,6 +55,8 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "failure_comment_url",
   "revision_count",
   "spec_feedback",
+  "files_to_change",
+  "pr_files",
 ];
 
 export function newId(prefix: string): string {
@@ -96,6 +100,9 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     last_head_sha: a ? a.head_sha : null,
     parent_id: !a && input.parent ? input.parent.id : null,
     phase: !a && input.parent ? input.parent.phase : null,
+    files_to_change: null,
+    // An adopted PR's file list is its allowed_paths: the files it changes (design 2026-11-03).
+    pr_files: a ? a.allowed_paths : null,
     created_at: now,
     updated_at: now,
   };
@@ -106,7 +113,8 @@ export const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
   "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
-  "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha, parent_id, phase";
+  "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha, parent_id, phase, " +
+  "files_to_change, pr_files";
 
 export function workItemValues(i: WorkItem): SqlValue[] {
   return [
@@ -117,6 +125,7 @@ export function workItemValues(i: WorkItem): SqlValue[] {
     i.spec_comment_url, i.failure_comment_url,
     i.issue_text, i.revision_count, i.spec_feedback, i.origin, i.head_branch, i.last_head_sha,
     i.parent_id, i.phase,
+    i.files_to_change && JSON.stringify(i.files_to_change), i.pr_files && JSON.stringify(i.pr_files),
   ];
 }
 
@@ -186,6 +195,8 @@ export function rowToWorkItem(r: Row): WorkItem {
     last_head_sha: (r.last_head_sha as string | null | undefined) ?? null,
     parent_id: (r.parent_id as WorkItemId | null | undefined) ?? null,
     phase: r.phase === null || r.phase === undefined ? null : Number(r.phase),
+    files_to_change: parseJson(r.files_to_change),
+    pr_files: parseJson(r.pr_files),
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
@@ -287,6 +298,34 @@ export function rowToUnreviewedMerge(r: Row): UnreviewedMerge {
     pr_number: Number(r.pr_number),
     merge_sha: r.merge_sha as string,
     merger_id: (r.merger_id as UserId | null | undefined) ?? null,
+    at: r.at as Timestamp,
+  };
+}
+
+export function rowToDependencyEdge(r: Row): DependencyEdge {
+  return {
+    work_item_id: r.work_item_id as WorkItemId,
+    depends_on: r.depends_on as string,
+    kind: r.kind as DependencyEdge["kind"],
+    state: r.state as DependencyEdge["state"],
+    created_at: r.created_at as Timestamp,
+    updated_at: r.updated_at as Timestamp,
+  };
+}
+
+export function rowToClaimDecision(r: Row): ClaimDecision {
+  return {
+    run_id: r.run_id as RunId,
+    work_item_id: r.work_item_id as WorkItemId,
+    decision: r.decision as ClaimDecision["decision"],
+    holder_work_item_id: (r.holder_work_item_id as WorkItemId | null) ?? null,
+    holder_ref: r.holder_ref as string,
+    holder_kind: r.holder_kind as ClaimDecision["holder_kind"],
+    shared: JSON.parse(r.shared as string) as ClaimDecision["shared"],
+    cost: Number(r.cost),
+    threshold: Number(r.threshold),
+    fallback: Number(r.fallback) === 1,
+    approved_by: (r.approved_by as UserId | null) ?? null,
     at: r.at as Timestamp,
   };
 }
