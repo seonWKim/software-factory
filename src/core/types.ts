@@ -170,6 +170,32 @@ export interface WipRef {
 }
 
 /**
+ * What a paused run left behind for the run that resumes it (design §5 Pause). Written by the worker that paused
+ * it, from trusted git calls after the agent stopped; read only by the worker that claims it next.
+ */
+export interface RunResume {
+  /** The host part of the pausing worker's id (`<host>:<pid>:<n>`). Only a worker on this host reattaches. */
+  host: string;
+  /** The sandbox id of the run folder, kept on that host until the run ends. */
+  folder: string;
+  /** The trusted base the folder was created against (its handle's `base_sha`), when the sandbox reported one. */
+  base_sha: string | null;
+  /** Implement only: HEAD before the agent's first step, the start of the run's own commits. */
+  start_sha: string | null;
+  /** Implement only: HEAD after the WIP commit, the commit a cross-host resume restores. */
+  head: string | null;
+  /** Implement only: the shared-storage key of the git bundle of start_sha..head; null when nothing to keep. */
+  bundle: string | null;
+}
+
+/** A row of `worker_pauses` (design §5 Pause): one worker loop, or every loop when `worker_id` is `*`. */
+export interface WorkerPause {
+  worker_id: WorkerId | "*";
+  paused_by: string;
+  paused_at: Timestamp;
+}
+
+/**
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update).
  */
@@ -208,6 +234,20 @@ export interface Run {
   not_before: Timestamp | null;
   /** Set at enqueue (e.g. the notes of a `/resolve`). Null when none was given, and on rows from before it existed. */
   input: RunInput | null;
+  /**
+   * Set while the run waits in `queued` after `workers pause` stopped it (design §5 Pause): no outcome, the lease
+   * cleared, `attempt` unchanged. Cleared by the claim that resumes it. Null otherwise, and on older rows.
+   */
+  paused_at: Timestamp | null;
+  /** The ID that asked for the pause (`--by`, default `system:cli`); set and cleared with paused_at. */
+  paused_by: string | null;
+  /**
+   * The agent session of the run's main step when it was paused, for a same-host resume (`--resume`). Kept
+   * after the resuming claim; null when the run was never paused.
+   */
+  session_id: string | null;
+  /** Where a paused run's work is (folder, WIP commit, bundle), written by the pause; null when never paused. */
+  resume: RunResume | null;
   created_at: Timestamp;
   /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;

@@ -13,6 +13,7 @@ import type {
   RunInput,
   RunKind,
   RunOutcome,
+  RunResume,
   RunStatus,
   SourceRef,
   SourceType,
@@ -30,6 +31,7 @@ import type {
   WorkItemId,
   WorkItemPatch,
   WorkerId,
+  WorkerPause,
 } from "../core/types.js";
 import type { LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
@@ -309,8 +311,29 @@ export interface FactoryStore {
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
    * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
    * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
+   * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
+   * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
+   * clears paused_at and paused_by; its session_id and resume stay for the worker.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
+  /**
+   * `workers pause <n>`: pauses the `count` workers, not paused yet, whose running runs started most recently
+   * (one row each in `worker_pauses`). `workers pause --all` (`all: true`): the all-flag, so no loop claims,
+   * idle ones included. Returns the worker ids paused by this call (`*` for the flag). Survives a restart.
+   */
+  pauseWorkers(input: { count: number } | { all: true }, by: string): Promise<{ paused: (WorkerId | "*")[] }>;
+  /** `workers resume`: clears every worker pause and the all-flag. Returns how many rows went. */
+  resumeWorkers(): Promise<{ cleared: number }>;
+  /** The pause that applies to `worker_id` (its own row, else the all-flag), or null. Read-only. */
+  workerPause(worker_id: WorkerId): Promise<WorkerPause | null>;
+  /** Every worker pause row, the all-flag included, oldest first. Read-only. */
+  listWorkerPauses(): Promise<WorkerPause[]>;
+  /**
+   * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
+   * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
+   * (it is not finished). lease_lost when the run is no longer ours.
+   */
+  pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume }): Promise<LeaseResult>;
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
