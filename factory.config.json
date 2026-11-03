@@ -1,7 +1,11 @@
 {
   "env": "local",
   "store": { "type": "mysql", "host": "localhost", "port": 3306, "database": "software_factory", "user": "factory" },
-  "repo": { "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main", "install_command": ["npm", "ci"], "test_command": ["npm", "test"] },
+  "repo": {
+    "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
+    "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
+    "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]]
+  },
   "intake_label": "factory",
   "branch_prefix": "factory/",
   "dials": { "spec_gate_min_tier": 1, "auto_merge_max_tier": 0 },
@@ -30,7 +34,8 @@
     "capability": "list-all",
     "clock": "system",
     "updater": "git-worktree",
-    "github_auth": "app"
+    "github_auth": "app",
+    "test_database": "none"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {

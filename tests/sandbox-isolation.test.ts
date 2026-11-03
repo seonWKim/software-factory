@@ -270,7 +270,8 @@ describe("the worker's implement run in a real clone", () => {
     });
     if (!moved.ok) throw new Error("setup");
     const before = factoryState(f.repo);
-    const cfg: FactoryConfig = { ...config, ...cfgPatch, repo: { ...config.repo, path: f.repo } };
+    // The pre-push checks (design §4) run in the clone; this one passes, so the run goes on to push.
+    const cfg: FactoryConfig = { ...config, ...cfgPatch, repo: { ...config.repo, path: f.repo, test_command: ["sh", "-c", "exit 0"] } };
     const runner = new FakeRunner({
       implement: (spec: AgentRunSpec) => {
         agent(spec.sandbox.workdir, f.root);

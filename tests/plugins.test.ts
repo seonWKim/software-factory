@@ -25,6 +25,7 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
+import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -73,6 +74,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   updater: { "git-worktree": GitWorktreeUpdater },
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
+  test_database: { none: NoTestDatabase },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -171,6 +173,7 @@ describe("plugin registry: defaults", () => {
       updater: "git-worktree",
       awake: "caffeinate",
       github_auth: "token",
+      test_database: "none",
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
@@ -735,7 +738,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 15 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(15);
+  it("covers 16 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(16);
   });
 });

@@ -19,6 +19,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
+import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
@@ -41,6 +42,7 @@ export interface Instances {
   updater: Updater;
   awake: KeepAwake;
   github_auth: GitHubCredentials;
+  test_database: TestDatabase;
 }
 
 export type PluginKind = keyof Instances;
@@ -72,6 +74,8 @@ export interface Contexts {
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
+  /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
+  test_database: BaseContext & { secrets: SecretStore };
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
