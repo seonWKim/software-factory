@@ -29,3 +29,4 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | Updater | `git-worktree`, `none` | [updater.md](plugins/updater.md) |
 | KeepAwake | `caffeinate`, `none` | [keep-awake.md](plugins/keep-awake.md) |
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
+| TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
