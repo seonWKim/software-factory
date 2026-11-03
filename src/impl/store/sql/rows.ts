@@ -224,6 +224,10 @@ export function rowToRun(r: Row): Run {
     finished_at: (r.finished_at as Timestamp | null | undefined) ?? null,
     not_before: (r.not_before as Timestamp | null | undefined) ?? null,
     input: parseJson(r.input ?? null),
+    paused_at: (r.paused_at as Timestamp | null | undefined) ?? null,
+    paused_by: (r.paused_by as string | null | undefined) ?? null,
+    session_id: (r.session_id as string | null | undefined) ?? null,
+    resume: parseJson(r.pause_state ?? null),
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };

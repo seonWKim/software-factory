@@ -1,4 +1,4 @@
--- Coordination (design §5, 2026-11-03, issue #115): the same tables and columns as SQLite migration 15,
+-- Coordination (design §5, 2026-11-03, issue #115): the same tables and columns as SQLite migration 16,
 -- plus `seq` for insertion order.
 
 ALTER TABLE work_items ADD COLUMN files_to_change MEDIUMTEXT NULL;

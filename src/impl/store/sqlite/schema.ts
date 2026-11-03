@@ -224,7 +224,21 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX link_codes_live ON link_codes (used_at, expires_at);
   `,
-  // 15: coordination (design §5, 2026-11-03). Triage's files_to_change and a PR's file list on the item (old rows
+  // 15: pause and resume (design §5 Pause, issue #146). A paused run waits in queued with paused_at set; its
+  // session and resume point are kept for the next claim. One worker_pauses row per paused worker loop, `*` for
+  // every loop. Old rows keep the new run columns NULL.
+  `
+  ALTER TABLE runs ADD COLUMN paused_at TEXT;
+  ALTER TABLE runs ADD COLUMN paused_by TEXT;
+  ALTER TABLE runs ADD COLUMN session_id TEXT;
+  ALTER TABLE runs ADD COLUMN pause_state TEXT;
+  CREATE TABLE worker_pauses (
+    worker_id   TEXT PRIMARY KEY,
+    paused_by   TEXT NOT NULL,
+    paused_at   TEXT NOT NULL
+  );
+  `,
+  // 16: coordination (design §5, 2026-11-03). Triage's files_to_change and a PR's file list on the item (old rows
   // keep both NULL: the cost falls back to allowed_paths). Dependency edges, recorded conflicts per file (one row
   // per file and conflict event, so recording twice counts once), and the latest claim decision per held run.
   `
