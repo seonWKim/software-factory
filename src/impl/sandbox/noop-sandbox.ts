@@ -72,6 +72,7 @@ export class NoOpSandbox implements Sandbox {
       ...(opts.stdin !== undefined && { stdin: opts.stdin }),
       ...(opts.timeout_ms !== undefined && { timeout_ms: opts.timeout_ms }),
       ...(opts.signal !== undefined && { signal: opts.signal }),
+      ...(opts.onStdout !== undefined && { onStdout: opts.onStdout }),
     });
   }
 
