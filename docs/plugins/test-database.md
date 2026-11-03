@@ -16,4 +16,4 @@ Switch back / disable: set `plugins.test_database` to the other plugin, or delet
 
 ## History
 
-- **The per-run test database** (changed 2026-11-01). Tests now isolate each run in its own `sf_test_*` database, so check commands can exercise MySQL without touching shared state. The previous setup used no test database by default, so the `none` plugin remained the default selection.
+- **The per-run test database** (new decision, 2026-11-03, issue #158). Before: no plugin gave check commands a database, and the MySQL tests ran only in CI. `none` stays the checked-in default until `TEST_MYSQL_URL` is in the secret file and the local test user exists; then `mysql-local` can be selected.
