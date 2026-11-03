@@ -89,6 +89,43 @@ describe("the real indexes", () => {
   });
 });
 
+describe("agents are told to read the index first and edit topic files", () => {
+  const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), "utf8");
+
+  it("AGENTS.md: index first, then only the topics the change touches; design changes name the topic file", () => {
+    const text = read("AGENTS.md");
+    expect(text).toMatch(/index first/i);
+    expect(text).toMatch(/only the topic files/i);
+    const rule = text.split("\n").find((l) => l.startsWith("- Design changes:"));
+    expect(rule, "the design-change rule").toBeDefined();
+    expect(rule).toContain("docs/design/");
+    expect(rule).toMatch(/topic file/);
+    expect(rule).toMatch(/History/);
+    expect(text).toContain("docs/plugins/<interface>.md");
+  });
+
+  it("prompts/triage.md names topic files, not the index, in files_to_change", () => {
+    const text = read("prompts/triage.md");
+    expect(text).toMatch(/topic files?/);
+    expect(text).toContain("docs/design/");
+    expect(text).toMatch(/not the index/);
+  });
+
+  it("prompts/implement.md updates the topic files, not the index", () => {
+    const text = read("prompts/implement.md");
+    expect(text).toMatch(/index first/i);
+    expect(text).toMatch(/topic file/);
+    expect(text).toMatch(/topic files, never the index/);
+    expect(text).toMatch(/History/);
+  });
+
+  it("prompts/review.md checks the topic files were updated and the index holds no decision text", () => {
+    const text = read("prompts/review.md");
+    expect(text).toMatch(/topic files?/);
+    expect(text).toMatch(/no decision text/);
+  });
+});
+
 describe("index checks, on small fixtures", () => {
   /** A fixture: `index.md` plus a `topics/` folder, from a map of relative path → content. */
   const fixture = (files: Record<string, string>): { index: string; topics: string } => {

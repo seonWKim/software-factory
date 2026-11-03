@@ -24,6 +24,10 @@ Produce:
   (not files you only read). Before answering, make sure each entry equals an allowed_paths entry or sits
   under an allowed_paths entry ending in `/`. An output where allowed_paths does not cover files_to_change
   is rejected.
+  Docs: `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic
+  files that apply. In files_to_change and allowed_paths, name the topic files the change touches
+  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), not the index. Name an index only when the change
+  adds a topic file.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.

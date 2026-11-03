@@ -6,7 +6,10 @@ Do:
 2. Write acceptance tests of your own for the done criteria and run them. They stay local; do not commit them.
 3. Look for bugs, missed edge cases, changes outside the allowed paths, and anything that touches secrets,
    permissions, gates or prompts.
-4. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
+4. If the change alters a design decision or a plugin, check that its topic files under `docs/design/` or
+   `docs/plugins/` were updated (current decision first, the replaced one under History), and that the indexes
+   (`docs/design.md`, `docs/plugins.md`) hold no decision text: one line or row per topic only.
+5. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
 Output:
 - verdict: "bug" if any done criterion is unmet, a test fails, or you found a real defect; otherwise "pass".
