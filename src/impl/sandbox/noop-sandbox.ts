@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
 /** Name of the empty hooks folder under the worktrees dir: beside the run folders, never inside one. */
 export const EMPTY_HOOKS_DIR = ".empty-hooks";
+/** The ids `create` makes; `reattach` takes no other, so a stored id can never name a path outside the worktrees dir. */
+const SANDBOX_ID = /^sbx_[0-9a-f]{8}$/;
 
 /**
  * One clone of the factory repo per run, on the host. No isolation: the agent has the host user's access, so
@@ -79,6 +81,17 @@ export class NoOpSandbox implements Sandbox {
 
   async copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void> {
     await cp(join(handle.workdir, sandboxPath), hostPath, { recursive: true });
+  }
+
+  /**
+   * A paused run's folder on this host (design §5 Pause): only an id `create` could have made, whose clone (its
+   * own `.git` folder) is still there. Anything else, a folder from another host included, is null.
+   */
+  async reattach(id: string): Promise<SandboxHandle | null> {
+    if (!SANDBOX_ID.test(id)) return null;
+    const workdir = join(this.worktreesDir, id);
+    const git = await stat(join(workdir, ".git")).catch(() => null);
+    return git?.isDirectory() ? { id, workdir } : null;
   }
 
   /** The clone is self-contained: removing its folder is the whole teardown. Nothing to undo in the factory repo. */
