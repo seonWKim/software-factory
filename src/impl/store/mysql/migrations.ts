@@ -77,22 +77,22 @@ export const INLINE_STEPS: readonly InlineStep[] = [
   {
     number: 15,
     name: "settings-overrides",
-    // Runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project` is '' for a
+    // Runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project_key` is '' for a
     // global override, else a project key. Values are JSON text. `seq` keeps the audit rows in commit order.
     // IF NOT EXISTS: MySQL DDL commits on its own, so a rerun after a failure midway must not trip on the first.
     sql: [
       "CREATE TABLE IF NOT EXISTS settings_overrides (",
       "  setting_key  VARCHAR(64) NOT NULL,",
-      "  project      VARCHAR(255) NOT NULL DEFAULT '',",
+      "  project_key  VARCHAR(255) NOT NULL DEFAULT '',",
       "  value_json   TEXT NOT NULL,",
       "  set_by       VARCHAR(128) NOT NULL,",
       "  set_at       CHAR(24) NOT NULL,",
-      "  PRIMARY KEY (setting_key, project)",
+      "  PRIMARY KEY (setting_key, project_key)",
       ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;",
       "CREATE TABLE IF NOT EXISTS settings_changes (",
       "  seq          BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,",
       "  setting_key  VARCHAR(64) NOT NULL,",
-      "  project      VARCHAR(255) NOT NULL DEFAULT '',",
+      "  project_key  VARCHAR(255) NOT NULL DEFAULT '',",
       "  old_value    TEXT NULL,",
       "  new_value    TEXT NULL,",
       "  actor        VARCHAR(128) NOT NULL,",
