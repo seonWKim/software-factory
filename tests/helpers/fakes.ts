@@ -427,6 +427,14 @@ export class FakeSandbox implements Sandbox {
   refs: Record<string, string> = {};
   /** Git argv prefixes (joined by spaces) that exit 1 with a `fatal:` stderr, e.g. "fetch" for a failed base fetch. */
   failGit: string[] = [];
+  /** What `git status --porcelain` prints: non-empty means the worktree has changes (a pause commits them). */
+  status = "";
+  /** When set, a `git commit` moves HEAD here (the WIP commit a pause makes). */
+  commitHead: string | null = null;
+  /** Folders created and not destroyed yet, by handle id: what `reattach` finds on this "host". */
+  live = new Set<string>();
+  /** Handles destroyed, in order. */
+  destroyedIds: string[] = [];
   private trees = 0;
 
   async updateBase(): Promise<string> {
@@ -434,7 +442,12 @@ export class FakeSandbox implements Sandbox {
   }
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     this.created.push(spec);
-    return { id: `sbx${this.created.length}`, workdir: `/wt/${this.created.length}` };
+    const id = `sbx${this.created.length}`;
+    this.live.add(id);
+    return { id, workdir: `/wt/${this.created.length}`, base_sha: "basesha" };
+  }
+  async reattach(id: string): Promise<SandboxHandle | null> {
+    return this.live.has(id) ? { id, workdir: `/wt/${id.slice(3)}` } : null;
   }
   async exec(_h: SandboxHandle, cmd: readonly string[], _o: ExecOptions): Promise<ExecResult> {
     const res = (exit_code: number, stdout = ""): ExecResult => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false });
@@ -462,6 +475,8 @@ export class FakeSandbox implements Sandbox {
     if (args.startsWith("grep")) return this.markers ? out(this.markers) : res(1);
     if (args.startsWith("commit-tree")) return out("resolvedsha\n");
     if (/(^| )checkout /.test(args)) this.head = `${cmd.at(-1)}\n`;
+    if (args.startsWith("status --porcelain")) return out(this.status);
+    if (/(^| )commit /.test(args) && this.commitHead) this.head = `${this.commitHead}\n`;
     if (args.startsWith("diff --cached --quiet")) return res(1);
     if (args.startsWith("diff --numstat")) {
       return out(this.numstat ?? this.changedFiles.map((f) => `1\t0\t${f}\0`).join(""));
@@ -474,8 +489,10 @@ export class FakeSandbox implements Sandbox {
   }
   async copyIn(): Promise<void> {}
   async copyOut(): Promise<void> {}
-  async destroy(): Promise<void> {
+  async destroy(h: SandboxHandle): Promise<void> {
     this.destroyed++;
+    this.live.delete(h.id);
+    this.destroyedIds.push(h.id);
   }
 }
 

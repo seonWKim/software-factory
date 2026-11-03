@@ -34,9 +34,18 @@ export interface AgentRunSpec {
   timeout_ms: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;
-  /** Abort when the worker loses its lease. */
+  /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
   signal: AbortSignal;
+  /**
+   * The agent session (design §5 Pause). Kept only for the roles in SESSION_ROLES and only when given: `id` names
+   * a new session, or with `resume` the stored one this call continues. Absent, or another role: the runner
+   * keeps no session, so nothing is left behind and nothing can be resumed.
+   */
+  session?: { id: string; resume: boolean };
 }
+
+/** The roles whose agent sessions a runner keeps (design §5 Pause): triage and update never keep one. */
+export const SESSION_ROLES: readonly RunKind[] = ["implement", "review", "resolve"];
 
 export interface AgentRunResult {
   /**
@@ -66,8 +75,20 @@ export interface AgentRunResult {
   error?: string;
   /** For `rate_limited`: when the limit resets (ISO-8601 UTC), if the runner could tell. */
   reset_at?: string;
+  /**
+   * The agent's last progress note (its latest plain text before it stopped), when the runner could tell. A
+   * pause uses it as the handoff's next steps. Agent text: the caller scans it before storing it (G5).
+   */
+  last_note?: string;
 }
 
 export interface AgentRunner {
   run(spec: AgentRunSpec): Promise<AgentRunResult>;
+  /**
+   * Whether session `id` is stored on this host and readable, so `--resume` can continue it. Absent: sessions
+   * are never resumed (a paused run starts a new session from its WIP commit and handoff).
+   */
+  hasSession?(id: string): Promise<boolean>;
+  /** Removes session `id` from this host. Idempotent; safe for a session that is already gone. */
+  removeSession?(id: string): Promise<void>;
 }

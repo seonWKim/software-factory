@@ -28,6 +28,9 @@ import type {
   WorkItem,
   WorkItemId,
   ClaimPauseName,
+  RunResume,
+  WorkerId,
+  WorkerPause,
 } from "../../../core/types.js";
 import { IMPLEMENT_KINDS } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
@@ -432,6 +435,9 @@ export class SqlFactoryStore implements FactoryStore {
       );
       const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
       if (active(RATE_LIMIT_PAUSE)) return null;
+      // `workers pause`: this loop's own row or the all-flag stops its claims (design §5 Pause), read under the lock.
+      const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
+      if (workerPaused) return null;
       const forgePaused = active(FORGE_AUTH_PAUSE);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
@@ -458,9 +464,11 @@ export class SqlFactoryStore implements FactoryStore {
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
         const id = next.id as RunId;
+        // A paused run's resume adds nothing to attempt (design §5 Pause): it was not a new try.
         const claimed = await tx.run(
-          `UPDATE runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
-             lease_expires_at = ?, started_at = ?, updated_at = ?
+          `UPDATE runs SET status = 'running', attempt = attempt + CASE WHEN paused_at IS NULL THEN 1 ELSE 0 END,
+             lease_owner = ?, lease_token = lease_token + 1, lease_expires_at = ?, started_at = ?, updated_at = ?,
+             paused_at = NULL, paused_by = NULL
            WHERE id = ? AND status = 'queued'`,
           [input.worker_id, this.after(input.lease_ms), now, now, id],
         );
@@ -501,6 +509,63 @@ export class SqlFactoryStore implements FactoryStore {
     const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
     const at = (row?.resume_at as Timestamp | undefined) ?? null;
     return at !== null && at > this.now() ? at : null;
+  }
+
+  // Worker pauses (design §5 Pause)
+
+  async pauseWorkers(input: { count: number } | { all: true }, by: string): Promise<{ paused: (WorkerId | "*")[] }> {
+    const { seq, forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      if ("all" in input) {
+        return { paused: (await this.insertOnce(tx, PAUSE_INSERT, [ALL_WORKERS, by, now])) ? [ALL_WORKERS] : [] };
+      }
+      // Under the claim lock, so no claim moves a run to running between the read and the pause rows.
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
+      const running = await tx.all(
+        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL ORDER BY started_at DESC, ${seq} DESC`,
+      );
+      const paused: WorkerId[] = [];
+      for (const r of running) {
+        const owner = r.lease_owner as WorkerId;
+        if (paused.length >= input.count) break;
+        if (already.has(owner) || paused.includes(owner)) continue;
+        if (await this.insertOnce(tx, PAUSE_INSERT, [owner, by, now])) paused.push(owner);
+      }
+      return { paused };
+    });
+  }
+
+  async resumeWorkers(): Promise<{ cleared: number }> {
+    return this.db.transaction(async (tx) => ({ cleared: await tx.run("DELETE FROM worker_pauses") }));
+  }
+
+  async workerPause(worker_id: WorkerId): Promise<WorkerPause | null> {
+    const rows = (await this.db.all("SELECT * FROM worker_pauses WHERE worker_id IN (?, ?)", [worker_id, ALL_WORKERS])).map(rowToWorkerPause);
+    return rows.find((p) => p.worker_id === worker_id) ?? rows[0] ?? null;
+  }
+
+  async listWorkerPauses(): Promise<WorkerPause[]> {
+    return (await this.db.all(`SELECT * FROM worker_pauses ORDER BY paused_at, ${this.db.dialect.seq}`)).map(rowToWorkerPause);
+  }
+
+  async pauseRun(
+    runId: RunId,
+    token: number,
+    pause: { paused_by: string; session_id: string | null; resume: RunResume },
+  ): Promise<LeaseResult> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      // Conditional on status and token, like completeRun. attempt is left as it is: the resuming claim adds nothing.
+      const paused = await tx.run(
+        `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = NULL,
+           paused_at = ?, paused_by = ?, session_id = ?, pause_state = ?, updated_at = ?
+         WHERE id = ? AND status = 'running' AND lease_token = ?`,
+        [now, pause.paused_by, pause.session_id, JSON.stringify(pause.resume), now, runId, token],
+      );
+      return paused === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
+    });
   }
 
   // Lease checks below test status and token only, never lease_expires_at. Fencing comes from the token:
@@ -1109,6 +1174,14 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
 
 /** The one row in `claim_locks`: every claim takes it first (migration 7). */
 const CLAIM_LOCK = "claim";
+
+/** The `worker_pauses` row that pauses every worker loop (`workers pause --all`). */
+const ALL_WORKERS = "*" as const;
+const PAUSE_INSERT = "INSERT INTO worker_pauses (worker_id, paused_by, paused_at) VALUES (?, ?, ?)";
+
+function rowToWorkerPause(r: Row): WorkerPause {
+  return { worker_id: r.worker_id as WorkerId | "*", paused_by: r.paused_by as string, paused_at: r.paused_at as Timestamp };
+}
 
 /**
  * claimRun's kind rank (design §5 Parallel workers): runs that lead to a human decision first (review takes a PR

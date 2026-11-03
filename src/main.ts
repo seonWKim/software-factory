@@ -13,6 +13,7 @@ import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
 import type { WorkItemId } from "./core/types.js";
+import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
@@ -38,6 +39,10 @@ const USAGE = `factory <command>
   status [id]  work items, or one item's state_changes trail
   stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
                --json for one JSON object
+  workers pause <n> | pause --all | resume | status   [--by <user id>]
+               pause n workers (those whose runs started most recently) or every loop: their implement and
+               review runs go back to the queue within one tick with their WIP committed locally, nothing
+               pushed; other runs finish first. resume clears every pause. Stored, so it survives a restart
   link-code <user_id>
                prints a one-time code that links another account (e.g. Slack) to a factory user such as
                github:12345: post /link <code> from that account. Works once, for 10 minutes
@@ -137,6 +142,22 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       try {
         const report = await collectStats(store, loaded.stats);
         console.log(args.includes("--json") ? JSON.stringify(report, null, 2) : formatStatsText(report));
+      } finally {
+        await store.close();
+      }
+      return 0;
+    }
+    case "workers": {
+      // The pause lives in the store (design §5 Pause): every running worker, on any host, reads it each tick.
+      const action = parseWorkersArgs(args);
+      if ("error" in action) {
+        console.log(action.error);
+        return 1;
+      }
+      const store = await buildStatsStore(loaded);
+      try {
+        await store.migrate();
+        for (const line of await runWorkersCommand(store, action)) console.log(line);
       } finally {
         await store.close();
       }

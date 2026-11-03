@@ -55,6 +55,13 @@ export interface Sandbox {
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult>;
   copyIn(handle: SandboxHandle, hostPath: string, sandboxPath: string): Promise<void>;
   copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void>;
+  /**
+   * The run folder `id` (a handle's `id`) if it still exists on this host, for a paused run resumed here (design
+   * §5 Pause); null when it is gone or was made on another host. The handle has no `base_sha`: the caller keeps
+   * the one `create` reported. A folder lives from `create` until `destroy`, which the worker calls when the run
+   * ends, whatever the outcome; a pause skips it. Absent: no reattach, a paused run always gets a new folder.
+   */
+  reattach?(id: string): Promise<SandboxHandle | null>;
   /** Idempotent. Safe on an already-destroyed handle. */
   destroy(handle: SandboxHandle): Promise<void>;
 }
