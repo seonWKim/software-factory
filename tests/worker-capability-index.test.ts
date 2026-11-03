@@ -122,7 +122,8 @@ describe("worker: capability index in the agent prompt", () => {
       writable_paths: s.writable_paths,
       env_allowlist: s.env_allowlist,
       settings: buildHarnessSettings(s),
-      args: buildClaudeArgs(s, "m"),
+      // Each run gets its own session id (design §5 Pause); only its place in the arguments is compared.
+      args: buildClaudeArgs(s, "m").map((a) => (a === s.session?.id ? "<session>" : a)),
     });
     expect(withIndex.map(perms)).toEqual(without.map(perms));
     const read = ["Read", "Glob", "Grep"];

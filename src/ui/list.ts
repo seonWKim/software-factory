@@ -56,7 +56,9 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       close_reason: it.close_reason,
       tier: it.tier,
       since: blocked && it.stage !== "CLOSED" ? waitingSince(it, changes) : it.updated_at,
-      run: run && (run.status === "queued" || run.status === "running") ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at } : null,
+      run: run && (run.status === "queued" || run.status === "running")
+        ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at, paused_at: run.paused_at }
+        : null,
       dependents: 0,
       waiting_on: 0,
       conflicts: conflictCounts(await c.store.listRuns(it.id), changes),

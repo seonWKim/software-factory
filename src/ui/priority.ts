@@ -39,8 +39,11 @@ export interface PriorityInput {
   tier: Tier | null;
   /** ISO time the item started waiting in its current state ("oldest waiting first"). */
   since: string;
-  /** The item's queued or running run, if any (running wins when it has both). */
-  run: { kind: RunKind; status: "queued" | "running"; heartbeat_at: string } | null;
+  /**
+   * The item's queued or running run, if any (running wins when it has both). `paused_at`: a queued run that
+   * `workers pause` stopped (design §5 Pause); it ranks as queued, never as stuck.
+   */
+  run: { kind: RunKind; status: "queued" | "running"; heartbeat_at: string; paused_at?: string | null } | null;
   /** Open items that wait on this one. 0 until dependency data exists (issue #49). */
   dependents: number;
   /** Open items this one waits on. 0 until dependency data exists (issue #49). */
@@ -111,7 +114,7 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       main = `running ${i.run!.kind}`;
       break;
     case "queued":
-      main = `queued ${i.run!.kind}`;
+      main = i.run!.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
       break;
     case "waiting_on_issue":
       main = `waits on ${i.waiting_on}`;
