@@ -1,7 +1,7 @@
-import { mkdir } from "node:fs/promises";
+import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
-import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 
@@ -137,6 +137,19 @@ export function buildHarnessSettings(
   };
 }
 
+/** A session id as Claude Code makes and accepts them. Nothing else reaches an argument or a file path. */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Session persistence (design §5 Pause): kept for implement, review and resolve runs that name a session
+ * (`--session-id`, or `--resume` to continue a stored one on this host); off for every other call.
+ */
+function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
+  const s = spec.session;
+  if (!s || !SESSION_ROLES.includes(spec.role) || !SESSION_ID.test(s.id)) return ["--no-session-persistence"];
+  return s.resume ? ["--resume", s.id] : ["--session-id", s.id];
+}
+
 /** Builds the `claude -p` argument list. Exported for tests. */
 export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude"): string[] {
   // Exactly the spec's tools, in its order: the runner adds none.
@@ -148,7 +161,7 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
     "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
     "--setting-sources", "project",
     "--strict-mcp-config",
-    "--no-session-persistence",
+    ...sessionArgs(spec),
     // Permission mode stays default: with the env scrub on, Claude Code forces it anyway. In -p mode,
     // anything outside --allowedTools is denied (no one can answer a prompt).
     "--tools", tools,
@@ -220,6 +233,29 @@ export class ClaudeCodeRunner implements AgentRunner {
       return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error" };
     }
     return { status: "completed", output: parsed.structured_output ?? parsed.result, transcript: result.stdout, usage };
+  }
+
+  /** A stored session is `<CLAUDE_CONFIG_DIR>/projects/<folder key>/<id>.jsonl`; readable means resumable. */
+  async hasSession(id: string): Promise<boolean> {
+    for (const file of await this.sessionFiles(id)) {
+      if (await access(file, constants.R_OK).then(() => true, () => false)) return true;
+    }
+    return false;
+  }
+
+  /** The session's transcript file and its side folder (`<id>/`), in every project folder. */
+  async removeSession(id: string): Promise<void> {
+    for (const file of await this.sessionFiles(id)) {
+      await rm(file, { force: true });
+      await rm(file.slice(0, -".jsonl".length), { recursive: true, force: true });
+    }
+  }
+
+  private async sessionFiles(id: string): Promise<string[]> {
+    if (!SESSION_ID.test(id)) return [];
+    const projects = join(this.opts.claudeConfigDir, "projects");
+    const dirs = await readdir(projects, { withFileTypes: true }).catch(() => []);
+    return dirs.filter((d) => d.isDirectory()).map((d) => join(projects, d.name, `${id}.jsonl`));
   }
 }
 
