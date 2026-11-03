@@ -86,6 +86,8 @@ const gitVerb = (args: readonly string[]): string => {
 };
 
 const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+/** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
+const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
 export const READ_TOOLS: readonly ToolSpec[] = [Read, Glob, Grep];
 /** The write roles' tools (implement, review, update, resolve). Order is the runner's `--tools` order. */
@@ -235,7 +237,13 @@ export class Worker {
 
   /** Claims and executes at most one run. Returns whether it found one. */
   async tick(): Promise<boolean> {
-    const run = await this.d.store.claimRun({ worker_id: this.d.id, kinds: KINDS, lease_ms: this.d.config.lease_ms });
+    // The coordination threshold and weights (design §5, 2026-11-03); absent from the config: the defaults.
+    const run = await this.d.store.claimRun({
+      worker_id: this.d.id,
+      kinds: KINDS,
+      lease_ms: this.d.config.lease_ms,
+      ...(this.d.config.coordination ? { coordination: this.d.config.coordination } : {}),
+    });
     if (!run?.lease) return false;
     await this.d.awake.hold().catch((err: unknown) => this.awakeFailed("hold", err));
     try {
@@ -562,7 +570,7 @@ export class Worker {
     const sync = await this.syncBase(run, item, handle, ctx, signal, gitDir, dirs, baseSha, model, resumed !== null);
     // The files an earlier sync of these commits conflicted in still pass the scope gate.
     const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
-    const floor = await this.prePush(run, item, handle, ctx, sync.baseSha, conflicts);
+    const { floor, paths } = await this.prePush(run, item, handle, ctx, sync.baseSha, conflicts);
     if (floor) {
       // Data, not a failure: the controller blocks the item on a human for the higher tier (design §4).
       return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
@@ -609,8 +617,14 @@ export class Worker {
     } catch (err) {
       throw await this.keepWip(run, ctx, handle, err, wip(), resumed !== null);
     }
-    // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict).
-    return { pr_number: content.number, commits: work.commits, ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}) };
+    // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
+    // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
+    return {
+      pr_number: content.number,
+      commits: work.commits,
+      files: paths.slice(0, MAX_PR_FILES),
+      ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}),
+    };
   }
 
   /**
@@ -824,6 +838,7 @@ export class Worker {
 
     const conflicts = await this.unmerged(handle);
     if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+    await this.recordConflicts(item, baseSha, conflicts);
     if (noAgent) {
       return this.mergeConflict(run, item, ctx, conflicts, "no agent step on a resumed run", "", true);
     }
@@ -1030,7 +1045,7 @@ export class Worker {
     ctx: ToolCallContext,
     baseSha: string,
     conflicts: readonly string[] = [],
-  ): Promise<FloorHit[] | null> {
+  ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
     await this.scopeGate(run, item, handle, ctx, baseSha, conflicts);
     const numstat = await this.git(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...HEAD`]);
     let stat;
@@ -1044,7 +1059,20 @@ export class Worker {
     const limits = { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
     if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
     const hits = floorHits(stat.paths, s.floors, item.tier ?? 1);
-    return hits.length > 0 ? hits : null;
+    return { floor: hits.length > 0 ? hits : null, paths: stat.paths };
+  }
+
+  /**
+   * One recorded conflict on each file a base merge conflicted in (design §5, 2026-11-03): it raises the file's
+   * coordination weight. Keyed on (item, base sha), so the update run, its automatic resolve and a sync step that
+   * hit the same merge count once. Best effort: a failure is a warning and never fails the run.
+   */
+  private async recordConflicts(item: WorkItem, baseSha: string, paths: readonly string[]): Promise<void> {
+    try {
+      await this.d.store.recordConflicts({ project: item.project, paths, event_key: `${item.id}:${baseSha}` });
+    } catch (err) {
+      this.d.log.warn("recording conflicts failed", { work_item_id: item.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    }
   }
 
   /**
@@ -1172,6 +1200,7 @@ export class Worker {
       if (merge.exit_code !== 0) {
         const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
         if (conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+        await this.recordConflicts(item, base_sha, conflicts);
         await comment([
           `PR #${item.pr_number} could not be updated with ${repo.base_branch}: merging \`${baseRef}\` conflicts in these files.`,
           `Nothing was pushed. The factory starts an automatic resolve run (at most ${AUTO_RESOLVE_LIMIT} per base commit); past that, a human needs to resolve them or comment \`/resolve\`.`,
@@ -1254,6 +1283,7 @@ export class Worker {
       );
       const conflicts = (await this.git(handle, ["diff", "--name-only", "-z", "--diff-filter=U"])).split("\0").filter(Boolean);
       if (merge.exit_code !== 0 && conflicts.length === 0) throw new RunFailure("git_failed", `git merge: ${merge.stderr.trim()}`, true);
+      if (conflicts.length > 0) await this.recordConflicts(item, baseSha, conflicts);
 
       // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
       const cp = await this.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: this.d.toolEnv });

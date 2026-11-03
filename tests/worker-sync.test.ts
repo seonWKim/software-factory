@@ -290,6 +290,9 @@ describe("implement run: sync with base before push", () => {
     expect(at(`git diff --numstat -z -M ${mainSha}...HEAD`)).toBeGreaterThan(at("git diff --name-only -z --no-renames"));
     expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
     expect(await f.store.listHandoffs(item.id)).toHaveLength(2);
+    // The sync conflict is recorded per file, and the PR's file list is stored (design §5, 2026-11-03).
+    expect(await f.store.conflictCounts(item.project)).toEqual(new Map([["src/a.txt", 1]]));
+    expect(item.pr_files).toEqual(["src/a.txt"]);
     // Two agent steps, two transcripts: the conflict step does not overwrite the first.
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded" });

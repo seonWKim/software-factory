@@ -91,7 +91,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 
 | Command | What it does | Applies when |
 |---|---|---|
-| `/approve [notes]` | Approve the spec or the floor block. Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run |
 | `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run |
 | `/retry` | Run the failed run again | blocked by a failed run, blocked: the change was too large, blocked by a failed implement run |

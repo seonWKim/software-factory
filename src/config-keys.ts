@@ -3,15 +3,18 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
+import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 
 /**
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
  * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
- * `retry_max_ms`, which is also its default.
+ * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
+ * 2026-11-03) are checked here at load (`coordinationProblems`); until compose.ts passes them through, the
+ * worker uses their defaults, which equal the checked-in values.
  */
-type CoreOnlyKey = "auth_pause_ms";
+type CoreOnlyKey = "auth_pause_ms" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -49,6 +52,9 @@ export const TOP_LEVEL_KEYS = [
   "budgets",
   "budget_min_sample",
   "inbox_retention_days",
+  "max_coordination_cost",
+  "hotspot_paths",
+  "hotspot_weight",
   "defaults",
   "projects",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
@@ -170,7 +176,8 @@ export function unknownConfigKeys(raw: unknown): string[] {
 
 /** Throws one ConfigKeyError listing every unknown key, or returns. */
 export function checkConfigKeys(raw: unknown): void {
-  const problems = unknownConfigKeys(raw);
+  // The coordination values too (design §5, 2026-11-03): a zero or non-numeric threshold fails at load.
+  const problems = [...unknownConfigKeys(raw), ...coordinationProblems(raw)];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }
 

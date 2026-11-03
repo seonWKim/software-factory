@@ -1,3 +1,4 @@
+import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
 import type { Tier, VerdictSeverity } from "./types.js";
@@ -72,6 +73,50 @@ export interface LoadedConfig {
   agent_git_identity: { name: string; email: string };
   /** Finished items a tier needs before budget suggestions come from its history. Absent: 10. */
   budget_min_sample?: number;
+  /**
+   * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight` from
+   * factory.config.json, checked at load by `coordinationConfig`. Absent: DEFAULT_COORDINATION.
+   */
+  coordination?: CoordinationSettings;
+}
+
+/** The coordination keys of factory.config.json (design §5, 2026-11-03). */
+export const COORDINATION_KEYS = ["max_coordination_cost", "hotspot_paths", "hotspot_weight"] as const;
+
+/**
+ * The coordination settings from the top level of factory.config.json, or why they are invalid. Each key is
+ * optional (absent: its default). `max_coordination_cost` and `hotspot_weight` must be numbers above 0; zero,
+ * a negative or a non-numeric value fails at startup, like the other numeric keys. `hotspot_paths` is a list of
+ * non-empty paths (a folder ends in `/`).
+ */
+export function coordinationProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  const r = raw as Record<string, unknown>;
+  const problems: string[] = [];
+  for (const key of ["max_coordination_cost", "hotspot_weight"] as const) {
+    const v = r[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      problems.push(`${key} must be a number above 0 (got ${JSON.stringify(v) ?? String(v)})`);
+    }
+  }
+  const h = r.hotspot_paths;
+  if (h !== undefined && (!Array.isArray(h) || !h.every((p) => typeof p === "string" && p.trim() !== ""))) {
+    problems.push("hotspot_paths must be a list of non-empty paths");
+  }
+  return problems;
+}
+
+/** The checked coordination settings; throws the first problem `coordinationProblems` finds. */
+export function coordinationConfig(raw: unknown): CoordinationSettings {
+  const problems = coordinationProblems(raw);
+  if (problems.length > 0) throw new Error(problems[0]);
+  const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    max_cost: (r.max_coordination_cost as number | undefined) ?? DEFAULT_COORDINATION.max_cost,
+    hotspots: (r.hotspot_paths as string[] | undefined) ?? DEFAULT_COORDINATION.hotspots,
+    hotspot_weight: (r.hotspot_weight as number | undefined) ?? DEFAULT_COORDINATION.hotspot_weight,
+  };
 }
 
 export interface Prompts {
