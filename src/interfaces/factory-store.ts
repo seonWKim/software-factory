@@ -431,6 +431,61 @@ export interface FactoryStore {
    * link and changes nothing. An account linked to another user is refused and the code stays live.
    */
   redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult>;
+
+  // Runtime settings overrides (design 2026-11-03, "Settings change at runtime"). The store keeps rows as they
+  // are given; checking a key or value is the caller's job (src/core/settings.ts).
+
+  /** Every stored override, ordered by key, then project. Read-only. */
+  listSettingOverrides(): Promise<SettingOverride[]>;
+  /**
+   * Stores `value` for (key, project), replacing any earlier one, and appends one audit row with the old and
+   * new value, in one transaction: if the audit insert fails, the override is unchanged. Concurrent sets:
+   * last writer wins, and the audit rows keep the order they committed in.
+   */
+  setSettingOverride(input: SetSettingInput): Promise<SettingChange>;
+  /**
+   * Deletes the override of (key, project) and appends one audit row with `new_value` null, in one
+   * transaction. Null, with nothing written, when there is no override to delete.
+   */
+  resetSettingOverride(input: ResetSettingInput): Promise<SettingChange | null>;
+  /** Audit rows, newest first, at most `limit`. Read-only. */
+  listSettingChanges(limit: number): Promise<SettingChange[]>;
+}
+
+/** One stored override. `project` is "" for a global override, else a project key. `value` is JSON text. */
+export interface SettingOverride {
+  key: string;
+  project: string;
+  value: string;
+  /** The actor's ID (e.g. `local:<OS login>`), never a display name. */
+  set_by: string;
+  set_at: Timestamp;
+}
+
+/** One audit row of a set or reset. `old_value` null: there was no override. `new_value` null: a reset. */
+export interface SettingChange {
+  seq: number;
+  key: string;
+  project: string;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string;
+  at: Timestamp;
+}
+
+export interface SetSettingInput {
+  key: string;
+  /** "" for global. */
+  project: string;
+  /** JSON text. */
+  value: string;
+  actor: string;
+}
+
+export interface ResetSettingInput {
+  key: string;
+  project: string;
+  actor: string;
 }
 
 /** How long a link code works (design 2026-11-01). */
