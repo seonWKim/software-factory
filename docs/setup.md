@@ -101,6 +101,22 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 
 `npm run setup` does steps 2–5 for you (hidden prompts for the tokens, MySQL database and user, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
 
+## Changing settings
+
+Fifteen keys change while the factory runs, with no PR and no restart (design 2026-11-03, "Settings change at runtime"):
+
+```bash
+npm run factory -- settings list                       # every settable key: effective value and source (override, file, default)
+npm run factory -- settings set workers 2              # stored as an override, with an audit row
+npm run factory -- settings set max_attempts 2 --project owner/name   # tighten one project's gate
+npm run factory -- settings reset workers              # back to the file value
+npm run factory -- settings history                    # who changed what, newest first
+```
+
+Applied live: `max_attempts`, `max_loops`, `max_restart`, `retry_base_ms`, `retry_max_ms` at the controller's next decision; `max_diff_lines`, `max_diff_files`, `run_timeout_ms`, `models`, `model_by` at the next run that starts; `poll_interval_ms`, `tick_ms` at the next tick; `heartbeat_ms`, `lease_ms` at the next lease renewal; `workers` at the worker pool's next tick, never above the `workers` in `factory.config.json` (raise that by PR, then restart).
+
+Not applied live: every other key, which changes only by a PR to `factory.config.json` and a restart (`plugins`, `repo`, `store`, `floors`, `dials`, `auth`, the guards and secrets are refused outright). The update run's own timeout in the updater keeps the file value until the next restart. On MySQL, run `npm run migrate` first (step 0015 adds the settings tables).
+
 ## Why agents can't read it
 
 The factory follows one rule: **agents never read secrets; only tools do.** The full design is in [`architecture.md` §5](architecture.md#5-secret-isolation). In short:
