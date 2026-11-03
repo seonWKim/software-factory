@@ -290,8 +290,9 @@ export class Worker {
    * Timers always fire a little late, so only a gap over 2 * heartbeat_ms is logged as late; renewal is unconditional.
    */
   private async heartbeat(run: Run, token: number, lease: AbortController, stop: AbortSignal): Promise<void> {
-    const { heartbeat_ms, lease_ms } = this.d.config;
     while (!stop.aborted) {
+      // Read each round: a heartbeat_ms or lease_ms change applies at the next renewal (design 2026-11-03).
+      const { heartbeat_ms } = this.live.values();
       const slept = this.d.clock.now().getTime();
       try {
         await this.d.clock.sleep(heartbeat_ms, stop);
@@ -324,7 +325,7 @@ export class Worker {
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
-    const { repo } = this.d.config;
+    const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch });
     try {
@@ -460,7 +461,7 @@ export class Worker {
    * detail starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
   private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
-    const { repo } = this.d.config;
+    const { repo } = this.cfg;
     const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
     if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
     const baseRef = `origin/${repo.base_branch}`;
@@ -541,7 +542,7 @@ export class Worker {
     /** A resumed run (design §5 Restarts): no agent step, so a conflict fails with merge_conflict at once. */
     noAgent = false,
   ): Promise<{ baseSha: string; merged: boolean; conflicts: string[] }> {
-    const { repo } = this.d.config;
+    const { repo } = this.cfg;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
     const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
@@ -874,7 +875,7 @@ export class Worker {
    */
   private async update(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
-    const { repo, branch_prefix } = this.d.config;
+    const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
     const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
@@ -963,7 +964,7 @@ export class Worker {
     if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
     const system_prompt = this.d.prompts.resolve;
     if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
-    const { repo, branch_prefix } = this.d.config;
+    const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
     const identity = gitIdentity(this.cfg.agent_git_identity);
