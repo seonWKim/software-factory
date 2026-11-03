@@ -129,6 +129,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     await d.health.section(d.scanner, { refresh: healthRefresh }),
     await runningSection(c),
     await queueSection(c),
+    await pausedSection(c),
   ];
   const body =
     `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` +
@@ -349,11 +350,41 @@ async function queueSection(c: Ctx): Promise<string> {
         esc(r.kind),
         await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
         esc(r.attempt),
-        c.ago(r.created_at),
+        c.ago(r.created_at) + (r.paused_at ? " <strong>(paused)</strong>" : ""),
       ],
     });
   }
   return `<section id="queue"><h2>Queue</h2>${table(["#", "kind", "item", "attempts so far", "queued for"], rows, "queue is empty")}</section>`;
+}
+
+/**
+ * Runs `workers pause` stopped and the worker pauses in force (design §5 Pause). A paused run waits in the queue
+ * with its WIP kept; it is shown as paused, with when and by whom, never as stuck. `workers resume` clears it.
+ */
+async function pausedSection(c: Ctx): Promise<string> {
+  const runs = await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT);
+  const rows = [];
+  for (const r of runs) {
+    if (r.paused_at === null) continue;
+    rows.push({
+      cells: [
+        esc(r.kind),
+        await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
+        esc(r.attempt),
+        `<time>${esc(r.paused_at)}</time> (${esc(c.ago(r.paused_at))} ago)`,
+        r.paused_by ? await c.w.text(r.paused_by) : `<span class="muted">unknown</span>`,
+      ],
+    });
+  }
+  const workers = await c.d.store.listWorkerPauses();
+  const names = [];
+  for (const p of workers) {
+    names.push(`${p.worker_id === "*" ? "every worker" : await c.w.text(p.worker_id)} (by ${await c.w.text(p.paused_by)}, since <time>${esc(p.paused_at)}</time>)`);
+  }
+  const line = workers.length
+    ? `<p>Paused workers: ${names.join("; ")}. They claim nothing until <code>factory workers resume</code>.</p>`
+    : `<p class="muted">No worker is paused.</p>`;
+  return `<section id="paused"><h2>Paused</h2>${line}${table(["kind", "item", "attempt", "paused at", "paused by"], rows, "no paused runs")}</section>`;
 }
 
 async function totalsSection(c: Ctx): Promise<string> {
