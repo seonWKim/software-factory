@@ -41,9 +41,9 @@ const failure = (p: Promise<unknown>): Promise<string | null> =>
   );
 
 describe("plugin discovery: finding descriptor files", () => {
-  it("the source tree holds 21 *.plugin.ts descriptors, sorted by path, and no other file", () => {
+  it("the source tree holds 23 *.plugin.ts descriptors, sorted by path, and no other file", () => {
     const files = findPluginFiles([IMPL_DIR]);
-    expect(files.length).toBe(21);
+    expect(files.length).toBe(23);
     expect(files).toEqual([...files].sort());
     for (const f of files) expect(f).toMatch(/\.plugin\.ts$/);
     for (const f of files) expect(relative(IMPL_DIR, f).startsWith("..")).toBe(false);
@@ -104,6 +104,7 @@ describe("plugin discovery: the built-in registry", () => {
       clock: "system",
       updater: "git-worktree",
       github_auth: "token",
+      test_database: "none",
     };
     expect(defaultPlugins("darwin")).toEqual({ ...fixed, awake: "caffeinate" });
     expect(defaultPlugins("linux")).toEqual({ ...fixed, awake: "none" });

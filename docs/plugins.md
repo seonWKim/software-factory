@@ -25,6 +25,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 | Clock | `plugins.clock` | `system` | no |
 | Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
+| TestDatabase | `plugins.test_database` | `none` (`mysql-local` available) | no |
 
 ```jsonc
 // factory.config.json (the checked-in defaults)
@@ -347,3 +348,19 @@ Plugins:
   - Secrets: `GITHUB_APP_ID`. Settings: the App's private key in `github-app.pem`, next to the secret file (`~/.config/software-factory/`), read only when a token is minted. A missing ID or unreadable key is a FAIL in `npm run factory -- doctor`.
 
 Turn on / off: set `plugins.github_auth` to `app` (bot) or `token` (your account); delete the key to go back to `token`.
+
+## TestDatabase
+
+What it does: gives the pre-push checks (`repo.check_commands`, `docs/design.md` §4) a throwaway database. The worker asks for one per run, the first time a check command runs (implement, update or resolve run, the merge-conflict step included), and drops it when the run ends, in a `finally` block, also when a check failed. Its env reaches only the check commands' environment: never an agent run's environment, a prompt, a run outcome, a comment or a log line. Check output is redacted (the URL and its password) before it goes anywhere.
+
+Plugins:
+
+- `mysql-local`: `MysqlLocalTestDatabase`. A local, test-only MySQL server. Per run it runs `CREATE DATABASE sf_test_<run id>` as the test user and sets `SF_TEST_MYSQL_URL` (`mysql://<user>:<password>@<host>:<port>/sf_test_<run id>`) in each check command's environment, so the MySQL store tests run before push. At the end of the run it runs `DROP DATABASE IF EXISTS` on that name. It refuses to create or drop any database whose name does not start with `sf_test_` (letters, digits and `_` only).
+  - Enable: `"plugins": { "test_database": "mysql-local", ... }`, after the test MySQL user exists (SET_UP.md, "Local test MySQL").
+  - Secrets: `TEST_MYSQL_URL` (the test user's admin URL, `mysql://user:password@host:port`, in the secret file outside the repository). Settings: none. Startup fails when the plugin is selected and the secret is missing.
+  - Security: a check command runs code the agent wrote, with `SF_TEST_MYSQL_URL` in its environment, so that code can read the test user's password while the checks run. That is why the test user may only create, use and drop `sf_test_*` databases on a server that holds no factory data (SET_UP.md lists the grants).
+  - Not handled: a run that crashes before its `finally` leaves its `sf_test_*` database behind; nothing sweeps them yet.
+- `none`: `NoTestDatabase`. No database: the check commands get no `SF_TEST_MYSQL_URL`, so the MySQL tests skip themselves, and the PR body says the MySQL checks were skipped.
+  - Enable: `"plugins": { "test_database": "none", ... }`, or no `test_database` key (the default, so a fresh install needs no MySQL). Secrets: none.
+
+Turn on / off: set `plugins.test_database` to `mysql-local` (on) or `none` (off). The checked-in `factory.config.json` names `none` until `TEST_MYSQL_URL` is in `.env.example` and the test user is set up; then switch it to `mysql-local`.

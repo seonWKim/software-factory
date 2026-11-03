@@ -40,8 +40,14 @@ export type StoreConfig =
 export interface FileConfig {
   env: "local" | "cloud";
   store?: StoreConfig;
-  /** install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. */
-  repo: { owner: string; name: string; path: string; base_branch: string; install_command?: unknown; test_command?: unknown };
+  /**
+   * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
+   * argv, the pre-push checks (design §4); absent: [test_command].
+   */
+  repo: {
+    owner: string; name: string; path: string; base_branch: string;
+    install_command?: unknown; test_command?: unknown; check_commands?: unknown;
+  };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
   status_label_prefix?: string;
@@ -180,12 +186,14 @@ export async function loadConfig(
 
   const stateDir = resolve(root, file.state_dir);
   const home = process.env.HOME ?? "";
+  const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
-      ...file.repo,
+      ...fileRepo,
       path: resolve(root, file.repo.path),
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
+      ...checkCommandsConfig(rawChecks),
     },
     intake_label: file.intake_label,
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
@@ -313,6 +321,9 @@ export class Plugins {
   runner(sandbox: Sandbox, secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
   }
+  testDatabase(secrets: SecretStore) {
+    return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
+  }
 }
 
 export async function build(
@@ -345,6 +356,8 @@ export async function build(
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
   const storage = await createPlugin(registry, "storage", sel.storage, base);
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
+  // The pre-push checks' database (design §4): its URL reaches only the check commands, never an agent.
+  const testDatabase = await p.testDatabase(secrets);
   // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
 
@@ -385,6 +398,7 @@ export async function build(
     models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
+    testDatabase,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
@@ -501,6 +515,18 @@ export function isSqlName(s: string): boolean {
 /** Absent: ["npm", "test"]. Otherwise a non-empty argv of non-empty strings, or startup fails. */
 export function testCommand(value: unknown): string[] {
   return argvConfig("repo.test_command", value, ["npm", "test"]);
+}
+
+/**
+ * `repo.check_commands`: absent → nothing (the core falls back to `[test_command]`); otherwise a non-empty list
+ * of argv, each a non-empty array of non-empty strings, or startup fails.
+ */
+export function checkCommandsConfig(value: unknown): { check_commands?: string[][] } {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('repo.check_commands must be a non-empty list of argv, e.g. [["npm", "run", "typecheck"], ["npm", "test"]]');
+  }
+  return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
 }
 
 /** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */

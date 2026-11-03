@@ -28,11 +28,20 @@ export interface FactoryConfig extends LoadedConfig {
  */
 export interface LoadedConfig {
   /**
-   * `install_command` and `test_command`: argv (no shell) of the gate commands. The update run runs the test
-   * command on a merged branch; the resolve run runs install, then test, before any push. Defaults
-   * ["npm", "ci"] and ["npm", "test"].
+   * `install_command` and `test_command`: argv (no shell) of the gate commands. Defaults ["npm", "ci"] and
+   * ["npm", "test"]. `check_commands`: the pre-push checks, a list of argv run in order before every push
+   * (design §4): the implement run before push (and in its merge-conflict step), the update run on the merged
+   * branch, the resolve run after install. Absent: `[test_command]` (checkCommands in src/core/checks.ts).
    */
-  repo: { owner: string; name: string; path: string; base_branch: string; install_command: string[]; test_command: string[] };
+  repo: {
+    owner: string;
+    name: string;
+    path: string;
+    base_branch: string;
+    install_command: string[];
+    test_command: string[];
+    check_commands?: string[][];
+  };
   intake_label: string;
   /** Status labels are this prefix plus a fixed suffix, e.g. "sf: needs approval". Default "sf: ". */
   status_label_prefix: string;
