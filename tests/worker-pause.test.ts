@@ -259,7 +259,8 @@ describe("workers pause <n>", () => {
     expect(run.attempt).toBe(1);
     await w.store.resumeWorkers();
     const tick = w.worker("hostA:1:1", w.hosts.hostA).tick();
-    await waitFor(async () => (await onlyRun(w.store, item)).status === "running", "the resume claim");
+    // The resumed run can finish between two polls, so "running" may never be seen: wait for the claim either way.
+    await waitFor(async () => ["running", "succeeded"].includes((await onlyRun(w.store, item)).status), "the resume claim");
     expect(await onlyRun(w.store, item)).toMatchObject({ attempt: 1 });
     await tick;
     expect(await onlyRun(w.store, item)).toMatchObject({ status: "succeeded", attempt: 1 });
