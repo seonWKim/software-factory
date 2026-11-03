@@ -293,7 +293,7 @@ describe("workers resume", () => {
     const done = await onlyRun(w.store, item);
     expect(done).toMatchObject({ status: "succeeded", attempt: 1 });
     // The run's outcome counts what the paused attempt used too.
-    expect((done.outcome as { data: { tokens: number } }).data.tokens).toBe(STEPS.length * TOKENS_PER_STEP);
+    expect((done.outcome as unknown as { data: { tokens: number } }).data.tokens).toBe(STEPS.length * TOKENS_PER_STEP);
     expect(w.runner.removed).toContain(session);
 
     // A fresh run of the same task, for comparison: the resumed session used fewer tokens.
