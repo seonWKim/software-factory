@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -680,19 +680,39 @@ describe("plugin registry: only plugin descriptors construct implementations", (
   });
 });
 
-describe("docs/plugins.md", () => {
-  /** The text from an interface's `## Name` heading to the next `## ` heading. */
+/** An interface name in kebab-case, the name of its topic file: KeepAwake → keep-awake, GitHubCredentials → github-credentials. */
+const kebab = (name: string): string =>
+  name
+    .replace(/GitHub/g, "Github")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase();
+
+describe("docs/plugins/<interface>.md", () => {
+  /** An interface's topic file, `docs/plugins/<kebab name>.md`, without its History section; null when the file is missing. */
   const section = (name: string): string | null => {
-    const doc = readFileSync(join(REPO_ROOT, "docs", "plugins.md"), "utf8");
-    const m = doc.match(new RegExp(`^## ${name}\\b[^\\n]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m"));
-    return m ? m[1]! : null;
+    const file = join(REPO_ROOT, "docs", "plugins", `${kebab(name)}.md`);
+    if (!existsSync(file)) return null;
+    return readFileSync(file, "utf8").split(/^## History\b/m)[0]!;
   };
+
+  it("names topic files in kebab-case", () => {
+    expect(kebab("KeepAwake")).toBe("keep-awake");
+    expect(kebab("LLMProvider")).toBe("llm-provider");
+    expect(kebab("GitHubCredentials")).toBe("github-credentials");
+    expect(kebab("Clock")).toBe("clock");
+    expect(kebab("FactoryStore")).toBe("factory-store");
+  });
+
+  it("reads no section for an interface without a topic file", () => {
+    expect(section("NoSuchInterface")).toBeNull();
+  });
 
   for (const kind of PLUGIN_KINDS) {
     const entry = REGISTRY[kind];
-    it(`has a ${entry.interface} section naming every ${kind} plugin`, () => {
+    it(`has docs/plugins/${kebab(entry.interface)}.md naming every ${kind} plugin`, () => {
       const s = section(entry.interface);
-      expect(s, `## ${entry.interface}`).not.toBeNull();
+      expect(s, `docs/plugins/${kebab(entry.interface)}.md`).not.toBeNull();
       for (const name of Object.keys(entry.plugins)) expect(s).toContain(`\`${name}\``);
       if (entry.guard) expect(s).toMatch(/cannot be disabled/);
     });
