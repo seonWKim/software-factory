@@ -1,6 +1,10 @@
 import type { Budgets } from "./budget.js";
+import type { FactoryConfig } from "./config.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
+import type { Logger } from "./log.js";
+import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { Tier } from "./types.js";
+import type { SettingOverride } from "../interfaces/factory-store.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
 // gate checks run once at config load; settingsFor resolves one project's effective values on each read.
@@ -240,4 +244,441 @@ export function settingsLayers(raw: Record<string, unknown>, configuredProject: 
 
 function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: ProjectSettings[K]): void {
   o[k] = v;
+}
+
+// Runtime overrides (design 2026-11-03, "Settings change at runtime"). `factory settings set` stores an override
+// in the store; every process reads the overrides through resolveSettings, the one function that gives a
+// settable key's effective value: override if set, else the config file value, else the built-in default.
+// A global override sits above the file's top-level value, a project override above the file's project block,
+// and the learned layer stays on top (settingsFor).
+
+/** The keys `factory settings set` accepts. An allow-list: every other key is refused. */
+export const SETTABLE_KEYS = [
+  "max_attempts",
+  "max_loops",
+  "max_restart",
+  "retry_base_ms",
+  "retry_max_ms",
+  "max_diff_lines",
+  "max_diff_files",
+  "run_timeout_ms",
+  "models",
+  "model_by",
+  "poll_interval_ms",
+  "tick_ms",
+  "heartbeat_ms",
+  "lease_ms",
+  "workers",
+] as const;
+export type SettableKey = (typeof SETTABLE_KEYS)[number];
+
+/** Settable keys that take `--project`: gates a project may tighten. */
+export const PROJECT_SETTABLE_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files"] as const;
+export type ProjectSettableKey = (typeof PROJECT_SETTABLE_KEYS)[number];
+export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
+
+/** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
+export const PR_ONLY_KEYS = [
+  "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env",
+] as const;
+
+/** When a set takes effect, per key. What `settings set` prints and docs/design.md lists. */
+export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
+  max_attempts: "the controller's next decision",
+  max_loops: "the controller's next decision",
+  max_restart: "the controller's next decision",
+  retry_base_ms: "the controller's next decision",
+  retry_max_ms: "the controller's next decision",
+  max_diff_lines: "the next run that starts",
+  max_diff_files: "the next run that starts",
+  run_timeout_ms: "the next run that starts",
+  models: "the next run that starts",
+  model_by: "the next run that starts",
+  poll_interval_ms: "the next tick",
+  tick_ms: "the next tick",
+  heartbeat_ms: "the next lease renewal",
+  lease_ms: "the next claim or lease renewal",
+  workers: "the worker pool's next tick",
+};
+
+export interface SettableValues {
+  max_attempts: number;
+  max_loops: number;
+  max_restart: number;
+  retry_base_ms: number;
+  retry_max_ms: number;
+  max_diff_lines: number;
+  max_diff_files: number;
+  run_timeout_ms: number;
+  models: ModelNames;
+  model_by: ModelTable;
+  poll_interval_ms: number;
+  tick_ms: number;
+  heartbeat_ms: number;
+  lease_ms: number;
+  workers: number;
+}
+
+/** The built-in default of each settable key, in the form factory.config.json writes it. */
+export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.freeze({
+  max_attempts: BUILT_IN_SETTINGS.max_attempts,
+  max_loops: 3,
+  max_restart: 3,
+  retry_base_ms: 60_000,
+  retry_max_ms: 1_800_000,
+  max_diff_lines: BUILT_IN_SETTINGS.max_diff_lines,
+  max_diff_files: BUILT_IN_SETTINGS.max_diff_files,
+  run_timeout_ms: 2_700_000,
+  models: { cheap: "haiku", standard: "sonnet", strong: "opus" },
+  model_by: DEFAULT_MODEL_BY,
+  poll_interval_ms: 30_000,
+  tick_ms: 2_000,
+  heartbeat_ms: 60_000,
+  lease_ms: 300_000,
+  workers: 1,
+});
+
+export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
+export const RETRY_ORDER_MESSAGE = "retry_base_ms must not exceed retry_max_ms";
+
+export function isSettableKey(key: string): key is SettableKey {
+  return (SETTABLE_KEYS as readonly string[]).includes(key);
+}
+
+export function isProjectSettableKey(key: string): key is ProjectSettableKey {
+  return (PROJECT_SETTABLE_KEYS as readonly string[]).includes(key);
+}
+
+export function isPrOnlyKey(key: string): boolean {
+  return (PR_ONLY_KEYS as readonly string[]).includes(key);
+}
+
+/** Why `settings set` / `reset` refuses `key`, or null when it is settable. */
+export function keyRefusal(key: string): string | null {
+  if (isSettableKey(key)) return null;
+  if (isPrOnlyKey(key)) return `"${key}" changes by PR only: edit factory.config.json in a reviewed pull request`;
+  return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
+}
+
+/** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
+export function workerCount(value: unknown): number {
+  if (value === undefined) return 1;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`workers must be an integer of 1 or more (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  return value;
+}
+
+/** A positive integer, or the config loader's message for `key`. */
+export function positiveInteger(key: string, value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
+  return value;
+}
+
+/** Checks one settable value; throws the message the config loader gives for that key. */
+export function parseSettable<K extends SettableKey>(key: K, value: unknown): SettableValues[K] {
+  switch (key) {
+    case "max_attempts":
+    case "max_diff_lines":
+    case "max_diff_files":
+      return parseSetting(key as ProjectSettableKey, value, key) as SettableValues[K];
+    case "models":
+      return parseModels(value) as SettableValues[K];
+    case "model_by":
+      if (value === undefined) throw new Error("model_by must be an object");
+      return parseModelBy(value) as SettableValues[K];
+    case "workers":
+      if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
+      return workerCount(value) as SettableValues[K];
+    default:
+      return positiveInteger(key, value) as SettableValues[K];
+  }
+}
+
+/** A ModelTable back in the form `model_by` is written in, so it can be checked and stored like any value. */
+export function modelByRaw(table: ModelTable): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const kind of MODEL_RUN_KINDS) out[kind] = Object.fromEntries(TIER_KEYS.map((t) => [t, table.by[kind][Number(t) as Tier]]));
+  out.retry_up = table.retry_up;
+  return out;
+}
+
+export type SettingSource = "override" | "file" | "default";
+
+/** What the config file says, before any override. Checked at load. */
+export interface SettingsBase {
+  /** The global keys the file sets, as written there. A key that is absent takes its built-in default. */
+  file: Partial<Record<GlobalSettableKey, unknown>>;
+  /** The file's per-project layers: `defaults` holds the file's global value of each per-project key. */
+  layers: SettingsLayers;
+}
+
+export interface ResolvedSetting<K extends SettableKey = SettableKey> {
+  value: SettableValues[K];
+  /** The value as written (file, override or default), for display. */
+  raw: unknown;
+  source: SettingSource;
+}
+
+export interface IgnoredOverride {
+  key: string;
+  project: string;
+  value: string;
+  reason: string;
+}
+
+export interface ResolvedSettings {
+  /** Each key's global effective value and its source. `workers` is not capped here. */
+  global: { [K in SettableKey]: ResolvedSetting<K> };
+  /** The values the factory acts on: `global` with `workers` capped at the file's value. */
+  values: SettableValues;
+  /** The per-project layers with the overrides applied, for settingsFor. */
+  layers: SettingsLayers;
+  /** Per project with a file block or a project override: the value and source of each key it sets. */
+  projects: Record<string, Partial<Record<ProjectSettableKey, { value: number; source: "override" | "file" }>>>;
+  /** Stored overrides that failed a check, with the reason. Their key keeps the file value. */
+  ignored: IgnoredOverride[];
+  /** The file's `workers` (else 1): sizes the supervisor's index block, so no override goes above it. */
+  workers_cap: number;
+}
+
+type OverrideRow = Pick<SettingOverride, "key" | "project" | "value">;
+
+const CROSS_CHECKS: readonly { keys: readonly [SettableKey, SettableKey]; bad: (v: SettableValues) => boolean; message: string }[] = [
+  { keys: ["heartbeat_ms", "lease_ms"], bad: (v) => v.heartbeat_ms * 2 >= v.lease_ms, message: HEARTBEAT_LEASE_MESSAGE },
+  { keys: ["retry_base_ms", "retry_max_ms"], bad: (v) => v.retry_base_ms > v.retry_max_ms, message: RETRY_ORDER_MESSAGE },
+];
+
+/**
+ * The effective value of every settable key: override if set, else the config file value, else the built-in
+ * default. The one function the controller, the worker pool and `factory settings` read settings through.
+ * A stored override that fails a check (bad JSON or value, heartbeat × 2 ≥ lease, base above max, a project
+ * value that would loosen its gate past the global value) is left out and reported in `ignored`; its key keeps
+ * the file value. `label` names a project in a reason (default: the project string itself).
+ */
+export function resolveSettings(base: SettingsBase, overrides: readonly OverrideRow[], label: (project: string) => string = (p) => p): ResolvedSettings {
+  const ignored: IgnoredOverride[] = [];
+  const ignore = (o: OverrideRow, reason: string) => ignored.push({ key: o.key, project: o.project, value: o.value, reason });
+  const globalOv = new Map<SettableKey, { o: OverrideRow; value: unknown; raw: unknown }>();
+  const projectOv: { o: OverrideRow; key: ProjectSettableKey; value: number }[] = [];
+  for (const o of overrides) {
+    const refused = keyRefusal(o.key);
+    if (refused) {
+      ignore(o, refused);
+      continue;
+    }
+    const key = o.key as SettableKey;
+    if (o.project !== "" && !isProjectSettableKey(key)) {
+      ignore(o, `${key} has no per-project value; only ${PROJECT_SETTABLE_KEYS.join(", ")} do`);
+      continue;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(o.value);
+    } catch {
+      ignore(o, `${key}: the stored value is not JSON`);
+      continue;
+    }
+    let value: unknown;
+    try {
+      value = parseSettable(key, raw);
+    } catch (err) {
+      ignore(o, err instanceof Error ? err.message : String(err));
+      continue;
+    }
+    if (o.project === "") globalOv.set(key, { o, value, raw });
+    else projectOv.push({ o, key: key as ProjectSettableKey, value: value as number });
+  }
+
+  const fromFile = (k: SettableKey): ResolvedSetting => {
+    const f = isProjectSettableKey(k) ? base.layers.defaults[k] : base.file[k as GlobalSettableKey];
+    return f === undefined
+      ? { value: parseSettable(k, SETTABLE_DEFAULTS[k]), raw: SETTABLE_DEFAULTS[k], source: "default" }
+      : { value: parseSettable(k, f), raw: f, source: "file" };
+  };
+  const build = () => {
+    const g = {} as Record<SettableKey, ResolvedSetting>;
+    for (const k of SETTABLE_KEYS) {
+      const ov = globalOv.get(k);
+      g[k] = ov ? { value: ov.value as SettableValues[typeof k], raw: ov.raw, source: "override" } : fromFile(k);
+    }
+    return g as ResolvedSettings["global"];
+  };
+  const valuesOf = (g: ResolvedSettings["global"]) =>
+    Object.fromEntries(SETTABLE_KEYS.map((k) => [k, g[k].value])) as unknown as SettableValues;
+  const drop = (k: SettableKey, reason: string) => {
+    const ov = globalOv.get(k);
+    if (!ov) return;
+    ignore(ov.o, reason);
+    globalOv.delete(k);
+  };
+
+  let global = build();
+  for (const c of CROSS_CHECKS) {
+    if (!c.bad(valuesOf(global))) continue;
+    for (const k of c.keys) drop(k, c.message);
+    global = build();
+  }
+  // A global override may not leave a project's file value looser than itself (it would be refused at load).
+  for (const k of PROJECT_SETTABLE_KEYS) {
+    const ov = globalOv.get(k);
+    if (!ov) continue;
+    for (const [p, block] of Object.entries(base.layers.projects)) {
+      const own = block[k];
+      if (own !== undefined && loosening(k, own, ov.value as number) !== null) {
+        drop(k, `${k} ${String(ov.value)} would leave ${projectPath(label(p), k)} (${own}) looser than the global value; a project may only tighten a gate`);
+        break;
+      }
+    }
+  }
+  global = build();
+
+  const defaults: Partial<ProjectSettings> = { ...base.layers.defaults };
+  for (const k of PROJECT_SETTABLE_KEYS) if (globalOv.has(k)) defaults[k] = global[k].value;
+  const projects: Record<string, Partial<ProjectSettings>> = {};
+  const sources: ResolvedSettings["projects"] = {};
+  for (const [p, block] of Object.entries(base.layers.projects)) {
+    projects[p] = { ...block };
+    for (const k of PROJECT_SETTABLE_KEYS) {
+      const v = block[k];
+      if (v !== undefined) (sources[p] ??= {})[k] = { value: v, source: "file" };
+    }
+  }
+  for (const po of projectOv) {
+    const why = loosening(po.key, po.value, global[po.key].value);
+    if (why !== null) {
+      ignore(po.o, `${projectPath(label(po.o.project), po.key)} ${why}; a project may only tighten a gate`);
+      continue;
+    }
+    projects[po.o.project] = { ...projects[po.o.project], [po.key]: po.value };
+    (sources[po.o.project] ??= {})[po.key] = { value: po.value, source: "override" };
+  }
+
+  const workers_cap = parseSettable("workers", base.file.workers ?? SETTABLE_DEFAULTS.workers);
+  const values = { ...valuesOf(global), workers: Math.min(global.workers.value, workers_cap) };
+  return { global, values, layers: { defaults, projects }, projects: sources, ignored, workers_cap };
+}
+
+/** One key's effective value: for `project`, its own value where it has one, else the global value. */
+export function effectiveSetting<K extends SettableKey>(r: ResolvedSettings, key: K, project = ""): ResolvedSetting<K> {
+  if (project !== "" && isProjectSettableKey(key)) {
+    const own = r.projects[project]?.[key];
+    if (own) return { value: own.value as SettableValues[K], raw: own.value, source: own.source };
+  }
+  if (key === "workers") return { ...r.global.workers, value: r.values.workers } as ResolvedSetting<K>;
+  return r.global[key];
+}
+
+/** The base a FactoryConfig alone gives: every key from the config, as if the file set it. For tests and lone loops. */
+export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTable; names?: ModelNames | undefined }): SettingsBase {
+  const file: Partial<Record<GlobalSettableKey, unknown>> = {
+    max_loops: config.max_loops,
+    max_restart: config.max_restart,
+    retry_base_ms: config.retry_base_ms,
+    retry_max_ms: config.retry_max_ms,
+    run_timeout_ms: config.run_timeout_ms,
+    poll_interval_ms: config.poll_interval_ms,
+    tick_ms: config.tick_ms,
+    heartbeat_ms: config.heartbeat_ms,
+    lease_ms: config.lease_ms,
+    workers: config.workers,
+  };
+  if (models) file.model_by = modelByRaw(models.table);
+  if (models?.names) file.models = models.names;
+  return { file, layers: config.settings };
+}
+
+/** Reads the stored overrides; the store's FactoryStore.listSettingOverrides. */
+export interface OverrideSource {
+  listSettingOverrides(): Promise<SettingOverride[]>;
+}
+
+/**
+ * The settings a running process acts on. refresh() re-reads the stored overrides (the controller each tick,
+ * the worker pool each tick, a worker before each claim and each lease renewal); the getters return the last
+ * resolved values without I/O. Only a cache of store rows: no replica needs it, and a restart rebuilds it.
+ * A failed read keeps the values in use; an override that fails a check is logged once and ignored.
+ */
+export class LiveSettings {
+  private current: ResolvedSettings;
+  private view: FactoryConfig;
+  private readonly reported = new Set<string>();
+
+  constructor(
+    private readonly opts: { config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; log?: Logger },
+  ) {
+    this.current = resolveSettings(opts.base, [], this.label);
+    this.view = this.viewOf(this.current);
+  }
+
+  /** No stored overrides: the config's values, fixed. What a Worker or Controller built without settings uses. */
+  static fixed(config: FactoryConfig, models?: { table: ModelTable; names?: ModelNames | undefined }): LiveSettings {
+    return new LiveSettings({ config, base: baseFromConfig(config, models) });
+  }
+
+  async refresh(): Promise<void> {
+    const source = this.opts.source;
+    if (!source) return;
+    let rows: SettingOverride[];
+    try {
+      rows = await source.listSettingOverrides();
+    } catch (err) {
+      this.opts.log?.warn("settings overrides could not be read; keeping the values in use", {
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return;
+    }
+    this.current = resolveSettings(this.opts.base, rows, this.label);
+    this.view = this.viewOf(this.current);
+    for (const i of this.current.ignored) {
+      const sig = JSON.stringify([i.key, i.project, i.value]);
+      if (this.reported.has(sig)) continue;
+      this.reported.add(sig);
+      this.opts.log?.warn("settings override ignored; the file value stays in use", { key: i.key, project: i.project || null, reason: i.reason });
+    }
+  }
+
+  /** The config with every settable key at its effective value. */
+  config(): FactoryConfig {
+    return this.view;
+  }
+
+  values(): SettableValues {
+    return this.current.values;
+  }
+
+  resolved(): ResolvedSettings {
+    return this.current;
+  }
+
+  /** Worker slots that may claim: the effective `workers`, capped at the file's value. */
+  workers(): number {
+    return this.current.values.workers;
+  }
+
+  /** The model table and, unless no config names them, the model name per class. */
+  models(): { table: ModelTable; names?: ModelNames } {
+    const r = this.current;
+    return r.global.models.source === "default" ? { table: r.values.model_by } : { table: r.values.model_by, names: r.values.models };
+  }
+
+  private readonly label = (project: string): string => (project === this.opts.config.project.key ? this.opts.config.project.label : project);
+
+  private viewOf(r: ResolvedSettings): FactoryConfig {
+    const v = r.values;
+    return {
+      ...this.opts.config,
+      settings: r.layers,
+      max_loops: v.max_loops,
+      max_restart: v.max_restart,
+      retry_base_ms: v.retry_base_ms,
+      retry_max_ms: v.retry_max_ms,
+      run_timeout_ms: v.run_timeout_ms,
+      poll_interval_ms: v.poll_interval_ms,
+      tick_ms: v.tick_ms,
+      heartbeat_ms: v.heartbeat_ms,
+      lease_ms: v.lease_ms,
+      workers: v.workers,
+    };
+  }
 }
