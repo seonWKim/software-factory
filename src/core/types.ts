@@ -186,6 +186,11 @@ export interface RunResume {
   head: string | null;
   /** Implement only: the shared-storage key of the git bundle of start_sha..head; null when nothing to keep. */
   bundle: string | null;
+  /**
+   * What the run's agent calls used before the pause, so the resumed run's outcome counts it once (design §6
+   * Measurement). Absent: nothing used yet.
+   */
+  usage?: RunUsage;
 }
 
 /** A row of `worker_pauses` (design §5 Pause): one worker loop, or every loop when `worker_id` is `*`. */
