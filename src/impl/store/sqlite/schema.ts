@@ -277,4 +277,25 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX claim_decisions_work_item ON claim_decisions (work_item_id, at);
   `,
+  // 17: runtime settings overrides and their audit trail (design 2026-11-03, issue #157). `project_key` is '' for a
+  // global override, else a project key. Values are JSON text. AUTOINCREMENT: audit rows keep commit order.
+  `
+  CREATE TABLE settings_overrides (
+    setting_key  TEXT NOT NULL,
+    project_key  TEXT NOT NULL DEFAULT '',
+    value_json   TEXT NOT NULL,
+    set_by       TEXT NOT NULL,
+    set_at       TEXT NOT NULL,
+    PRIMARY KEY (setting_key, project_key)
+  );
+  CREATE TABLE settings_changes (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    setting_key  TEXT NOT NULL,
+    project_key  TEXT NOT NULL DEFAULT '',
+    old_value    TEXT,
+    new_value    TEXT,
+    actor        TEXT NOT NULL,
+    at           TEXT NOT NULL
+  );
+  `,
 ];

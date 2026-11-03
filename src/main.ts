@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { mkdir } from "node:fs/promises";
+import { userInfo } from "node:os";
 import { join } from "node:path";
-import { CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, resolveProject, uiPort } from "./compose.js";
+import {
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
+} from "./compose.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
@@ -19,6 +22,7 @@ import { startUi } from "./ui/server.js";
 import { readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
+import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, runProjectKeyStep } from "./impl/store/project-keys.js";
@@ -42,6 +46,12 @@ const USAGE = `factory <command>
   link-code <user_id>
                prints a one-time code that links another account (e.g. Slack) to a factory user such as
                github:12345: post /link <code> from that account. Works once, for 10 minutes
+  settings list | set <key> <value> | reset <key> | history
+               change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
+               max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
+               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers. No restart. Every set and
+               reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
+               --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
@@ -163,6 +173,40 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         await store.close();
       }
       return 0;
+    }
+    case "settings": {
+      const action = parseSettingsArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${SETTINGS_USAGE}`);
+        return 1;
+      }
+      await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+      const store = await buildStatsStore(loaded);
+      try {
+        // Refuses on MySQL while schema steps are pending, as the other commands do.
+        await store.migrate();
+        const { owner, name } = loaded.config.repo;
+        const r = await runSettings(
+          {
+            store,
+            base: settingsBase(loaded),
+            repo: { owner, name },
+            // Only for --project: the configured repo's key, from the forge (design 2026-11-01).
+            resolveProject: async () => {
+              const p = new Plugins(loaded);
+              const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
+              return resolveProject(github, { owner, name });
+            },
+            // An ID, never a display name: the OS login of the local owner.
+            actor: `local:${userInfo().username}`,
+          },
+          action,
+        );
+        for (const line of r.lines) console.log(line);
+        return r.ok ? 0 : 1;
+      } finally {
+        await store.close();
+      }
     }
     case "ui": {
       const parts = await buildUiParts(loaded);

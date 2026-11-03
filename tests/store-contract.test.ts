@@ -1349,4 +1349,51 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.resolveLink("slack", "U1")).toBe(userB);
     });
   });
+  describe("settings overrides (migration 15)", () => {
+    const actor = "local:owner";
+
+    it("set stores the JSON value and one audit row; a second set replaces it and records the old value", async () => {
+      const { store, clock } = await make();
+      expect(await store.listSettingOverrides()).toEqual([]);
+      const first = await store.setSettingOverride({ key: "workers", project: "", value: "2", actor });
+      expect(first).toMatchObject({ key: "workers", project: "", old_value: null, new_value: "2", actor, at: clock.now().toISOString() });
+      clock.advance(1000);
+      const second = await store.setSettingOverride({ key: "workers", project: "", value: "3", actor: "local:other" });
+      expect(second).toMatchObject({ old_value: "2", new_value: "3", actor: "local:other" });
+      expect(second.seq).toBeGreaterThan(first.seq);
+      expect(await store.listSettingOverrides()).toEqual([
+        { key: "workers", project: "", value: "3", set_by: "local:other", set_at: clock.now().toISOString() },
+      ]);
+      expect((await store.listSettingChanges(10)).map((c) => c.new_value)).toEqual(["3", "2"]);
+    });
+
+    it("a project override is its own row; overrides list by key, then project", async () => {
+      const { store } = await make();
+      await store.setSettingOverride({ key: "max_attempts", project: PROJECT_KEY, value: "2", actor });
+      await store.setSettingOverride({ key: "max_attempts", project: "", value: "3", actor });
+      await store.setSettingOverride({ key: "lease_ms", project: "", value: "90000", actor });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.project, o.value])).toEqual([
+        ["lease_ms", "", "90000"],
+        ["max_attempts", "", "3"],
+        ["max_attempts", PROJECT_KEY, "2"],
+      ]);
+    });
+
+    it("reset deletes the override with one audit row; reset with no override writes nothing", async () => {
+      const { store } = await make();
+      expect(await store.resetSettingOverride({ key: "workers", project: "", actor })).toBeNull();
+      expect(await store.listSettingChanges(10)).toEqual([]);
+      await store.setSettingOverride({ key: "workers", project: "", value: "2", actor });
+      expect(await store.resetSettingOverride({ key: "workers", project: "", actor })).toMatchObject({ old_value: "2", new_value: null });
+      expect(await store.listSettingOverrides()).toEqual([]);
+      expect(await store.resetSettingOverride({ key: "workers", project: "", actor })).toBeNull();
+      expect((await store.listSettingChanges(10)).map((c) => [c.old_value, c.new_value])).toEqual([["2", null], [null, "2"]]);
+    });
+
+    it("history is newest first and honours the limit", async () => {
+      const { store } = await make();
+      for (const v of ["1", "2", "3"]) await store.setSettingOverride({ key: "workers", project: "", value: v, actor });
+      expect((await store.listSettingChanges(2)).map((c) => c.new_value)).toEqual(["3", "2"]);
+    });
+  });
 });
