@@ -8,6 +8,8 @@ export interface RunProcessOptions {
   stdin?: string;
   timeout_ms?: number;
   signal?: AbortSignal;
+  /** Each stdout chunk as it arrives (the full stdout is still in the result). */
+  onStdout?: (chunk: string) => void;
 }
 
 const MAX_OUTPUT = 16 * 1024 * 1024;
@@ -33,7 +35,9 @@ export function runProcess(cmd: readonly string[], opts: RunProcessOptions): Pro
     let stderr = "";
     let timedOut = false;
     child.stdout.on("data", (d: Buffer) => {
-      if (stdout.length < MAX_OUTPUT) stdout += d.toString();
+      const chunk = d.toString();
+      if (stdout.length < MAX_OUTPUT) stdout += chunk;
+      opts.onStdout?.(chunk);
     });
     child.stderr.on("data", (d: Buffer) => {
       if (stderr.length < MAX_OUTPUT) stderr += d.toString();

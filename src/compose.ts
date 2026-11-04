@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import type { FactoryConfig, LoadedConfig, Prompts, StatsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
@@ -88,6 +88,10 @@ export interface FileConfig {
   max_diff_lines?: number;
   /** Pre-push size gate (design §4): changed files. Absent: 40. */
   max_diff_files?: number;
+  /** Stall detection (design §5 Restarts): ms of silence that ends an agent run `stalled`. Absent: 300000. */
+  stall_ms?: number;
+  /** How often a stall pause probes the cheap model. Absent: 600000. */
+  probe_interval_ms?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -211,6 +215,7 @@ export async function loadConfig(
     tick_ms: file.tick_ms,
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
+    ...stallConfig(file),
     inbox_retention_days: retention,
     workers,
     deny_paths: [
@@ -576,6 +581,21 @@ export function retryConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   if (r.retry_base_ms > r.retry_max_ms) throw new Error("retry_base_ms must not exceed retry_max_ms");
+  return r;
+}
+
+/**
+ * `stall_ms` and `probe_interval_ms` (design §5 Restarts) with their defaults (STALL_DEFAULTS): positive
+ * integers, or startup fails.
+ */
+export function stallConfig(file: Pick<FileConfig, "stall_ms" | "probe_interval_ms">): { stall_ms: number; probe_interval_ms: number } {
+  const r = {
+    stall_ms: file.stall_ms === undefined ? STALL_DEFAULTS.stall_ms : file.stall_ms,
+    probe_interval_ms: file.probe_interval_ms === undefined ? STALL_DEFAULTS.probe_interval_ms : file.probe_interval_ms,
+  };
+  for (const [k, v] of Object.entries(r)) {
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
+  }
   return r;
 }
 

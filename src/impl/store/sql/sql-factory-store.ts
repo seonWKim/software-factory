@@ -45,7 +45,7 @@ import {
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
-import { IMPLEMENT_KINDS } from "../../../core/policy.js";
+import { IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
@@ -448,11 +448,16 @@ export class SqlFactoryStore implements FactoryStore {
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
       // implement-type claims only (design §5 Restarts). Both are rows of claim_pauses, read under the lock.
       const pauses = new Map(
-        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE]))
-          .map((r) => [r.name as string, r.resume_at as string]),
+        (
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          ])
+        ).map((r) => [r.name as string, r.resume_at as string]),
       );
       const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
       if (active(RATE_LIMIT_PAUSE)) return null;
+      // A stall pauses every claim until a probe answers, not until a time (design §5 Restarts).
+      if (stallInEffect(pauses.get(MODEL_STALL), pauses.get(MODEL_ANSWERED))) return null;
       // `workers pause`: this loop's own row or the all-flag stops its claims (design §5 Pause), read under the lock.
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
@@ -653,6 +658,8 @@ export class SqlFactoryStore implements FactoryStore {
     // `started` only for forge_auth: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
+    if (name === MODEL_STALL) return this.pauseForStall(resume_at);
+    if (name === MODEL_STALL_SINCE) throw new Error("model_stall_since is written by the store when a stall pause starts");
     return this.db.transaction(async (tx) => {
       if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
         return result(true, true, resume_at);
@@ -673,7 +680,49 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
+  /**
+   * The stall pause (design §5 Restarts), under the claim lock so a claim, a stall and a probe never interleave.
+   * It is in effect while its row's time (the next probe) is after the last answered probe, whatever the clock
+   * says. Not in effect: this call starts one (`started`) and writes when it began (`model_stall_since`). In
+   * effect: only a later probe time moves it.
+   */
+  private async pauseForStall(resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const rows = new Map(
+        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
+          .map((r) => [r.name as string, r.resume_at as Timestamp]),
+      );
+      const current = rows.get(MODEL_STALL);
+      const answered = rows.get(MODEL_ANSWERED);
+      if (current !== undefined && stallInEffect(current, answered)) {
+        if (resume_at <= current) return { extended: false, started: false, resume_at: current };
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, MODEL_STALL]);
+        return { extended: true, started: false, resume_at };
+      }
+      // A probe time not after the last answer would start a pause that is already over.
+      if (answered !== undefined && resume_at <= answered) return { extended: false, started: false, resume_at: current ?? resume_at };
+      const now = this.now();
+      for (const [name, at] of [[MODEL_STALL, resume_at], [MODEL_STALL_SINCE, now]] as const) {
+        if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
+          await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
+        }
+      }
+      return { extended: true, started: true, resume_at };
+    });
+  }
+
   async getClaimPause(name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<Timestamp | null> {
+    if (name === MODEL_STALL || name === MODEL_STALL_SINCE) {
+      // In effect until a probe answers, not until a time: the probe time is returned also once it passed.
+      const rows = new Map(
+        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [MODEL_STALL, MODEL_STALL_SINCE, MODEL_ANSWERED]))
+          .map((r) => [r.name as string, r.resume_at as Timestamp]),
+      );
+      if (!stallInEffect(rows.get(MODEL_STALL), rows.get(MODEL_ANSWERED))) return null;
+      return rows.get(name) ?? null;
+    }
     const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
     const at = (row?.resume_at as Timestamp | undefined) ?? null;
     return at !== null && at > this.now() ? at : null;
@@ -1395,6 +1444,11 @@ const RATE_LIMIT_PAUSE: ClaimPauseName = "rate_limit";
  * both backends), so no schema change.
  */
 const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
+
+/** A stall pause is in effect while its next probe time is after the last answered probe (none: always). */
+function stallInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
+  return probeAt !== undefined && probeAt > (answeredAt ?? "");
+}
 
 function rowToOverride(row: Row): SettingOverride {
   return {

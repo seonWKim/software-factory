@@ -43,6 +43,8 @@ export const TOP_LEVEL_KEYS = [
   "tick_ms",
   "poll_interval_ms",
   "run_timeout_ms",
+  "stall_ms",
+  "probe_interval_ms",
   "workers",
   "state_dir",
   "worktrees_dir",

@@ -217,8 +217,14 @@ export interface WorkerPause {
 /**
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update).
+ * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
+ * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
+ * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
+ * is not before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
+ * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
+ * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
  */
-export type ClaimPauseName = "rate_limit" | "forge_auth";
+export type ClaimPauseName = "rate_limit" | "forge_auth" | "model_stall" | "model_stall_since" | "model_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface Lease {
@@ -320,7 +326,10 @@ export type RunOutcome =
       status: "failed";
       /** What the run's agent calls used before it failed. Absent on rows from before it existed. */
       usage?: RunUsage;
-      /** `rate_limited` means a usage or rate limit, not a failed attempt (design §5 Restarts). */
+      /**
+       * `rate_limited` means a usage or rate limit, `agent_stalled` a model that printed nothing for `stall_ms`;
+       * neither is a failed attempt (design §5 Restarts).
+       */
       error_code: string;
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */

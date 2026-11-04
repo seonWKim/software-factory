@@ -34,6 +34,11 @@ export interface ExecOptions {
   timeout_ms?: number;
   stdin?: string;
   signal?: AbortSignal;
+  /**
+   * Called with each chunk of stdout as it arrives, before the command exits (design §5 Restarts, stall
+   * detection). The full stdout is still in the result. Absent: output is only read at the end.
+   */
+  onStdout?: (chunk: string) => void;
 }
 
 export interface ExecResult {

@@ -65,6 +65,13 @@ export interface LoadedConfig {
    * How long a forge 401/403 pauses implement-type claims (design §5 Restarts). Absent: `retry_max_ms`.
    */
   auth_pause_ms?: number;
+  /**
+   * Stall detection (design §5 Restarts): an agent run that prints nothing for this long, with no tool call
+   * open, ends `stalled`. Absent: DEFAULT_STALL_MS (300000).
+   */
+  stall_ms?: number;
+  /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
+  probe_interval_ms?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -88,6 +95,9 @@ export interface LoadedConfig {
    */
   coordination?: CoordinationSettings;
 }
+
+/** `stall_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
+export const STALL_DEFAULTS = { stall_ms: 300_000, probe_interval_ms: 600_000 } as const;
 
 /** The coordination keys of factory.config.json (design §5, 2026-11-03). */
 export const COORDINATION_KEYS = ["max_coordination_cost", "hotspot_paths", "hotspot_weight"] as const;

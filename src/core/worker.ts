@@ -1,4 +1,4 @@
-import type { FactoryConfig, Prompts } from "./config.js";
+import { type FactoryConfig, type Prompts, STALL_DEFAULTS } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
@@ -12,7 +12,7 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { AUTO_RESOLVE_LIMIT, FORGE_AUTH, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
+import { AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -358,6 +358,16 @@ export class Worker {
       const pause = await this.d.store.pauseClaims(resume);
       if (pause.extended) {
         this.d.log.warn(`rate limited: all runs paused, work resumes at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
+    }
+    if (outcome.status === "failed" && outcome.error_code === AGENT_STALLED) {
+      // The model printed nothing for stall_ms: every claim pauses until a probe on the cheap model answers, set
+      // before the outcome is stored, as for a rate limit (design §5 Restarts). The first probe is due after
+      // probe_interval_ms. `started` comes from the store's conditional write, so one worker logs the line.
+      const probeMs = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
+      const pause = await this.d.store.pauseClaims(this.after(probeMs), MODEL_STALL);
+      if (pause.started) {
+        this.d.log.warn(`model not answering: all runs paused, first probe at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
     if (outcome.status === "failed" && outcome.error_code === FORGE_AUTH) {
@@ -1637,6 +1647,7 @@ export class Worker {
       deny_paths: this.cfg.deny_paths,
       writable_paths: [],
       timeout_ms: this.cfg.run_timeout_ms,
+      stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
@@ -1660,6 +1671,7 @@ export class Worker {
       const reset = result.reset_at && !Number.isNaN(Date.parse(result.reset_at)) ? (new Date(result.reset_at).toISOString() as Timestamp) : null;
       throw new RunFailure(RATE_LIMITED, result.error ?? "usage or rate limit", false, { reset_at: reset, output_tail: tail(result.transcript) });
     }
+    // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
     }

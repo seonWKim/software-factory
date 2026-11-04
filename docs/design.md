@@ -26,7 +26,7 @@ the `05-*` files.
 
 ## 5. Coordination
 - [05-coordination.md](design/05-coordination.md): isolation, parallel workers and claim order, dependencies and the coordination cost threshold, leases and fencing, the store backend and MySQL schema steps.
-- [05-restarts.md](design/05-restarts.md): how failed runs are retried, backed off, paused, resumed or sent to a human.
+- [05-restarts.md](design/05-restarts.md): stalled runs and the model probe, how failed runs are retried, backed off, paused, resumed or sent to a human.
 - [05-sandbox.md](design/05-sandbox.md): the sandbox interface, one git folder per run, and the guarded file and shell tools.
 - [05-merge-conflict.md](design/05-merge-conflict.md): update runs on unmergeable PRs, the automatic resolve, and `/resolve`.
 - [05-ci-gate.md](design/05-ci-gate.md): the CI workflow and the controller's check gate before a merge.

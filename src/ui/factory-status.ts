@@ -3,7 +3,9 @@
 // settings take effect.
 
 import { readFile } from "node:fs/promises";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { SupervisorStatus } from "../interfaces/updater.js";
+import type { Check } from "../setup.js";
 
 /** What the page shows: the file's status, or null when there is none (not started with `factory dev`). */
 export type FactoryStatus = SupervisorStatus & {
@@ -32,4 +34,19 @@ function pidAlive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EPERM";
   }
+}
+
+/**
+ * The stall pause line (design §5 Restarts): `agents paused: model not answering since <time>` while the
+ * `model_stall` claim pause is in effect, else null. `factory status` prints it above the item table.
+ */
+export async function modelStallLine(store: Pick<FactoryStore, "getClaimPause">): Promise<string | null> {
+  const since = await store.getClaimPause("model_stall_since");
+  return since === null ? null : `agents paused: model not answering since ${since}`;
+}
+
+/** The same line as a failing check, for the dashboard's Health panel; none without a stall pause. */
+export async function modelStallChecks(store: Pick<FactoryStore, "getClaimPause">): Promise<Check[]> {
+  const line = await modelStallLine(store);
+  return line === null ? [] : [{ ok: false, msg: line }];
 }

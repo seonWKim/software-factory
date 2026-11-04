@@ -32,6 +32,11 @@ export interface AgentRunSpec {
   writable_paths: readonly string[];
   model_class: "cheap" | "standard" | "strong";
   timeout_ms: number;
+  /**
+   * Silence limit (design §5 Restarts): a run whose harness reports no progress for this long, while no tool
+   * call is in progress, ends `stalled`. Absent: the runner's default (300000). `timeout_ms` still bounds it.
+   */
+  stall_ms?: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */
@@ -52,8 +57,10 @@ export interface AgentRunResult {
    * `rate_limited`: the model provider refused for a usage or rate limit. Not a failed attempt; the
    * factory pauses every claim until `reset_at` (design §5 Restarts). Each runner maps its own harness's
    * signal to this; core never parses harness text.
+   * `stalled`: the harness reported nothing for `stall_ms` while no tool call was open (the model is not
+   * answering). Not a failed attempt either; the factory pauses claims until a probe gets an answer.
    */
-  status: "completed" | "failed" | "timed_out" | "aborted" | "rate_limited";
+  status: "completed" | "failed" | "timed_out" | "aborted" | "rate_limited" | "stalled";
   /** Final structured answer, if any. Not yet egress-scanned: the caller scans it before storing (G5). */
   output: unknown;
   /** Raw harness output. Not yet egress-scanned: the caller scans it before storing anywhere (G5). */

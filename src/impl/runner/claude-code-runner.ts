@@ -157,7 +157,11 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
   return [
     bin,
     "-p",
-    "--output-format", "json",
+    // Streamed events (one JSON object per line) so the runner sees progress during the run (stall detection,
+    // design §5 Restarts); `--verbose` is required for stream-json in print mode. The last `result` event is
+    // the same object `--output-format json` prints.
+    "--output-format", "stream-json",
+    "--verbose",
     "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
     "--setting-sources", "project",
     "--strict-mcp-config",
@@ -195,17 +199,28 @@ export class ClaudeCodeRunner implements AgentRunner {
       path: process.env.PATH ?? "/usr/bin:/bin",
     });
     const model = this.opts.models[spec.model_class];
-    const result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin), {
-      env,
-      stdin: spec.prompt,
-      timeout_ms: spec.timeout_ms,
-      signal: spec.signal,
-    });
+    const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
+    const watch = new StallWatch(stallMs);
+    let result: Awaited<ReturnType<Sandbox["exec"]>>;
+    try {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin), {
+        env,
+        stdin: spec.prompt,
+        timeout_ms: spec.timeout_ms,
+        signal: AbortSignal.any([spec.signal, watch.signal]),
+        onStdout: (chunk) => watch.feed(chunk),
+      });
+    } finally {
+      watch.stop();
+    }
 
-    // Usage is read whenever stdout holds the CLI's JSON result, also on timeout and abort.
+    // Usage is read whenever stdout holds the CLI's result event, also on timeout, stall and abort.
     const parsed = parseJsonResult(result.stdout);
     const usage = usageOf(parsed);
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage };
+    if (watch.stalled) {
+      return { status: "stalled", output: null, transcript: result.stdout, usage, error: `no output for ${stallMs} ms with no tool call open` };
+    }
     if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage };
 
     if (parsed === null) {
@@ -278,15 +293,97 @@ interface ClaudeJsonResult {
   api_error_status?: number | null;
 }
 
-/** The CLI's JSON result object on stdout, or null when stdout holds none. */
-function parseJsonResult(stdout: string): ClaudeJsonResult | null {
+/** One JSON object, or null when `text` is not one. */
+function parseObject(text: string): Record<string, unknown> | null {
   try {
-    const v: unknown = JSON.parse(stdout);
-    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as ClaudeJsonResult) : null;
+    const v: unknown = JSON.parse(text);
+    return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
   } catch {
     return null;
   }
 }
+
+/**
+ * The CLI's result object on stdout, or null when stdout holds none: the last `result` event of the stream
+ * (stream-json, one event per line), else stdout as one JSON object (the older `--output-format json`).
+ */
+function parseJsonResult(stdout: string): ClaudeJsonResult | null {
+  const lines = stdout.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith("{")) continue;
+    const event = parseObject(line);
+    if (event?.type === "result") return event as ClaudeJsonResult;
+  }
+  return parseObject(stdout) as ClaudeJsonResult | null;
+}
+
+/** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
+export const DEFAULT_STALL_MS = 300_000;
+
+/**
+ * Stall detection over the CLI's streamed events (design §5 Restarts). Every stdout chunk is activity and
+ * restarts the clock. Tool calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks
+ * close it): while any is open the clock does not run, since a test run in Bash can be silent for minutes; a
+ * hung tool is still bounded by the run timeout. When the clock runs out, `signal` aborts and `stalled` is set.
+ */
+class StallWatch {
+  private readonly ctl = new AbortController();
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private readonly open = new Set<string>();
+  private partial = "";
+  private done = false;
+  stalled = false;
+
+  constructor(private readonly ms: number) {
+    this.arm();
+  }
+
+  get signal(): AbortSignal {
+    return this.ctl.signal;
+  }
+
+  feed(chunk: string): void {
+    if (this.done) return;
+    const lines = (this.partial + chunk).split("\n");
+    this.partial = lines.pop() ?? "";
+    // A line longer than any event we care about is not kept whole: only its tool blocks matter, and an event
+    // that large is mostly a tool result's content.
+    if (this.partial.length > PARTIAL_LIMIT) this.partial = "";
+    for (const line of lines) this.track(line);
+    this.arm();
+  }
+
+  stop(): void {
+    this.done = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+
+  private track(line: string): void {
+    const event = line.trim().startsWith("{") ? parseObject(line) : null;
+    const message = event?.message as { content?: unknown } | undefined;
+    if (!Array.isArray(message?.content)) return;
+    for (const block of message.content as { type?: unknown; id?: unknown; tool_use_id?: unknown }[]) {
+      if (block?.type === "tool_use" && typeof block.id === "string") this.open.add(block.id);
+      if (block?.type === "tool_result" && typeof block.tool_use_id === "string") this.open.delete(block.tool_use_id);
+    }
+  }
+
+  /** Restarts the clock when no tool call is open; stops it while one is. */
+  private arm(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (this.done || this.open.size > 0) return;
+    this.timer = setTimeout(() => {
+      this.stalled = true;
+      this.ctl.abort();
+    }, this.ms);
+  }
+}
+
+/** Characters of an unfinished stdout line kept for tool tracking. */
+const PARTIAL_LIMIT = 4 * 1024 * 1024;
 
 const count = (n: unknown): number => (typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : 0);
 
