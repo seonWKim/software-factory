@@ -1,13 +1,13 @@
 import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { DRAIN_MARGIN_MS, GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
-import { supervise } from "../src/supervisor.js";
+import { childError, supervise } from "../src/supervisor.js";
 import { recordingLog, waitFor } from "./helpers/fakes.js";
 
 // The supervisor end to end, with fake git/npm (a linear history; every change touches src/) and a fake
@@ -25,6 +25,10 @@ class Fake {
   drainMode: "ack" | "hold" | "ignore" = "ack";
   /** `workers` in each new folder's factory.config.json; 0: none (block size 1). */
   workers = 0;
+  /** Pending migration steps per revision, as its `migrate --status --json` lists them. */
+  pending = new Map<string, string[]>();
+  /** How many migration checks ran. */
+  checks = 0;
 
   get origin(): string {
     return this.commits[this.commits.length - 1]!;
@@ -34,6 +38,16 @@ class Fake {
     const dir = relative(this.root, opts.cwd) || ".";
     const [tool, sub, ...rest] = cmd;
     const last = rest[rest.length - 1]!;
+    if (tool === "node") {
+      const rev = this.heads.get(relative(this.root, dirname(dirname(cmd[cmd.indexOf("migrate") - 1]!))))!;
+      if (cmd.includes("--status")) {
+        this.checks++;
+        return ok(JSON.stringify({ pending: this.pending.get(rev) ?? [] }));
+      }
+      this.events.push(`migrate ${rev}`);
+      this.pending.delete(rev);
+      return ok();
+    }
     if (tool === "npm") {
       if (sub === "ci") return mkdirSync(join(opts.cwd, "node_modules"), { recursive: true }), ok();
       const rev = this.heads.get(dir)!;
@@ -334,5 +348,41 @@ describe("supervisor: signals", () => {
     expect(f.events.slice(-3)).toEqual(["kill SIGTERM 1", "kill SIGKILL 1", "exit 1"]);
     expect(log.lines.some((l) => /hard stop/.test(l.msg))).toBe(true);
     expect(f.live).toEqual([]);
+  });
+});
+
+describe("supervisor: pending migration steps", () => {
+  it("while the check lists pending steps, no child is launched or drained over several polls; once clean, the new one starts", async () => {
+    const { f, clock, signals, running } = setup();
+    await waitFor(() => f.children.length === 1, "first child");
+    f.pending.set("c2", ["0018-add-thing.sql"]);
+    f.commits.push("c2");
+    await nextPoll(clock, () => f.events.includes("build c2"), "c2 built");
+    const checks = f.checks;
+    for (let i = 0; i < 5; i++) await nextPoll(clock, () => f.checks > checks + i, `check ${i}`);
+    await settle();
+    expect(f.children.map((c) => c.pid)).toEqual([1]);
+    expect(f.events.filter((e) => /^(launch|drain|kill)/.test(e))).toEqual(["launch 1"]);
+
+    f.pending.delete("c2");
+    await nextPoll(clock, () => f.events.includes("drain 1"), "new child, old drains");
+    expect(f.events.slice(f.events.indexOf("launch 2 (alive: 1)"))).toEqual(["launch 2 (alive: 1)", "drain 1", "ack 1", "exit 1"]);
+    signals.emit("SIGTERM");
+    expect(await running).toBe(0);
+  });
+});
+
+describe("supervisor: a child's error message", () => {
+  it("keeps the pending-migration code as a field and the step names; text alone sets no code", () => {
+    expect(childError({ type: "factory:error", error: "boom", code: "migration_pending", pending: ["0018-a.sql", 7, "project-keys"] })).toEqual({
+      lastError: "boom",
+      lastErrorCode: "migration_pending",
+      lastErrorPending: ["0018-a.sql", "project-keys"],
+    });
+    expect(childError({ type: "factory:error", error: "1 schema step pending: run `npm run migrate`" })).toEqual({
+      lastError: "1 schema step pending: run `npm run migrate`",
+      lastErrorCode: null,
+      lastErrorPending: [],
+    });
   });
 });

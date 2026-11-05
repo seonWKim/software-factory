@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
@@ -10,7 +10,9 @@ import {
   type ChildHandle,
   type ChildLauncher,
   type CommandRunner,
+  MIGRATION_PENDING_CODE,
   SUPERVISED_ENV,
+  type SupervisorRequest,
   type SupervisorStatus,
   type Updater,
   WORKER_INDEX_BASE_ENV,
@@ -23,6 +25,8 @@ const BUILT_MARKER = ".factory-built-rev";
 /** Written into a version folder when its child starts: the child's pid. The orphan sweep reads it. */
 export const PID_FILE = ".factory-pid";
 const TAIL = 2000;
+/** How long one migration check (`migrate --status --json`) may take. */
+const CHECK_TIMEOUT_MS = 120_000;
 
 /**
  * Files whose change needs a build and a restart. Anything else (docs) only moves the newest folder.
@@ -66,6 +70,23 @@ export interface GitWorktreeOptions {
   statusFile?: string;
   /** Whether a pid names a live process (the orphan sweep). Default: `process.kill(pid, 0)`. */
   pidAlive?: (pid: number) => boolean;
+  /** `<state_dir>/supervisor-request.json`, written by `npm run migrate`; none: no request is read. */
+  requestFile?: string;
+  /** Written into the status file so `npm run migrate` can tell a live supervisor. Default: process.pid. */
+  supervisorPid?: number;
+  /** `updater.auto_migrate`: run the target's migrate itself after draining, instead of waiting for the owner. */
+  autoMigrate?: boolean;
+  /** Added to `env` for a version's `migrate` (the check and auto_migrate), e.g. the secret file's path. */
+  migrateEnv?: Readonly<Record<string, string>>;
+}
+
+/** A built revision whose migration check lists pending steps: not started until they are applied. */
+interface Pending {
+  rev: string;
+  dir: string;
+  steps: string[];
+  /** Why the check itself failed, or null. */
+  error: string | null;
 }
 
 /** One child this supervisor started, and the folder and worker index block it runs with. */
@@ -138,6 +159,12 @@ export class GitWorktreeUpdater implements Updater {
   private crash: { error: string | null; since: string } | null = null;
   /** The status write in progress. */
   private reporting: Promise<void> = Promise.resolve();
+  /** The built target waiting for its migration steps; it stays in its folder until superseded or started. */
+  private pending: Pending | null = null;
+  /** True while a drain request from `npm run migrate` stands: no child is started. */
+  private held = false;
+  /** A revision whose automatic migrate failed: not tried again automatically. */
+  private autoFailedRev: string | null = null;
 
   constructor(private readonly o: GitWorktreeOptions) {}
 
@@ -170,7 +197,7 @@ export class GitWorktreeUpdater implements Updater {
       this.o.log.info("creating a version folder", { rev: origin });
       this.newest = await this.create(origin);
     }
-    await this.ensureChild();
+    if (!(await this.handleRequest())) await this.ensureChild(true);
     if (!this.closed) await this.cleanup();
   }
 
@@ -178,14 +205,20 @@ export class GitWorktreeUpdater implements Updater {
     const origin = await this.fetch();
     await this.fastForwardMain(origin);
     if (origin === this.failedRev) return null;
+    if (this.pending?.rev === origin) return null; // poll checks its steps again
     if (this.newest && (await this.head(this.newest)) === origin) return null;
     return origin;
   }
 
   async poll(): Promise<void> {
     if (this.closed) return;
+    if (await this.handleRequest()) {
+      if (!this.closed) await this.cleanup();
+      return;
+    }
     const target = await this.check();
     if (target && !this.closed) await this.update(target);
+    else if (this.pending && !this.closed) await this.settlePending(this.pending.rev, this.pending.dir);
     await this.ensureChild();
     if (!this.closed) await this.cleanup();
   }
@@ -199,6 +232,141 @@ export class GitWorktreeUpdater implements Updater {
     await Promise.all(all.map((l) => this.stop(l.child)));
     this.current = null;
     await this.report("stopped", null);
+  }
+
+  // --- pending migration steps -------------------------------------------------------------------------------
+
+  /**
+   * The built revision in `dir`: its own `migrate --status --json`. Clean: start it (start-then-drain). Steps
+   * pending (or the check failed): it waits as `pending` and nothing is drained or started; with auto_migrate
+   * the old children are drained, the target's migrate runs, and then it starts.
+   */
+  private async settlePending(rev: string, dir: string): Promise<void> {
+    const { log } = this.o;
+    const check = await this.migrationCheck(dir);
+    if (this.closed) return;
+    if (check.error === null && check.steps.length === 0) {
+      if (this.pending) log.info("migration steps applied: starting the waiting revision", { rev, dir });
+      this.pending = null;
+      this.newest = dir;
+      await this.startChild(dir, rev);
+      return;
+    }
+    const first = this.pending?.rev !== rev;
+    this.pending = { rev, dir, steps: check.steps, error: check.error };
+    if (first) {
+      log.warn("new revision built but migration steps are pending: not started, nothing drained; run `npm run migrate`", {
+        rev,
+        pending: check.steps.join(", "),
+        ...(check.error ? { error: check.error } : {}),
+      });
+    }
+    if (this.o.autoMigrate && check.error === null && this.autoFailedRev !== rev) {
+      await this.autoMigrate(this.pending);
+      return;
+    }
+    await this.report("migration_pending", rev, check.error);
+  }
+
+  /** `updater.auto_migrate`: drain every live child and wait for it, run the target's migrate, then start it. */
+  private async autoMigrate(p: Pending): Promise<void> {
+    const { log } = this.o;
+    log.info("auto_migrate: draining every child, then applying the pending steps", { rev: p.rev, pending: p.steps.join(", ") });
+    this.held = true;
+    try {
+      for (const l of this.live) if (!l.draining) this.drain(l);
+      await this.report("draining", p.rev);
+      await Promise.all(this.live.map((l) => l.child.exited));
+      if (this.closed) return;
+      const r = await this.exec(this.o.repoPath, this.migrateCmd(p.dir, ["--no-drain"]), this.migrateEnvFor(p.dir));
+      if (this.closed) return;
+      if (r.exit_code === 0) {
+        log.info("auto_migrate: steps applied; starting the new revision", { rev: p.rev });
+        this.held = false;
+        this.pending = null;
+        this.newest = p.dir;
+        await this.startChild(p.dir, p.rev);
+        return;
+      }
+      this.autoFailedRev = p.rev;
+      p.error = `npm run migrate failed (exit ${r.exit_code}): ${tail(`${r.stdout}${r.stderr}`.trim(), 300)}`;
+      log.error("auto_migrate: migrate failed; restarting the old revision", { rev: p.rev, exit_code: r.exit_code, output_tail: tail(`${r.stdout}${r.stderr}`) });
+    } finally {
+      this.held = false;
+    }
+    await this.report("migration_pending", p.rev, p.error);
+  }
+
+  /** Runs `migrate --status --json` from the folder's build. A failed or unreadable check counts as pending. */
+  private async migrationCheck(dir: string): Promise<{ steps: string[]; error: string | null }> {
+    const r = await this.exec(this.o.repoPath, this.migrateCmd(dir, ["--status", "--json"]), this.migrateEnvFor(dir), CHECK_TIMEOUT_MS);
+    const out = `${r.stdout}`.trim().split("\n").filter(Boolean).at(-1) ?? "";
+    let pending: unknown;
+    try {
+      pending = (JSON.parse(out) as { pending?: unknown }).pending;
+    } catch {
+      pending = undefined;
+    }
+    if (r.exit_code !== 0 || !Array.isArray(pending) || !pending.every((p) => typeof p === "string")) {
+      const error = `migration check failed (exit ${r.exit_code}): ${tail(`${r.stdout}${r.stderr}`.trim(), 300)}`;
+      this.o.log.error("migration check of the new revision failed; it is not started", { dir, error });
+      return { steps: [], error };
+    }
+    return { steps: pending as string[], error: null };
+  }
+
+  private migrateCmd(dir: string, flags: string[]): string[] {
+    return ["node", "--disable-warning=ExperimentalWarning", join(dir, "dist", "main.js"), "migrate", ...flags];
+  }
+
+  private migrateEnvFor(dir: string): Record<string, string> {
+    return { ...this.o.env, ...this.o.migrateEnv, [CODE_ROOT_ENV]: dir };
+  }
+
+  /**
+   * Reads the request `npm run migrate` wrote. drain: drain every child and start none (true: poll does nothing
+   * else). start: start the waiting target. cancel, or a drain whose migrate process is gone: resume, so the old
+   * revision restarts from its own folder. start and cancel are removed once handled.
+   */
+  private async handleRequest(): Promise<boolean> {
+    const file = this.o.requestFile;
+    if (!file || this.closed) return false;
+    let req: SupervisorRequest | null = null;
+    try {
+      req = JSON.parse(await readFile(file, "utf8")) as SupervisorRequest;
+    } catch {
+      req = null;
+    }
+    const { log } = this.o;
+    if (!req) {
+      this.held = false;
+      return false;
+    }
+    if (req.action === "drain" && this.pidAlive(req.pid)) {
+      if (!this.held) {
+        log.info("npm run migrate asked for a drain: every child drains, none starts until it is done", { migrate_pid: req.pid, rev: req.target_rev });
+        this.held = true;
+        for (const l of this.live) if (!l.draining) this.drain(l);
+      }
+      await this.report("draining", this.pending?.rev ?? req.target_rev);
+      return true;
+    }
+    this.held = false;
+    await unlink(file).catch(() => undefined);
+    if (req.action === "start") {
+      const p = this.pending;
+      if (p && (req.target_rev === null || req.target_rev === p.rev)) {
+        log.info("npm run migrate applied the steps: starting the waiting revision", { rev: p.rev, dir: p.dir });
+        this.pending = null;
+        this.newest = p.dir;
+        await this.startChild(p.dir, p.rev);
+      } else log.info("npm run migrate applied the steps: resuming", { rev: req.target_rev });
+      return false;
+    }
+    log.warn(req.action === "drain" ? "the npm run migrate that asked for a drain is gone: resuming" : "npm run migrate was cancelled: resuming the old revision", {
+      migrate_pid: req.pid,
+    });
+    return false;
   }
 
   /** SIGTERM, then SIGKILL if it has not exited within the drain timeout. Resolves once it exited. */
@@ -238,6 +406,9 @@ export class GitWorktreeUpdater implements Updater {
       return;
     }
     log.info("code change: building the new revision in its own folder", { rev: target, pid: this.childPid() });
+    // A newer commit replaces a waiting target: its folder is no longer kept.
+    if (this.pending) log.info("a newer revision replaces the one waiting for migration steps", { waiting: this.pending.rev, rev: target });
+    this.pending = null;
     await this.report("building", target);
     let dir: string | null = null;
     let ok = false;
@@ -256,14 +427,19 @@ export class GitWorktreeUpdater implements Updater {
       );
       return;
     }
-    if (this.closed) return;
-    this.newest = dir;
-    await this.startChild(dir, target);
+    if (this.closed || !dir) return;
+    // The schema check before anything drains: pending steps keep the old child running.
+    await this.settlePending(target, dir);
   }
 
-  /** Starts a child from the newest folder when none claims, building it first if needed. */
-  private async ensureChild(): Promise<void> {
-    if (this.closed || this.current || !this.newest) return;
+  /**
+   * Starts a child from the newest folder when none claims, building it first if needed. `check`: run the
+   * migration check first (supervisor start). Nothing starts while held or while the newest folder itself waits
+   * for migration steps (its child exited on them).
+   */
+  private async ensureChild(check = false): Promise<void> {
+    if (this.closed || this.current || !this.newest || this.held) return;
+    if (this.pending && this.pending.dir === this.newest) return;
     const dir = this.newest;
     const head = await this.head(dir);
     if ((await this.builtRev(dir)) !== head) {
@@ -281,6 +457,7 @@ export class GitWorktreeUpdater implements Updater {
       }
     }
     if (this.closed) return;
+    if (check) return this.settlePending(head, dir);
     await this.startChild(dir, head);
   }
 
@@ -308,7 +485,14 @@ export class GitWorktreeUpdater implements Updater {
     await writeFile(join(dir, PID_FILE), `${child.pid}\n`).catch((err: unknown) =>
       log.warn("could not write the pid file", { dir, error: err instanceof Error ? err.message.slice(0, 200) : "unknown" }),
     );
-    await this.report("running", null);
+    await this.reportIdle();
+  }
+
+  /** running, or migration_pending while a built target waits for its steps. */
+  private reportIdle(): Promise<void> {
+    if (this.held) return this.report("draining", this.pending?.rev ?? null);
+    if (this.pending) return this.report("migration_pending", this.pending.rev, this.pending.error);
+    return this.report("running", null);
   }
 
   /** Asks an old child to drain; it exits by itself after its in-flight runs. Hard stop only on timeout. Never awaited. */
@@ -338,7 +522,18 @@ export class GitWorktreeUpdater implements Updater {
     if (this.stopping.has(l.child)) return;
     if (l.draining) {
       log.info("old child drained and exited", { pid: l.child.pid, rev: l.rev, acknowledged: l.child.drainAcknowledged, exit_code: code });
-      if (!this.closed && this.current) void this.report("running", null);
+      if (!this.closed && (this.current || this.held)) void this.reportIdle();
+      return;
+    }
+    if (l.child.lastErrorCode === MIGRATION_PENDING_CODE) {
+      // Not a crash loop: it waits, like a target whose check listed steps, until they are applied.
+      this.pending = { rev: l.rev, dir: l.dir, steps: [...(l.child.lastErrorPending ?? [])], error: null };
+      if (!this.closed) void this.report("migration_pending", l.rev);
+      log.warn("child exited on pending migration steps; not restarted until they are applied (npm run migrate)", {
+        pid: l.child.pid,
+        rev: l.rev,
+        pending: this.pending.steps.join(", "),
+      });
       return;
     }
     if (!this.closed) void this.report("crashed", null, l.child.lastError ?? `exit code ${code}`);
@@ -371,6 +566,7 @@ export class GitWorktreeUpdater implements Updater {
     // A crash loop (crash, restart, the same crash) keeps the first crash's time; any other state ends it.
     if (state === "crashed") this.crash = this.crash?.error === error ? this.crash : { error, since: now };
     else if (state !== "running") this.crash = null;
+    const waiting = state === "migration_pending" || state === "draining" ? this.pending : null;
     const status: SupervisorStatus = {
       state,
       rev: this.runningRev,
@@ -379,6 +575,10 @@ export class GitWorktreeUpdater implements Updater {
       draining_pids: state === "stopped" ? [] : this.live.filter((l) => l.draining).map((l) => l.child.pid),
       since: state === "crashed" ? this.crash!.since : last && last.state === state ? last.since : now,
       error,
+      pending_steps: waiting?.steps ?? [],
+      target_dir: waiting?.dir ?? null,
+      supervisor_pid: state === "stopped" ? null : (this.o.supervisorPid ?? process.pid),
+      held: this.held,
     };
     this.lastStatus = status;
     // One write at a time: a child's exit can report while a poll does.
@@ -476,6 +676,7 @@ export class GitWorktreeUpdater implements Updater {
     const all = await this.folders();
     const kept = new Set<string>([...this.live.map((l) => l.dir), ...this.foreign]);
     if (this.building) kept.add(this.building);
+    if (this.pending) kept.add(this.pending.dir);
     const extra = this.newest && !kept.has(this.newest) ? this.newest : await this.newestBuilt(all.filter((d) => !kept.has(d)));
     if (extra) kept.add(extra);
     const links = await Promise.all([...kept].map((d) => this.linkTarget(d)));
@@ -646,8 +847,8 @@ export class GitWorktreeUpdater implements Updater {
     return r.stdout;
   }
 
-  private exec(cwd: string, cmd: readonly string[]): Promise<ExecResult> {
-    return this.o.run(cmd, { cwd, env: this.o.env, signal: this.abort.signal });
+  private exec(cwd: string, cmd: readonly string[], env: Readonly<Record<string, string>> = this.o.env, timeoutMs?: number): Promise<ExecResult> {
+    return this.o.run(cmd, { cwd, env, signal: this.abort.signal, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) });
   }
 }
 

@@ -144,6 +144,19 @@ export function processChannel(proc: NodeJS.Process = process): DrainChannel {
 
 // --- supervisor side ------------------------------------------------------------------------------------
 
+/**
+ * What a child's error message carries: the text, its stable `code` (MIGRATION_PENDING_CODE when steps are
+ * pending; never derived from the text) and the pending step names.
+ */
+export function childError(m: unknown): { lastError: string; lastErrorCode: string | null; lastErrorPending: string[] } {
+  const o = (typeof m === "object" && m !== null ? m : {}) as { error?: unknown; code?: unknown; pending?: unknown };
+  return {
+    lastError: String(o.error ?? "").slice(0, 500),
+    lastErrorCode: typeof o.code === "string" ? o.code.slice(0, 64) : null,
+    lastErrorPending: Array.isArray(o.pending) ? o.pending.filter((p): p is string => typeof p === "string").slice(0, 50).map((p) => p.slice(0, 200)) : [],
+  };
+}
+
 /** Forks `dist/main.js` of a version folder with an IPC channel. Output goes to the supervisor's terminal. */
 export class ForkLauncher implements ChildLauncher {
   launch(spec: ChildSpec): ChildHandle {
@@ -160,6 +173,8 @@ export class ForkLauncher implements ChildLauncher {
 class ForkedChild implements ChildHandle {
   drainAcknowledged = false;
   lastError: string | null = null;
+  lastErrorCode: string | null = null;
+  lastErrorPending: string[] = [];
   readonly exited: Promise<number | null>;
 
   constructor(private readonly c: ChildProcess) {
@@ -171,7 +186,7 @@ class ForkedChild implements ChildHandle {
     });
     c.on("message", (m: unknown) => {
       if (isMessage(m, DRAINED_MESSAGE)) this.drainAcknowledged = true;
-      if (isMessage(m, CHILD_ERROR_MESSAGE)) this.lastError = String((m as { error?: unknown }).error ?? "").slice(0, 500);
+      if (isMessage(m, CHILD_ERROR_MESSAGE)) Object.assign(this, childError(m));
     });
   }
 
