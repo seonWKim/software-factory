@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, commandFooter, commandPhase, commandState, commandsFor,
-  commandTableMarkdown, helpReply, parseComment, phaseLabel, unknownCommandReply,
+  COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, commandFooter, commandPhase, commandSpec,
+  commandState, commandsFor, commandTableMarkdown, helpReply, parseComment, phaseLabel, prCommandsFor, unknownCommandReply,
 } from "../src/core/commands.js";
 import { Controller } from "../src/core/controller.js";
 import type { WorkItemPatch } from "../src/core/types.js";
@@ -95,8 +95,29 @@ describe("command table", () => {
     expect(at("RUNNING", "max_restart")).toBe("failed_implement");
     expect(at("NEW", "max_attempts")).toBe("failed_run");
     expect(at("NEW", "run_failed:triage:invalid_output")).toBe("failed_run");
-    expect(at("REVIEW", "max_restart")).toBe("failed_run");
+    expect(at("REVIEW", "max_restart")).toBe("failed_review");
+    expect(at("REVIEW", "run_failed:review:invalid_output")).toBe("failed_review");
     expect(at("REVIEW", "run_failed:update:invalid_output")).toBe("failed_run");
+  });
+
+  it("/revise has a PR meaning at a merge wait and a failed review run, only with a PR; the footer names it first", () => {
+    const revise = commandSpec("revise");
+    for (const phase of COMMAND_PHASES) {
+      const on = phase === "merge_pending" || phase === "failed_review";
+      expect({ phase, on: appliesOnPr(revise, s(phase, true)) }).toEqual({ phase, on });
+      expect(appliesOnPr(revise, s(phase, false))).toBe(false);
+      // Only /revise has a PR meaning.
+      expect(prCommandsFor(s(phase, true)).map((c) => c.name)).toEqual(on ? ["revise"] : []);
+    }
+    const f = commandFooter(s("merge_pending", true)).split("\n");
+    expect(f[0]).toBe("On the pull request, you can reply with:");
+    expect(f[1]).toMatch(/^- `\/revise <feedback>`: On the PR: send your feedback to the implementer/);
+    expect(f.indexOf("Commands you can reply with now:")).toBe(3);
+    expect(commandFooter(s("merge_pending", false))).not.toContain("On the pull request");
+    expect(commandFooter(s("reviewing", true))).not.toContain("/revise");
+    expect(helpReply(s("failed_review", true))).toContain("`/revise <feedback>` **(now, on the PR)**: Get a new spec written with your feedback. On the PR:");
+    expect(helpReply(s("failed_review", true))).toContain("(blocked by a failed review run)");
+    expect(commandTableMarkdown()).toContain("; on its PR: waiting for a human merge, blocked by a failed review run |");
   });
 
   it("/revise and /retry apply at both failed-implement phases; /revise not at a failed triage, review or update run", () => {
@@ -107,10 +128,13 @@ describe("command table", () => {
     }
     expect(names("failed_run")).toContain("retry");
     expect(names("failed_run")).not.toContain("revise");
+    expect(names("failed_review")).toContain("retry");
+    expect(names("failed_review")).not.toContain("revise");
     expect(names("floor_tier")).not.toContain("revise");
     expect(phaseLabel("too_large")).toBe("blocked: the change was too large");
     expect(phaseLabel("failed_implement")).toBe("blocked by a failed implement run");
     expect(phaseLabel("failed_run")).toBe("blocked by a failed run");
+    expect(phaseLabel("failed_review")).toBe("blocked by a failed review run");
   });
 
   it("/help names the state by its label, not its phase id", () => {
@@ -137,7 +161,8 @@ describe("footers match what the controller accepts", () => {
     implementing: { stage: "RUNNING" },
     dependency_hold: { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #1 to merge" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
-    failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
+    failed_review: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
+    failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:update:invalid_output" },
     too_large: { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" },
     failed_implement: { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" },
     reviewing: { stage: "REVIEW" },
@@ -191,6 +216,9 @@ describe("footers match what the controller accepts", () => {
     return { store, source, controller, itemIn };
   }
 
+  /** The issue part of a footer: the PR block (if any) comes before it. */
+  const issuePart = (footer: string) => footer.slice(footer.indexOf("Commands you can reply with now:"));
+
   it("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", async () => {
     const { source, controller, itemIn } = await harness();
     let n = 0;
@@ -207,8 +235,37 @@ describe("footers match what the controller accepts", () => {
           const refused = source.comments.some((c) => c.marker === `<!-- factory:refused:${n} -->`);
           const spec = COMMANDS.find((c) => c.name === name)!;
           expect({ phase, pr, name, accepted: !refused }).toEqual({ phase, pr, name, accepted: applies(spec, state) });
-          expect({ phase, pr, name, listed: footer.includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
+          expect({ phase, pr, name, listed: issuePart(footer).includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
         }
+      }
+    }
+  });
+
+  it("for every phase, a /revise on the item's PR is refused exactly when the footer's PR block leaves it out", async () => {
+    const { store, source, controller, itemIn } = await harness();
+    let n = 20_000;
+    for (const phase of COMMAND_PHASES) {
+      n++;
+      const item = await itemIn(phase, 42, n);
+      const state = commandState(item);
+      await controller.handleEvent({
+        kind: "revise_requested", source: issueRef(42), comment_id: String(n), requester: alice, feedback: "fix the flag",
+        pr: { pr_number: 42, head_branch: `${config.branch_prefix}${item.id}` },
+      });
+      const after = (await store.getWorkItem(item.id))!;
+      const refused = source.comments.filter((c) => c.marker === `<!-- factory:refused:${n} -->`);
+      const listed = commandFooter(state).startsWith("On the pull request") && commandFooter(state).includes("`/revise <feedback>`");
+      if (phase === "closed") {
+        // A closed item's PR: no change and no reply.
+        expect(refused).toEqual([]);
+        expect(after).toEqual(item);
+        continue;
+      }
+      expect({ phase, accepted: after.version !== item.version }).toEqual({ phase, accepted: listed });
+      expect({ phase, refused: refused.length }).toEqual({ phase, refused: listed ? 0 : 1 });
+      if (!listed) {
+        expect(refused[0]!.source).toEqual(issueRef(42));
+        expect(refused[0]!.body).toContain(`the item is ${phaseLabel(phase)}`);
       }
     }
   });

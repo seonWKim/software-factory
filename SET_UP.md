@@ -74,6 +74,7 @@ Then on GitHub:
 1. Label an issue `factory`.
 2. The factory posts a spec on the issue. Reply `/approve [notes]`, `/reject <reason>`, or `/revise <feedback>`. Notes after `/approve` (on the same line or the lines below) go to the implementer and the reviewer; `/revise` keeps the issue open and posts a new spec written with your feedback; `/reject` posts your reason and closes the issue as not planned.
 3. It opens a PR, reviews it, waits for the PR's checks (the `test` workflow, below), and comments when a human merge is needed. Merge it yourself. If a check fails, the factory sends the PR back to the implementer with the failing check names; that counts as one loop, like a review that found a bug.
+   To ask for changes before you merge (or after its review run failed), reply `/revise <feedback>` on the PR, or submit a GitHub review with "Request changes": its text and each line comment (file and line) go to the implementer, who pushes to the same PR branch; a fresh review follows. Each round counts as one loop toward `max_loops`; at the limit the factory comments and starts nothing. Approvals and plain review comments start nothing. Only reviews from users with write permission count, and only those submitted after the factory first read the PR's reviews.
 4. If a step fails, it comments; reply `/retry`.
    If `budgets` is set for the item's tier in `factory.config.json` (e.g. `"budgets": {"2": 2000000}`; absent means no limit) and the item has spent that many tokens, the factory stops before its next implement or review run and comments a budget checkpoint: what was spent, the current budget and a suggested one. All work so far is kept. Reply:
    - `/budget` to continue with the suggested budget;
@@ -93,15 +94,15 @@ A command is the first line of a comment: `/` and the command name (any case), t
 |---|---|---|
 | `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run |
-| `/revise <feedback>` | Get a new spec written with your feedback | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run |
-| `/retry` | Run the failed run again | blocked by a failed run, blocked: the change was too large, blocked by a failed implement run |
+| `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run; on its PR: waiting for a human merge, blocked by a failed review run |
+| `/retry` | Run the failed run again | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
 | `/link <code>` | Link the account you post from to a factory user, with a code from `factory link-code <user_id>` | any time |
 | `/help` | List every command and which ones apply now | any time |
 
-Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
+Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. Feedback on a PR (`/revise` there, or a "Request changes" review) is handled the same way, capped at 8000 characters. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
 
 Who may act is decided by the grant plugins in `permissions.grants` (default: write access on the repository; docs/plugins.md, GrantSource). To act from another account as the same factory user (your GitHub user is `github:<numeric id>`), run `npm run --silent factory -- link-code github:<id>` and post the printed `/link <code>` as a comment on any issue from the other account. The code works once, for 10 minutes, and 5 wrong codes lock it. `/link` is the one command read on any issue, work item or not; it is never listed in an item's footer.
 

@@ -8,7 +8,9 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
-import { commandFooter, commandPhase, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply } from "./commands.js";
+import {
+  commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply,
+} from "./commands.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyVerdict,
@@ -109,6 +111,8 @@ type Refusal = { refuse: string };
 type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" | "budget_continue" | "resolve_requested" }>;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
+type ReviseEvent = Extract<SourceEvent, { kind: "revise_requested" }>;
+type PrReviewEvent = Extract<SourceEvent, { kind: "pr_changes_requested" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
@@ -150,6 +154,11 @@ const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
+/** Characters of PR feedback (a `/revise` on a PR, or a "Request changes" review) kept and sent to the implementer. */
+const MAX_FEEDBACK_CHARS = 8000;
+/** State change reasons of PR feedback that started an implement run (design §4). */
+const PR_REVISE = "pr_revise_requested";
+const PR_CHANGES = "pr_changes_requested";
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 const FLOOR_TIER = "floor_tier";
 /**
@@ -517,6 +526,8 @@ export class Controller {
         return this.handleInfo(e);
       case "plain_comment":
         return this.handlePlainComment(e);
+      case "pr_changes_requested":
+        return this.handlePrReview(e);
       case "pr_merged":
       case "pr_closed":
         return this.prFinished(e);
@@ -699,10 +710,11 @@ export class Controller {
    * (no reaction, no reply): they may be ordinary conversation on an unrelated issue.
    */
   private async handleCommand(e: CommandEvent): Promise<void> {
-    const item = e.kind === "resolve_requested" && e.pr
-      ? await this.itemOfPr(e.pr)
-      : await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const onPr = (e.kind === "resolve_requested" || e.kind === "revise_requested") && e.pr ? e.pr : null;
+    const item = onPr ? await this.itemOfPr(onPr) : await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
+    // A `/revise` on the PR of a closed item is ordinary conversation now: no reaction, no reply (design §4).
+    if (e.kind === "revise_requested" && onPr && item.stage === "CLOSED") return;
     // /resolve uses the same write-permission check as /approve and /retry; no new AuthAction.
     const who = e.kind === "retry_requested" || e.kind === "revise_requested" || e.kind === "resolve_requested" ? e.requester : e.approver;
     const principal = await this.authorize(who, "approve_spec", item.id);
@@ -729,20 +741,100 @@ export class Controller {
     }
     if (refusal === null) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
-    // A /resolve sent on the PR is answered on the PR; every other command on the item's own issue.
+    // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
     await this.post(
-      e.kind === "resolve_requested" ? e.source : item.source,
+      onPr ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
     );
   }
 
-  /** The work item of a factory PR, from its head branch; null unless that item's PR is this one. */
+  /**
+   * The work item of a PR: a factory PR's from its head branch, any other PR's adopted item by number; null
+   * unless that item's PR is this one.
+   */
   private async itemOfPr(pr: { pr_number: number; head_branch: string }): Promise<WorkItem | null> {
     const id = workItemIdFromBranch(pr.head_branch, this.cfg.branch_prefix);
-    if (!id) return null;
-    const it = await this.d.store.getWorkItem(id as WorkItemId);
+    const it = id
+      ? await this.d.store.getWorkItem(id as WorkItemId)
+      : await this.d.store.getWorkItemByPr(this.project(), pr.pr_number).then((x) => (x?.origin === "adopted" ? x : null));
     return it && it.pr_number === pr.pr_number ? it : null;
+  }
+
+  /**
+   * A "Request changes" review on a PR (design §4): its body and line comments are feedback for one implement
+   * run, as a `/revise` on the PR is. A PR with no open item, and a reviewer without write permission, get
+   * nothing: no change, no reply. A review already applied (a later poll, a restart) changes nothing. A writer's
+   * review in a state that cannot take it gets one reply on the PR, keyed on the review.
+   */
+  private async handlePrReview(e: PrReviewEvent): Promise<void> {
+    const item = await this.itemOfPr(e);
+    if (!item || item.stage === "CLOSED") return;
+    const principal = await this.authorize(e.reviewer, "approve_spec", item.id);
+    if ("refuse" in principal) {
+      this.d.log.info("review ignored", { work_item_id: item.id, pr_number: e.pr_number, reason: principal.refuse });
+      return;
+    }
+    const actor: Actor = { kind: "user", id: principal.user_id };
+    const refusal = await this.decide(item.id, (it) =>
+      this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, pr_number: e.pr_number, key: { review_id: e.review_id } }));
+    if (refusal === null) return;
+    this.d.log.info("review refused", { work_item_id: item.id, pr_number: e.pr_number, reason: refusal });
+    await this.post(e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
+  }
+
+  /**
+   * Feedback on a PR (design §4): a `/revise` on the PR or a "Request changes" review. Accepted while the PR
+   * waits for a human merge or its review run failed: the item goes to RUNNING with one implement run on its
+   * branch, keyed on the next loop (loop_count + 1), with the feedback as its input and on the state change.
+   * At the loop limit the item blocks on a human with `max_loops` and starts nothing. `key` (the comment or the
+   * review id) is recorded on the state change, so the same feedback delivered again changes nothing.
+   */
+  private async prFeedback(
+    it: WorkItem,
+    f: { text: string; actor: Actor; reason: string; pr_number: number; key: { comment_id: string } | { review_id: string } },
+  ): Promise<Decision | Refusal> {
+    if (it.stage === "CLOSED" || it.pr_number !== f.pr_number) return null;
+    const [field, value] = Object.entries(f.key)[0] as [string, string];
+    const done = (await this.d.store.listStateChanges(it.id)).some(
+      (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
+    if (done) return null;
+    const phase = commandPhase(it);
+    const accepted = commandSpec("revise").pr_phases ?? [];
+    if (!accepted.includes(phase)) {
+      return {
+        refuse: `the item is ${phaseLabel(phase)}; feedback on the PR is taken only when it is ` +
+          accepted.map((p) => phaseLabel(p)).join(" or "),
+      };
+    }
+    const feedback = f.text.trim();
+    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+    const scan = await this.d.scanner.scan("comment", feedback);
+    if (!scan.clean) {
+      const rules = scan.findings.map((x) => x.rule).join(",");
+      this.d.log.warn("PR feedback blocked by the egress scan", { work_item_id: it.id, rules });
+      return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
+    }
+    const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
+    const detail = { ...f.key, pr_number: f.pr_number };
+    const limit = this.cfg.max_loops;
+    if (it.loop_count + 1 >= limit) {
+      const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
+      await this.comment(it, `max-loops:${field}-${value}`, [
+        `The PR feedback would start loop ${it.loop_count + 1} (limit \`max_loops\` = ${limit}), so the factory started no implement run. A human needs to decide.`,
+        "",
+        footerAfter(it, patch),
+      ].join("\n"));
+      return { patch, actor: f.actor, reason: "max_loops", detail };
+    }
+    const next = { ...it, loop_count: it.loop_count + 1 };
+    return {
+      patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: next.loop_count, failure_comment_url: null },
+      actor: f.actor,
+      reason: f.reason,
+      detail: { ...detail, feedback: kept },
+      enqueue: { kind: "implement", idempotency_key: runKey(next, "implement"), input: { notes: kept } },
+    };
   }
 
   /**
@@ -1086,6 +1178,9 @@ export class Controller {
     note: string | null,
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") return resolveCommand(e, it, actor);
+    if (e.kind === "revise_requested" && e.pr) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
+    }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) {
       return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
@@ -1102,7 +1197,10 @@ export class Controller {
     const afterFailure = phase === "too_large" || phase === "failed_implement";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
-      return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})` };
+      const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
+        ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.pr_number}`
+        : "";
+      return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})${onPr}` };
     }
     switch (e.kind) {
       case "spec_rejected":
@@ -2463,6 +2561,20 @@ function suggestedSplit(detail: string, paths: readonly string[], limits: { max_
   });
   out.push("");
   return out;
+}
+
+/**
+ * The feedback of a "Request changes" review: its body, then each line comment as `path:line` and its text.
+ * Untrusted text; the worker fences it.
+ */
+function reviewFeedback(e: PrReviewEvent): string {
+  const parts = e.body.trim() ? [e.body.trim()] : [];
+  const lines = e.comments.filter((c) => c.body.trim()).map((c) => {
+    const where = c.line === null ? c.path : `${c.path}:${c.line}`;
+    return `- ${where}: ${c.body.trim().replace(/\r?\n/g, "\n  ")}`;
+  });
+  if (lines.length) parts.push(["Line comments:", ...lines].join("\n"));
+  return parts.join("\n\n");
 }
 
 /** A reviewed PR whose checks have not finished (design §5 CI gate). */
