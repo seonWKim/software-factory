@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
@@ -20,12 +21,16 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
-import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
+import { CHILD_ERROR_MESSAGE, MIGRATION_PENDING_CODE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
-import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
+import {
+  MigrationPendingError, type PendingReport, SQLITE_MIGRATE_MESSAGE, liveSupervisor, migrateCommand, migrateFlags, migrateWithSupervisor,
+  parseMigrateArgs, pendingReport,
+} from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
-import { type ResolveRepo, runProjectKeyStep } from "./impl/store/project-keys.js";
+import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
+import { DRAIN_MARGIN_MS } from "./impl/updater/git-worktree.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
 const USAGE = `factory <command>
@@ -53,11 +58,14 @@ const USAGE = `factory <command>
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
-  migrate [--status | --dry-run]
+  migrate [--status [--json] | --dry-run | --no-drain]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
-               github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
-               --dry-run prints what would run and each row it would change, no flag applies them
-               (back up first). The other commands refuse to start while steps or owner/name rows remain
+               github:<host>:<repo id>, SQLite too): --status lists the state and pending steps (--json:
+               one JSON object, exit 0 even when steps are pending), --dry-run prints what would run and
+               each row it would change, no flag applies them (back up first). While \`dev\` runs, applying
+               asks its supervisor to drain, applies once no child runs, then has it start the waiting
+               revision (or restart the old one if applying failed); --no-drain applies without asking.
+               The other commands refuse to start while steps or owner/name rows remain
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
   llm-check [--model cheap|standard|strong]
@@ -112,7 +120,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
-        const app = await build(loaded);
+        // A start refused on pending steps exits with MIGRATION_PENDING_CODE, so the supervisor waits instead of looping.
+        const app = await build(loaded).catch(async (err: unknown) => {
+          const report = await pendingSteps(loaded).catch(() => null);
+          if (report && report.pending.length > 0) throw new MigrationPendingError(err instanceof Error ? err.message : String(err), report.pending);
+          throw err;
+        });
         await runDevChild(app, channel, stop.signal);
         await app.close();
         return 0;
@@ -242,7 +255,34 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         console.log(mode.error);
         return 1;
       }
+      const flags = migrateFlags(args, process.env);
+      if (flags.json && mode === "status") {
+        // Machine-readable, for the updater's check: one JSON object; exit 0 even when steps are pending.
+        try {
+          console.log(JSON.stringify(await pendingSteps(loaded)));
+          return 0;
+        } catch (err) {
+          console.error(err instanceof Error ? err.message : String(err));
+          return 1;
+        }
+      }
       const print = (line: string) => console.log(line);
+      if (mode === "apply" && !flags.noDrain) {
+        // A live supervisor (its pid in supervisor.json): drain it first, apply, then start or cancel.
+        const sup = await liveSupervisor(loaded.stateDir, isAlive);
+        if (sup) {
+          return migrateWithSupervisor(sup, {
+            stateDir: loaded.stateDir,
+            clock: await new Plugins(loaded).clock(),
+            alive: isAlive,
+            drainTimeoutMs: loaded.config.run_timeout_ms + DRAIN_MARGIN_MS + loaded.config.poll_interval_ms,
+            pid: process.pid,
+            print,
+            // The waiting target's own migrate, from its folder: the steps checked are the steps applied.
+            apply: (target) => runVersionMigrate(target?.dir ?? null),
+          });
+        }
+      }
       // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
       const resolveRepo = async (): Promise<ResolveRepo> => {
         const p = new Plugins(loaded);
@@ -329,6 +369,56 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
   }
 }
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * \`migrate --no-drain\` as a child process: from a version folder's build (\`dir\`, with its code root), or from
+ * this checkout's own build (null). Output goes to this terminal. Resolves with its exit code.
+ */
+function runVersionMigrate(dir: string | null): Promise<number> {
+  const entry = dir ? join(dir, "dist", "main.js") : process.argv[1]!;
+  const env = { ...process.env, ...(dir ? { [CODE_ROOT_ENV]: dir } : {}) };
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", entry, "migrate", "--no-drain"], { cwd: process.cwd(), env, stdio: "inherit" });
+    child.once("error", () => resolve(1));
+    child.once("exit", (code) => resolve(code ?? 1));
+  });
+}
+
+/**
+ * The pending steps of this code against the configured store (\`migrate --status --json\`): schema steps on
+ * MySQL, then the project-key step, counted only once the schema is current. Reads only on MySQL.
+ */
+async function pendingSteps(loaded: Loaded): Promise<PendingReport> {
+  const db = loaded.store;
+  if (db.type !== "mysql") {
+    await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+    const driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+    try {
+      await driver.migrate();
+      return await pendingReport({ schema: async () => null, legacyRows: () => countLegacyProjectRows(driver) });
+    } finally {
+      await driver.close();
+    }
+  }
+  const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+  const { host, port, database, user } = db;
+  const driver = new MysqlDriver({ host, port, database, user, password: password.reveal(), connectionLimit: 1 });
+  try {
+    return await pendingReport({ schema: () => driver.migrationStatus(), legacyRows: () => countLegacyProjectRows(driver) });
+  } finally {
+    await driver.close();
+  }
+}
+
 /** `golden add` reads the store and GitHub (read-only); `golden run` opens neither. */
 async function golden(loaded: Loaded, sub: string | undefined, args: string[]): Promise<number> {
   const p = new Plugins(loaded);
@@ -374,7 +464,9 @@ main(process.argv[2], process.argv.slice(3)).then(
     console.error(message);
     // A supervised child tells the supervisor why, so the status page can show it; then exits.
     if (process.env[SUPERVISED_ENV] === "1" && process.send && process.connected) {
-      process.send({ type: CHILD_ERROR_MESSAGE, error: message }, undefined, {}, () => process.exit(1));
+      // Pending steps carry a stable code and the step names, so the supervisor waits instead of restarting.
+      const pending = err instanceof MigrationPendingError ? { code: MIGRATION_PENDING_CODE, pending: err.pending } : {};
+      process.send({ type: CHILD_ERROR_MESSAGE, error: message, ...pending }, undefined, {}, () => process.exit(1));
     } else process.exit(1);
   },
 );

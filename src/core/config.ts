@@ -138,6 +138,44 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
   };
 }
 
+/** The keys of the `updater` object in factory.config.json (design: Self-update). */
+export const UPDATER_KEYS = ["auto_migrate"] as const;
+
+/** The checked `updater` settings. */
+export interface UpdaterSettings {
+  /**
+   * true: when a new revision's migration check lists pending steps, the supervisor drains the old child, runs
+   * the new revision's `migrate` itself and then starts it. Default false: it waits for `npm run migrate`.
+   */
+  auto_migrate: boolean;
+}
+
+/**
+ * Problems with the top-level `updater` key of factory.config.json: absent is fine; otherwise an object with
+ * only UPDATER_KEYS, and `auto_migrate` a boolean.
+ */
+export function updaterProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  const u = (raw as Record<string, unknown>).updater;
+  if (u === undefined) return [];
+  if (typeof u !== "object" || u === null || Array.isArray(u)) return ["updater must be an object, e.g. { \"auto_migrate\": false }"];
+  const problems: string[] = [];
+  for (const k of Object.keys(u)) {
+    if (!(UPDATER_KEYS as readonly string[]).includes(k)) problems.push(`unknown key "updater.${k}" (valid: ${UPDATER_KEYS.join(", ")})`);
+  }
+  const a = (u as Record<string, unknown>).auto_migrate;
+  if (a !== undefined && typeof a !== "boolean") problems.push(`updater.auto_migrate must be true or false (got ${JSON.stringify(a) ?? String(a)})`);
+  return problems;
+}
+
+/** The checked `updater` settings; throws the first problem `updaterProblems` finds. Absent: auto_migrate false. */
+export function updaterConfig(raw: unknown): UpdaterSettings {
+  const problems = updaterProblems(raw);
+  if (problems.length > 0) throw new Error(problems[0]);
+  const u = (raw as { updater?: { auto_migrate?: boolean } } | null)?.updater;
+  return { auto_migrate: u?.auto_migrate === true };
+}
+
 export interface Prompts {
   triage: string;
   implement: string;

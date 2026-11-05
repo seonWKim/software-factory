@@ -20,8 +20,13 @@ export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
 /** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
 export const DRAIN_MESSAGE = "factory:drain";
 export const DRAINED_MESSAGE = "factory:drained";
-/** Sent by a child before it exits on an error (e.g. pending migrations), with `error`: the message it prints. */
+/**
+ * Sent by a child before it exits on an error, with `error`: the message it prints. A child that exits because
+ * migration steps are pending also sends `code: MIGRATION_PENDING_CODE` and `pending`: the step names.
+ */
 export const CHILD_ERROR_MESSAGE = "factory:error";
+/** The stable `code` of a child's start error when schema or data steps are pending. Never matched as text. */
+export const MIGRATION_PENDING_CODE = "migration_pending";
 
 /** Runs one host command. Same shape as `runProcess`, so tests can pass a fake. */
 export type CommandRunner = (
@@ -48,6 +53,10 @@ export interface ChildHandle {
   readonly drainAcknowledged: boolean;
   /** The error the child sent before exiting on an error, or null. */
   readonly lastError: string | null;
+  /** The `code` the child sent with its error (MIGRATION_PENDING_CODE), or null/absent. */
+  readonly lastErrorCode?: string | null;
+  /** With MIGRATION_PENDING_CODE: the pending step names the child sent. */
+  readonly lastErrorPending?: readonly string[];
   /** Resolves with the exit code (null if killed by a signal) when the child exits. */
   readonly exited: Promise<number | null>;
   /** SIGTERM: today's hard stop. SIGKILL: when it did not exit in time. */
@@ -87,9 +96,11 @@ export interface SupervisorStatus {
   /** running: the child claims work (older children may still be draining, see `draining_pids`). building: a
    * new revision builds in its own folder while the child keeps claiming. build_failed: the running child stays
    * on `rev`. crashed: the child exited without being asked to (it is restarted every poll); `error` says why.
-   * stopped: no child. draining and restarting are no longer written by git-worktree (start-then-drain) but stay
-   * valid values for readers of older files. */
-  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "crashed" | "stopped";
+   * stopped: no child. migration_pending: `target_rev` built, but its migration check lists pending steps
+   * (`pending_steps`), so it is not started and nothing drains; the child keeps running `rev` (none when the child
+   * itself exited on pending steps). draining: written while `npm run migrate` holds the supervisor (`held`); the
+   * old start-then-drain never writes it. restarting is no longer written but stays valid for older files. */
+  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "crashed" | "migration_pending" | "stopped";
   /** The revision the child runs (null before the first start). */
   rev: string | null;
   /** The revision being built or started, when there is one. */
@@ -99,8 +110,35 @@ export interface SupervisorStatus {
   draining_pids?: number[];
   /** ISO time this state began. A repeat of the same state keeps it. */
   since: string;
-  /** crashed: the child's error, or its exit code when it sent none. */
+  /** crashed: the child's error, or its exit code when it sent none. migration_pending: why the check failed. */
   error?: string | null;
+  /** migration_pending (and a held drain): the step names the target's check listed. */
+  pending_steps?: string[];
+  /** The folder of the waiting target: `npm run migrate` runs that folder's migrate. */
+  target_dir?: string | null;
+  /** The supervisor's own pid: `npm run migrate` asks it to drain only while this pid is alive. */
+  supervisor_pid?: number | null;
+  /** True while a drain request from `npm run migrate` holds the supervisor: no child is started. */
+  held?: boolean;
 }
 
 export const SUPERVISOR_STATUS_FILE = "supervisor.json";
+
+/**
+ * `<state_dir>/supervisor-request.json`, written by `npm run migrate` and read by the supervisor on its poll.
+ * drain: stop every child and start none while the request stands (the migrate applies the steps meanwhile).
+ * start: the steps applied; start the waiting target (or the newest folder when none waits). cancel: they
+ * failed or the wait gave up; restart the old revision from its own folder. A drain whose `pid` is no longer
+ * alive counts as cancel. The supervisor removes start and cancel once handled.
+ */
+export const SUPERVISOR_REQUEST_FILE = "supervisor-request.json";
+
+export interface SupervisorRequest {
+  action: "drain" | "start" | "cancel";
+  /** The target revision the migrate applies steps for; null when none was waiting. */
+  target_rev: string | null;
+  /** The pid of the `npm run migrate` process. */
+  pid: number;
+  /** ISO time written. */
+  at: string;
+}

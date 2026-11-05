@@ -1,6 +1,6 @@
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
 import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../sql/driver.js";
-import { MysqlMigrations, pendingMessage } from "./migrations.js";
+import { type MigrationStatus, MysqlMigrations, pendingMessage } from "./migrations.js";
 
 export interface MysqlOptions {
   host: string;
@@ -76,6 +76,11 @@ export class MysqlDriver implements SqlDriver {
     if (s.refusal) throw new Error(`MySQL schema: ${s.refusal}`);
     if (s.pending.length > 0) throw new Error(pendingMessage(s));
     return { applied: s.state ?? 0, latest: s.latest };
+  }
+
+  /** Reads only: the step state and the pending steps, without throwing on them (`migrate --status --json`). */
+  migrationStatus(): Promise<MigrationStatus> {
+    return new MysqlMigrations(this.pool, this.steps).status();
   }
 
   async transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T> {

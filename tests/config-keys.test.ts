@@ -11,6 +11,7 @@ import {
   configFailLines,
   editDistance,
 } from "../src/config-keys.js";
+import { updaterConfig, updaterProblems } from "../src/core/config.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -211,5 +212,22 @@ describe("coordination config (design §5, 2026-11-03)", () => {
 
   it("the checked-in config loads with the coordination keys", async () => {
     await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
+  });
+});
+
+describe("config keys: updater.auto_migrate", () => {
+  it("absent or false: the supervisor never migrates by itself; true turns it on", () => {
+    expect(updaterConfig({})).toEqual({ auto_migrate: false });
+    expect(updaterConfig({ updater: {} })).toEqual({ auto_migrate: false });
+    expect(updaterConfig({ updater: { auto_migrate: false } })).toEqual({ auto_migrate: false });
+    expect(updaterConfig({ updater: { auto_migrate: true } })).toEqual({ auto_migrate: true });
+  });
+
+  it("a non-boolean value, an unknown key under updater or a non-object updater is a problem", () => {
+    expect(updaterProblems({ updater: { auto_migrate: "yes" } })).toEqual(['updater.auto_migrate must be true or false (got "yes")']);
+    expect(updaterProblems({ updater: { auto_migrat: true } })[0]).toContain('"updater.auto_migrat"');
+    expect(updaterProblems({ updater: true })[0]).toContain("updater must be an object");
+    expect(() => updaterConfig({ updater: { auto_migrate: 1 } })).toThrow(/auto_migrate must be true or false/);
+    expect(updaterProblems({})).toEqual([]);
   });
 });
