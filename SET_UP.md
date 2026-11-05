@@ -211,7 +211,9 @@ For `npm run test:mysql` on your own machine, the same URL can go in `.factory/t
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
 | MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first) | `npm run migrate` |
-| MySQL: see the schema state and the pending steps | `npm run migrate -- --status` |
+| An update waits for its migration steps (status page: "Update to … waits for `npm run migrate`"). Works while the factory runs: it asks the running supervisor to drain, prints progress while in-flight runs finish (gives up after `run_timeout_ms` + 60 s plus one poll), applies the waiting revision's own steps once no child runs, then the supervisor starts that revision; if applying fails, it restarts the old one. Back up first | `npm run migrate` |
+| Apply the steps without asking the running factory to drain (the old behaviour; also what happens when no supervisor runs) | `npm run migrate --no-drain` |
+| MySQL: see the schema state and the pending steps | `npm run migrate -- --status` (`--status --json`: one JSON object, what the updater checks) |
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> |
