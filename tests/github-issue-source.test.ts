@@ -880,6 +880,96 @@ describe("GitHubIssueSource: pull requests the factory did not open (design 2026
     ]);
   });
 
+  it("/revise on a PR's conversation names the PR and its head branch, factory or not; a PR that is gone is ignored", async () => {
+    const { client, source } = make();
+    client.byNumber[14] = pull(14, "factory/wi_a");
+    client.byNumber[10] = pull(10, "feature/x");
+    const onPr = (id: number, body: string, pr: number) => ({
+      ...comment(id, body, `2026-11-01T00:00:${String(id).padStart(2, "0")}Z`, pr),
+      html_url: `https://github.com/o/r/pull/${pr}#issuecomment-${id}`,
+    });
+    client.responses["/repos/o/r/issues/comments"] = [
+      onPr(30, "/revise rename the flag\nkeep an alias", 14),
+      onPr(31, "/revise", 10),
+      { ...onPr(32, "/revise x", 44), html_url: "https://github.com/o/r/pull/44#issuecomment-32" },
+      comment(33, "/revise on the issue", "2026-11-01T00:00:33Z", 7),
+    ];
+    // PR 44 is gone (404): its comment is ignored and the poll still succeeds.
+    const original = client.request.bind(client);
+    client.request = (async (method: string, path: string, body?: unknown) => {
+      if (path === "/repos/o/r/pulls/44") throw new GitHubError(404, "Not Found");
+      return original(method, path, body);
+    }) as typeof client.request;
+    const { events } = await source.poll(null);
+    const alice = { provider: "github", subject: "1", login: "alice" };
+    expect(events.filter((e) => e.kind === "revise_requested")).toEqual([
+      {
+        kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: alice, feedback: "rename the flag\nkeep an alias",
+        pr: { pr_number: 14, head_branch: "factory/wi_a" },
+      },
+      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: alice, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: alice, feedback: "on the issue" },
+    ]);
+  });
+
+  describe("'Request changes' reviews", () => {
+    const at = (s: number) => `2026-11-02T00:00:${String(s).padStart(2, "0")}Z`;
+    const rv = (id: number, state: string, submitted_at: string | null, o: Record<string, unknown> = {}) =>
+      ({ id, state, body: `review ${id}`, user: bob, submitted_at, ...o });
+
+    it("the first poll only sets the review time: no review is read or delivered", async () => {
+      const { client, source } = make();
+      client.open = [pull(14, "factory/wi_a", { updated_at: at(5) })];
+      client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
+      client.responses["/repos/o/r/pulls/14/reviews"] = [rv(1, "CHANGES_REQUESTED", at(1))];
+      const { events, next_cursor } = await source.poll(null);
+      expect(events.filter((e) => e.kind === "pr_changes_requested")).toEqual([]);
+      expect(client.calls.some((c) => c.path.includes("/reviews"))).toBe(false);
+      expect(JSON.parse(next_cursor)).toMatchObject({ reviews: at(5), review_ids: [] });
+    });
+
+    it("a later poll delivers each new 'Request changes' review by a person with its line comments, once", async () => {
+      const { client, source } = make();
+      client.open = [pull(14, "factory/wi_a", { updated_at: at(5) }), pull(10, "feature/x", { updated_at: at(1) })];
+      client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
+      const first = (await source.poll(null)).next_cursor;
+
+      client.open = [pull(14, "factory/wi_a", { updated_at: at(9) }), pull(10, "feature/x", { updated_at: at(1) })];
+      client.responses["/repos/o/r/pulls/14/reviews"] = [
+        rv(1, "CHANGES_REQUESTED", at(2)), // before the review time: never delivered
+        rv(2, "APPROVED", at(6)),
+        rv(3, "COMMENTED", at(7)),
+        rv(4, "CHANGES_REQUESTED", at(8), { user: { id: 9, login: "ci-bot", type: "Bot" } }),
+        rv(5, "CHANGES_REQUESTED", at(9), { body: "Two problems." }),
+        rv(6, "PENDING", null),
+      ];
+      client.responses["/repos/o/r/pulls/14/reviews/5/comments"] = [
+        { path: "src/core/a.ts", line: 12, original_line: 12, body: "this throws on an empty list" },
+        { path: "tests/a.test.ts", line: null, original_line: 40, body: "add a case" },
+      ];
+      const second = await source.poll(first);
+      expect(second.events.filter((e) => e.kind === "pr_changes_requested")).toEqual([
+        {
+          kind: "pr_changes_requested", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", review_id: "5",
+          reviewer: bobId, body: "Two problems.",
+          comments: [
+            { path: "src/core/a.ts", line: 12, body: "this throws on an empty list" },
+            { path: "tests/a.test.ts", line: 40, body: "add a case" },
+          ],
+        },
+      ]);
+      // PR 10 was not updated since the review time: its reviews are not read. Only review 5's comments are.
+      const reads = client.calls.filter((c) => c.path.includes("/reviews")).map((c) => c.path.split("?")[0]);
+      expect([...new Set(reads)]).toEqual(["/repos/o/r/pulls/14/reviews", "/repos/o/r/pulls/14/reviews/5/comments"]);
+      expect(second.events.findIndex((e) => e.kind === "pr_changes_requested"))
+        .toBeGreaterThan(second.events.findIndex((e) => e.kind === "pr_open"));
+
+      // The same reviews on the next poll: nothing again.
+      const third = await source.poll(second.next_cursor);
+      expect(third.events.filter((e) => e.kind === "pr_changes_requested")).toEqual([]);
+    });
+  });
+
   it("prFiles lists every changed path, both sides of a rename", async () => {
     const { client, source } = make();
     client.files[10] = [

@@ -4,7 +4,7 @@ import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
+  ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
@@ -66,6 +66,22 @@ interface GhPull {
   user?: GhUser | null;
   labels?: { name: string }[];
 }
+/** A PR review. `state`: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING. */
+interface GhReview {
+  id: number;
+  state: string;
+  body: string | null;
+  user: GhUser | null;
+  /** Absent on a pending review. */
+  submitted_at?: string | null;
+}
+/** A line comment of a review. `line` is null on an outdated comment; `original_line` is where it was made. */
+interface GhReviewComment {
+  path: string;
+  line?: number | null;
+  original_line?: number | null;
+  body: string;
+}
 interface GhPullFile {
   filename: string;
   previous_filename?: string;
@@ -121,6 +137,14 @@ interface Cursor {
    */
   closed?: string | null;
   closed_numbers?: number[];
+  /**
+   * Reviews (design §4): reviews submitted before this time are never delivered, and only open PRs updated at
+   * or after it are read. `review_ids` are the reviews already read that were submitted at or after it. Absent
+   * in cursors written before reviews were read, and on the first poll: that poll sets the time to the newest
+   * open PR update and delivers no review, so a review from before the factory read reviews starts nothing.
+   */
+  reviews?: string | null;
+  review_ids?: number[];
 }
 
 /**
@@ -235,8 +259,16 @@ export class GitHubIssueSource implements PollSource, DependencySource {
           events.push({ kind: "spec_rejected", source, comment_id, approver: who, reason: text });
           break;
         case "revise":
+        {
+          // On a PR's conversation: any PR of this repository (factory or adopted); one that is gone is ignored.
+          if (cm.html_url?.includes("/pull/")) {
+            const pr = await this.pullHead(base, Number(cm.issue_url.split("/").pop()));
+            if (pr) events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text, pr });
+            break;
+          }
           events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text });
           break;
+        }
         case "retry":
           events.push({ kind: "retry_requested", source, comment_id, requester: who });
           break;
@@ -291,9 +323,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     // PR only when it does not know it yet. Then factory PRs that cannot merge into their base: the controller
     // keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
     const open = await this.client.list<GhPull>(`${base}/pulls?state=open&sort=updated&direction=desc`);
+    const reviewed: GhPull[] = [];
     for (const p of open) {
       const factory = p.head.ref.startsWith(this.branchPrefix);
       if (p.base.ref === this.baseBranch && !this.isFork(p) && (factory || !p.draft)) {
+        reviewed.push(p);
         events.push({
           kind: "pr_open",
           source: this.prRef(p.number),
@@ -317,6 +351,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         base_sha: full.base.sha,
       });
     }
+
+    // "Request changes" reviews on the PRs reported open, after their pr_open (design §4).
+    events.push(...(await this.changeRequests(base, reviewed, c, next)));
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     const commits = await this.client.list<GhCommit>(
@@ -356,6 +393,62 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
     }
+  }
+
+  /**
+   * The PR's number and head branch, whatever the branch; null for one that is gone (404). Other errors are
+   * thrown and the poll is retried.
+   */
+  private async pullHead(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
+    try {
+      const p = await this.client.request<Pick<GhPull, "number" | "head">>("GET", `${base}/pulls/${n}`);
+      return { pr_number: p.number, head_branch: p.head.ref };
+    } catch (err) {
+      if (err instanceof GitHubError && err.status === 404) return null;
+      throw err;
+    }
+  }
+
+  /**
+   * One pr_changes_requested per "Request changes" review by a person (not a bot) submitted since the cursor's
+   * review time, on the open PRs given that were updated since then, with the review's line comments. Approvals,
+   * plain comments, dismissed and pending reviews give nothing. With no review time yet, sets it and reads none.
+   */
+  private async changeRequests(base: string, pulls: GhPull[], c: Cursor, next: Cursor): Promise<SourceEvent[]> {
+    const newest = pulls.reduce<string | null>((m, p) => max(m, p.updated_at), null);
+    if (!c.reviews) {
+      next.reviews = newest;
+      next.review_ids = [];
+      return [];
+    }
+    const since = c.reviews;
+    const already = new Set(c.review_ids ?? []);
+    const mark = max(since, newest ?? since);
+    const seen: number[] = [];
+    const events: SourceEvent[] = [];
+    for (const p of pulls) {
+      if (p.updated_at < since) continue;
+      for (const r of await this.client.list<GhReview>(`${base}/pulls/${p.number}/reviews`, 3)) {
+        if (!r.submitted_at || r.submitted_at < since || already.has(r.id)) continue;
+        if (r.submitted_at >= mark) seen.push(r.id);
+        if (r.state !== "CHANGES_REQUESTED" || !r.user || r.user.type === "Bot") continue;
+        const comments = await this.client.list<GhReviewComment>(`${base}/pulls/${p.number}/reviews/${r.id}/comments`, 3);
+        events.push({
+          kind: "pr_changes_requested",
+          source: this.prRef(p.number),
+          pr_number: p.number,
+          head_branch: p.head.ref,
+          review_id: String(r.id),
+          reviewer: identity(r.user),
+          body: r.body ?? "",
+          comments: comments.map((cm): PrLineComment => ({ path: cm.path, line: cm.line ?? cm.original_line ?? null, body: cm.body })),
+        });
+      }
+    }
+    next.reviews = mark;
+    // Ids read at exactly the old time stay known while the time does not move.
+    next.review_ids = mark === since ? [...already, ...seen] : seen;
+    return events;
   }
 
   /** A head in another repository, or in one that was deleted. A list without `repo` (older fixtures) counts as ours. */
