@@ -678,6 +678,38 @@ export interface FactoryStore {
   /** Ends the lease now if `token` is still current, so another replica can take it at once. */
   releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
 
+  // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's
+  // inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
+
+  /**
+   * Takes lease `name` for `owner` if nobody holds it, the holder's lease expired, or `owner` already holds it
+   * (then the token stays and the lease is extended). The token goes up by one on every take by a new owner.
+   * Otherwise reports the current holder.
+   */
+  acquireSyncLease(name: string, owner: string, lease_ms: number): Promise<SyncLeaseResult>;
+  /** Extends the lease while `token` is still current, whatever the clock says (like heartbeat). */
+  renewSyncLease(name: string, token: number, lease_ms: number): Promise<SyncLeaseResult>;
+  /** Ends the lease now if `token` is still current, so another replica can take it at once. */
+  releaseSyncLease(name: string, token: number): Promise<void>;
+  /** The lease row, expired or not; null when it was never taken. Read-only. */
+  getSyncLease(name: string): Promise<SyncLease | null>;
+  /**
+   * advanceCursor fenced by a sync lease: sets cursor `cursor` to `next` only if it still equals `expected` and
+   * `fence.token` is still the token of lease `fence.name`, in one transaction. False changes nothing.
+   */
+  advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean>;
+
+  // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
+  // one row per (project, plugin), shared by every replica.
+
+  /** The row of `project` and `plugin`, or null. Read-only. */
+  getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null>;
+  /**
+   * Stores `b` when there is no row yet or the stored row's `updated_at` is older than `b.updated_at`; an equal or
+   * older write changes nothing. Returns whether this call wrote.
+   */
+  putForgeBudget(b: ForgeBudget): Promise<boolean>;
+
   // Identity links (design 2026-11-01, issue #107)
 
   /** The factory user `(provider, subject)` is linked to, or null. Found by provider and subject only. */
@@ -860,9 +892,10 @@ export interface FactoryStore {
   listDeliveries(work_item_id: WorkItemId): Promise<ThreadDelivery[]>;
   /**
    * Claims outbox row `seq` for `lease_ms`, so only one replica posts it. Conditional: only an undelivered row
-   * with no live claim. Returns the claim token, or null when the row is delivered or claimed by another.
+   * with no live claim and, with `fence`, only while `fence.token` is still the token of sync lease `fence.name`.
+   * Returns the claim token, or null when the row is delivered, claimed by another, or the fence is stale.
    */
-  claimDelivery(seq: number, lease_ms: number): Promise<number | null>;
+  claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null>;
   /**
    * Marks row `seq` delivered with the comment's `url`, under claim `token`. When the row names a link field and
    * no newer row of the item names the same field, the item's field is set to `url` (no version change, no
@@ -993,6 +1026,11 @@ export interface NewItemMessage {
   /** Unique within the item; a repeat with the same marker stores nothing. */
   marker: string;
   body: string;
+  /**
+   * Who wrote it when it came from a source: the account's ID (e.g. `github:<numeric id>`), never a login or a
+   * display name. Absent for the factory's own messages (and on entries stored before it existed).
+   */
+  actor?: string;
   /**
    * Present: the entry also gets one outbox row in the same transaction (only when the entry is new), so the
    * controller's outbox step delivers it to that source. Absent or null: the thread is the only copy.
@@ -1207,3 +1245,35 @@ export type ListenerLeaseResult =
   | { ok: true; lease: ListenerLease }
   /** `holder`: the current lease, or null when there is none (renew of a lease that was never taken). */
   | { ok: false; reason: "held" | "lease_lost"; holder: ListenerLease | null };
+
+/** A sync lease row: `name` is `sync:<source type>:<project key>`. */
+export interface SyncLease {
+  name: string;
+  owner: string;
+  token: number;
+  expires_at: Timestamp;
+}
+
+export type SyncLeaseResult =
+  | { ok: true; lease: SyncLease }
+  /** `holder`: the current lease, or null when there is none (renew of a lease that was never taken). */
+  | { ok: false; reason: "held" | "lease_lost"; holder: SyncLease | null };
+
+/** A sync lease token a write is fenced with: the write lands only while `token` is the lease's current one. */
+export interface SyncFence {
+  name: string;
+  token: number;
+}
+
+/**
+ * The forge's rate limit as a response last reported it, for one project and forge plugin. `updated_at`: when the
+ * writer read that response (its clock); a newer one replaces the row, an older one never does.
+ */
+export interface ForgeBudget {
+  project: string;
+  plugin: string;
+  remaining: number;
+  limit: number;
+  reset_at: Timestamp;
+  updated_at: Timestamp;
+}

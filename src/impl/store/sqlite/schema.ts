@@ -653,4 +653,26 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
   CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
   `,
+  // 38: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
+  // `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a sync source and delivers its outbox, like
+  // `listener_leases` but keyed by name. `forge_budget`: the forge's rate limit per (project, plugin), a newer
+  // `updated_at` wins. `item_thread.actor`: the account ID of a message that came from a source, NULL otherwise.
+  `
+  CREATE TABLE IF NOT EXISTS sync_leases (
+    name        TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    token       INTEGER NOT NULL,
+    expires_at  TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS forge_budget (
+    project     TEXT NOT NULL,
+    plugin      TEXT NOT NULL,
+    remaining   INTEGER NOT NULL,
+    \`limit\`     INTEGER NOT NULL,
+    reset_at    TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (project, plugin)
+  );
+  ALTER TABLE item_thread ADD COLUMN actor TEXT;
+  `,
 ];
