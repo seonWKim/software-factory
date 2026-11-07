@@ -14,7 +14,7 @@ import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 
-// The agent's needs_human answer and the repeated-failure rule (design §5 Restarts, decided 2026-11-07).
+// The agent's needs_human answer and the repeated-failure rule (issue #167, decided 2026-11-07).
 
 const ASK = { reason: "The push token has no write access to this repository.", question: "Can you grant the factory app write access?" };
 const done = { output: { summary: "s", next_steps: "n" } };

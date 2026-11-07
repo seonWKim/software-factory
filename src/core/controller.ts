@@ -108,10 +108,11 @@ export interface ControllerDeps {
    */
   settings?: LiveSettings;
   /**
-   * The repeated-failure rule (design §5 Restarts, decided 2026-11-07): two task failures in a row in one step
+   * The repeated-failure rule (issue #167, decided 2026-11-07): two task failures in a row in one step
    * with the same code and detail line block the item with `repeated_failure`. Absent or false: off, and the
    * step retries up to max_attempts as before. Off by default until the tests that pin "identical failures use
-   * every attempt" (outside the change that added it) are updated and src/compose.ts turns it on.
+   * every attempt" (outside the change that added it) are updated and src/compose.ts turns it on. The decision
+   * is not yet in docs/design/05-restarts.md; that follow-up records it there.
    */
   repeated_failure_rule?: boolean;
 }
@@ -2254,7 +2255,7 @@ export class Controller {
   }
 
   /**
-   * Two task failures in a row in one step with the same code and detail line (design §5 Restarts, decided
+   * Two task failures in a row in one step with the same code and detail line (issue #167, decided
    * 2026-11-07): the item blocks on a human with `repeated_failure` and no third run is queued. One comment,
    * keyed on the run; the detail line is dropped if the egress scan flags it. `/retry` starts the step afresh.
    */
@@ -2282,7 +2283,7 @@ export class Controller {
   }
 
   /**
-   * An implement, review or resolve run that returned needs_human (design §5 Restarts, decided 2026-11-07). The
+   * An implement, review or resolve run that returned needs_human (issue #167, decided 2026-11-07). The
    * worker pushed nothing. The item keeps its stage and blocks on a human with `agent_needs_human`; nothing is
    * queued. One comment, keyed on the run, gives the agent's reason and question (left out if the egress scan
    * flags them) and the command footer. The run's tokens are added as for any finished run; the ack fences it.
