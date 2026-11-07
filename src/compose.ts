@@ -4,7 +4,9 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig } from "./core/config.js";
+import {
+  type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolGrants, toolGrantsConfig,
+} from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
@@ -16,7 +18,7 @@ import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
-import { checkConfigKeys } from "./config-keys.js";
+import { ConfigKeyError, checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
@@ -24,6 +26,7 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
+import type { ToolBroker } from "./interfaces/tool-broker.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -123,6 +126,12 @@ export interface FileConfig {
    * settingsLayers (src/core/settings.ts).
    */
   projects?: unknown;
+  /**
+   * Read-only broker tools granted to agent runs, per run kind, e.g. {"triage": ["github.preflight"]}
+   * (docs/architecture.md §5). Absent: no run gets any. Checked against the broker's tools when build() builds
+   * the broker (checkToolGrants), not at load: the tool list comes from the broker plugin.
+   */
+  tool_grants?: unknown;
 }
 
 export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -325,8 +334,9 @@ export class Plugins {
   githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
     return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
   }
-  runner(sandbox: Sandbox, secrets: SecretStore) {
-    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
+  /** `tools`: the broker and scanner for granted tools; absent (canary, golden), the runner exposes none. */
+  runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }) {
+    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets, ...tools });
   }
   testDatabase(secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
@@ -359,8 +369,11 @@ export async function build(
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Suggests a command for a plain-language comment; never changes state (design §4).
   const llm = await p.llm(secrets);
-  const runner = await p.runner(sandbox, secrets);
+  // The broker before the runner: the runner exposes granted broker tools, and the grants are checked against the
+  // broker's tools here, at startup (docs/architecture.md §5).
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const tool_grants = checkToolGrants(loaded.file.tool_grants, broker);
+  const runner = await p.runner(sandbox, secrets, { broker, scanner });
   const storage = await createPlugin(registry, "storage", sel.storage, base);
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
   // The pre-push checks' database (design §4): its URL reaches only the check commands, never an agent.
@@ -372,7 +385,7 @@ export async function build(
   // project key every write uses, and the label refreshed from GitHub (a renamed repo shows its new path).
   const project = await resolveProject(opts.repoLookup ?? github, base.repo);
   await saveProjectLabel(store, project);
-  const config = resolvedConfig(loaded.config, project);
+  const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
   // controller and the worker pool, refreshed each tick. The file's per-project blocks are keyed by project key.
@@ -421,6 +434,22 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
+}
+
+/**
+ * `tool_grants` checked against `broker`'s tools (its catalog when it has one, else what it lists for the granted
+ * names): every role a run kind, every name a read-only tool. Throws a ConfigKeyError with one line per problem,
+ * each listing the valid names. Absent: undefined, and no run gets a grant.
+ */
+export function checkToolGrants(raw: unknown, broker: ToolBroker): ToolGrants | undefined {
+  if (raw === undefined) return undefined;
+  const asked = typeof raw === "object" && raw !== null ? Object.values(raw).flatMap((v) => (Array.isArray(v) ? v.filter((n) => typeof n === "string") : [])) : [];
+  const tools = broker.catalog?.() ?? broker.listTools(asked);
+  try {
+    return toolGrantsConfig(raw, tools);
+  } catch (err) {
+    throw new ConfigKeyError(String((err as Error).message).split("\n"));
+  }
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */

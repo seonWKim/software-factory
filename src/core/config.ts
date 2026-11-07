@@ -1,7 +1,8 @@
 import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
-import type { Tier, VerdictSeverity } from "./types.js";
+import type { RunKind, Tier, VerdictSeverity } from "./types.js";
+import type { ToolDescriptor } from "../interfaces/tool-broker.js";
 
 /**
  * The `stats` key of factory.config.json (design §6 Measurement). Read only by `factory stats`; it changes
@@ -94,6 +95,64 @@ export interface LoadedConfig {
    * factory.config.json, checked at load by `coordinationConfig`. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
+  /**
+   * Read-only broker tools granted per run kind (`tool_grants`, docs/architecture.md §5), checked against the
+   * broker's tools when it is built at startup (`toolGrantsConfig`). Absent, or a kind with no entry: no grants.
+   */
+  tool_grants?: ToolGrants;
+}
+
+/** Granted broker tool names per run kind. */
+export type ToolGrants = Readonly<Partial<Record<RunKind, readonly string[]>>>;
+
+/** Every run kind, in the order the `tool_grants` errors list them. */
+export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "manual"];
+
+/** The tools granted to `kind`: its `tool_grants` entry, or none. */
+export function grantsFor(config: Pick<LoadedConfig, "tool_grants">, kind: RunKind): readonly string[] {
+  return config.tool_grants?.[kind] ?? [];
+}
+
+/**
+ * Why `tool_grants` from factory.config.json is invalid, one message per problem; empty when it is fine. Runs when
+ * the broker is built at startup, not at load: the broker's tools come from its plugin. `tools` is every tool the
+ * broker serves (its catalog, or what it lists for the granted names). A role must be a run kind; a name must be a
+ * tool the broker lists, and that tool must be read-only. Each message lists the valid names.
+ */
+export function toolGrantsProblems(raw: unknown, tools: readonly ToolDescriptor[]): string[] {
+  if (raw === undefined) return [];
+  const readOnly = tools.filter((t) => t.read_only === true).map((t) => t.name);
+  const valid = `valid read-only tools: ${readOnly.length > 0 ? readOnly.join(", ") : "(none)"}`;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return [`tool_grants must be an object from run kind to a list of tool names; run kinds: ${RUN_KINDS.join(", ")}`];
+  }
+  const problems: string[] = [];
+  for (const [role, names] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(RUN_KINDS as readonly string[]).includes(role)) {
+      problems.push(`tool_grants: "${role}" is not a run kind; run kinds: ${RUN_KINDS.join(", ")}`);
+      continue;
+    }
+    if (!Array.isArray(names) || !names.every((n) => typeof n === "string")) {
+      problems.push(`tool_grants.${role} must be a list of tool names; ${valid}`);
+      continue;
+    }
+    for (const name of names as string[]) {
+      const tool = tools.find((t) => t.name === name);
+      if (!tool) problems.push(`tool_grants.${role}: the broker has no tool "${name}"; ${valid}`);
+      else if (tool.read_only !== true) problems.push(`tool_grants.${role}: "${name}" is not read-only and cannot be granted; ${valid}`);
+    }
+  }
+  return problems;
+}
+
+/** The checked `tool_grants` (each list without duplicates), or throws every problem `toolGrantsProblems` finds. */
+export function toolGrantsConfig(raw: unknown, tools: readonly ToolDescriptor[]): ToolGrants | undefined {
+  const problems = toolGrantsProblems(raw, tools);
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  if (raw === undefined) return undefined;
+  const out: Partial<Record<RunKind, readonly string[]>> = {};
+  for (const [role, names] of Object.entries(raw as Record<string, string[]>)) out[role as RunKind] = [...new Set(names)];
+  return out;
 }
 
 /** `stall_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
