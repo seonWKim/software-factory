@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ItemRow, QueueRow, RunRow } from "../api.js";
+import type { ItemRow, Overview, QueueRow, RunRow } from "../api.js";
 import { Badge, Empty, Table, Td } from "../components/ui/parts.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -29,29 +29,44 @@ export function ItemTitle({ id, title, source }: { id: string; title: string | n
   );
 }
 
-export function ItemsTable({ items, now, label, empty }: { items: readonly ItemRow[]; now: number; label: string; empty: string }) {
-  if (items.length === 0) return <Empty>{empty}</Empty>;
+/** A link out to GitHub; only drawn for the github plugin. */
+function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <Table label={label} head={["Item", "State", "Why", "Since", "PR"]}>
+    <a href={href} target="_blank" rel="noreferrer" className="hover:underline">
+      {children}
+    </a>
+  );
+}
+
+/**
+ * Needs you and Work items. The title links to the item's page; the Item cell has no link out. The Issue and PR
+ * columns exist only when the GitHub plugin is in use (`plugins` from the overview).
+ */
+export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
+  if (items.length === 0) return <Empty>{empty}</Empty>;
+  const showIssue = plugins?.issues === "github";
+  const showPr = plugins?.prs === "github";
+  const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), ...(showPr ? ["PR"] : [])];
+  return (
+    <Table label={label} head={head}>
       {items.map((it) => (
         <tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
-            <ItemTitle id={it.id} title={it.title} source={it.source} />
+            <Link href={itemPath(it.id)} className="block truncate font-medium hover:underline">
+              {it.title ?? it.id}
+            </Link>
           </Td>
           <Td>
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
           </Td>
           <Td className="text-zinc-600 dark:text-zinc-400">{it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
-          <Td className="tabular-nums">
-            {it.pr_url ? (
-              <a href={it.pr_url} target="_blank" rel="noreferrer" className="hover:underline">
-                #{it.pr_number}
-              </a>
-            ) : (
-              "–"
-            )}
-          </Td>
+          {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
+          {showPr && (
+            <Td className="tabular-nums">
+              {it.pr_number === null ? "–" : it.pr_url ? <Ext href={it.pr_url}>#{it.pr_number}</Ext> : `#${it.pr_number}`}
+            </Td>
+          )}
         </tr>
       ))}
     </Table>

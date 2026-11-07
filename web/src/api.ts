@@ -23,6 +23,8 @@ export interface Overview {
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
+  /** Which plugins are in use: the tables show Issue and PR columns only for "github". */
+  plugins?: { issues: "github" | null; prs: "github" | null };
   /** Absent when the server has no status function. */
   factory?: FactoryState | null;
 }
@@ -48,6 +50,8 @@ export interface ItemRow {
   run_status: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  /** The source issue; null for an adopted PR. */
+  issue?: { number: number; url: string } | null;
   since: string;
   updated_at: string;
   version: number;

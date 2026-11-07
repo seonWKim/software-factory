@@ -35,6 +35,11 @@ export interface UiDeps {
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
   factoryStatus?: () => Promise<FactoryStatus | null>;
+  /**
+   * Which plugins are in use, for the app's columns. Absent: both null. PRs are read only through the
+   * github-issues adapter today, so `prs` follows `issues`.
+   */
+  plugins?: { issues: "github" | null; prs: "github" | null };
   /** The built app served under /app/; absent: web/dist in this checkout. */
   appDir?: string;
 }
