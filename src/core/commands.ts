@@ -78,7 +78,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "approve",
     usage: "/approve [notes]",
     description:
-      "Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer",
+      "Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
+      "`/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths",
     // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03): that hold is not in the
     // item's fields, so it is no phase here; the hold comment names the command. Never on a dependency hold.
     phases: ["spec_pending", "max_revisions", "floor_tier"],
@@ -108,7 +109,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "retry",
     usage: "/retry",
-    description: "Run the failed run again",
+    description:
+      "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
+      "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths",
     phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
     needs_pr: false,
     changes_state: true,
@@ -345,6 +348,55 @@ export function parseComment(body: string): ParsedComment {
   if (ACCOUNT_COMMANDS.includes(name as CommandName)) return null;
   const same = first.trim().slice(m[0].length).replace(/^[.,:;!?]/, "").trim();
   return { kind: "command", name: name as CommandName, text: [same, ...rest].join("\n").trim() };
+}
+
+/** The most paths one `+paths` names (design §4, issue #280). */
+export const MAX_COMMAND_PATHS = 10;
+
+const PATHS_FLAG = /^\+paths(?=$|\s)/;
+
+/** Why a `+paths` path is refused, or null when it is a repo-relative path with no `..` and no glob. */
+export function commandPathProblem(p: string): string | null {
+  if (p === "") return "an empty path";
+  if (/^[/\\~]/.test(p) || /^[A-Za-z]:/.test(p)) return "an absolute path";
+  if (p.split(/[/\\]/).includes("..")) return "a path with `..`";
+  if (/[*?[\]{}!]/.test(p)) return "a glob";
+  return null;
+}
+
+/**
+ * Splits `+paths <path>...` off the text after `/approve` or `/retry` (design §4, issue #280). The flag starts
+ * the text's first line; the paths are the rest of that line, separated by whitespace (a path may be wrapped
+ * in backticks, and a leading `./` is dropped); the note is the lines below. Without the flag, no paths and
+ * the whole text is the note. A refusal for no paths, more than MAX_COMMAND_PATHS, or a path that is empty,
+ * absolute, has `..` or has a glob. Duplicates are dropped; coverage against allowed_paths is the caller's.
+ */
+export function parseCommandPaths(text: string): { paths: string[]; note: string } | { refuse: string } {
+  const [first = "", ...rest] = text.trim().split(/\r?\n/);
+  const m = PATHS_FLAG.exec(first.trim());
+  if (!m) return { paths: [], note: text.trim() };
+  const tokens = first.trim().slice(m[0].length).split(/\s+/).filter((t) => t !== "")
+    .map((t) => t.replace(/^`([^`]*)`$/, "$1").replace(/^(\.\/)+/, ""));
+  if (tokens.length === 0) return { refuse: "`+paths` needs at least one path after it on the same line, e.g. `+paths src/core/x.ts`" };
+  if (tokens.length > MAX_COMMAND_PATHS) {
+    return { refuse: `\`+paths\` takes at most ${MAX_COMMAND_PATHS} paths per command, not ${tokens.length}` };
+  }
+  for (const t of tokens) {
+    const problem = commandPathProblem(t);
+    if (problem) return { refuse: `\`+paths\` takes repo-relative paths only, and ${t === "" ? "one" : `\`${t}\``} is ${problem}` };
+  }
+  return { paths: [...new Set(tokens)], note: rest.join("\n").trim() };
+}
+
+/**
+ * The exact `/retry +paths ...` reply that allows `paths`, or null when no such reply exists: none given, more
+ * than MAX_COMMAND_PATHS, or one the parser would refuse or split (whitespace, a backtick).
+ */
+export function retryPathsReply(paths: readonly string[]): string | null {
+  const unique = [...new Set(paths)];
+  if (unique.length === 0 || unique.length > MAX_COMMAND_PATHS) return null;
+  if (unique.some((p) => commandPathProblem(p) !== null || /[\s`]/.test(p) || p.startsWith("./"))) return null;
+  return `/retry +paths ${unique.join(" ")}`;
 }
 
 /**
