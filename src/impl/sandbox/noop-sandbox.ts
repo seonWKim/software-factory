@@ -1,8 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
-import { baseEnv, runProcess } from "../process/run-process.js";
+import { baseEnv, runProcess, type RunProcessOptions } from "../process/run-process.js";
+
+/** How the sandbox starts a process; tests inject a fake. */
+export type ProcessRunner = (cmd: readonly string[], opts: RunProcessOptions) => Promise<ExecResult>;
+/** How the sandbox waits before retrying a fetch; tests inject one that does not sleep. */
+export type Wait = (ms: number) => Promise<void>;
+
+const realWait: Wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Git's messages when another fetch in the same checkout holds or moved a ref this one is updating. */
+const REF_LOCK = /incorrect old value|cannot lock ref|unable to update local ref/i;
+/** Retries after the first attempt, for a ref-lock failure only. */
+const FETCH_RETRIES = 3;
+const RETRY_BASE_MS = 200;
+/**
+ * One promise chain per factory checkout path, shared by every sandbox in this process: fetches into the same
+ * checkout run one at a time. One host only; another host has its own checkout.
+ */
+const fetchChains = new Map<string, Promise<unknown>>();
 
 /** Name of the empty hooks folder under the worktrees dir: beside the run folders, never inside one. */
 export const EMPTY_HOOKS_DIR = ".empty-hooks";
@@ -20,7 +37,11 @@ const SANDBOX_ID = /^sbx_[0-9a-f]{8}$/;
  * `base_sha` is the factory repo's `origin/<base>`, resolved before any agent runs.
  */
 export class NoOpSandbox implements Sandbox {
-  constructor(private readonly worktreesDir: string) {}
+  constructor(
+    private readonly worktreesDir: string,
+    private readonly run: ProcessRunner = runProcess,
+    private readonly wait: Wait = realWait,
+  ) {}
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const id = `sbx_${randomUUID().slice(0, 8)}`;
@@ -28,8 +49,9 @@ export class NoOpSandbox implements Sandbox {
     await mkdir(this.worktreesDir, { recursive: true });
     const hooks = await this.emptyHooks();
 
-    // Trusted: the factory repo's own refs and config, never anything an agent wrote.
-    await this.git(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
+    // Trusted: the factory repo's own refs and config, never anything an agent wrote. Every origin/* branch,
+    // so an existing factory/<id> branch can be resumed.
+    await this.serialized(spec.repo, () => this.fetch(spec.repo, ["fetch", "--quiet", "--prune", "origin"]));
     const common = (await this.git(spec.repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim();
     const base_sha = (
       await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])
@@ -66,7 +88,7 @@ export class NoOpSandbox implements Sandbox {
   }
 
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult> {
-    return runProcess(cmd, {
+    return this.run(cmd, {
       cwd: opts.cwd ? join(handle.workdir, opts.cwd) : handle.workdir,
       env: opts.env,
       ...(opts.stdin !== undefined && { stdin: opts.stdin }),
@@ -113,14 +135,44 @@ export class NoOpSandbox implements Sandbox {
     return dir;
   }
 
+  /** Fetches only the base branch (no prune, no other ref touched) and returns its commit. */
   async updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string> {
-    await this.git(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
-    return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
+    const ref = `refs/remotes/origin/${spec.base_ref}`;
+    return this.serialized(spec.repo, async () => {
+      await this.fetch(spec.repo, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${spec.base_ref}:${ref}`]);
+      return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim();
+    });
+  }
+
+  /** Runs `fn` after every earlier fetch into the same checkout has settled. */
+  private serialized<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+    const key = resolve(repo);
+    const next = (fetchChains.get(key) ?? Promise.resolve()).then(fn, fn);
+    const tail = next.catch(() => undefined);
+    fetchChains.set(key, tail);
+    void tail.then(() => {
+      if (fetchChains.get(key) === tail) fetchChains.delete(key);
+    });
+    return next;
+  }
+
+  /** A fetch in the factory checkout: a ref-lock failure is retried up to FETCH_RETRIES times, anything else throws. */
+  private async fetch(repo: string, args: string[]): Promise<ExecResult> {
+    for (let attempt = 0; ; attempt++) {
+      const r = await this.git(repo, args, false);
+      if (r.exit_code === 0) return r;
+      if (attempt >= FETCH_RETRIES || !REF_LOCK.test(r.stderr)) throw gitError(args, r);
+      await this.wait(RETRY_BASE_MS * 2 ** attempt);
+    }
   }
 
   private async git(cwd: string, args: string[], check = true): Promise<ExecResult> {
-    const r = await runProcess(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
-    if (check && r.exit_code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim()}`);
+    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
+    if (check && r.exit_code !== 0) throw gitError(args, r);
     return r;
   }
+}
+
+function gitError(args: string[], r: ExecResult): Error {
+  return new Error(`git ${args[0]} failed: ${r.stderr.trim()}`);
 }
