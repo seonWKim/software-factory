@@ -45,6 +45,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
+import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
@@ -65,6 +66,11 @@ export interface WorkerDeps {
   broker: ToolBroker;
   scanner: EgressScanner;
   storage: SharedStorage;
+  /**
+   * Plain completions with no tools: the improve run's one draft call per failure group (design §7). Absent: the
+   * improve run asks no model and its groups carry no draft. Compose always passes the `plugins.llm` chain.
+   */
+  llm?: LLMProvider;
   clock: Clock;
   config: FactoryConfig;
   prompts: Prompts;
@@ -696,7 +702,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
-    if (run.kind === "improve") return this.improve(run, item);
+    if (run.kind === "improve") return this.improve(run, item, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
@@ -722,9 +728,28 @@ export class Worker {
     }
   }
 
-  /** The improve run (design §7): no sandbox, no agent, no model. Stores one report; the outcome names it. */
-  private async improve(run: Run, item: WorkItem): Promise<Record<string, unknown>> {
-    const report = await runImprove(this.d.store, run, item);
+  /**
+   * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
+   * counts toward the run's. Stores one report; the outcome names it.
+   */
+  private async improve(run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const { llm } = this.d;
+    const meter = this.meters.get(run);
+    const metered: LLMProvider | undefined = llm && {
+      complete: async (req) => {
+        const res = await llm.complete(req);
+        if (meter) addUsage(meter, res.usage);
+        return res;
+      },
+    };
+    const report = await runImprove(
+      {
+        store: this.d.store, storage: this.d.storage, scanner: this.d.scanner, signal,
+        ...(metered ? { llm: metered } : {}), ...(this.d.prompts.improve !== undefined ? { prompt: this.d.prompts.improve } : {}),
+      },
+      run,
+      item,
+    );
     return { report_id: report.id, groups: report.groups.length, patterns: report.patterns.length };
   }
 
