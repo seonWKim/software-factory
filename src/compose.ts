@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -34,7 +35,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
+import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
@@ -136,9 +137,9 @@ export interface FileConfig {
   updater?: { auto_migrate?: unknown };
   /**
    * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
-   * reset. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
+   * reset; `budget_share` (default 1), the part of the hourly core limit this process may count. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
    */
-  github?: { min_remaining?: unknown; history_since?: unknown };
+  github?: { min_remaining?: unknown; budget_share?: unknown; history_since?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -276,6 +277,18 @@ export interface Loaded {
   model_by: ModelTable;
 }
 
+/** The placeholder in prompts/*.md that names the project's pre-push checks. */
+export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+
+/**
+ * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
+ * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ */
+export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+  const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+}
+
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
 const GITHUB_SOURCE = "github-issues";
 const GITHUB_FORGE = "github";
@@ -328,6 +341,7 @@ export async function loadConfig(
   uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
+  githubBudgetShare(file.github);
   githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
@@ -402,12 +416,13 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
   const prompts: Prompts = {
-    triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
-    implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
-    review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
+    triage: await readPrompt("triage"),
+    implement: await readPrompt("implement"),
+    review: await readPrompt("review"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
+  const resolvePrompt = await readPrompt("resolve").catch((err: NodeJS.ErrnoException) => {
     if (err.code === "ENOENT") return undefined;
     throw err;
   });
@@ -671,6 +686,8 @@ export async function build(
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
+    github_budget: () => github.status(),
   });
 
   const worker = new WorkerPool({
@@ -823,7 +840,7 @@ export interface SessionParts {
 
 /** The GitHub client's settings from factory.config.json (`github`), with its log lines under "github". */
 function githubClientOptions(loaded: Loaded, clock: Clock): GitHubClientOptions {
-  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github) };
+  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github), budget_share: githubBudgetShare(loaded.file.github) };
 }
 
 /** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */

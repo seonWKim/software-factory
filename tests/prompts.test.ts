@@ -1,6 +1,8 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt } from "../src/compose.js";
+import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
 
@@ -26,10 +28,14 @@ function bullet(text: string, field: string): string {
 describe("prompts/triage.md", () => {
   const text = prompt("triage");
 
-  it("allows every store's migration paths for a store schema change (issue #229)", () => {
+  it("allows every store's migration paths for a store schema change, naming no repo path (issues #229, #335)", () => {
     expect(text).toContain("store schema change");
-    expect(text).toContain("`migrations/mysql/`");
-    expect(text).toContain("`src/impl/store/mysql/migrations.ts`");
+    expect(text).toMatch(/migration for every store the repository\s+ships/);
+    expect(text).not.toContain("migrations/mysql/");
+  });
+
+  it("its output example uses neutral paths (issue #335)", () => {
+    expect(text).toContain('"allowed_paths": ["src/example/"]');
   });
   const produce = text.slice(text.indexOf("Produce:"));
 
@@ -39,8 +45,7 @@ describe("prompts/triage.md", () => {
 
   it("names the topic files as the documentation targets, not the index (issue #224)", () => {
     const b = bullet(produce, "files_to_change");
-    expect(b).toContain("`docs/design/<topic>.md`");
-    expect(b).toContain("`docs/plugins/<interface>.md`");
+    expect(b).toMatch(/topic files the change touches/);
     expect(b).not.toMatch(/Name an index only when/);
     expect(b).toMatch(/not the index/i);
   });
@@ -92,5 +97,68 @@ describe.each([
     const fileLevel = b.search(/file-level|each (conflicting )?file|files/);
     expect(inShort).toBeGreaterThanOrEqual(0);
     expect(fileLevel).toBeGreaterThan(inShort);
+  });
+});
+
+// The core prompts serve every project the factory works on (issue #335): no npm or repo-specific paths, and the
+// configured checks filled in at load.
+const CORE = ["triage", "implement", "review", "resolve"] as const;
+const repo = (over: Partial<FactoryConfig["repo"]>): FactoryConfig["repo"] =>
+  ({ owner: "o", name: "n", path: ".", base_branch: "main", install_command: ["make", "deps"], test_command: ["make", "unit"], ...over }) as FactoryConfig["repo"];
+
+describe.each(CORE)("prompts/%s.md is project-neutral", (name) => {
+  const text = prompt(name);
+
+  it("names no npm, doc index or src/core/ path", () => {
+    for (const s of ["npm", "docs/design.md", "docs/plugins.md", "src/core/"]) expect(text, s).not.toContain(s);
+  });
+
+  it("renders for non-npm checks with no npm, no docs/design.md and no unfilled placeholder", () => {
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    expect(out).not.toContain("npm");
+    expect(out).not.toContain("docs/design.md");
+    expect(out).not.toContain("{{");
+  });
+});
+
+describe.each(["implement", "review"])("prompts/%s.md names the configured checks", (name) => {
+  const text = prompt(name);
+
+  it("has the placeholder", () => {
+    expect(text).toContain(CHECK_COMMANDS_PLACEHOLDER);
+  });
+
+  it("puts each check_commands entry in the text, in order", () => {
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    expect(out).toContain("`make check`");
+    expect(out).toContain("`make test`");
+    expect(out.indexOf("`make check`")).toBeLessThan(out.indexOf("`make test`"));
+    expect(out).toMatch(/project's own scripts, never the test runner directly/);
+  });
+
+  it("falls back to test_command when check_commands is absent", () => {
+    const out = fillPrompt(text, repo({}));
+    expect(out).toContain("`make unit`");
+    expect(out).not.toContain("{{");
+  });
+});
+
+describe("on this repo", () => {
+  const root = join(import.meta.dirname, "..");
+  const config = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as FactoryConfig;
+
+  it.each(["implement", "review"])("prompts/%s.md renders with npm run typecheck and npm test", (name) => {
+    const out = fillPrompt(prompt(name), config.repo);
+    expect(out).toContain("`npm run typecheck`");
+    expect(out).toContain("`npm test`");
+  });
+
+  it("CLAUDE.md links to AGENTS.md, which holds the moved test-running rule", () => {
+    expect(readlinkSync(join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    const rule = readFileSync(join(root, "AGENTS.md"), "utf8").split("\n").find((l) => l.startsWith("- Tests:"));
+    expect(rule, "the test-running rule").toBeDefined();
+    expect(rule).toMatch(/through the project's scripts/);
+    expect(rule).toContain("never the test runner directly (`npx vitest ...`)");
+    expect(rule).toMatch(/never run `npm install`, `npm ci`, or `npx`/);
   });
 });

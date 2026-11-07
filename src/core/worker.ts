@@ -6,7 +6,8 @@ import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import type { LogFields, Logger } from "./log.js";
 import {
-  CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, redact, runChecks, toolchainMissing,
+  BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText,
+  failingTestFiles, redact, runChecks, toolchainMissing, withTestFiles,
 } from "./checks.js";
 import {
   IMPLEMENT_SCHEMA,
@@ -22,7 +23,7 @@ import {
   unverifiedOf,
 } from "./outputs.js";
 import {
-  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
   NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
@@ -904,10 +905,10 @@ export class Worker {
       work.commits += Number((await this.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
     };
     try {
-      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model });
+      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model, baseSha: sync.baseSha });
     } catch (err) {
-      // Both keep the commits on a wip branch, so the retry starts from them.
-      if (!(err instanceof RunFailure) || (err.code !== CHECKS_FAILED_RUN && err.code !== TOOLCHAIN_MISSING)) throw err;
+      // Each keeps the commits on a wip branch, so the retry starts from them.
+      if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
       await countFixCommits();
       const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       throw await this.keepWip(run, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
@@ -1544,8 +1545,9 @@ export class Worker {
    * The pre-push checks of an implement run (design §4, decided 2026-11-03): `repo.check_commands` in order on
    * the committed branch, stopping at the first failure. A failure gets one fix step in the same run (the
    * implement prompt with the failing command and its output tail; the agent commits the fix), then the whole
-   * list runs again. A second failure posts one comment naming the command and fails the run with
-   * `checks_failed`. Returns the passing round's results and whether a fix step ran; the caller then runs the
+   * list runs again. On a second failure the failing test files run again on the base commit (failsOnBase):
+   * when they fail there too, the run fails with `checks_env`; otherwise one comment names the command and the
+   * run fails with `checks_failed`. Returns the passing round's results and whether a fix step ran; the caller then runs the
    * scope, size and floor gates again on the final diff.
    */
   private async checksBeforePush(
@@ -1554,7 +1556,7 @@ export class Worker {
     handle: SandboxHandle,
     ctx: ToolCallContext,
     signal: AbortSignal,
-    s: { gitDir: string; dirs: string; model: ModelClass },
+    s: { gitDir: string; dirs: string; model: ModelClass; baseSha: string },
   ): Promise<{ results: CheckResult[]; fixed: boolean }> {
     await this.cleanTree(handle);
     const first = await this.runCheckList(run, handle, signal);
@@ -1570,7 +1572,48 @@ export class Worker {
     await this.cleanTree(handle);
     const second = await this.runCheckList(run, handle, signal);
     if (!second.failed) return { results: second.results, fixed: true };
+    const onBase = await this.failsOnBase(run, handle, signal, s.baseSha, second.failed);
+    if (onBase) return this.checksEnv(run, item, ctx, second.failed, onBase);
     return this.checksFailed(run, item, ctx, first.failed, second.failed);
+  }
+
+  /**
+   * The base rerun (design §4, decided 2026-11-07): the test files `failed` names run again with the same
+   * command and env, on a temporary detached worktree of `baseSha` inside the run folder (BASE_CHECKOUT_DIR),
+   * removed afterwards. Returns the files when every one fails on the base too; null when the output names no
+   * test file (no base run), when one of them passes or is missing on the base, or when the base run cannot
+   * start (logged): those stay `checks_failed`.
+   */
+  private async failsOnBase(run: Run, handle: SandboxHandle, signal: AbortSignal, baseSha: string, failed: CheckResult): Promise<string[] | null> {
+    const files = failingTestFiles(failed.tail);
+    if (files.length === 0) return null;
+    const cannotStart = (why: string) => {
+      this.d.log.warn("base rerun could not start; the run fails with checks_failed", { run_id: run.id, error: why.slice(0, 300) });
+      return null;
+    };
+    try {
+      await this.removeBaseCheckout(handle);
+      await this.git(handle, [...NO_HOOKS, "worktree", "add", "--quiet", "--detach", BASE_CHECKOUT_DIR, baseSha]);
+    } catch (err) {
+      await this.removeBaseCheckout(handle);
+      return cannotStart(err instanceof Error ? err.message : "unknown");
+    }
+    try {
+      const round = await this.runCheckList(run, handle, signal, { commands: [withTestFiles(failed.command, files)], cwd: BASE_CHECKOUT_DIR });
+      if (!round.failed) return null;
+      const missing = round.failed.how.startsWith("could not run") ? round.failed.how : toolchainMissing(round.failed.tail);
+      if (missing) return cannotStart(missing);
+      const alsoFailing = new Set(failingTestFiles(round.failed.tail));
+      return files.every((f) => alsoFailing.has(f)) ? files : null;
+    } finally {
+      await this.removeBaseCheckout(handle);
+    }
+  }
+
+  /** Removes the base rerun's worktree, if there is one; best effort, a failure leaves it for the next add to refuse. */
+  private async removeBaseCheckout(handle: SandboxHandle): Promise<void> {
+    await this.gitRaw(handle, [...NO_HOOKS, "worktree", "remove", "--force", BASE_CHECKOUT_DIR]);
+    await this.gitRaw(handle, ["worktree", "prune"]);
   }
 
   /**
@@ -1639,15 +1682,44 @@ export class Worker {
   }
 
   /**
-   * The check list in the run folder with the check env: the tool env, the slot env (worker index, test workers)
-   * and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
+   * `checks_env` (design §5 Restarts): one comment, keyed on the run, names the test files that fail on the base
+   * too; a failed post is logged. Nothing is pushed. The controller requeues the run without spending an attempt
+   * or a restart, at most CHECKS_ENV_LIMIT times per item.
    */
-  private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<CheckRound> {
+  private async checksEnv(run: Run, item: WorkItem, ctx: ToolCallContext, failed: CheckResult, files: string[]): Promise<never> {
+    const cmd = commandText(failed.command);
+    const body = [
+      "## Factory pre-push checks: failing on the base branch too",
+      "",
+      `Before pushing, the implement run ran the checks (\`repo.check_commands\`), and \`${cmd}\` failed (${failed.how}), also after one fix step. The failing test files fail the same way on a clean checkout of the base commit, so the factory reads them as flaky or broken on the base, not as a fault of this branch:`,
+      "",
+      ...files.map((f) => `- \`${f.replace(/`/g, "'")}\``),
+      "",
+      `Nothing was pushed to the pull request branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
+    ].join("\n");
+    const posted = await this.d.broker.call(ctx, "github.comment", {
+      number: Number(item.source.id.split("#")[1]),
+      body,
+      marker: `<!-- factory:checks:${run.id} -->`,
+    });
+    if (!posted.ok) this.d.log.warn("checks env comment failed", { run_id: run.id, error_code: posted.error_code });
+    throw new RunFailure(CHECKS_ENV, `\`${cmd}\` ${failed.how} after one fix step, and on the base commit too; failing tests: ${files.join(", ")}`.slice(0, 500), false, {
+      output_tail: failed.tail,
+    });
+  }
+
+  /**
+   * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env, the slot env
+   * (worker index, test workers) and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an
+   * agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   */
+  private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
     const db = await this.database(run);
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
-      commands: checkCommands(this.cfg.repo),
+      commands: o.commands ?? checkCommands(this.cfg.repo),
+      ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
       env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,

@@ -3,7 +3,7 @@
 // step, the update run on the merged branch, the resolve run after install.
 
 import type { FactoryConfig } from "./config.js";
-import { stripAnsi } from "./output-summary.js";
+import { failingTests, stripAnsi } from "./output-summary.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 
 /**
@@ -19,6 +19,12 @@ export const CHECKS_FAILED_RUN = "checks_failed";
  * so the fix step is skipped and the retry does not spend a task attempt.
  */
 export const TOOLCHAIN_MISSING = "toolchain_missing";
+
+/**
+ * Where the base rerun checks out the base commit (design §4): a temporary detached worktree inside the run
+ * folder, so the same command finds the same dependencies as in the run folder and writes none of them.
+ */
+export const BASE_CHECKOUT_DIR = ".factory-base";
 
 const SETUP_LINES = [
   // Node: a dependency the check imports is not installed where it looks.
@@ -47,6 +53,19 @@ export const REDACTED = "[redacted]";
 /** The check list: `repo.check_commands`, or `[repo.test_command]` when it is absent. */
 export function checkCommands(repo: FactoryConfig["repo"]): string[][] {
   return repo.check_commands && repo.check_commands.length > 0 ? repo.check_commands.map((c) => [...c]) : [[...repo.test_command]];
+}
+
+/** The test files a check's output reports as failed (vitest's `FAIL  <file> > <name>` lines), in order, each once. */
+export function failingTestFiles(text: string): string[] {
+  return [...new Set(failingTests(text, Number.POSITIVE_INFINITY).map((t) => t.split(" > ")[0]!.trim()))];
+}
+
+/**
+ * `cmd` run on `files` only, for the base rerun (design §4): npm needs `--` before arguments for the script;
+ * a command that already has `--`, or any other runner, takes the files as they are.
+ */
+export function withTestFiles(cmd: readonly string[], files: readonly string[]): string[] {
+  return cmd[0] === "npm" && !cmd.includes("--") ? [...cmd, "--", ...files] : [...cmd, ...files];
 }
 
 /** A command as it is shown in prompts, comments and the PR body. */
@@ -81,7 +100,7 @@ export function exitText(r: Pick<ExecResult, "exit_code" | "signal" | "timed_out
 }
 
 /**
- * Runs `commands` in order in the run folder, each with `env` and the run timeout, and stops at the first
+ * Runs `commands` in order in the run folder (or `cwd` inside it), each with `env` and the run timeout, and stops at the first
  * failure. Output is redacted before it is kept: the env may hold a database URL with a password.
  */
 export async function runChecks(o: {
@@ -92,12 +111,16 @@ export async function runChecks(o: {
   timeout_ms: number;
   signal: AbortSignal;
   redact: readonly string[];
+  /** The folder to run in, relative to the run folder; absent: the run folder itself. */
+  cwd?: string;
 }): Promise<CheckRound> {
   const results: CheckResult[] = [];
   for (const cmd of o.commands) {
     let r: ExecResult;
     try {
-      r = await o.sandbox.exec(o.handle, cmd, { env: o.env, timeout_ms: o.timeout_ms, signal: o.signal });
+      r = await o.sandbox.exec(o.handle, cmd, {
+        env: o.env, timeout_ms: o.timeout_ms, signal: o.signal, ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
+      });
     } catch (err) {
       const why = redact(err instanceof Error ? err.message : "unknown", o.redact).slice(0, 300);
       const failed = { command: [...cmd], ok: false, how: `could not run: ${why}`, tail: "" };
