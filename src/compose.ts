@@ -2,9 +2,9 @@
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
 import { mkdir, readFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -38,6 +38,7 @@ import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity,
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -573,6 +574,8 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
+    cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
@@ -638,8 +641,16 @@ export interface UiParts {
   settings: UiSettings;
   /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
   commands: UiCommands;
+  /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
+  pauses: UiPauses;
   close(): Promise<void>;
 }
+
+/** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
+const NO_FORGE = new Proxy({}, {
+  // Not a thenable: awaiting the client itself must not hang.
+  get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error("the UI process makes no forge call"))),
+}) as unknown as GitHubClient;
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -648,7 +659,8 @@ export interface UiParts {
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
  * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
- * commands route acts as `ui.user_id` (null: not configured) and takes the same token.
+ * commands route acts as `ui.user_id` (null: not configured) and takes the same token. The pause route's owner
+ * check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -667,9 +679,26 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // One token per process for both write routes; held only in memory, never written to a file, the store or a log.
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
-  return { clock, store, scanner, settings, commands, close: () => store.close() };
+  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
+  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  const base = p.base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const cliUser = cliUserConfig(loaded.file);
+  const pauses: UiPauses = {
+    // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
+    authorize: async (user_id) => {
+      const project = await settings.resolveProject();
+      if (!project) return { allow: false, reason: "no project is stored yet" };
+      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
+    },
+    csrfToken: token,
+    log: new ConsoleLogger(clock, "ui"),
+  };
+  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
