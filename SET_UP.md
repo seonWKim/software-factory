@@ -131,6 +131,8 @@ By default the factory builds one item at a time. To build several in parallel, 
 
 To change the count while the factory runs, without a PR, set `max_workers` in the file once (a whole number of at least `workers`; absent means `workers`), then use `npm run factory -- settings set workers <n>` with any n from 1 to `max_workers`. The pool starts or stops worker loops on its next tick; a stopped loop finishes its current run first. `npm run factory -- settings reset workers` goes back to the file's `workers`.
 
+To let the phases of a split you approved run without an `/approve` each, run `npm run factory -- settings set phases_auto_approve true` (`settings reset phases_auto_approve` turns it off again).
+
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
