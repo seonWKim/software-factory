@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import type { Logger } from "./log.js";
@@ -273,6 +273,10 @@ export const SETTABLE_KEYS = [
   "workers",
   "phases_auto_approve",
   "hold_policy",
+  "alarm_repeat_count",
+  "alarm_window_minutes",
+  "alarm_restart_count",
+  "standing_approvals.threshold",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -310,6 +314,10 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   workers: "Worker loops in each process that claim and run steps.",
   phases_auto_approve: "Whether a phase spec of an approved split needs no approval of its own.",
   hold_policy: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
+  alarm_repeat_count: "Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert.",
+  alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
+  alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
+  "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -348,6 +356,10 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   workers: "the worker pool's next tick",
   phases_auto_approve: "the next phase spec triage writes",
   hold_policy: "the next claim",
+  alarm_repeat_count: "the next alarm step (each poll)",
+  alarm_window_minutes: "the next alarm step (each poll)",
+  alarm_restart_count: "the next alarm step (each poll)",
+  "standing_approvals.threshold": "the controller's next spec approval",
 };
 
 export interface SettableValues {
@@ -369,6 +381,10 @@ export interface SettableValues {
   workers: number;
   phases_auto_approve: boolean;
   hold_policy: HoldPolicy;
+  alarm_repeat_count: number;
+  alarm_window_minutes: number;
+  alarm_restart_count: number;
+  "standing_approvals.threshold": number;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -391,6 +407,8 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   workers: 1,
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy,
+  ...ALARM_DEFAULTS,
+  "standing_approvals.threshold": 10,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -669,6 +687,9 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     lease_ms: config.lease_ms,
     workers: config.workers,
     phases_auto_approve: config.phases_auto_approve ?? false,
+    alarm_repeat_count: config.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
+    alarm_window_minutes: config.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
+    alarm_restart_count: config.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
   };
   if (config.coordination) file.hold_policy = config.coordination.hold_policy;
   if (models) file.model_by = modelByRaw(models.table);
@@ -774,6 +795,9 @@ export class LiveSettings {
       lease_ms: v.lease_ms,
       phases_auto_approve: v.phases_auto_approve,
       workers: v.workers,
+      alarm_repeat_count: v.alarm_repeat_count,
+      alarm_window_minutes: v.alarm_window_minutes,
+      alarm_restart_count: v.alarm_restart_count,
     };
   }
 }

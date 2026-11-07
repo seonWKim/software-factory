@@ -9,7 +9,7 @@ import type { LiveSettings } from "../src/core/settings.js";
 import type { WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { type AgentRunner, TOOLS_NOT_EXPOSED } from "../src/interfaces/agent-runner.js";

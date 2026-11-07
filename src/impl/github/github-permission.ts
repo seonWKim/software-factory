@@ -1,5 +1,5 @@
 import type { GrantSource, GrantSubject, Role } from "../../interfaces/auth-provider.js";
-import { type GitHubClient, GitHubError, GitHubRateLimitError, type RepoRef } from "../github/github-client.js";
+import { type GitHubClient, GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
 
 const APPROVER = new Set(["admin", "maintain", "write"]);
 const REQUESTER = new Set(["triage", "read"]);

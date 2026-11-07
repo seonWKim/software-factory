@@ -99,6 +99,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
+| `/standing [accept\|decline <rule>]` | Show the standing-approval rules, or turn one on or off. `/standing accept spec-t1` lets tier 1 specs that wait at the spec gate be approved without a reply; `/standing decline spec-t1` turns it off or declines its proposal. A `/revise` or `/reject` on an item the rule approved also turns it off | any time |
 | `/link <code>` | Link the account you post from to a factory user, with a code from `factory link-code <user_id>` | any time |
 | `/help` | List every command and which ones apply now | any time |
 

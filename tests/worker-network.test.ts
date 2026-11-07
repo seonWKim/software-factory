@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
 import { NETWORK_UNAVAILABLE, classifyNetwork, unreachableHost } from "../src/core/policy.js";

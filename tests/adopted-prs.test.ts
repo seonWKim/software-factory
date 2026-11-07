@@ -8,7 +8,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";

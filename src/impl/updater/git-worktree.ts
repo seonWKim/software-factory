@@ -10,7 +10,9 @@ import {
   CODE_ROOT_ENV,
   CONFIG_ENV,
   type ChildHandle,
+  type ChildRestart,
   MIGRATION_PENDING,
+  RESTART_HISTORY,
   type SupervisorRequest,
   type ChildLauncher,
   type CommandRunner,
@@ -177,6 +179,8 @@ export class GitWorktreeUpdater implements Updater {
   private readonly abort = new AbortController();
   /** The revision the claiming child was started from. */
   private runningRev: string | null = null;
+  /** The last unexpected child exits, oldest first, for the status file (RESTART_HISTORY at most). */
+  private restarts: ChildRestart[] = [];
   /** The last status written: a repeat of the same state keeps its `since`. */
   private lastStatus: SupervisorStatus | null = null;
   /** The crash loop in progress: its error and when it began. */
@@ -585,7 +589,9 @@ export class GitWorktreeUpdater implements Updater {
       log.warn("child exited: schema or data steps pending; waiting for npm run migrate", { pid: l.child.pid, rev: l.rev });
       return;
     }
-    if (!this.closed) void this.report("crashed", null, l.child.lastError ?? `exit code ${code}`);
+    const reason = l.child.lastError ?? `exit code ${code}`;
+    this.restarts = [...this.restarts, { at: this.o.clock.now().toISOString(), reason }].slice(-RESTART_HISTORY);
+    if (!this.closed) void this.report("crashed", null, reason);
     log.warn("child exited unexpectedly; restarting on the next poll", { pid: l.child.pid, exit_code: code });
   }
 
@@ -631,6 +637,7 @@ export class GitWorktreeUpdater implements Updater {
       error,
       ...(state.startsWith("migration_") && this.migration ? { pending: this.migration.steps } : {}),
       supervisor_pid: process.pid,
+      restarts: this.restarts,
     };
     this.lastStatus = status;
     // One write at a time: a child's exit can report while a poll does.
