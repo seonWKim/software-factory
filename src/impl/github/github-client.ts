@@ -41,6 +41,8 @@ export const DEFAULT_MIN_REMAINING = 200;
 export const DEFAULT_BUDGET_SHARE = 1;
 /** Default ETag cache size per client (one per process): entries, each one GET's URL, ETag and body. */
 export const DEFAULT_ETAG_ENTRIES = 500;
+/** Below this share of the hourly limit left, optional reads wait for the reset too (issue #254). */
+const LOW_BUDGET_SHARE = 0.1;
 /** A body larger than this is never cached (keeps the per-process cache bounded in bytes too). */
 const MAX_CACHED_BODY = 1_000_000;
 
@@ -169,14 +171,14 @@ export class GitHubClient {
   }
 
   /**
-   * True while the reset has not passed and fewer than `min_remaining` core calls are left, or this process has
-   * made its `budget_share` of the limit: skip optional reads (refreshes that a later poll makes as well). Logs
-   * one line on entering and one on leaving.
+   * True while the reset has not passed and fewer than `min_remaining` core calls, or under LOW_BUDGET_SHARE (10%)
+   * of the limit, are left, or this process has made its `budget_share` of the limit: skip optional reads
+   * (refreshes that a later poll makes as well). Logs one line on entering and one on leaving.
    */
   lowBudget(): boolean {
     const r = this.rate;
     const before = r !== null && this.now() < Date.parse(r.reset_at);
-    const floor = before && r!.remaining < this.minRemaining;
+    const floor = before && r!.remaining < Math.max(this.minRemaining, r!.limit * LOW_BUDGET_SHARE);
     const cap = this.shareLimit();
     const shared = before && cap !== null && this.counted() >= cap;
     const low = floor || shared;

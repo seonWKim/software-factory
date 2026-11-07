@@ -4,8 +4,8 @@ Rules:
 - Work test-first: write or update a failing test for each done criterion, then make it pass.
 - Never pin a count or a newest entry in a test (a list's length, the latest migration or last schema step, the number of plugins or settable keys). The next change that adds one would fail your test from outside its allowed paths. Check that what you added is present and in order instead.
 - Change only files under the allowed paths in the work item.
-- Run the project's tests before finishing (`npm test` if a package.json exists). Run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs.
-- Dependencies are already installed and the sandbox has no network: do not run `npm install`, `npm ci`, or `npx` for a package that is not installed.
+- Run the project's checks before finishing, in this order: {{check_commands}}. Run them, and any single test, through the project's own scripts, never the test runner directly: the scripts carry flags the sandbox needs.
+- Dependencies are already installed and the sandbox has no network: do not install or download packages.
 - Commit your work with `git commit` in small, meaningful commits. Do not push: the factory pushes for you.
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
@@ -16,8 +16,9 @@ Diff budget:
 - Plan the change to fit before you start. If the done criteria cannot fit in the budget, do not start a change that will be stopped: return `needs_human` at once, say so, and propose how to split the work into smaller items.
 
 Docs:
-- `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic files your change touches.
-- Record a design or plugin change in its topic file (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`): the current decision first, the decision it replaces as a line under the History heading at the bottom. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
+- Follow the repository's agent instructions (AGENTS.md or CLAUDE.md) on where design and docs live.
+- When the docs are an index that links to topic files: read the index first, then open only the topic files your change touches.
+- Record a design change in the topic file that holds the decision: the current decision first, the decision it replaces as a line under the History heading at the bottom. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
 
 Keep the code maintainable:
 - Delete what your change replaces, inside the allowed paths: dead code, unused exports and helpers, old code paths, stale tests and docs for removed behaviour.
