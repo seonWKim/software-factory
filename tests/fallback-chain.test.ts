@@ -7,6 +7,7 @@ import type { RunId, WorkItemId } from "../src/core/types.js";
 import { type AgentRunResult, type AgentRunSpec, type AgentRunner, toolsNotExposedMessage } from "../src/interfaces/agent-runner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SandboxHandle } from "../src/interfaces/sandbox.js";
+import { pipeline } from "./helpers/fakes.js";
 import { REGISTRY, declaredSecretNames, selectPlugins, selectedLlms, selectedRunners } from "../src/plugins.js";
 
 // The runner and LLM fallback chains (design 2026-11-07): `plugins.runner` / `plugins.llm` list several plugins,
@@ -278,5 +279,32 @@ describe("selection: plugins.runner and plugins.llm take a list", () => {
     expect(runnerChain.has("CLAUDE_CODE_OAUTH_TOKEN" as never)).toBe(true);
     const llmChain = declaredSecretNames(REGISTRY, select({ runner: "claude-code", llm: ["claude-cli", "openai-compatible"] }));
     expect(llmChain.has("OPENAI_COMPATIBLE_API_KEY" as never)).toBe(true);
+  });
+});
+
+describe("worker: one log line per fall-over", () => {
+  const TOKEN = `ghp_${"Ab3".repeat(12)}`;
+  it("logs runner fallback with from, to and reason; a reason the scan flags is withheld", async () => {
+    const f = await pipeline({
+      implement: () => ({
+        output: { summary: "s", next_steps: "n" },
+        transcript: "t",
+        served_by: "openai-compatible",
+        fallbacks: [
+          { from: "claude-code", to: "openai-compatible", reason: "rate_limited: usage limit" },
+          { from: "x", to: "y", reason: `failed: ${TOKEN}` },
+        ],
+      }),
+    });
+    const item = await f.submit();
+    await f.step();
+    const [impl] = await f.runs(item, "implement");
+    expect(impl!.status).toBe("succeeded");
+    const lines = f.log.lines.filter((l) => l.msg === "runner fallback");
+    expect(lines.map((l) => l.fields)).toEqual([
+      expect.objectContaining({ run_id: impl!.id, from: "claude-code", to: "openai-compatible", reason: "rate_limited: usage limit" }),
+      expect.objectContaining({ from: "x", to: "y", reason: "[withheld]" }),
+    ]);
+    expect(JSON.stringify(f.log.lines)).not.toContain(TOKEN);
   });
 });

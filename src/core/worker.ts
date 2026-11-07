@@ -1895,8 +1895,6 @@ export class Worker {
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
       ...(session ? { session } : {}),
     });
-    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next.
-    for (const f of result.fallbacks ?? []) this.d.log.warn("runner fallback", { run_id: run.id, step: step ?? "", ...f });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
@@ -1911,6 +1909,13 @@ export class Worker {
       this.d.log.warn("transcript not stored: the egress scan flagged it", { run_id: run.id, step: step ?? "", rules: rules.join(",") });
     } else {
       await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
+    }
+
+    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next. The reason is a
+    // member's error text, scanned like any other before it reaches a log.
+    for (const f of result.fallbacks ?? []) {
+      const clean = (await this.d.scanner.scan("log", f.reason)).clean;
+      this.d.log.warn("runner fallback", { run_id: run.id, step: step ?? "", from: f.from, to: f.to, reason: clean ? f.reason.slice(0, 300) : "[withheld]" });
     }
 
     if (result.status === "aborted") {
