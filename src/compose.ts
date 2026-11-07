@@ -32,7 +32,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
+import { GitHubClient, type GitHubClientOptions, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -123,6 +123,8 @@ export interface FileConfig {
   ui?: { port?: number };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
   updater?: { auto_migrate?: unknown };
+  /** The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the reset. */
+  github?: { min_remaining?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -208,6 +210,7 @@ export async function loadConfig(
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
   autoMigrate(file.updater);
+  githubMinRemaining(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
@@ -397,7 +400,7 @@ export async function build(
 
   const scanner = await p.scanner(secrets);
   const credentials = await p.githubCredentials(secrets, clock);
-  const github = new GitHubClient(credentials);
+  const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
   const sandbox = await p.sandbox();
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
@@ -557,6 +560,11 @@ export interface SessionParts {
   close(): Promise<void>;
 }
 
+/** The GitHub client's settings from factory.config.json (`github`), with its log lines under "github". */
+function githubClientOptions(loaded: Loaded, clock: Clock): GitHubClientOptions {
+  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github) };
+}
+
 /** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */
 export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const { stateDir, registry, plugins: sel } = loaded;
@@ -566,7 +574,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const store = await p.store(secrets, clock);
   await store.migrate();
   const [scanner, credentials, sandbox] = [await p.scanner(secrets), await p.githubCredentials(secrets, clock), await p.sandbox()];
-  const github = new GitHubClient(credentials);
+  const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
