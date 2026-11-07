@@ -1,5 +1,6 @@
 // Several sources in one controller (docs/plugins.md, SourceAdapter; design 2026-11-01): each item's calls go
-// to the adapter of its own source type, PR status goes to GitHub, and one source failing does not stop another.
+// to the adapter of its own source type, PR status goes to the forge (issue #273), and one source failing does not
+// stop another.
 
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
@@ -12,6 +13,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import {
   FakeAuth,
+  FakeForge,
   FakeSlackPollSource,
   FakeSource,
   FakeStreamSource,
@@ -44,10 +46,11 @@ async function setup(log: Logger = silent) {
   const { store } = await newStore(clock);
   const gh = new FakeSource();
   const sl = new FakeSlackPollSource();
+  const forge = new FakeForge(gh);
   const controller = new Controller({
-    store, sources: [gh, sl], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, llm: new ApproveLLM(),
+    store, sources: [gh, sl], forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, llm: new ApproveLLM(),
   });
-  return { clock, store, gh, sl, controller };
+  return { clock, store, gh, sl, forge, controller };
 }
 
 type F = Awaited<ReturnType<typeof setup>>;
@@ -120,7 +123,7 @@ describe("multi-source controller: per-item routing", () => {
     expect(f.sl.closed).toEqual([slackRef(1)]);
   });
 
-  it("status for the PR of a non-GitHub item goes to the GitHub adapter; the item's own status stays on its source", async () => {
+  it("status for the PR of a non-GitHub item goes to the forge; the item's own status stays on its source", async () => {
     const f = await setup();
     const { slItem } = await intakeBoth(f);
     await finishAll(f, "triage", { spec: triageSpec });
@@ -130,12 +133,11 @@ describe("multi-source controller: per-item routing", () => {
 
     expect((await f.store.getWorkItem(slItem.id))!.pr_number).toBe(42);
     expect(f.sl.statusCalls.filter((c) => c.pr_number !== null)).toEqual([]);
-    expect(f.gh.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
+    expect(f.forge.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
       { source: slackRef(1), status: "in_review", pr_number: 42 },
     ]);
-    expect(f.gh.statusCalls.some((c) => c.source.id === slackRef(1).id && c.pr_number === null)).toBe(false);
+    expect(f.gh.statusCalls.some((c) => c.source.id === slackRef(1).id)).toBe(false);
     expect(f.sl.statusLabels(slackRef(1))).toEqual(["in_review"]);
-    expect(f.gh.statusLabels(slackRef(1), 42)).toEqual(["in_review"]);
   });
 
   it("with one source, PR status still goes to that source (today's behaviour)", async () => {
@@ -345,13 +347,14 @@ describe("multi-source controller: startup checks", () => {
     expect(make([new FakeSlackPollSource(), new FakeStreamSource()])).toThrow(/plugins\.source.*slack_thread/);
   });
 
-  it("several sources without a github_issue one fail, naming plugins.source", () => {
+  it("several sources with none of type github_issue are accepted: PRs come from the forge (issue #273)", () => {
     const other = new FakeStreamSource();
     (other as { type: string }).type = "local" as never;
-    expect(make([new FakeSlackPollSource(), other])).toThrow(/plugins\.source.*github_issue/);
+    expect(make([new FakeSlackPollSource(), other])).not.toThrow();
   });
 
-  it("one non-GitHub source alone still works, as today", () => {
+  it("one non-GitHub source alone is accepted", () => {
     expect(make([new FakeStreamSource()])).not.toThrow();
+    expect(make([new FakeSlackPollSource()])).not.toThrow();
   });
 });
