@@ -15,7 +15,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
-import { type Run, type RunUsage, type WorkerId, outcomeTokens } from "../src/core/types.js";
+import { type Run, type RunUsage, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { MYSQL_URL, issue, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
@@ -313,7 +313,7 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
  */
 async function seedRuns(store: FactoryStore, clock: FakeClock) {
   const usage: RunUsage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 3, cache_write_tokens: 2, cost_usd: null, model: null };
-  const ids = [];
+  const ids: WorkItemId[] = [];
   let n = 100;
   const next = async () => {
     const { item } = await store.createWorkItem(issue(++n), system, { enqueue: { kind: "triage", idempotency_key: `k${n}` } });
