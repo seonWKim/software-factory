@@ -17,6 +17,7 @@ import {
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
+import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
@@ -24,6 +25,7 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
+import type { ToolBroker } from "./interfaces/tool-broker.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -421,6 +423,52 @@ export async function build(
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
+}
+
+export interface SessionParts {
+  clock: Clock;
+  store: FactoryStore;
+  scanner: EgressScanner;
+  sandbox: Sandbox;
+  broker: ToolBroker;
+  auth: AuthProvider;
+  github: GitHubClient;
+  /** The resolved config with the runtime settings applied, as a worker would read it at its next claim. */
+  config: FactoryConfig;
+  close(): Promise<void>;
+}
+
+/**
+ * What `factory session` needs (design 2026-11-01): the configured store, sandbox, broker, auth and scanner, the
+ * project resolved through GitHub, and the settings with the stored overrides, so a session's gates read the same
+ * values a worker's do. No controller, no worker, no runner: the session's LLM is the person's own.
+ */
+export async function buildSessionParts(loaded: Loaded, opts: { repoLookup?: RepoLookup } = {}): Promise<SessionParts> {
+  const { stateDir, registry, plugins: sel } = loaded;
+  await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
+  const p = new Plugins(loaded);
+  const base = p.base;
+  const clock = await p.clock();
+  const secrets = await p.secrets();
+  const store = await p.store(secrets, clock);
+  await store.migrate();
+  const scanner = await p.scanner(secrets);
+  const credentials = await p.githubCredentials(secrets, clock);
+  const github = new GitHubClient(credentials);
+  const sandbox = await p.sandbox();
+  const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
+  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const project = await resolveProject(opts.repoLookup ?? github, base.repo);
+  await saveProjectLabel(store, project);
+  const settings = new LiveSettings({
+    config: resolvedConfig(loaded.config, project),
+    base: { ...settingsBase(loaded), layers: resolvedConfig(loaded.config, project).settings },
+    source: store,
+    log: new ConsoleLogger(clock, "settings"),
+  });
+  await settings.refresh();
+  return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => store.close() };
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */

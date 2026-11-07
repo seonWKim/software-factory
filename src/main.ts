@@ -23,6 +23,7 @@ import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factor
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { SESSION_USAGE, parseSessionArgs, runSession } from "./session-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, runProjectKeyStep } from "./impl/store/project-keys.js";
@@ -52,6 +53,11 @@ const USAGE = `factory <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
+  session start <issue | item id> [--as <login>] [--spec <file>] [--transcript <url>]
+        | status | note <text> | finish | abandon   [<item id>] [--tokens <n>]
+               your own LLM session on a work item, recorded as an interactive run: start makes the run
+               folder and renews the lease until Ctrl-C; finish runs the scope, size and floor gates and
+               repo.test_command, then pushes and opens the PR through the broker (see SET_UP.md)
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
@@ -210,6 +216,14 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       } finally {
         await store.close();
       }
+    }
+    case "session": {
+      const action = parseSessionArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${SESSION_USAGE}`);
+        return 1;
+      }
+      return runSession(loaded, action, (line) => console.log(line), stopOnSignals());
     }
     case "ui": {
       const parts = await buildUiParts(loaded);

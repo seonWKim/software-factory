@@ -49,6 +49,11 @@ export interface StatsReport {
    * null. Absent in reports built before it existed.
    */
   adopted?: StatsRow;
+  /**
+   * Finished `interactive` runs (a person's sessions, design 2026-11-01), succeeded or failed, and the tokens their
+   * outcomes count. Absent in reports built before it existed.
+   */
+  interactive?: { runs: number; tokens: number };
 }
 
 export const STATS_TIERS: readonly (Tier | null)[] = [1, 2, 3, 4, 5, null];
@@ -82,9 +87,15 @@ function row(tier: Tier | null, records: readonly StatsRecord[], config: StatsCo
 }
 
 /** Reads through the one read-only store method; the narrow type keeps every write method out of reach. */
-export async function collectStats(store: Pick<FactoryStore, "listStatsRecords">, config: StatsConfig): Promise<StatsReport> {
+export async function collectStats(store: Pick<FactoryStore, "listStatsRecords" | "sessionStats">, config: StatsConfig): Promise<StatsReport> {
   const records = await store.listStatsRecords([STATS_REASONS.reject, STATS_REASONS.retry]);
-  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config) };
+  const sessions = await store.sessionStats();
+  return {
+    config,
+    tiers: aggregateStats(records, config),
+    adopted: aggregateAdopted(records, config),
+    interactive: { runs: sessions.finished, tokens: sessions.tokens },
+  };
 }
 
 export function tierLabel(tier: Tier | null): string {
@@ -116,6 +127,9 @@ export function formatStatsText(report: StatsReport): string {
     "",
     `items: CLOSED work items per tier. rate: feedback ÷ items, shown from min_sample ${report.config.min_sample} items.`,
     ...(report.adopted ? ["adopted: CLOSED pull requests a person opened and the factory adopted, any tier; not in the tier rows."] : []),
+    ...(report.interactive
+      ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens (the totals people gave with --tokens).`]
+      : []),
     `weights: none ${w.none}, minor ${w.minor}, major ${w.major}, critical ${w.critical}.`,
     "/reject and /retry count applied commands only (spec_rejected, retry_requested); refused commands are not counted.",
   ].join("\n");

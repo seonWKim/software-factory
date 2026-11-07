@@ -55,7 +55,8 @@ export function runTokens(run: Run): number | null {
     const t = Number(run.outcome.data.tokens);
     return Number.isFinite(t) && t >= 0 ? t : null;
   }
-  return run.outcome?.status === "failed" && run.outcome.usage ? outcomeTokens(run.outcome) : null;
+  // A failed session (design 2026-11-01) stores the person's latest total as `tokens`, not as usage.
+  return run.outcome?.status === "failed" && (run.outcome.usage || run.outcome.tokens !== undefined) ? outcomeTokens(run.outcome) : null;
 }
 
 class Ctx {
@@ -327,7 +328,7 @@ async function runningSection(c: Ctx): Promise<string> {
         esc(r.kind),
         await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
         esc(r.attempt),
-        r.lease ? await c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`,
+        await workerCell(c, r),
         c.ago(r.started_at),
         esc(c.ago(r.updated_at)) + (stale ? " <strong>(past lease)</strong>" : ""),
       ],
@@ -338,6 +339,15 @@ async function runningSection(c: Ctx): Promise<string> {
     rows,
     "no runs in progress",
   )}</section>`;
+}
+
+/**
+ * Who holds a running run: the worker's lease owner, or for an interactive session (design 2026-11-01) the person's
+ * user ID. Never a display name: the store holds none.
+ */
+async function workerCell(c: Ctx, r: Run): Promise<string> {
+  if (r.kind === "interactive") return `person ${r.actor_id ? await c.w.text(r.actor_id) : `<span class="muted">unknown</span>`}`;
+  return r.lease ? c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`;
 }
 
 async function queueSection(c: Ctx): Promise<string> {
@@ -498,7 +508,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     }
     runRows.push({
       cells: [
-        esc(r.kind),
+        r.actor_id ? `${esc(r.kind)} (${await c.w.text(r.actor_id)})` : esc(r.kind),
         esc(r.status),
         esc(r.attempt),
         r.started_at ? esc(r.started_at) : `<span class="muted">unknown</span>`,

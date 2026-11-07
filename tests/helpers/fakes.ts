@@ -15,12 +15,13 @@ import type {
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
 import { Worker } from "../../src/core/worker.js";
-import type { Run, WorkItem, WorkerId } from "../../src/core/types.js";
+import type { Run, WorkItem, WorkItemId, WorkerId } from "../../src/core/types.js";
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import { newStore } from "./store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
+import type { SessionFiles, SessionRecord } from "../../src/core/session.js";
 
 /** The configured repo o/r as startup resolves it: keyed by its (fake) node ID, labelled by its path. */
 export const PROJECT: ProjectRef = { key: "github:github.com:R_kgDOrepo1", label: "github.com/o/r" };
@@ -552,13 +553,32 @@ export class FakeBroker implements ToolBroker {
   listTools(): ToolDescriptor[] {
     return [];
   }
+  /** Branches a successful `github.push_branch` left on the fake remote. Nothing ever deletes one. */
+  remote = new Set<string>();
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
-    if (scripted) return scripted;
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
-    return { ok: true, content: {} };
+    const result: ToolResult = scripted ?? (name === "github.open_pr" ? { ok: true, content: { number: 42 } } : { ok: true, content: {} });
+    if (name === "github.push_branch" && result.ok) this.remote.add((args as { branch: string }).branch);
+    return result;
+  }
+}
+
+/** Open sessions' local records in memory, as the CLI keeps them under state_dir. */
+export class MemorySessionFiles implements SessionFiles {
+  records = new Map<string, SessionRecord>();
+  async read(id: WorkItemId) {
+    return this.records.get(id) ?? null;
+  }
+  async write(r: SessionRecord) {
+    this.records.set(r.work_item_id, r);
+  }
+  async remove(id: WorkItemId) {
+    this.records.delete(id);
+  }
+  async list() {
+    return [...this.records.values()];
   }
 }
 
