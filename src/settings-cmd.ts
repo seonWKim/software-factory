@@ -15,6 +15,7 @@ import {
   keyRefusal,
   parseSettable,
   resolveSettings,
+  workersCap,
 } from "./core/settings.js";
 import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.js";
 
@@ -155,10 +156,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
     }
     value = JSON.stringify(raw);
     if (key === "workers") {
-      const cap = parseSettable("workers", deps.base.file.workers ?? 1);
+      const cap = workersCap(deps.base);
       if ((parsed as number) > cap) {
         return fail(
-          `workers ${String(parsed)} is above the config file's workers (${cap}), which sizes this process's worker index block; raise it in factory.config.json by PR`,
+          `workers ${String(parsed)} is above the config file's max_workers (${cap}), which sizes this process's worker index block; raise max_workers in factory.config.json by PR`,
         );
       }
     }
@@ -202,7 +203,7 @@ async function list(deps: SettingsDeps): Promise<SettingsResult> {
   const lines: string[] = [];
   for (const k of SETTABLE_KEYS) {
     const e = r.global[k];
-    const capped = k === "workers" && r.values.workers < r.global.workers.value ? ` (capped at the file's ${r.workers_cap})` : "";
+    const capped = k === "workers" && r.values.workers < r.global.workers.value ? ` (capped at max_workers ${r.workers_cap})` : "";
     lines.push(`${k.padEnd(width)}  ${e.source.padEnd(8)}  ${fmt(e.raw)}${capped}`);
   }
   for (const [p, keys] of Object.entries(r.projects)) {
