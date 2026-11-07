@@ -36,7 +36,7 @@ import {
   type Run, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
 import {
-  type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
 } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -2027,6 +2027,14 @@ export class Worker {
     if (result.status === "rate_limited") {
       const reset = result.reset_at && !Number.isNaN(Date.parse(result.reset_at)) ? (new Date(result.reset_at).toISOString() as Timestamp) : null;
       throw new RunFailure(RATE_LIMITED, result.error ?? "usage or rate limit", false, { reset_at: reset, output_tail: tail(result.transcript) });
+    }
+    if (result.status === "failed" && result.code === PROVIDER_SETUP) {
+      // The provider's quota, key or model needs a person (design §5 Restarts). Its message can echo part of the
+      // key: a message the scan flags is dropped, with the output tail that holds it, and the code is kept.
+      const said = result.error ?? "";
+      const clean = said === "" || (await this.d.scanner.scan("run_outcome", said)).clean;
+      throw new RunFailure(PROVIDER_SETUP, clean ? said : "the provider's message is withheld: the egress scan flagged it", false,
+        clean ? { output_tail: tail(result.transcript) } : {});
     }
     // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {

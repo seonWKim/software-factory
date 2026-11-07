@@ -82,6 +82,7 @@ import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../i
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
+import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
@@ -2301,6 +2302,8 @@ export class Controller {
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
+    // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
+    if (code === PROVIDER_SETUP) return this.providerSetup(it, run);
     // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
     if (run.kind === "implement" && code === SPEC_CONFLICT) {
       const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
@@ -2621,7 +2624,8 @@ export class Controller {
    */
   private async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
     const auto = parseAutoResolveKey(run.idempotency_key);
-    const next = auto ? nextAutoResolveAttempt(auto.attempt) : null;
+    // provider_setup is never retried (design §5 Restarts): the item waits on a person, as after the last attempt.
+    const next = auto && code !== PROVIDER_SETUP ? nextAutoResolveAttempt(auto.attempt) : null;
     if (auto && next !== null) {
       const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
       const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
@@ -2856,6 +2860,35 @@ export class Controller {
       actor: SYSTEM,
       reason: "run_failed",
       detail: { run_id: run.id, error_code: code },
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * A run the model provider refused for its account or config (`provider_setup`, design §5 Restarts): the quota,
+   * the API key or the model name. Any run kind; never retried, since waiting does not fix it, and no claim pause.
+   * Blocks on a human with `run_failed:<kind>:provider_setup`, so `/retry` runs it again once fixed. One comment,
+   * keyed on the run, says what to fix and quotes the provider's message, dropped if the egress scan flags it.
+   */
+  private async providerSetup(it: WorkItem, run: Run): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${PROVIDER_SETUP}` };
+    const body = (withDetail: boolean) => [
+      "## Factory check: the model provider needs setup",
+      "",
+      `The ${run.kind} run failed (\`${PROVIDER_SETUP}\`): ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      "",
+      "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: PROVIDER_SETUP },
       ack_run: run.id,
     };
   }
@@ -3430,6 +3463,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",
