@@ -1,3 +1,4 @@
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
 import type { RunKind, WorkItem } from "./types.js";
 
 /**
@@ -19,6 +20,8 @@ export type CommandPhase =
   | "failed_implement"
   | "failed_review"
   | "failed_run"
+  | "agent_needs_human"
+  | "repeated_failure"
   | "reviewing"
   | "merge_pending"
   | "max_loops"
@@ -28,7 +31,7 @@ export type CommandPhase =
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "floor_tier", "too_large",
-  "failed_implement", "failed_review", "failed_run", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
+  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
@@ -37,6 +40,11 @@ const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
 export interface CommandState {
   phase: CommandPhase;
   has_pr: boolean;
+  /**
+   * At `agent_needs_human`: the kind of run that asked (read from the item's runs; the item's fields cannot tell
+   * a resolve block from an implement block). Absent when not known.
+   */
+  asked_by?: RunKind;
 }
 
 export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "link" | "help";
@@ -60,6 +68,8 @@ export interface CommandSpec {
   pr_phases?: readonly CommandPhase[];
   /** One line: what it does on the PR. */
   pr_description?: string;
+  /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
+  asked_by?: readonly RunKind[];
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -78,7 +88,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "reject",
     usage: "/reject <reason>",
     description: "Close the item without a merge, giving your reason",
-    phases: ["spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement"],
+    phases: [
+      "spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
+    ],
     needs_pr: false,
     changes_state: true,
   },
@@ -86,7 +98,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    phases: ["spec_pending", "too_large", "failed_implement"],
+    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
     needs_pr: false,
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
@@ -96,7 +108,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "retry",
     usage: "/retry",
     description: "Run the failed run again",
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
     needs_pr: false,
     changes_state: true,
   },
@@ -104,7 +116,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "resolve",
     usage: "/resolve [notes]",
     description: "Let an agent resolve the PR's merge conflict; notes go to the agent",
-    phases: ["merge_conflict"],
+    // Also the answer to a resolve run that asked for a human: the reply is the next resolve run's notes.
+    phases: ["merge_conflict", "agent_needs_human"],
+    asked_by: ["resolve"],
     needs_pr: false,
     changes_state: true,
   },
@@ -148,11 +162,18 @@ export function commandSpec(name: CommandName): CommandSpec {
   return BY_NAME.get(name)!;
 }
 
-/** The kind of run a human `/retry` would restart, or undefined if the item is not blocked by a failed run. */
+/** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
+const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
+
+/**
+ * The kind of run a human `/retry` would restart, or undefined if the item is not blocked by a failed run. For
+ * `agent_needs_human` and `repeated_failure` this is the stage's step; the controller reads the run that blocked
+ * first (`blockingRunKind`), since a resolve block has an implement block's stage.
+ */
 export function failedRunKind(it: WorkItem): RunKind | undefined {
   const kind = it.blocked_reason?.match(/^run_failed:(triage|implement|review|update):/)?.[1] as RunKind | undefined;
   if (kind) return kind;
-  if (it.blocked_reason !== "max_attempts" && it.blocked_reason !== "max_restart") return undefined;
+  if (!STAGE_RETRY_REASONS.includes(it.blocked_reason)) return undefined;
   if (it.stage === "NEW") return "triage";
   if (it.stage === "RUNNING") return "implement";
   if (it.stage === "REVIEW") return "review";
@@ -167,6 +188,8 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
   if (it.blocked_reason === "floor_tier") return "floor_tier";
   if (it.blocked_on === "human") {
+    if (it.blocked_reason === AGENT_NEEDS_HUMAN) return "agent_needs_human";
+    if (it.blocked_reason === REPEATED_FAILURE) return "repeated_failure";
     const kind = failedRunKind(it as WorkItem);
     if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
     if (kind === "review") return "failed_review";
@@ -184,12 +207,15 @@ export function commandPhase(it: ItemState): CommandPhase {
   return "implementing";
 }
 
-export function commandState(it: ItemState): CommandState {
-  return { phase: commandPhase(it), has_pr: it.pr_number !== null };
+/** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
+export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
+  const phase = commandPhase(it);
+  return { phase, has_pr: it.pr_number !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
 }
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  return c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr);
+  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr)) return false;
+  return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
 }
 
 /** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
@@ -262,6 +288,8 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   failed_implement: "blocked by a failed implement run",
   failed_review: "blocked by a failed review run",
   failed_run: "blocked by a failed run",
+  agent_needs_human: "blocked: the agent asked for a human",
+  repeated_failure: "blocked: a run failed the same way twice",
   reviewing: "in review",
   merge_pending: "waiting for a human merge",
   max_loops: "review loop limit reached",

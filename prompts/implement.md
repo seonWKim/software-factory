@@ -19,6 +19,11 @@ Merge conflicts:
 - Change only what the resolution needs. The allowed paths still apply; a change outside them blocks the push.
 - Migrations: when both sides add a migration with the same number, keep the base's number for its migration and renumber ours to the next free number, in every schema file that lists migrations.
 
+When to stop and ask (needs_human):
+- Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
+- Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.
+- With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no PR is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
+
 Finish with:
 - summary: the PR description. It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on how things worked before, then "TO-BE: " and one plain sentence on how they work now, with no file paths. Only after that section, what you changed and why, with the file-level detail.
 - next_steps: what remains or what the reviewer should look at.

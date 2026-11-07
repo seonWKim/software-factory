@@ -137,6 +137,25 @@ describe("command table", () => {
     expect(phaseLabel("failed_review")).toBe("blocked by a failed review run");
   });
 
+  it("agent_needs_human and repeated_failure take /retry, /revise and /reject; /resolve only after a resolve run asked", () => {
+    const names = (phase: CommandPhase) => commandsFor(s(phase)).map((c) => c.name);
+    for (const phase of ["agent_needs_human", "repeated_failure"] as const) {
+      expect(names(phase)).toEqual(expect.arrayContaining(["retry", "revise", "reject"]));
+      expect(names(phase)).not.toContain("resolve");
+      for (const c of ["`/retry`", "`/revise <feedback>`", "`/reject <reason>`"]) expect(commandFooter(s(phase))).toContain(c);
+    }
+    expect(commandsFor({ phase: "agent_needs_human", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).toContain("resolve");
+    expect(commandsFor({ phase: "repeated_failure", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).not.toContain("resolve");
+    const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
+      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+    for (const stage of ["NEW", "RUNNING", "REVIEW"] as const) {
+      expect(at(stage, "agent_needs_human")).toBe("agent_needs_human");
+      expect(at(stage, "repeated_failure")).toBe("repeated_failure");
+    }
+    expect(phaseLabel("agent_needs_human")).toBe("blocked: the agent asked for a human");
+    expect(phaseLabel("repeated_failure")).toBe("blocked: a run failed the same way twice");
+  });
+
   it("/help names the state by its label, not its phase id", () => {
     expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
     expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");
@@ -165,6 +184,8 @@ describe("footers match what the controller accepts", () => {
     failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:update:invalid_output" },
     too_large: { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" },
     failed_implement: { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" },
+    agent_needs_human: { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human" },
+    repeated_failure: { stage: "RUNNING", blocked_on: "human", blocked_reason: "repeated_failure" },
     reviewing: { stage: "REVIEW" },
     merge_pending: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },
