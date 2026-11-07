@@ -1128,6 +1128,16 @@ export class Controller {
   private async handleInfo(e: InfoEvent): Promise<void> {
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
+    // Outside GitHub (a Slack thread, issue #109) the person is checked first, like every other command: an
+    // unknown account gets the refusal and no list. On GitHub `/help` answers anyone, as it always did.
+    if (item.source.type !== PR_SOURCE_TYPE) {
+      const principal = await this.authorize(e.requester, "submit_work", item.id);
+      if ("refuse" in principal) {
+        await this.post(item.source, `${e.kind === "help_requested" ? "`/help`" : "The command"} was not applied: ${principal.refuse}.`,
+          `<!-- factory:refused:${e.comment_id} -->`);
+        return;
+      }
+    }
     await this.markSeen(e.source, e.comment_id);
     const state = await this.stateOf(item);
     const help = e.kind === "help_requested";
@@ -2848,6 +2858,7 @@ export class Controller {
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
         if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.showStatus(r.item);
+        if (r.item.pr_number !== null && r.item.pr_number !== item.pr_number) await this.guard("pr link", () => this.prLink(r.item));
         return null;
       }
       if (r.reason !== "version_conflict") {
@@ -2980,6 +2991,20 @@ export class Controller {
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
     }
+  }
+
+  /**
+   * The PR's link in the item's own thread, once per PR, for an item from a source other than GitHub (a Slack
+   * thread): on GitHub the PR already links its issue. Implement, review and the human gate stay on GitHub.
+   */
+  private async prLink(it: WorkItem): Promise<void> {
+    if (it.source.type === PR_SOURCE_TYPE || it.origin === "adopted" || it.pr_number === null) return;
+    const url = `https://${this.cfg.project.label}/pull/${it.pr_number}`;
+    await this.comment(it, `pr-link:${it.pr_number}`, [
+      `The factory opened a pull request for this item: [PR #${it.pr_number}](${url}).`,
+      "",
+      "Review and the merge happen on GitHub; this thread gets the item's status and commands.",
+    ].join("\n"));
   }
 
   /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */

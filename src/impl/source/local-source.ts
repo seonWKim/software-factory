@@ -73,8 +73,14 @@ function identity(actor: string): ExternalIdentity {
 function toEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
   const text = typeof c.args.text === "string" ? c.args.text : "";
   const body = text === "" ? `/${c.command}` : `/${c.command} ${text}`;
-  const comment_id = c.key;
-  const who = identity(c.actor);
+  return commentEvent(body, source, c.key, identity(c.actor));
+}
+
+/**
+ * One comment, as typed, as the event GitHub gives for it: a command event, `unknown_command`, or a
+ * `plain_comment` (`/link` included). Shared with the slack source's typed commands and buttons.
+ */
+export function commentEvent(body: string, source: SourceRef, comment_id: string, who: ExternalIdentity): SourceEvent | null {
   const parsed = parseComment(body);
   if (parsed === null) return { kind: "plain_comment", source, comment_id, author: who, body };
   if (parsed.kind === "unknown") return { kind: "unknown_command", source, comment_id, requester: who, command: parsed.word };

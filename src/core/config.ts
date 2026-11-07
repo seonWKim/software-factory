@@ -202,6 +202,54 @@ export function coordinationProblems(raw: unknown): string[] {
   return problems;
 }
 
+/** Keys of the `slack` block of factory.config.json (docs/plugins/source-adapter.md, `slack`). */
+export const SLACK_KEYS = ["channels"] as const;
+
+/** The checked `slack` block: the channel IDs the slack source listens in. IDs only, never channel names. */
+export interface SlackConfig {
+  channels: readonly string[];
+}
+
+/** A Slack channel ID: `C…` (public) or `G…` (private), upper-case letters and digits. */
+const SLACK_CHANNEL_ID = /^[CG][A-Z0-9]{2,}$/;
+
+/**
+ * Why the `slack` block is invalid, checked at load whether or not the slack source is selected. Absent: no
+ * problem. Otherwise an object whose only key is `channels`, a non-empty list of distinct channel IDs.
+ */
+export function slackProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  const block = (raw as Record<string, unknown>).slack;
+  if (block === undefined) return [];
+  if (typeof block !== "object" || block === null || Array.isArray(block)) {
+    return ["slack must be an object with `channels`, a list of Slack channel IDs"];
+  }
+  const problems: string[] = [];
+  for (const key of Object.keys(block)) {
+    if (!(SLACK_KEYS as readonly string[]).includes(key)) {
+      problems.push(`unknown config key "${key}" at slack.${key}; valid slack keys: ${SLACK_KEYS.join(", ")}`);
+    }
+  }
+  const ch = (block as Record<string, unknown>).channels;
+  if (!Array.isArray(ch) || ch.length === 0 || !ch.every((c) => typeof c === "string" && SLACK_CHANNEL_ID.test(c))) {
+    problems.push("slack.channels must be a non-empty list of Slack channel IDs (e.g. \"C0123ABCD\"), never channel names");
+  } else if (new Set(ch).size !== ch.length) {
+    problems.push("slack.channels lists a channel twice; name each channel once");
+  }
+  return problems;
+}
+
+/** The checked `slack` block; throws when it is absent or invalid (the slack source cannot run without it). */
+export function slackConfig(raw: unknown): SlackConfig {
+  const problems = slackProblems(raw);
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  const block = (typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).slack : undefined) as
+    | { channels: string[] }
+    | undefined;
+  if (block === undefined) throw new Error("the slack source needs a `slack` block in factory.config.json with `channels`, a list of channel IDs");
+  return { channels: [...block.channels] };
+}
+
 /** The checked coordination settings; throws the first problem `coordinationProblems` finds. */
 export function coordinationConfig(raw: unknown): CoordinationSettings {
   const problems = coordinationProblems(raw);

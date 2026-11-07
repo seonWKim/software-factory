@@ -3,7 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
-import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
+import { COORDINATION_KEYS, coordinationProblems, slackProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
@@ -71,6 +71,7 @@ export const TOP_LEVEL_KEYS = [
   "openai_compatible",
   "path_companions",
   "cli_user",
+  "slack",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -204,6 +205,8 @@ export function checkConfigKeys(raw: unknown): void {
     ...coordinationProblems(raw),
     ...openaiCompatibleProblems(raw),
     ...pathCompanionProblems(raw),
+    // The slack block (docs/plugins/source-adapter.md, `slack`): channel IDs, and no other key.
+    ...slackProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }

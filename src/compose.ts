@@ -110,6 +110,8 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
+  /** The slack source's channel IDs (docs/plugins/source-adapter.md, `slack`). Checked by slackProblems. */
+  slack?: { channels?: unknown };
   /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
   inbox_retention_days?: number;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
@@ -401,8 +403,11 @@ export async function build(
   const sandbox = await p.sandbox();
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
+  // Beyond the typed source context: the secret store, scanner and clock a stream source such as `slack` reads
+  // its own tokens with, scans each post with and logs with (src/impl/source/slack.plugin.ts).
+  const sourceCtx = { ...base, github, store, secrets, scanner, clock };
   const sources = [];
-  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github, store }));
+  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, sourceCtx));
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
