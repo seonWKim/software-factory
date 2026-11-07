@@ -71,7 +71,8 @@ const USAGE = `factory [--config <path>] <command>
   settings list | set <key> <value> | reset <key> | history
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
-               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
+               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
+               alarm_repeat_count, alarm_window_minutes, alarm_restart_count. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
   ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
@@ -434,6 +435,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "retry":
     case "revise":
     case "reject":
+    case "resolve":
     case "users":
       return localCli(loaded, cmd, args);
     case "improve": {
@@ -477,7 +479,7 @@ async function cliEnvironment(root: string): Promise<CliEnvironment> {
 }
 
 /**
- * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
+ * `factory task …` and `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200): the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
  */
 async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], args: string[]): Promise<number> {

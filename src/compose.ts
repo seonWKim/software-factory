@@ -5,7 +5,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
   coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
@@ -20,7 +20,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
@@ -37,7 +37,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -118,6 +118,10 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The alarm step's thresholds (design 05-alarms). Settable live. Absent: 3, 60 and 5 (ALARM_DEFAULTS). */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
   /** The gate hooks' Stop hook (design §4): the most times it sends an implement run's agent back. Absent: 3. */
   agent_stop_checks?: number;
   lease_ms: number;
@@ -292,23 +296,25 @@ export interface Loaded {
 
 /** The placeholder in prompts/*.md that names the project's pre-push checks. */
 export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+/** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
+export const FORGE_PLACEHOLDER = "{{forge}}";
 
 /** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
 export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
- * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; and with a `toolchain`
- * block, one sentence saying those checks run offline from the read-only caches. No block: the toolchain
- * placeholder is removed, so the text is what it was before the block existed.
+ * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
+ * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
+ * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"], toolchain?: ToolchainConfig): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
   const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
   const offline = toolchain
     ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
     : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(TOOLCHAIN_PLACEHOLDER).join(offline);
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -413,6 +419,7 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     workers,
@@ -442,7 +449,7 @@ export async function loadConfig(
   // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
   const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
   if (toolchain) config.toolchain = toolchain;
-  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, config.toolchain);
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local", config.toolchain);
   const prompts: Prompts = {
     triage: await readPrompt("triage"),
     implement: await readPrompt("implement"),
@@ -723,6 +730,8 @@ export async function build(
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
+    restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
     github_budget: () => github.status(),
   });
@@ -1077,6 +1086,30 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/**
+ * The restart list of the supervisor status file (design 05-alarms). No file (not supervised, or the `none`
+ * updater), one that does not parse, or one from before the list existed: none.
+ */
+export async function readRestarts(file: string): Promise<ChildRestart[]> {
+  try {
+    const status = JSON.parse(await readFile(file, "utf8")) as Partial<SupervisorStatus>;
+    return Array.isArray(status.restarts) ? status.restarts : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The alarm keys (design 05-alarms) with their defaults (ALARM_DEFAULTS): positive integers, or startup fails. */
+export function alarmConfig(
+  file: Pick<FileConfig, "alarm_repeat_count" | "alarm_window_minutes" | "alarm_restart_count">,
+): { alarm_repeat_count: number; alarm_window_minutes: number; alarm_restart_count: number } {
+  return {
+    alarm_repeat_count: positiveInteger("alarm_repeat_count", file.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count),
+    alarm_window_minutes: positiveInteger("alarm_window_minutes", file.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes),
+    alarm_restart_count: positiveInteger("alarm_restart_count", file.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count),
+  };
 }
 
 /** `agent_stop_checks` (design §4 Pre-push gates): absent means 3, otherwise a positive integer or startup fails. */

@@ -129,6 +129,26 @@ export interface NewRun {
   input?: RunInput | null;
 }
 
+/** The patterns the alarm step looks for across items (design 05-alarms). */
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts";
+
+/** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
+export interface NewAlert {
+  pattern: AlertPattern;
+  /** The dedupe key: the pattern and a hash of its code and normalized detail, never the detail itself. */
+  pattern_key: string;
+  error_code: string;
+  /** Runs (or restarts) that matched. */
+  count: number;
+  /** Egress-scanned before it is stored; null when the scanner flagged it (the code and count stay). */
+  detail: string | null;
+}
+
+export interface Alert extends NewAlert {
+  id: string;
+  created_at: Timestamp;
+}
+
 /** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
 export interface NewImproveReport extends ImproveWindow {
   run_id: RunId;
@@ -740,6 +760,17 @@ export interface FactoryStore {
    * `work_item_id`: only sleeps recorded during one of that item's runs. Read-only.
    */
   listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]>;
+
+  // Alerts (design 05-alarms): one row per pattern the alarm step saw, at most one per pattern per dedupe window.
+
+  /**
+   * Stores `alert` unless its pattern already alerted within `dedupe_ms` of the store clock's now. One
+   * transaction with a conditional write on the pattern's row, so replicas recording one pattern at once store
+   * one alert; the one that did gets `created: true`.
+   */
+  recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
+  /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
+  listAlerts(opts: { limit: number }): Promise<Alert[]>;
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 

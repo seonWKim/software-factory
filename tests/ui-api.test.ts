@@ -351,6 +351,44 @@ describe("ui api: items", () => {
   });
 });
 
+describe("ui api: item thread (issue #286)", () => {
+  it("item detail returns the thread from the store, oldest first: seq, time, kind, author ID or unknown, channel, anchor, withheld body", async () => {
+    const { d, store, clock, items } = await seeded();
+    const it = items.secretive;
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:spec:1 -->", body: "## Spec\n\nthe spec" });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "github:77", body: `a comment with ${SECRET}` });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:refused:app-3 -->", body: "`/approve` was not applied" });
+    await store.recordItemMessage({ work_item_id: items.approve.id, marker: "<!-- factory:spec:2 -->", body: "another item's" });
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    const listed = await store.listItemMessages(it.id);
+    expect(body.thread).toEqual(listed.map((m, i) => ({
+      seq: m.seq,
+      at: m.created_at,
+      kind: ["spec", "comment", "refused"][i],
+      author: i === 1 ? "unknown" : "factory",
+      channel: "github_issue",
+      anchor: `msg-${m.seq}`,
+      body: i === 1 ? "[withheld: github_token]" : m.body,
+    })));
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    // An item with no entries has an empty thread.
+    expect((await json<{ thread: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).thread).toEqual([]);
+  });
+
+  it("each Needs-you row's need has the anchor of the item's newest factory entry; null when it has none", async () => {
+    const { d, store, items } = await seeded();
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:needs-human:1 -->", body: "first why" });
+    const why = (await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:failed:2 -->", body: "second why" })).message;
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "github:5", body: "a later comment" });
+    const needs = await json<{ items: { id: string; need: { anchor: string | null } }[] }>(d, "/api/v1/items?state=needs");
+    const anchors = Object.fromEntries(needs.items.map((i) => [i.id, i.need.anchor]));
+    expect(anchors[items.secretive.id]).toBe(`msg-${why.seq}`);
+    expect(anchors[items.approve.id]).toBeNull();
+  });
+});
+
 describe("ui api: runs, queue, workers, overview, health", () => {
   it("/runs lists running then queued runs with owner, heartbeat, start and lease expiry, and no fencing token", async () => {
     const { d, items, claimed } = await seeded();

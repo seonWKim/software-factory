@@ -161,18 +161,18 @@ describe("prompts name the offline check command", () => {
   it.each(["implement", "review", "resolve"])("prompts/%s.md: the checks from check_commands, said to run offline from the caches", (name) => {
     const text = readFileSync(join(REPO_ROOT, "prompts", `${name}.md`), "utf8");
     expect(text).toContain(TOOLCHAIN_PLACEHOLDER);
-    const out = fillPrompt(text, repo({ check_commands: [["./gradlew", "--offline", "test"]] }), tc);
+    const out = fillPrompt(text, repo({ check_commands: [["./gradlew", "--offline", "test"]] }), "local", tc);
     expect(out).toMatch(/`\.\/gradlew --offline test`\. They run offline: there is no network, and the toolchain caches \(`\/home\/u\/\.gradle\/caches`\) are read-only/);
     expect(out).not.toContain("{{");
     // The test_command fallback.
-    expect(fillPrompt(text, repo(), tc)).toMatch(/`make unit`\. They run offline/);
+    expect(fillPrompt(text, repo(), "local", tc)).toMatch(/`make unit`\. They run offline/);
   });
 
   it.each(["implement", "review", "resolve"])("prompts/%s.md without a toolchain block: the text before the placeholder existed", (name) => {
     const text = readFileSync(join(REPO_ROOT, "prompts", `${name}.md`), "utf8");
     const before = text.split(TOOLCHAIN_PLACEHOLDER).join("");
-    expect(fillPrompt(text, repo())).toBe(fillPrompt(before, repo()));
-    expect(fillPrompt(text, repo())).not.toMatch(/offline|toolchain/);
+    expect(fillPrompt(text, repo(), "local")).toBe(fillPrompt(before, repo(), "local"));
+    expect(fillPrompt(text, repo(), "local")).not.toMatch(/offline|toolchain/);
   });
 
   it("loadConfig fills them from the block, and leaves them as before without it", async () => {

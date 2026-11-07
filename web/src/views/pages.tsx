@@ -15,6 +15,7 @@ import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { SystemActions } from "./system-banner.js";
+import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
 
@@ -332,7 +333,7 @@ export function ItemsPage() {
   );
 }
 
-/** One work item: its state, command buttons, runs (with errors) and timeline. */
+/** One work item: its state, command buttons, thread, runs (with errors) and timeline. */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
@@ -382,6 +383,7 @@ export function ItemPage({ id }: { id: string }) {
         ))}
       </dl>
       <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
+      <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
         <Section title="Merge check">

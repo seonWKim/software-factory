@@ -139,6 +139,14 @@ export interface LoadedConfig {
   /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
   probe_interval_ms?: number;
   /**
+   * The alarm step (design 05-alarms): matching runs on distinct items (and zero-token agent runs in a row) that
+   * raise an alert, the minutes they are counted over, and the child restarts within 30 minutes that raise one.
+   * Settable live. Absent: ALARM_DEFAULTS.
+   */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
+  /**
    * The most times the gate hooks' Stop hook sends an implement run's agent back in one run (design §4, issue
    * #302); the next stop is allowed. A positive integer. Absent: AGENT_STOP_CHECKS_DEFAULT (3).
    */
@@ -215,6 +223,8 @@ export function toolchainCacheOverlaps(
   );
 }
 
+/** The alarm keys when factory.config.json gives none (design 05-alarms). */
+export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
 /** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
 export const AGENT_STOP_CHECKS_DEFAULT = 3;
 

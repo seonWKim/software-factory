@@ -148,6 +148,20 @@ export interface SupervisorStatus {
   pending?: string[];
   /** The supervisor's own pid, so `npm run migrate` can tell a live supervisor from a stale file. */
   supervisor_pid?: number;
+  /**
+   * The last RESTART_HISTORY unexpected child exits this supervisor restarts from, oldest first (design
+   * 05-alarms: the alarm step counts them). Absent on files from before it existed and from the `none` updater.
+   */
+  restarts?: ChildRestart[];
 }
+
+/** One unexpected child exit: when (ISO time) and why (the child's error, else its exit code). */
+export interface ChildRestart {
+  at: string;
+  reason: string;
+}
+
+/** Restarts the status file keeps. */
+export const RESTART_HISTORY = 10;
 
 export const SUPERVISOR_STATUS_FILE = "supervisor.json";

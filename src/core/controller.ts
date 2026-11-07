@@ -12,7 +12,8 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { alarmStep } from "./alarms.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
   type DependencyVerdict,
@@ -103,6 +104,7 @@ import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
+import type { ChildRestart } from "../interfaces/updater.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -195,6 +197,11 @@ export interface ControllerDeps {
    */
   sandbox?: Sandbox;
   /**
+   * The supervisor's restart list on this host (design 05-alarms), read by the alarm step each poll. Absent: no
+   * restart alarm (in-place or none updater, or a test).
+   */
+  restarts?: () => Promise<readonly ChildRestart[]>;
+  /**
    * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
    */
@@ -272,6 +279,8 @@ const FLOOR_TIER = "floor_tier";
  * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
  */
 const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
+/** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
+const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -432,6 +441,8 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
+      // Store reads and the restart list, on the poll interval like the steps it looks across (design 05-alarms).
+      if (due) await this.guard("alarms", () => this.alarmsStep());
       // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
       await this.guard("commands", () => this.commandsStep());
       await this.guard("runs", () => this.runsStep());
@@ -813,6 +824,26 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One alarm step (design 05-alarms) with the settings as of this tick. */
+  async tickAlarms(): Promise<void> {
+    await this.live.refresh();
+    await this.alarmsStep();
+  }
+
+  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  private async alarmsStep(): Promise<void> {
+    const c = this.cfg;
+    await alarmStep(
+      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      {
+        alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
+        alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
+        alarm_restart_count: c.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
+        probe_interval_ms: c.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      },
+    );
   }
 
   /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
@@ -2789,12 +2820,14 @@ export class Controller {
             case "conflict":
               return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
             case "tests_failed":
-              return {
-                patch: { blocked_reason: CONFLICT_PENDING },
-                actor: SYSTEM,
-                reason: "update_tests_failed",
-                ack_run: run.id,
-              };
+              // The worker's PR comment names the failure; this one offers the command that applies now.
+              await this.prComment(it, `update-tests-failed:${run.id}`, [
+                `The base branch merged cleanly into PR #${it.pr_number}, but the tests failed on the updated branch, so nothing was pushed.`,
+                "Comment `/resolve [notes]` to let an agent fix it, or fix it by hand.",
+                "",
+                footerAfter(it, CONFLICT_PATCH),
+              ].join("\n"));
+              return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_tests_failed", ack_run: run.id };
             default:
               return {
                 // No comment is posted for this one, so an older failure link must not stand in for it.
@@ -3135,8 +3168,10 @@ export class Controller {
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
+        "",
+        footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: { blocked_reason: CONFLICT_PENDING }, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
@@ -3188,13 +3223,15 @@ export class Controller {
       `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
+      "",
+      footerAfter(it, CONFLICT_PATCH),
     ].join("\n");
     // The detail is run output (G5): post it only if the scan passes, else the comment without it.
     const scan = await this.d.scanner.scan("comment", body(true));
     if (auto) await this.prComment(it, `run-failed:${run.id}`, body(scan.clean));
     else await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
     return {
-      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING },
+      patch: CONFLICT_PATCH,
       actor: SYSTEM,
       reason: "resolve_failed",
       detail: { run_id: run.id, error_code: code, ...(auto ? { base_sha: auto.base_sha, attempt: auto.attempt } : {}) },

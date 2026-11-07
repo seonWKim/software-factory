@@ -16,7 +16,7 @@ Every dependency points downward. Core code talks only to interfaces, never to a
 graph TB
   subgraph SURF["Surfaces"]
     direction LR
-    GH["GitHub: issues, PRs, reviews"]
+    GH["GitHub (forge and sync plugin, optional): issues, PRs, reviews"]
     SL["Slack (later)"]
     CLI["factory CLI"]
     UI["factory ui: read-only status page"]
@@ -56,6 +56,8 @@ graph TB
 
   SURF --> CORE --> IF --> IMPL
 ```
+
+**GitHub is a plugin, not core.** It is a forge plugin (`plugins.forge`: where a change is reviewed and merged) and a sync plugin (`plugins.source`: issues and comments copied to and from the store), like Slack and Jira. With no forge selected the factory runs local: intake, specs, gate commands, branches, review and merge all work from the store and the local repository, and the prompts name the forge as `local` (`{{forge}}`, filled at load). Core code never assumes a forge is there.
 
 | Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
 |---|---|---|

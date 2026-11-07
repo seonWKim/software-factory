@@ -626,4 +626,23 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS work_items_change ON work_items (project, change_ref);
   CREATE UNIQUE INDEX IF NOT EXISTS unreviewed_merges_change ON unreviewed_merges (project, change_ref);
   `,
+  // 36: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
+  // detail (NULL when the egress scanner flagged it). `alert_patterns`: one row per pattern, the time it last
+  // alerted; the conditional update on it is the 6-hour dedupe. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS alerts (
+    id           TEXT PRIMARY KEY,
+    pattern      TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    count        INTEGER NOT NULL,
+    detail       TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS alerts_created ON alerts (created_at);
+  CREATE TABLE IF NOT EXISTS alert_patterns (
+    pattern_key    TEXT PRIMARY KEY,
+    last_alert_at  TEXT NOT NULL
+  );
+  `,
 ];
