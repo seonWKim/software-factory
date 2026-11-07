@@ -148,6 +148,26 @@ describe("split spec flow", () => {
     expect(f.source.comments.some((c) => c.source.id === issueRef(70).id && c.body.includes("Closed because all 3 phases"))).toBe(true);
   });
 
+  it("a duplicate phase issue closed as not planned neither holds the next phase nor keeps the parent open", async () => {
+    const f = await setup();
+    const parent = await f.intake(74);
+    await f.finish("triage", f.triaged(bigSpec(2)));
+    await f.approve(issueRef(74));
+    const subs = f.source.subIssues;
+    // A second, racing approval filed phase 2 again: linked to the parent, but not in its recorded sub_issues.
+    const dup = issueRef(9074);
+    await f.store.createWorkItem(
+      { source: dup, title: "Phase 2/2: Part 2", requester_id: parent.requester_id, project: parent.project, problem: "p", resources: [], parent: { id: parent.id, phase: 2 } },
+      { kind: "user", id: parent.requester_id },
+    );
+    await f.closeSource(dup, "not_planned");
+    await f.closeSource(subs[0]!.ref, "completed");
+    const p2 = await f.bySource(subs[1]!.ref);
+    expect(p2).toMatchObject({ stage: "NEW", blocked_on: "none" });
+    await f.closeSource(subs[1]!.ref, "completed");
+    expect(await f.get(parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+  });
+
   it("a small estimate gives a normal spec and /approve files no sub-issues", async () => {
     const f = await setup();
     const item = await f.intake(71);

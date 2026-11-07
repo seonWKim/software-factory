@@ -1,5 +1,7 @@
 # 4. Agents: split specs
 
+**Only recorded phases count (decision changed 2026-11-07).** Releasing the next phase and closing the parent read only the phases its approval recorded (`sub_issues` of the last `split_approved`). A duplicate sub-issue linked to the same parent, filed by a racing approval and closed by hand, neither holds the next phase nor keeps the parent open.
+
 **Phase issues read first (decision changed 2026-11-07, issue #229).** A phase issue's title is `Phase N/M: <title>`, and a leading "Phase N:" (or "Phase N/M:") the model already wrote is dropped, so it never repeats. Its body opens with `## In short` (the phase number and the first sentence of its problem), then `Part of #<parent>` and the phase it waits for as `#<n>`, then Problem, Done when and Allowed paths. A factory close posts one line that starts with "Closed because" (a rejected spec, a budget-checkpoint `/reject`, all phases of a split done).
 
 **Split specs.** Four decisions changed:
@@ -14,6 +16,8 @@ Store: one migration, SQLite 13 and MySQL step 13 (`work-item-phases`): `work_it
 The size checkpoint now suggests a split: after `diff_too_large`, the comment adds "Suggested split", 2 to 4 phases built from the diff size (the counts in the size gate's detail) and the item's allowed paths, grouped by folder, never the code. It is computed in the controller (`suggestSplit` in `src/core/split.ts`), so it runs no agent and costs no tokens. The work item asked for a short triage-role step reading the changed paths; that needs the worker to put the changed paths in the failed outcome (and to run the step), and `src/core/worker.ts` and `src/core/diff-gate.ts` were outside this change's allowed paths. Until then the suggestion groups the item's allowed paths, the only paths the controller has. A reviewer can use the suggestion as the phases of a split spec through `/revise`. Not changed: the caps, floors, tiers, the human merge gate, Slack intake (GitHub only), splitting an item that is already running, and merging any phase automatically.
 
 ## History
+
+- **Only recorded phases count** (2026-11-07). Before: every work item linked to the parent counted, so a duplicate phase closed as not planned kept the parent open forever (#172 and #252 got duplicate phases from two approvals racing).
 
 - **Phase issues** (2026-11-07, issue #229). Before: the title could read "Phase 2/4: Phase 2: …", and the body opened with "Phase N of M of owner/repo#163 (https://…)" and had no In short.
 

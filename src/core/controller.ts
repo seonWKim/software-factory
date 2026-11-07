@@ -1509,7 +1509,7 @@ export class Controller {
     }
     const parentId = it.parent_id;
     const phase = it.phase;
-    const prev = phase > 1 ? (await this.d.store.listPhases(parentId)).find((p) => p.phase === phase - 1) : null;
+    const prev = phase > 1 ? (await this.recordedPhases(parentId)).find((p) => p.phase === phase - 1) : null;
     if (phase > 1 && !completed(prev)) return;
     await this.decide(id, (cur) =>
       phaseHeld(cur)
@@ -1524,6 +1524,18 @@ export class Controller {
     );
   }
 
+  /**
+   * The parent's phases, only those its approval recorded (`sub_issues` of its last split_approved). Another
+   * work item linked to the parent (a duplicate sub-issue a racing approval filed, then closed by hand) neither
+   * holds the next phase nor keeps the parent open. With no recorded list, every linked phase counts.
+   */
+  private async recordedPhases(parentId: WorkItemId): Promise<WorkItem[]> {
+    const phases = await this.d.store.listPhases(parentId);
+    const approved = (await this.d.store.listStateChanges(parentId)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
+    const ids = parseSubIssues(approved?.detail);
+    return ids ? phases.filter((p) => ids.includes(p.source.id)) : phases;
+  }
+
   private async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !splitOpen(it)) return;
@@ -1531,7 +1543,7 @@ export class Controller {
     const approved = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
     const ids = parseSubIssues(approved?.detail);
     if (!ids) return;
-    const phases = await this.d.store.listPhases(id);
+    const phases = await this.recordedPhases(id);
     if (phases.length < ids.length || !phases.every(completed)) return;
     const adapter = this.adapterFor(it.source, "closeIssue");
     if (!adapter) return;
