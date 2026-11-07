@@ -3,13 +3,15 @@
 // Everything goes through respond(), the server's whole request handling without a socket.
 
 import { describe, expect, it } from "vitest";
-import type { Timestamp, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import { commandState, commandsFor } from "../src/core/commands.js";
+import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
+import { newCsrfToken } from "../src/ui/settings-api.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -532,5 +534,236 @@ describe("ui api: plugins, issue and PR links (issue #240)", () => {
     const row = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
     expect(row.pr_number).toBe(42);
     expect(row.pr_url).toBeNull();
+  });
+});
+
+describe("ui api: item commands POST (issue #227)", () => {
+  const HOST = "127.0.0.1:4310";
+  const ORIGIN = "http://127.0.0.1:4310";
+  const ACTOR = "github:7" as UserId;
+  const TOKEN = newCsrfToken();
+
+  async function setup(actor: UserId | null = ACTOR) {
+    const s = await seeded();
+    s.d.commands = { actor, token: TOKEN };
+    return s;
+  }
+
+  interface PostOpts {
+    path?: string; host?: string; origin?: string | null; contentType?: string | null; token?: string | null; raw?: string; bodyTooLarge?: boolean;
+  }
+
+  function post(d: UiDeps, id: string, body: unknown, o: PostOpts = {}): Promise<UiResponse> {
+    return respond(d, {
+      method: "POST",
+      url: o.path ?? `/api/v1/items/${encodeURIComponent(id)}/commands`,
+      host: o.host ?? HOST,
+      origin: o.origin === null ? undefined : (o.origin ?? ORIGIN),
+      contentType: o.contentType === null ? undefined : (o.contentType ?? "application/json"),
+      csrfToken: o.token === null ? undefined : (o.token ?? TOKEN),
+      body: o.raw ?? JSON.stringify(body),
+      ...(o.bodyTooLarge ? { bodyTooLarge: true } : {}),
+    });
+  }
+
+  async function nothingWritten(store: FactoryStore) {
+    expect(await store.listPendingAppCommandRequests(1000)).toEqual([]);
+  }
+
+  async function refused(r: UiResponse, status: number, what: string) {
+    expect(r.status, what).toBe(status);
+    expect(r.headers["content-type"], what).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(r.body), what).toHaveProperty("error");
+  }
+
+  it("a valid request answers 202 with a request ID and writes one row for that item, acting as ui.user_id", async () => {
+    const { d, store, items } = await setup();
+    const r = await post(d, items.approve.id, { command: "approve", note: "  keep it small  " });
+    expect(r.status).toBe(202);
+    const got = JSON.parse(r.body) as { request_id: string; seq: number };
+    expect(typeof got.request_id).toBe("string");
+    expect(got.request_id).not.toBe("");
+    const rows = await store.listPendingAppCommandRequests(1000);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      key: got.request_id, seq: got.seq, actor: ACTOR, command: "approve", args: { work_item_id: items.approve.id, note: "keep it small" },
+    });
+    // localhost with its own origin is accepted too; a note is optional on approve.
+    const r2 = await post(d, items.approve.id, { command: "approve" }, { host: "localhost:4310", origin: "http://localhost:4310" });
+    expect(r2.status).toBe(202);
+    const keys = (await store.listAppCommandRequestsForItem(items.approve.id, 10)).map((x) => x.key);
+    expect(keys).toEqual([got.request_id, (JSON.parse(r2.body) as { request_id: string }).request_id]);
+    expect((await store.getAppCommandRequest((JSON.parse(r2.body) as { seq: number }).seq))!.args).toEqual({ work_item_id: items.approve.id });
+  });
+
+  it("a missing or wrong token is a 403 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const token of [null, "", "nope", newCsrfToken(), `${TOKEN}x`]) {
+      await refused(await post(d, items.approve.id, { command: "approve" }, { token }), 403, String(token));
+    }
+    await nothingWritten(store);
+  });
+
+  it("a foreign Host is a 403 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const host of ["evil.example", "127.0.0.1.evil.example", "localhost.evil:4310", ""]) {
+      await refused(await post(d, items.approve.id, { command: "approve" }, { host, origin: `http://${host}` }), 403, host);
+    }
+    await nothingWritten(store);
+  });
+
+  it("an Origin that is missing or not this server's own is a 403 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const origin of [null, "", "null", "http://evil.example", "https://127.0.0.1:4310", "http://127.0.0.1:4311", "http://localhost:4310", "http://127.0.0.1"]) {
+      await refused(await post(d, items.approve.id, { command: "approve" }, { origin }), 403, String(origin));
+    }
+    await nothingWritten(store);
+  });
+
+  it("without ui.user_id (or without the route wired) a POST is a 503 and writes nothing", async () => {
+    const { d, store, items } = await setup(null);
+    await refused(await post(d, items.approve.id, { command: "approve" }), 503, "no user_id");
+    expect(JSON.parse((await post(d, items.approve.id, { command: "approve" })).body).error).toContain("ui.user_id");
+    const { commands: _, ...unwired } = d;
+    await refused(await post(unwired, items.approve.id, { command: "approve" }), 503, "unwired");
+    await nothingWritten(store);
+  });
+
+  it("a Content-Type other than application/json is a 415 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const contentType of [null, "", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data", "application/jsonx"]) {
+      await refused(await post(d, items.approve.id, { command: "approve" }, { contentType }), 415, String(contentType));
+    }
+    expect((await post(d, items.approve.id, { command: "approve" }, { contentType: "Application/JSON; charset=utf-8" })).status).toBe(202);
+  });
+
+  it("an unknown command, help and link included, is a 400 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const command of ["help", "link", "nope", "", "APPROVE", "/approve", 1, null, undefined]) {
+      await refused(await post(d, items.approve.id, { command, note: "x" }), 400, String(command));
+    }
+    for (const body of [[], "approve", 1, null, { command: "approve", extra: 1 }, { command: "approve", note: 5 }]) {
+      await refused(await post(d, items.approve.id, body), 400, JSON.stringify(body));
+    }
+    await nothingWritten(store);
+  });
+
+  it("every other item command is accepted for the controller to answer", async () => {
+    const { d, store, items } = await setup();
+    for (const command of ["reject", "revise", "retry", "resolve", "budget", "verdict"]) {
+      expect((await post(d, items.approve.id, { command, note: "why" })).status, command).toBe(202);
+    }
+    expect((await store.listAppCommandRequestsForItem(items.approve.id, 50)).map((r) => r.command)).toEqual([
+      "reject", "revise", "retry", "resolve", "budget", "verdict",
+    ]);
+  });
+
+  it("reject or revise with no text is a 400 and writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const command of ["reject", "revise"]) {
+      for (const note of [undefined, "", "   \n "]) {
+        await refused(await post(d, items.approve.id, note === undefined ? { command } : { command, note }), 400, `${command} ${String(note)}`);
+      }
+    }
+    await nothingWritten(store);
+  });
+
+  it("a POST to any other path is a JSON 405; every GET is unchanged", async () => {
+    const { d, store, items } = await setup();
+    const before = new Map<string, string>();
+    for (const route of ROUTES) {
+      const path = route.replace("ITEM", items.done.id);
+      const r = await get(d, path);
+      before.set(path, `${r.status} ${route.includes("ITEM") ? "" : r.body}`);
+    }
+    const id = encodeURIComponent(items.approve.id);
+    for (const path of [
+      `/api/v1/items/${id}`, `/api/v1/items/${id}/commands/x`, `/api/v1/items/${id}/commandsx`, "/api/v1/items//commands", "/api/v1/session",
+      "/api/v1/overview", "/api/v1/nope", "/classic", "/", `/items/${id}`, "/app/", "/app/items/x", "/api/health",
+    ]) {
+      const r = await post(d, items.approve.id, { command: "approve" }, { path });
+      await refused(r, 405, path);
+      expect(r.headers.allow, path).toBe("GET, HEAD");
+    }
+    for (const method of ["PUT", "DELETE", "PATCH"]) {
+      const r = await respond(d, { method, url: `/api/v1/items/${id}/commands`, host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: TOKEN, body: "{}" });
+      expect(r.status, method).toBe(405);
+    }
+    await nothingWritten(store);
+    for (const route of ROUTES) {
+      const path = route.replace("ITEM", items.done.id);
+      const r = await get(d, path);
+      expect(`${r.status} ${route.includes("ITEM") ? "" : r.body}`, path).toBe(before.get(path));
+    }
+  });
+
+  it("a body that is not JSON is a 400; an unknown item id is a 404; a body over 16 KB is a 413; each writes nothing", async () => {
+    const { d, store, items } = await setup();
+    for (const raw of ["not json", "", "{", "{'command':'approve'}"]) await refused(await post(d, items.approve.id, null, { raw }), 400, raw);
+    for (const id of ["wi_nope", "%E0%A4%A"]) {
+      await refused(await post(d, id, { command: "approve" }, { path: `/api/v1/items/${id}/commands` }), 404, id);
+    }
+    await refused(await post(d, items.approve.id, { command: "approve" }, { bodyTooLarge: true }), 413, "flag");
+    const big = JSON.stringify({ command: "approve", note: "x".repeat(1000), pad: "y".repeat(16 * 1024) });
+    await refused(await post(d, items.approve.id, null, { raw: big }), 413, "long body");
+    await nothingWritten(store);
+  });
+
+  it("a note over 2000 characters on approve is a 400 and writes nothing; 2000 is accepted", async () => {
+    const { d, store, items } = await setup();
+    await refused(await post(d, items.approve.id, { command: "approve", note: "n".repeat(2001) }), 400, "2001");
+    await nothingWritten(store);
+    expect((await post(d, items.approve.id, { command: "approve", note: "n".repeat(2000) })).status).toBe(202);
+  });
+
+  it("GET /api/v1/session gives the token behind the Host guard; 404 when commands are not wired", async () => {
+    const { d } = await setup();
+    const s = await json<{ csrf_token: string; commands_enabled: boolean }>(d, "/api/v1/session");
+    expect(s).toMatchObject({ csrf_token: TOKEN, commands_enabled: true });
+    expect((await get(d, "/api/v1/session", { host: "evil.example" })).status).toBe(403);
+    expect((await get(d, "/api/v1/session", { host: "evil.example" })).body).not.toContain(TOKEN);
+    d.commands = { actor: null, token: TOKEN };
+    expect((await json<{ commands_enabled: boolean }>(d, "/api/v1/session")).commands_enabled).toBe(false);
+    const { commands: _, ...unwired } = d;
+    expect((await get(unwired, "/api/v1/session")).status).toBe(404);
+  });
+});
+
+describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227)", () => {
+  type Detail = { commands: { name: string; usage: string; description: string }[]; replies: Record<string, unknown>[] };
+
+  it("commands are the footer table's commands for the item's state, /help last, never /link", async () => {
+    const { d, store, items } = await seeded();
+    for (const it of Object.values(items)) {
+      const cur = (await store.getWorkItem(it.id))!;
+      const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+      const want = commandsFor(commandState(cur)).map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+      expect(body.commands, it.id).toEqual(want);
+      expect(body.commands.at(-1)!.name).toBe("help");
+      expect(body.commands.map((c) => c.name)).not.toContain("link");
+    }
+    const approve = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`);
+    expect(approve.commands.map((c) => c.name)).toContain("approve");
+    const done = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`);
+    expect(done.commands.map((c) => c.name)).not.toContain("approve");
+  });
+
+  it("replies are the item's stored requests with seq, command, times and the withheld refusal; never the note", async () => {
+    const { d, store, items, clock } = await seeded();
+    const note = "private note text";
+    const a = (await store.recordAppCommandRequest({ key: "a", actor: "github:7" as UserId, command: "approve", args: { work_item_id: items.approve.id, note } })).request;
+    const b = (await store.recordAppCommandRequest({ key: "b", actor: "github:7" as UserId, command: "retry", args: { work_item_id: items.approve.id } })).request;
+    await store.recordAppCommandRequest({ key: "c", actor: "github:7" as UserId, command: "approve", args: { work_item_id: items.merge.id } });
+    clock.advance(1000);
+    await store.markAppCommandRequest(b.seq, `\`retry\` was not applied: ${SECRET}.`);
+    const r = await get(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`);
+    expect(r.body).not.toContain(note);
+    expect(r.body).not.toContain(SECRET);
+    const body = JSON.parse(r.body) as Detail;
+    expect(body.replies).toEqual([
+      { seq: a.seq, command: "approve", created_at: a.created_at, handled_at: null, refusal: null },
+      { seq: b.seq, command: "retry", created_at: b.created_at, handled_at: clock.now().toISOString(), refusal: "[withheld: github_token]" },
+    ]);
+    expect((await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.queued.id)}`)).replies).toEqual([]);
   });
 });

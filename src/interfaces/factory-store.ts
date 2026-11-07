@@ -656,6 +656,11 @@ export interface FactoryStore {
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
   /** The request with `seq`, or null. Read-only. */
   getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /**
+   * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
+   * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
+   */
+  listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]>;
 
   // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
   // come from the database's own catalog, never from the caller: an unknown name is refused, not built into

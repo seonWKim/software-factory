@@ -62,7 +62,7 @@ const USAGE = `factory <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
-  ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
@@ -246,10 +246,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
+          commands: parts.commands,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (Settings is the only write; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();

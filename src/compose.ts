@@ -8,7 +8,7 @@ import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, ty
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProjectLabel } from "./core/project-labels.js";
-import type { Tier, VerdictSeverity } from "./core/types.js";
+import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { Controller } from "./core/controller.js";
@@ -34,6 +34,7 @@ import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
+import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -119,8 +120,11 @@ export interface FileConfig {
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
-  /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
-  ui?: { port?: number };
+  /**
+   * The status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. `user_id`: the factory
+   * user ID the page's commands act as (issue #227); absent, the page cannot send commands.
+   */
+  ui?: { port?: number; user_id?: string };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
   updater?: { auto_migrate?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
@@ -207,6 +211,7 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
+  uiUserId(file.ui);
   autoMigrate(file.updater);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
@@ -515,12 +520,25 @@ export function uiPort(ui: FileConfig["ui"]): number {
   return port;
 }
 
+/**
+ * `ui.user_id` from factory.config.json: absent means null (the page cannot send commands), otherwise a
+ * non-empty string (a factory user ID, never a display name) or startup fails naming the key.
+ */
+export function uiUserId(ui: FileConfig["ui"]): UserId | null {
+  const id: unknown = ui?.user_id;
+  if (id === undefined) return null;
+  if (typeof id !== "string" || id.trim() === "") throw new Error("ui.user_id must be a non-empty string (a factory user ID)");
+  return id.trim() as UserId;
+}
+
 export interface UiParts {
   clock: Clock;
   store: FactoryStore;
   scanner: EgressScanner;
   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
   settings: UiSettings;
+  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
+  commands: UiCommands;
   close(): Promise<void>;
 }
 
@@ -530,7 +548,8 @@ export interface UiParts {
  * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
- * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory.
+ * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
+ * commands route acts as `ui.user_id` (null: not configured) and takes the same token.
  */
 export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -541,14 +560,17 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
   await store.migrate();
   const scanner = await p.scanner(secrets);
   const { owner, name } = loaded.config.repo;
+  const token = newCsrfToken();
   const settings: UiSettings = {
     base: settingsBase(loaded),
     repo: { owner, name },
     actor: opts.actor,
     resolveProject: storeProjectResolver(store, { owner, name }),
-    csrfToken: newCsrfToken(),
+    csrfToken: token,
   };
-  return { clock, store, scanner, settings, close: () => store.close() };
+  // One token per process for both write routes; held only in memory, never written to a file, the store or a log.
+  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
+  return { clock, store, scanner, settings, commands, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
