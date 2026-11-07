@@ -298,4 +298,20 @@ export const MIGRATIONS: readonly string[] = [
     at           TEXT NOT NULL
   );
   `,
+  // 18: worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
+  // `<host>:<pid>`, replaced each tick and deleted on a clean stop. Readers skip rows older than lease_ms.
+  `
+  CREATE TABLE worker_processes (
+    process_id   TEXT PRIMARY KEY,
+    pid          INTEGER NOT NULL,
+    host         TEXT NOT NULL,
+    slots        INTEGER NOT NULL,
+    max_slots    INTEGER NOT NULL,
+    busy         INTEGER NOT NULL,
+    index_base   INTEGER NOT NULL,
+    started_at   TEXT NOT NULL,
+    reported_at  TEXT NOT NULL
+  );
+  CREATE INDEX worker_processes_reported ON worker_processes (reported_at);
+  `,
 ];

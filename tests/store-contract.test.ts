@@ -1,6 +1,14 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
-import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
@@ -1395,5 +1403,86 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       for (const v of ["1", "2", "3"]) await store.setSettingOverride({ key: "workers", project: "", value: v, actor });
       expect((await store.listSettingChanges(2)).map((c) => c.new_value)).toEqual(["3", "2"]);
     });
+  });
+
+  describe("worker processes (migration 18)", () => {
+    const report = (over: Partial<WorkerProcessReport> = {}): WorkerProcessReport => ({
+      process_id: "host-a:42", pid: 42, host: "host-a", slots: 2, max_slots: 4, busy: 1, index_base: 0,
+      started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ...over,
+    });
+
+    it("a report is stored with reported_at = now; a repeat write for the same process replaces the row", async () => {
+      const { store, clock } = await make();
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([]);
+      const first = await store.reportWorkerProcess(report());
+      expect(first).toEqual({ ...report(), reported_at: clock.now().toISOString() });
+      clock.advance(1000);
+      await store.reportWorkerProcess(report({ slots: 3, busy: 3 }));
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([{ ...report({ slots: 3, busy: 3 }), reported_at: clock.now().toISOString() }]);
+    });
+
+    it("lists one row per process, by host then pid; a row older than max_age_ms is not listed", async () => {
+      const { store, clock } = await make();
+      await store.reportWorkerProcess(report({ process_id: "host-b:7", host: "host-b", pid: 7 }));
+      clock.advance(LEASE / 2);
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      await store.reportWorkerProcess(report());
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42", "host-b:7"]);
+      clock.advance(LEASE / 2);
+      // host-b:7 is exactly LEASE old: still live.
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(3);
+      clock.advance(1);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42"]);
+    });
+
+    it("remove deletes only that process's row; removing again reports false", async () => {
+      const { store } = await make();
+      await store.reportWorkerProcess(report());
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(true);
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(false);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9"]);
+    });
+
+    it("concurrent first writes for one process leave one row", async () => {
+      const { store } = await make();
+      await Promise.all([store.reportWorkerProcess(report({ busy: 0 })), store.reportWorkerProcess(report({ busy: 2 }))]);
+      const rows = await store.listWorkerProcesses(LEASE);
+      expect(rows).toHaveLength(1);
+      expect([0, 2]).toContain(rows[0]!.busy);
+    });
+  });
+});
+
+describe("migration 18 on an existing SQLite database", () => {
+  it("adds worker_processes and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig18-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 17; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)").run(
+      "workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z",
+    );
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+      expect(await store.getCursor("poll")).toBe("c1");
+      await store.reportWorkerProcess({
+        process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+      });
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
   });
 });

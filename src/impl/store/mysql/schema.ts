@@ -193,3 +193,28 @@ export const BASELINE: readonly (readonly string[])[] = [
   // 11: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
   ["ALTER TABLE runs ADD COLUMN input MEDIUMTEXT NULL"],
 ];
+
+/**
+ * Step 18, worker processes (design §5 Coordination, 2026-11-07): the same table as SQLite migration 18. Kept
+ * here, outside BASELINE (which stays frozen), for `npm run migrate` to run as `0018-worker-processes.sql`:
+ * listing it in INLINE_STEPS (migrations.ts), or moving it into that file, wires it in. IF NOT EXISTS: MySQL
+ * DDL commits on its own, so a rerun after a failure midway must not trip on the table.
+ */
+export const WORKER_PROCESSES_STEP = {
+  number: 18,
+  name: "worker-processes",
+  sql: [
+    "CREATE TABLE IF NOT EXISTS worker_processes (",
+    "  process_id   VARCHAR(255) NOT NULL PRIMARY KEY,",
+    "  pid          INT NOT NULL,",
+    "  host         VARCHAR(255) NOT NULL,",
+    "  slots        INT NOT NULL,",
+    "  max_slots    INT NOT NULL,",
+    "  busy         INT NOT NULL,",
+    "  index_base   INT NOT NULL,",
+    "  started_at   CHAR(24) NOT NULL,",
+    "  reported_at  CHAR(24) NOT NULL,",
+    "  KEY worker_processes_reported (reported_at)",
+    `) ${TABLE};`,
+  ].join("\n"),
+} as const;
