@@ -72,18 +72,59 @@ export interface ImplementOutput {
   /** Where the change differs from the spec on purpose, one entry each. [] when absent. */
   deviations: string[];
   needs_human?: NeedsHuman;
+  /**
+   * A done criterion that cannot be met inside the spec (issue #222): a file outside the allowed paths, a
+   * criterion against a repo rule. Non-empty: the run fails with this reason, nothing is pushed, and the
+   * controller starts a spec revision. Absent when the agent left it out or returned "".
+   */
+  spec_conflict?: string;
 }
 
 /** Entries kept per `missing` / `deviations` list, and characters per entry. */
 export const PR_NOTE_MAX_ITEMS = 10;
 export const PR_NOTE_MAX_CHARS = 300;
 
+/** The error code of an implement run whose agent returned a `spec_conflict`; its detail is the reason. */
+export const SPEC_CONFLICT = "spec_conflict";
+
+/** The longest `spec_conflict` reason the validator accepts: what a failed run's detail keeps. */
+export const SPEC_CONFLICT_MAX_CHARS = 500;
+
+/**
+ * One reviewer finding (issue #222): `code` is a defect the implementer can fix inside the spec; `spec` is one
+ * that needs the spec changed (a needed file outside the allowed paths, a criterion against a repo rule).
+ */
+export interface ReviewFinding {
+  kind: "code" | "spec";
+  text: string;
+}
+
 export interface ReviewOutput {
   verdict: "pass" | "bug";
   tier: Tier;
-  findings: string[];
+  findings: ReviewFinding[];
+  /**
+   * Checks the reviewer could not run (e.g. the tests in its sandbox). Never a finding. Left out when empty, so
+   * an older review parses to the same value; read it with `unverifiedOf`.
+   */
+  unverified?: string[];
   summary: string;
   needs_human?: NeedsHuman;
+}
+
+/** The review's unverified checks; [] when it has none. */
+export function unverifiedOf(r: Pick<ReviewOutput, "unverified">): string[] {
+  return r.unverified ?? [];
+}
+
+/** The findings that need the spec changed. */
+export function specFindings(r: Pick<ReviewOutput, "findings">): ReviewFinding[] {
+  return r.findings.filter((f) => f.kind === "spec");
+}
+
+/** A finding as one line of text: a spec finding says so. */
+export function findingLine(f: ReviewFinding): string {
+  return f.kind === "spec" ? `(spec) ${f.text}` : f.text;
 }
 
 const tierSchema = { type: "integer", minimum: 1, maximum: 5 };
@@ -173,6 +214,13 @@ export const IMPLEMENT_SCHEMA = {
       description: "Where the change differs from the spec on purpose. Empty or absent when it does not.",
     },
     needs_human: NEEDS_HUMAN_SCHEMA,
+    spec_conflict: {
+      type: "string",
+      maxLength: SPEC_CONFLICT_MAX_CHARS,
+      description:
+        "Only when a done criterion cannot be met inside the spec (it needs a file outside the allowed paths, or it conflicts with a repo rule): " +
+        "the criterion and why, in plain text. Nothing is pushed and the spec is revised. Empty or absent otherwise.",
+    },
   },
 };
 
@@ -183,7 +231,19 @@ export const REVIEW_SCHEMA = {
   properties: {
     verdict: { enum: ["pass", "bug"] },
     tier: tierSchema,
-    findings: strings,
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["kind", "text"],
+        properties: {
+          kind: { enum: ["code", "spec"], description: "code: fixable inside the spec. spec: needs the spec changed." },
+          text: { type: "string" },
+        },
+      },
+    },
+    unverified: { ...strings, description: "Checks you could not run or confirm. Never makes the verdict bug." },
     summary: { type: "string" },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
@@ -297,9 +357,12 @@ export function parseImplement(v: unknown): Validation<ImplementOutput> {
   if (!ask.ok) return ask;
   const notes = (x: unknown) => x === undefined || (isStrs(x) && x.length <= PR_NOTE_MAX_ITEMS && x.every((e) => e.length <= PR_NOTE_MAX_CHARS));
   if (!notes(v.missing) || !notes(v.deviations)) return { ok: false, error: "missing/deviations" };
+  const conflict = v.spec_conflict ?? "";
+  if (!isStr(conflict) || conflict.length > SPEC_CONFLICT_MAX_CHARS) return { ok: false, error: "spec_conflict" };
   const lists = {
     missing: ((v.missing as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
     deviations: ((v.deviations as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
+    ...(conflict.trim() ? { spec_conflict: conflict.trim() } : {}),
   };
   if (ask.value) {
     const optional = (x: unknown) => x === undefined || isStr(x);
@@ -317,8 +380,22 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   if (!isObj(v)) return { ok: false, error: "not an object" };
   const { verdict, tier, findings, summary } = v;
   if (verdict !== "pass" && verdict !== "bug") return { ok: false, error: "verdict" };
-  if (!isTier(tier) || !isStrs(findings) || !isStr(summary)) return { ok: false, error: "tier/findings/summary" };
+  if (!isTier(tier) || !Array.isArray(findings) || !isStr(summary)) return { ok: false, error: "tier/findings/summary" };
+  const parsed: ReviewFinding[] = [];
+  for (const [i, f] of findings.entries()) {
+    // An older review's finding is a plain string: a code finding (issue #222).
+    if (isStr(f)) parsed.push({ kind: "code", text: f });
+    else if (isObj(f) && (f.kind === "code" || f.kind === "spec") && isStr(f.text)) parsed.push({ kind: f.kind, text: f.text });
+    else return { ok: false, error: `findings[${i}]: an object with kind "code" or "spec" and a text` };
+  }
+  const unverified = v.unverified ?? [];
+  if (!isStrs(unverified)) return { ok: false, error: "unverified" };
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
-  return { ok: true, value: { verdict, tier, findings, summary, ...(ask.value ? { needs_human: ask.value } : {}) } };
+  return {
+    ok: true,
+    value: {
+      verdict, tier, findings: parsed, summary, ...(unverified.length > 0 ? { unverified } : {}), ...(ask.value ? { needs_human: ask.value } : {}),
+    },
+  };
 }

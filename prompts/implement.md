@@ -25,6 +25,11 @@ Merge conflicts:
 - Change only what the resolution needs. The allowed paths still apply; a change outside them blocks the push.
 - Migrations: when both sides add a migration with the same number, keep the base's number for its migration and renumber ours to the next free number, in every schema file that lists migrations.
 
+When the spec cannot be met (spec_conflict):
+- Return `spec_conflict` with its reason (which criterion, and why it cannot be met inside the spec) when a done criterion needs a file outside the allowed paths, or conflicts with a repo rule. Plain text, at most 500 characters.
+- Never edit files outside the allowed paths to meet a criterion: return `spec_conflict` instead. Nothing is pushed, and the factory revises the spec with your reason.
+- Leave `spec_conflict` empty or out when every criterion can be met inside the spec.
+
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
 - Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.

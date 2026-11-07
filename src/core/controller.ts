@@ -24,7 +24,9 @@ import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, setting
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
-import { type NeedsHuman, type TriagePhase, parseNeedsHuman, parseReview, parseTriage } from "./outputs.js";
+import {
+  type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriagePhase, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings,
+} from "./outputs.js";
 import {
   AGENT_NEEDS_HUMAN,
   AUTO_RESOLVE_LIMIT,
@@ -1957,6 +1959,8 @@ export class Controller {
           };
         }
         case "review": {
+          // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
+          if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -1970,6 +1974,14 @@ export class Controller {
               ack_run: run.id,
             };
           }
+          const spec = specFindings(parsed.value);
+          if (parsed.value.verdict === "bug" || spec.length > 0) {
+            // Finding text becomes the next run's input or the spec feedback: scanned before anything is stored.
+            const scan = await this.d.scanner.scan("comment", parsed.value.findings.map((f) => f.text).join("\n"));
+            if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
+          }
+          // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
+          if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.cfg.max_loops) {
               const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -2070,6 +2082,13 @@ export class Controller {
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
+    // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
+    if (run.kind === "implement" && code === SPEC_CONFLICT) {
+      const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+      const scan = await this.d.scanner.scan("comment", reason);
+      if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), {}, "implement");
+      return this.specRevision(it, run, conflictFeedback(reason), {}, "implement");
+    }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
@@ -2080,6 +2099,84 @@ export class Controller {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * A spec revision the factory starts itself (issue #222): a review with a spec finding, or an implement run that
+   * returned `spec_conflict`. The same path as `/revise` after a failure: back to triage with the feedback under
+   * the next `:v<n>` key, revision_count + 1, restart_count + 1 so the implement run after the revised spec is
+   * approved gets a new key (it continues on the PR branch; the PR number is kept). loop_count is unchanged. At
+   * the revision limit (`max_loops`) no triage run starts: the item waits at the spec gate with `max_revisions`
+   * (restart_count + 1 there too, so `/approve` implements the current spec afresh) and one comment says so.
+   */
+  private async specRevision(
+    it: WorkItem,
+    run: Run,
+    feedback: string,
+    fields: { tier?: Tier; token_cost?: number },
+    from: "review" | "implement",
+  ): Promise<Decision> {
+    const limit = this.cfg.max_loops;
+    const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
+    const detail = { run_id: run.id, from };
+    const why = from === "review" ? "The review found that the spec needs a change" : "The implementer reported that the spec cannot be met as written";
+    if (it.revision_count >= limit) {
+      const patch = {
+        ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "max_revisions",
+        restart_count: it.restart_count + 1, failure_comment_url: null,
+      };
+      await this.comment(it, `max-revisions:${run.id}`, [
+        `${why}, but the spec was revised ${it.revision_count} times (limit \`max_loops\` = ${limit}), so the factory started no new triage run (\`max_revisions\`).`,
+        "",
+        "Reply `/approve` to implement the spec above as it is, or `/reject <reason>` to close.",
+        "",
+        footerAfter(it, patch),
+      ].join("\n"));
+      return { patch, actor: SYSTEM, reason: "max_revisions", detail, ack_run: run.id };
+    }
+    const n = it.revision_count + 1;
+    return {
+      patch: {
+        ...fields, stage: "NEW", blocked_on: "none", blocked_reason: null, revision_count: n, restart_count: it.restart_count + 1,
+        spec_feedback: kept, failure_comment_url: null,
+      },
+      actor: SYSTEM,
+      reason: from === "review" ? "review_spec_revision" : "spec_conflict_revision",
+      detail,
+      ack_run: run.id,
+      // The spec-gate revision key: differs from the intake key and from every earlier revision's key.
+      enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
+    };
+  }
+
+  /**
+   * Finding text or a spec_conflict reason the egress scan flagged (issue #222): nothing of it is stored. The item
+   * blocks on a human as a failed run of its kind (so `/retry` and `/revise` apply) and one comment names the rules.
+   */
+  private async leakBlock(
+    it: WorkItem,
+    run: Run,
+    rules: readonly string[],
+    fields: { tier?: Tier; token_cost?: number },
+    kind: "review" | "implement",
+  ): Promise<Decision> {
+    const names = [...new Set(rules)].map((r) => r.replace(/[^\w.:-]/g, "").slice(0, 60)).filter(Boolean);
+    const patch = { ...fields, blocked_on: "human" as const, blocked_reason: `run_failed:${kind}:egress_blocked` };
+    const what = kind === "review" ? "review findings" : "spec conflict the implementer reported";
+    const url = await this.comment(it, `leak-blocked:${run.id}`, [
+      `The ${what} were blocked by the leak scanner (${names.map((n) => `\`${n}\``).join(", ") || "a rule"}), so nothing of them was stored or posted.`,
+      "",
+      `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: "egress_blocked", rules: names.join(",") },
       ack_run: run.id,
     };
   }
@@ -3077,6 +3174,16 @@ const FAILURES: Record<string, string> = {
   git_failed: "a git command failed",
   cancelled: "the run was cancelled",
 };
+
+/** The spec feedback of a review with a spec finding: every finding, spec ones marked, then the summary. */
+function specFeedback(r: ReviewOutput): string {
+  return ["The factory reviewer found that the spec needs a change.", "", r.summary, "", ...r.findings.map((f) => `- ${findingLine(f)}`)].join("\n");
+}
+
+/** The spec feedback of an implement run that returned spec_conflict. */
+function conflictFeedback(reason: string): string {
+  return ["The implementer could not meet a done criterion inside the spec:", "", reason].join("\n");
+}
 
 function describeFailure(code: string): string {
   return FAILURES[code] ?? "the run failed";
