@@ -8,7 +8,7 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import { FORGE_AUTH, PREFLIGHT_FAILED } from "../../core/policy.js";
+import { FORGE_AUTH, PREFLIGHT_ACCESS } from "../../core/policy.js";
 import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
 import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -285,7 +285,8 @@ export class GitHubToolBroker implements ToolBroker {
   /**
    * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (it answers;
    * its push flag is only reported) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
-   * or 403 is `forge_auth`; anything else `preflight_failed`. The message starts with the failed check's name and
+   * or 403 is `forge_auth`; anything else `preflight_access` (since 2026-11-07, issue #216; before, `preflight_failed`),
+   * which pauses implement-type claims. The message starts with the failed check's name and
    * carries the status only: no response body, no header, no credential.
    */
   private async preflight(a: PreflightArgs): Promise<ToolResult> {
@@ -300,7 +301,7 @@ export class GitHubToolBroker implements ToolBroker {
         const status = refusedStatus(err);
         if (status) return { ok: false, error_code: FORGE_AUTH, message: `${what}: GitHub refused the credentials (${status})` };
         const why = err instanceof GitHubError ? `GitHub answered ${err.status}` : "GitHub could not be reached";
-        return { ok: false, error_code: PREFLIGHT_FAILED, message: `${what}: ${why}` };
+        return { ok: false, error_code: PREFLIGHT_ACCESS, message: `${what}: ${why}` };
       }
     };
     const repo = await check<{ permissions?: { push?: boolean } }>("push_access", `/repos/${owner}/${name}`);

@@ -97,8 +97,25 @@ export const FORGE_AUTH = "forge_auth";
 /** The error code of a failed implement preflight check; the detail starts with the check's name. */
 export const PREFLIGHT_FAILED = "preflight_failed";
 
+/**
+ * The error code of a failed push_access or pr_api preflight check that is not a 401/403 (decided 2026-11-07,
+ * issue #216): a revoked permission or a forge that does not answer fails every implement run the same way. A
+ * task failure; like `forge_auth` it pauses implement-type claims for every worker, in its own claim pause row
+ * (`preflight_access`), and its retry waits for the pause. The detail starts with the check's name.
+ */
+export const PREFLIGHT_ACCESS = "preflight_access";
+
+/** The error codes whose failure pauses implement-type claims, each in the claim pause row of the same name. */
+export const IMPLEMENT_PAUSE_CODES = [FORGE_AUTH, PREFLIGHT_ACCESS] as const;
+
 /** The implement preflight's checks, in order. Each failure's detail starts with `<check>: `. */
 export const PREFLIGHT_CHECKS = ["push_access", "pr_api", "base_fetch"] as const;
+
+/** The preflight check a failure's detail names (its `<check>: ` prefix); null when it names none. */
+export function preflightCheck(detail: string): (typeof PREFLIGHT_CHECKS)[number] | null {
+  const name = detail.split(":")[0]?.trim() ?? "";
+  return (PREFLIGHT_CHECKS as readonly string[]).includes(name) ? (name as (typeof PREFLIGHT_CHECKS)[number]) : null;
+}
 
 /**
  * Implement failure codes never retried automatically (design §5 Restarts, decided 2026-11-02): the same spec
@@ -114,9 +131,16 @@ export const AGENT_NEEDS_HUMAN = "agent_needs_human";
 
 /**
  * The block after two task failures in a row in one step with the same error code and the same detail line
- * (decided 2026-11-07): a third run would fail the same way. `/retry` starts the step with a fresh budget.
+ * (decided 2026-11-07): a third run would fail the same way. `/retry` starts the step with a fresh budget. Also
+ * the block after two fast identical infra failures in a row (`repeatsFastInfraFailure`, issue #216).
  */
 export const REPEATED_FAILURE = "repeated_failure";
+
+/**
+ * How long a run may take and still count as failing "at once" for the repeated infra failure rule (decided
+ * 2026-11-07, issue #216): an infra failure that repeats within this of starting is not a passing hiccup.
+ */
+export const FAST_FAILURE_MS = 60_000;
 
 /** The longest detail line the repeated-failure rule compares. */
 export const FAILURE_LINE_CHARS = 200;
@@ -133,10 +157,36 @@ export function failureLine(detail: string): string {
  */
 export function repeatsLastFailure(step: readonly Pick<Run, "id" | "outcome">[], run: Pick<Run, "id" | "outcome">): boolean {
   const o = run.outcome;
-  if (o?.status !== "failed" || failureClass(o) !== "task") return false;
+  // A preflight_access failure pauses implement claims instead (issue #216): its retry waits, it never blocks.
+  if (o?.status !== "failed" || failureClass(o) !== "task" || o.error_code === PREFLIGHT_ACCESS) return false;
   const before = step.slice(0, Math.max(0, step.findIndex((r) => r.id === run.id)));
   const prev = before.filter((r) => failureClass(r.outcome) === "task" && r.outcome !== null).at(-1)?.outcome;
   return prev?.status === "failed" && prev.error_code === o.error_code && failureLine(prev.detail) === failureLine(o.detail);
+}
+
+/**
+ * Whether `run`, an infra failure, repeats the step's previous run at once (decided 2026-11-07, issue #216): the
+ * run just before it in the step also failed as infra with the same error code and the same detail, and both
+ * finished within FAST_FAILURE_MS of their start. Task failures, rate limits, stalls and `preflight_access` never
+ * match; a run with no start or finish time, or with an empty detail, is not compared. `step`: the step's runs in order, `run` among them.
+ */
+export function repeatsFastInfraFailure(
+  step: readonly Pick<Run, "id" | "outcome" | "started_at" | "finished_at">[],
+  run: Pick<Run, "id" | "outcome" | "started_at" | "finished_at">,
+): boolean {
+  const infra = (r: Pick<Run, "outcome">) =>
+    r.outcome?.status === "failed" && failureClass(r.outcome) === "infra" && r.outcome.error_code !== PREFLIGHT_ACCESS ? r.outcome : null;
+  const fast = (r: Pick<Run, "started_at" | "finished_at">) => {
+    const took = Date.parse(r.finished_at ?? "") - Date.parse(r.started_at ?? "");
+    return Number.isFinite(took) && took < FAST_FAILURE_MS;
+  };
+  const o = infra(run);
+  const i = step.findIndex((r) => r.id === run.id);
+  const prevRun = i > 0 ? step[i - 1]! : undefined;
+  const prev = prevRun ? infra(prevRun) : null;
+  // An empty detail says nothing about the cause, so two of them are not "the same failure".
+  const same = o !== null && prev !== null && prev.error_code === o.error_code && o.detail.trim() !== "" && prev.detail.trim() === o.detail.trim();
+  return same && fast(prevRun!) && fast(run);
 }
 
 /**
