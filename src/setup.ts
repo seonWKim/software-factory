@@ -60,7 +60,7 @@ export function checksExitCode(checks: readonly Check[]): number {
  * egress-scan them first (the status page does).
  */
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
-  const checks: Check[] = [...settingsChecks(loaded)];
+  const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded)];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
@@ -147,6 +147,12 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/** The one line that names the config file in use: `--config` / FACTORY_CONFIG, or the checked-in file. */
+export function configFileCheck(loaded: Pick<Loaded, "configFile" | "externalConfig">): Check {
+  const how = loaded.externalConfig === null ? "checked-in" : "--config / FACTORY_CONFIG";
+  return { ok: true, msg: `config file: ${loaded.configFile} (${how})` };
 }
 
 /**
