@@ -542,4 +542,61 @@ export const MIGRATIONS: readonly string[] = [
   WHERE r.handled_at IS NULL AND NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.command_key = 'app:' || r.seq)
   ORDER BY r.seq;
   `,
+  // 30: when a cost hold started (issue #314, design §5 Hold policy): kept while the run stays held, whichever
+  // holder the decision names, so a `run_after_minutes` timer does not restart. NULL on older rows.
+  `
+  ALTER TABLE claim_decisions ADD COLUMN held_since TEXT;
+  `,
+  // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
+  // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
+  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  `
+  CREATE TABLE IF NOT EXISTS improve_reports (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    project_key     TEXT NOT NULL,
+    window_start    TEXT NOT NULL,
+    window_end      TEXT NOT NULL,
+    failure_groups  TEXT NOT NULL,
+    patterns        TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project_key, created_at);
+  CREATE TABLE IF NOT EXISTS filed_patterns (
+    id           TEXT PRIMARY KEY,
+    project_key  TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    report_id    TEXT NOT NULL REFERENCES improve_reports(id),
+    filed_ref    TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE (project_key, pattern_key)
+  );
+  `,
+  // 32: standing approvals (design 05-standing-approvals, issue #298). `standing_rules`: one row per (gate, tier),
+  // `enabled` 0 or 1, `set_by` a user ID. `standing_proposals`: one row per (gate, tier, run_length), the run of
+  // unchanged approvals that reached `threshold`. Stored only: nothing acts on either yet. IF NOT EXISTS: safe to run
+  // again on a database whose recorded version was set back below 32.
+  `
+  CREATE TABLE IF NOT EXISTS standing_rules (
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL,
+    set_by      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (gate, tier)
+  );
+  CREATE TABLE IF NOT EXISTS standing_proposals (
+    id          TEXT PRIMARY KEY,
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    run_length  INTEGER NOT NULL,
+    threshold   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (gate, tier, run_length)
+  );
+  `,
 ];

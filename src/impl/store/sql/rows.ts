@@ -361,6 +361,7 @@ export function rowToClaimDecision(r: Row): ClaimDecision {
     threshold: Number(r.threshold),
     fallback: Number(r.fallback) === 1,
     approved_by: (r.approved_by as UserId | null) ?? null,
+    held_since: (r.held_since as Timestamp | null) ?? null,
     at: r.at as Timestamp,
   };
 }

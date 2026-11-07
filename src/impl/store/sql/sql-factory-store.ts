@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveReportId,
   Run,
   RunAttempt,
   RunAttemptStatus,
@@ -21,6 +23,10 @@ import type {
   SourceRef,
   SourceType,
   Stage,
+  StandingGate,
+  StandingProposal,
+  StandingProposalId,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   StateChangeId,
@@ -49,6 +55,7 @@ import {
   type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
+  holdOutcome,
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
@@ -83,9 +90,12 @@ import type {
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
+  NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
   NewRun,
+  NewStandingProposal,
+  NewStandingRule,
   NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
@@ -644,7 +654,8 @@ export class SqlFactoryStore implements FactoryStore {
 
   /**
    * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
-   * decision when the cost rule decided it and the decision changed.
+   * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
@@ -660,12 +671,20 @@ export class SqlFactoryStore implements FactoryStore {
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
+    const now = this.now();
+    const since = existing?.decision === "held" ? (existing.held_since ?? existing.at) : now;
+    const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
     if (existing?.approved_by) {
-      await this.writeDecision(tx, it, runId, "approved", holds[0]!, s.max_cost, existing);
+      await write("approved");
       return true;
     }
-    await this.writeDecision(tx, it, runId, verdict === "deadlock" ? "deadlock" : "held", holds[0]!, s.max_cost, existing);
-    return verdict === "deadlock";
+    if (verdict === "deadlock") {
+      await write("deadlock");
+      return true;
+    }
+    const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
+    await write(outcome);
+    return outcome !== "held";
   }
 
   private refFor(c: CoordContext, holderId: string, self: WorkItem): string {
@@ -677,7 +696,7 @@ export class SqlFactoryStore implements FactoryStore {
   /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
   private async writeDecision(
     tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
-    existing: ClaimDecision | null,
+    existing: ClaimDecision | null, held_since: Timestamp,
   ): Promise<void> {
     const row = {
       decision,
@@ -688,27 +707,30 @@ export class SqlFactoryStore implements FactoryStore {
       cost: hold.cost,
       threshold,
       fallback: hold.holder.fallback ? 1 : 0,
+      held_since,
     };
     if (
       existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
       existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
       JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
-      (existing.fallback ? 1 : 0) === row.fallback
+      (existing.fallback ? 1 : 0) === row.fallback && existing.held_since === row.held_since
     ) {
       return;
     }
-    const values = [row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback];
+    const values = [
+      row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback, row.held_since,
+    ];
     const now = this.now();
     const updated = await tx.run(
       `UPDATE claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
-         threshold = ?, fallback = ?, at = ? WHERE run_id = ?`,
+         threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
       [...values, now, runId],
     );
     if (updated === 0) {
       await this.insertOnce(
         tx,
         `INSERT INTO claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
-           threshold, fallback, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [runId, it.id, ...values, now],
       );
     }
@@ -800,7 +822,10 @@ export class SqlFactoryStore implements FactoryStore {
     return { ended: ended === 1 };
   }
 
-  /** Ends a stall pause as an answered probe would: model_answered moves to the probe time, under the claim lock. */
+  /**
+   * Ends a stall pause as an answered probe would, under the claim lock: model_answered and the probe time both
+   * move to the earlier of the probe time and now. Never a future answer, so a stall right after starts a pause.
+   */
   private async endStall(): Promise<{ ended: boolean }> {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx) => {
@@ -811,10 +836,25 @@ export class SqlFactoryStore implements FactoryStore {
       );
       const probeAt = rows.get(MODEL_STALL);
       if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, probeAt]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [probeAt, MODEL_ANSWERED, probeAt]);
+      const now = this.now();
+      const at = probeAt < now ? probeAt : now;
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, at]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_ANSWERED]);
       }
+      await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_STALL]);
       return { ended: true };
+    });
+  }
+
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    // Under the claim lock, as every stall write: a pause ended meanwhile is never moved back into effect.
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const [answered] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [MODEL_ANSWERED]);
+      if (!stallInEffect(due, answered?.resume_at as Timestamp | undefined) || next <= due) return { taken: false };
+      const taken = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, MODEL_STALL, due]);
+      return { taken: taken === 1 };
     });
   }
 
@@ -1110,6 +1150,87 @@ export class SqlFactoryStore implements FactoryStore {
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
+  }
+
+  async listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
+      [start, end],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const run = await this.insertRun(tx, input);
+      if (run) return { run, created: true };
+      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      return { run: rowToRun(row!), created: false };
+    });
+  }
+
+  // Improve reports (design §7)
+
+  async recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
+    const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        report.id, report.run_id, report.project, report.window_start, report.window_end,
+        JSON.stringify(report.groups), JSON.stringify(report.patterns), report.created_at,
+      ],
+    );
+    return created ? { report, created } : { report: (await this.getImproveReport(input.run_id))!, created };
+  }
+
+  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
+    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  // Standing approvals (design 05-standing-approvals)
+
+  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const enabled = input.enabled ? 1 : 0;
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.gate, input.tier, enabled, input.set_by, now, now],
+      );
+      if (!inserted) {
+        await tx.run("UPDATE standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
+          enabled, input.set_by, now, input.gate, input.tier,
+        ]);
+      }
+      const [row] = await tx.all("SELECT * FROM standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
+      return rowToStandingRule(row!);
+    });
+  }
+
+  async listStandingRules(): Promise<StandingRule[]> {
+    return (await this.db.all("SELECT * FROM standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
+  }
+
+  async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
+    const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      "INSERT INTO standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [proposal.id, proposal.gate, proposal.tier, proposal.run_length, proposal.threshold, proposal.created_at],
+    );
+    if (created) return { proposal, created };
+    const [row] = await this.db.all("SELECT * FROM standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
+      input.gate, input.tier, input.run_length,
+    ]);
+    return { proposal: rowToStandingProposal(row!), created };
+  }
+
+  async listStandingProposals(): Promise<StandingProposal[]> {
+    return (await this.db.all("SELECT * FROM standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
   }
 
   // Coordination (design §5, 2026-11-03)
@@ -2452,6 +2573,41 @@ function rowToMergeCheck(row: Row): MergeCheck {
     head_sha: row.head_sha as string,
     base_sha: row.base_sha as string,
     checked_at: row.checked_at as Timestamp,
+  };
+}
+
+function rowToImproveReport(row: Row): ImproveReport {
+  return {
+    id: row.id as ImproveReportId,
+    run_id: row.run_id as RunId,
+    project: row.project_key as string,
+    window_start: row.window_start as Timestamp,
+    window_end: row.window_end as Timestamp,
+    groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
+    patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToStandingRule(row: Row): StandingRule {
+  return {
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    enabled: Number(row.enabled) === 1,
+    set_by: row.set_by as UserId,
+    created_at: row.created_at as Timestamp,
+    updated_at: row.updated_at as Timestamp,
+  };
+}
+
+function rowToStandingProposal(row: Row): StandingProposal {
+  return {
+    id: row.id as StandingProposalId,
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    run_length: Number(row.run_length),
+    threshold: Number(row.threshold),
+    created_at: row.created_at as Timestamp,
   };
 }
 

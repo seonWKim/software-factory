@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
   API, type FactoryState, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
-  type UnreviewedMerges, postResume, useApi,
+  type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
@@ -14,6 +14,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
+import { SystemActions } from "./system-banner.js";
 import { transcriptPath } from "./transcript.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
@@ -21,8 +22,17 @@ export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, M
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
+/** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
+function pauseLine(p: PauseRow, now: number): string {
+  const what = PAUSE_LABELS[p.name] ?? p.name;
+  if (p.name !== "model_stall") return `Paused (${p.name}): ${what}; until ${p.ends_at}.`;
+  const began = p.since ? ` since ${p.since}` : "";
+  const next = Date.parse(p.ends_at) <= now ? "the next check is due" : `next check at ${p.ends_at}`;
+  return `Paused (${p.name}): ${what}${began}; ${next}.`;
+}
+
 /** The supervisor banner: what the factory process is doing (the status page's words, shorter). */
-export function FactoryBanner({ factory, now }: { factory: FactoryState | null | undefined; now: number }) {
+export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
   if (factory === undefined) return null;
   const bad = "bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100";
   const warn = "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
@@ -37,8 +47,12 @@ export function FactoryBanner({ factory, now }: { factory: FactoryState | null |
     const target = shortRev(factory.target_rev);
     switch (factory.state) {
       case "running":
+        if (pauses.length > 0) {
+          text = pauses.map((p) => pauseLine(p, now)).join(" ");
+          break;
+        }
         tone = ok;
-        text = `Factory running: revision ${rev}, ${factory.workers} workers, since ${ago(factory.since, now)} ago.`;
+        text = `Factory running: revision ${rev}, since ${ago(factory.since, now)} ago.`;
         break;
       case "building":
         text = `Building ${target}; runs continue on ${rev} meanwhile.`;
@@ -144,14 +158,20 @@ export function FloorPage() {
   const items = useApi<Items>(API.items);
   const runs = useApi<{ runs: RunRow[] }>(API.runs);
   const queue = useApi<{ queue: QueueRow[] }>(API.queue);
+  const pauses = useApi<PausesView>(API.pauses);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
+  const actions = o?.system_actions ?? [];
+  // A deadlocked item is a system action and a row of the table: counted once.
+  const ids = new Set(needs.map((i) => i.id));
+  const extra = actions.filter((a) => a.work_item_id === null || !ids.has(a.work_item_id)).length;
   return (
     <>
-      <FactoryBanner factory={o?.factory} now={now} />
+      <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
       <ClaimPauses now={now} />
-      <Section title="Needs you" count={items.data ? needs.length : undefined}>
+      <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
+        <SystemActions actions={actions} />
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
@@ -177,13 +197,15 @@ export function FloorPage() {
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ["Runs succeeded", String(o.last_24h.succeeded)],
-              ["Runs failed", String(o.last_24h.failed)],
+              ["Runs failed", String(o.last_24h.failed), `${BASE}failures?window=24h`],
               ["Tokens", tokens(o.last_24h.tokens)],
               ["Open items", String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
-            ].map(([k, v]) => (
+            ].map(([k, v, href]) => (
               <div key={k} className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
                 <dt className="text-xs text-zinc-600 dark:text-zinc-400">{k}</dt>
-                <dd className="text-lg font-semibold tabular-nums">{v}</dd>
+                <dd className="text-lg font-semibold tabular-nums">
+                  {href ? <Link href={href} className={LINK_CLASS}>{v}</Link> : v}
+                </dd>
               </div>
             ))}
           </dl>
@@ -454,29 +476,64 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
   );
 }
 
+/** One live worker process: host, pid, version or start time, and its slots (busy, idle, current, max). */
+function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<string, ItemRow>; now: number }) {
+  const draining = p.slots === 0;
+  return (
+    <li data-testid="worker-process" className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
+        <span className="font-mono text-xs font-semibold">{p.host}</span>
+        <span className="tabular-nums">pid {p.pid}</span>
+        <span className="tabular-nums text-zinc-600 dark:text-zinc-400">started {ago(p.started_at, now)} ago</span>
+        {draining && <Badge level="needs_approval">draining</Badge>}
+        <span className="tabular-nums" data-slots>
+          {p.busy} busy, {p.idle} idle, {p.slots} slots, max {p.max_slots}
+        </span>
+      </div>
+      {p.runs.length > 0 && (
+        <ul aria-label={`Runs of ${p.host} ${p.pid}`} className="mt-1 space-y-0.5 text-xs">
+          {p.runs.map((r) => (
+            <li key={r.id} className="flex flex-wrap gap-x-3">
+              <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
+              <span>{r.kind}</span>
+              <span className="font-mono">{r.worker_id}</span>
+              <span className="tabular-nums">{ago(r.started_at, now)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+const WORKERS_SOURCE: Record<string, string> = { override: "override", file: "config file", default: "default" };
+
 export function WorkersPage() {
   const now = useNow();
-  const workers = useApi<{ workers: { owner: string; running: number }[] }>(API.workers);
+  const workers = useApi<WorkersView>(API.workers);
   const overview = useApi<Overview>(API.overview);
   const runs = useApi<{ runs: RunRow[] }>(API.runs);
   const items = useApi<Items>(API.items);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const f = overview.data?.factory;
+  const processes = workers.data?.processes ?? [];
   return (
     <>
       <FactoryBanner factory={f} now={now} />
-      <Section title="Worker slots with a run" count={workers.data?.workers.length}>
-        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.workers.length === 0 ? (
-          <Empty>No worker holds a run.{f && f.state === "running" ? ` The factory runs ${f.workers} worker slots; they claim queued runs as they come.` : ""}</Empty>
+      {f && (
+        <p data-testid="effective-workers" className="mb-4 text-sm">
+          Worker setting: <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
+        </p>
+      )}
+      <Section title="Worker processes" count={workers.data?.processes ? processes.length : undefined}>
+        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+          <ErrorNote error={new Error(workers.data.processes_error)} />
+        ) : processes.length === 0 ? (
+          <Empty>No worker process is reporting.</Empty>
         ) : (
-          <Table label="Workers" head={["Worker", "Runs"]}>
-            {workers.data.workers.map((w) => (
-              <Tr key={w.owner}>
-                <Td className="font-mono text-xs">{w.owner}</Td>
-                <Td className="tabular-nums">{w.running}</Td>
-              </Tr>
-            ))}
-          </Table>
+          <ul aria-label="Worker processes" className="space-y-2">
+            {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
+          </ul>
         )}
       </Section>
       <Section title="Running now">
@@ -500,6 +557,20 @@ export function QueuePage() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "needs_human" };
 
+function CheckList({ checks }: { checks: Health["checks"] }) {
+  if (checks.length === 0) return null;
+  return (
+    <ul className="space-y-1 text-sm">
+      {checks.map((c, i) => (
+        <li key={i} className="flex items-baseline gap-2">
+          <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
+          <span className="min-w-0 text-pretty break-words">{c.msg}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
@@ -509,19 +580,21 @@ export function HealthPage() {
   if (!health.data) return <Loading rows={6} />;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
+  const open = checks.filter((c) => c.status !== "ok");
+  const fine = checks.filter((c) => c.status === "ok");
   const sleeps = health.data.sleeps ?? [];
   return (
     <>
       <ClaimPauses now={now} />
       <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
-        <ul className="space-y-1 text-sm">
-          {checks.map((c, i) => (
-            <li key={i} className="flex items-baseline gap-2">
-              <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
-              <span className="min-w-0 text-pretty break-words">{c.msg}</span>
-            </li>
-          ))}
-        </ul>
+        <CheckList checks={open} />
+        {fine.length > 0 && (
+          <details data-testid="ok-checks" className="mt-2 text-sm">
+            <summary className="cursor-pointer text-zinc-600 dark:text-zinc-400">{fine.length} ok</summary>
+            <CheckList checks={fine} />
+          </details>
+        )}
       </Section>
       <Section title="Host sleeps" count={sleeps.length}>
         {sleeps.length === 0 ? (
