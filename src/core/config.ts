@@ -1,3 +1,4 @@
+import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
@@ -158,6 +159,12 @@ export interface LoadedConfig {
    * factory.config.json, checked at load by `coordinationConfig`. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
+  /**
+   * Path companions (design 04-triage.md, issue #224): `path_companions` from factory.config.json, checked at
+   * load by `pathCompanionsConfig` (src/core/companions.ts). The triage branch adds each `also` path to an
+   * answer's `allowed_paths` when its `files_to_change` names the `when` path. Absent: none.
+   */
+  path_companions?: PathCompanion[];
 }
 
 /** `stall_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */

@@ -1,12 +1,15 @@
+import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
 import type { Tier } from "./types.js";
 
-/** What else fed the effective tier, so a raise above the agent's tier can be explained. */
+/** What else fed the effective tier, so a raise above the agent's tier can be explained, and what triage's paths gained. */
 export interface TierSources {
   /** Highest floor matched by the allowed paths, if any. */
   floor?: Tier | null;
   /** Tier the work item already had; a tier is never lowered. */
   previous?: Tier | null;
+  /** Paths the companion step added to `allowed_paths` (design 04-triage.md), each with the path that caused it. */
+  added?: readonly AddedPath[];
 }
 
 const FOOTER =
@@ -94,6 +97,10 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
     out.push("### Scope", spec.scope, "");
   }
   out.push("### Files", "Allowed to change:", ...spec.allowed_paths.map(code));
+  // One line per path the companion step added (design 04-triage.md), naming the path that caused it.
+  if (why.added?.length) {
+    out.push("", "Added by `path_companions`:", ...why.added.map((a) => `- \`${a.path}\`: added because the spec names \`${a.because}\``));
+  }
   if (spec.files_to_change.length > 0) out.push("", "Expected to change:", ...spec.files_to_change.map(code));
   out.push("");
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
