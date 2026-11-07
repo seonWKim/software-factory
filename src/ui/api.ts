@@ -7,6 +7,8 @@
 //
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached.
 
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
+import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { Run, RunAttempt, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
@@ -99,8 +101,22 @@ class ApiCtx {
     return { store: this.d.store, text: (v) => this.text(v), now: this.now };
   }
 
-  prUrl(it: WorkItem): string | null {
-    return it.pr_number === null ? null : this.d.prUrl(it.project, it.pr_number);
+  private readonly labels = new Map<string, Promise<string>>();
+
+  /** The PR's URL, built from the project's stored label (never its key); null with no PR or no stored label. */
+  async prUrl(it: WorkItem): Promise<string | null> {
+    if (it.pr_number === null) return null;
+    let p = this.labels.get(it.project);
+    if (!p) this.labels.set(it.project, (p = readProjectLabel(this.d.store, it.project)));
+    const label = await p;
+    return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, it.pr_number);
+  }
+
+  /** The issue the item came from; null for an adopted PR (its source link is a /pull/ URL) or an id without a number. */
+  issue(it: WorkItem): { number: number; url: string } | null {
+    if (/\/pull\/\d+/.test(it.source.link)) return null;
+    const n = /#(\d+)$/.exec(it.source.id)?.[1];
+    return n ? { number: Number(n), url: it.source.link } : null;
   }
 }
 
@@ -126,6 +142,7 @@ async function overview(c: ApiCtx) {
   };
   return {
     as_of: c.now.toISOString(),
+    plugins: c.d.plugins ?? { issues: null, prs: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
     needs_you,
@@ -162,7 +179,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       close_reason: it.close_reason,
       run_status: r.runStatus,
       pr_number: it.pr_number,
-      pr_url: c.prUrl(it),
+      pr_url: await c.prUrl(it),
+      issue: c.issue(it),
       since: r.input.since,
       updated_at: it.updated_at,
       version: it.version,
@@ -219,7 +237,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       restart_count: it.restart_count,
       token_cost: it.token_cost,
       pr_number: it.pr_number,
-      pr_url: c.prUrl(it),
+      pr_url: await c.prUrl(it),
       version: it.version,
       created_at: it.created_at,
       updated_at: it.updated_at,
