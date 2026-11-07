@@ -12,7 +12,9 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
+import {
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, failureClass, scopeViolations, wipBranchFor,
+} from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -293,6 +295,7 @@ export class Worker {
 
   private async execute(run: Run, token: number): Promise<void> {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
+    const startedAt = this.d.clock.now().getTime();
     this.d.log.info("run start", log);
     const lease = new AbortController();
     const stopHeartbeat = new AbortController();
@@ -387,8 +390,16 @@ export class Worker {
       }
     }
     const done = await this.d.store.completeRun(run.id, token, outcome);
-    if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", log);
-    else this.d.log.info("run done", { ...log, status: outcome.status });
+    // Codes and numbers only, never the outcome's detail text: a failed attempt reads from the log alone.
+    const result = {
+      error_code: outcome.status === "failed" ? outcome.error_code : null,
+      // failureClass reads a succeeded run as "task", so a succeeded run gets null here.
+      failure: outcome.status === "failed" ? failureClass(outcome) : null,
+      tokens: usageTokens(usage),
+      duration_ms: this.d.clock.now().getTime() - startedAt,
+    };
+    if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", { ...log, ...result });
+    else this.d.log.info("run done", { ...log, status: outcome.status, ...result });
   }
 
   /**
