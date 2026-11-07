@@ -17,6 +17,7 @@ import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, 
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
+import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
@@ -121,13 +122,13 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
   switch (cmd) {
     case "dev": {
       if (process.env[SUPERVISED_ENV] === "1" && process.send) {
-        // Child of the supervisor: a drain (IPC) stops claiming; SIGTERM stays the hard stop.
+        // Child of the supervisor: a drain (IPC) stops the controller and claiming; SIGTERM stays the hard stop.
         const channel = processChannel();
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
         const app = await build(loaded);
-        await runDevChild(app, channel, stop.signal);
+        await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
       }

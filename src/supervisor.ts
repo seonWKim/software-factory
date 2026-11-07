@@ -95,25 +95,29 @@ export interface DrainChannel {
 }
 
 interface Loops {
-  controller: { run(signal: AbortSignal): Promise<void>; tickRuns(): Promise<void> };
+  controller: { run(signal: AbortSignal): Promise<void> };
   worker: { run(signal: AbortSignal): Promise<void> };
 }
 
+const quiet: Logger = { info() {}, warn() {}, error() {} };
+
 /**
- * The supervised `dev` child. A drain stops the worker from claiming; its in-flight run finishes (it runs
- * on its own lease signal). The controller keeps running until the worker has drained, then handles finished
- * runs once more: the last run usually finishes after the loop's final pass, and its outcome (a failure that
- * blocks the item, say) would otherwise wait for the next process. Then the drain is acknowledged. `stop` (SIGINT/SIGTERM) is the hard stop.
+ * The supervised `dev` child. A drain stops the controller loop (and its stream listeners) at once, so it
+ * starts no new pass beside the new child's controller; a pass already running finishes. The worker stops
+ * claiming and its in-flight run finishes (it runs on its own lease signal); the new child's controller
+ * applies that run's outcome on its next pass. Then the drain is acknowledged. `stop` (SIGINT/SIGTERM) is the
+ * hard stop of both loops.
  */
-export async function runDevChild(app: Loops, channel: DrainChannel, stop: AbortSignal): Promise<"drained" | "stopped"> {
+export async function runDevChild(app: Loops, channel: DrainChannel, stop: AbortSignal, log: Logger = quiet): Promise<"drained" | "stopped"> {
   const drain = new AbortController();
   channel.onDrain(() => drain.abort());
-  const controllerStop = new AbortController();
-  const worker = app.worker.run(AbortSignal.any([drain.signal, stop])).finally(() => controllerStop.abort());
-  const controller = app.controller.run(AbortSignal.any([controllerStop.signal, stop]));
+  const signal = AbortSignal.any([drain.signal, stop]);
+  const worker = app.worker.run(signal);
+  const controller = app.controller.run(signal).then(() => {
+    if (drain.signal.aborted && !stop.aborted) log.info("controller stopped on drain: the new child handles outcomes");
+  });
   await Promise.all([worker, controller]);
   if (stop.aborted || !drain.signal.aborted) return "stopped";
-  await app.controller.tickRuns().catch(() => undefined); // the next process handles it if this fails
   await channel.acknowledge();
   return "drained";
 }
