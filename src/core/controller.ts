@@ -65,7 +65,7 @@ import {
   CHECKS_ENV_LIMIT,
   SESSION_RELEASED,
 } from "./policy.js";
-import { commandEvent } from "./command-inbox.js";
+import { commandEvent, syncedCommand } from "./command-inbox.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
@@ -582,7 +582,8 @@ export class Controller {
    * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
    * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
+   * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
    * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
    * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
    */
@@ -614,6 +615,14 @@ export class Controller {
     if (typeof app === "number") {
       const r = await this.d.store.getAppCommandRequest(app);
       if (r && r.handled_at === null) await this.applyAppRequest(r);
+      return;
+    }
+    const synced = syncedCommand(c);
+    if (synced) {
+      // A source's own command (issue #284): applied only where that source's adapter runs, and a failure is logged
+      // and passed like a polled event's, so a sync plugin's outage never holds the local commands after it.
+      const e = synced.event;
+      if (e && this.byType.has(synced.source.type)) await this.guard(`event:${e.kind}`, () => this.handle(e));
       return;
     }
     const id = c.args.item;
