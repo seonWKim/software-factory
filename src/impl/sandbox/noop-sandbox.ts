@@ -31,6 +31,12 @@ const fetchChains = new Map<string, Promise<unknown>>();
  * One clone of the factory repo per run, on the host. No isolation: the agent has the host user's access, so
  * the harness-level guards (G3 via Claude Code's OS sandbox, G4) carry the weight (design §5).
  *
+ * Writes (design §5 Sandbox): an agent may write only under the run folder, the run's `writable_paths` and its
+ * runner's temp folder, never the owner's live checkout, though run folders sit inside it. This class adds no
+ * OS rule for that: the runner enforces it (Claude Code: `Edit(...)` allow rules for native Write and Edit, and
+ * its OS sandbox's write list for Bash; other runners: the shared tools' guard policy), and the worker reports
+ * any file that still appears in the live checkout during an agent step.
+ *
  * The clone has its own git folder inside the run folder, so nothing the agent does to its index, HEAD, refs,
  * config or hooks reaches the owner's checkout or its `.git` (architecture §5). Objects are borrowed from the
  * factory repo through an alternates link, not copied. The clone's `core.hooksPath` is an empty, read-only
