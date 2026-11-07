@@ -12,6 +12,7 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { BASELINE } from "../src/impl/store/mysql/schema.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MYSQL_URL, newEmptyMysqlDatabase, newStore } from "./helpers/store.js";
+import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
 
 const REPO = process.cwd();
 
@@ -164,7 +165,7 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
       join(root, "tsconfig.json"),
       JSON.stringify({ extends: join(REPO, "tsconfig.migrations.json"), compilerOptions: { rootDir: ".", outDir: "dist", types: [] }, include: ["migrations/**/*.ts"] }),
     );
-    execFileSync(join(REPO, "node_modules", ".bin", "tsc"), ["-p", join(root, "tsconfig.json")], { stdio: "pipe" });
+    execFileSync(process.execPath, tscArgs("-p", join(root, "tsconfig.json")), { stdio: "pipe" });
     // The compiled file is what loads: break the source so only dist/ can work.
     writeFileSync(join(dir, "0012-rename.ts"), "export default 42;\n");
     expect(await runMigrate(c, "apply", () => undefined, { dir })).toBe(0);
@@ -345,9 +346,9 @@ let built: App | undefined;
 async function compiledApp(): Promise<App> {
   if (built) return built;
   const root = mkdtempSync(join(tmpdir(), "sf-app-"));
-  execFileSync(join(REPO, "node_modules", ".bin", "tsc"), ["-p", join(REPO, "tsconfig.json"), "--outDir", join(root, "dist")], { stdio: "pipe" });
+  execFileSync(process.execPath, tscArgs("-p", join(REPO, "tsconfig.json"), "--outDir", join(root, "dist")), { stdio: "pipe" });
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
-  symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
+  symlinkSync(NODE_MODULES, join(root, "node_modules"));
   cpSync(join(REPO, "migrations", "mysql"), join(root, "migrations", "mysql"), { recursive: true });
   built = {
     run: (cwd, args, env) => {

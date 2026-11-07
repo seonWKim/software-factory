@@ -8,6 +8,7 @@ import { SystemClock } from "../src/impl/clock/system-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { issue, system } from "./helpers/store.js";
+import { TSC_JS } from "./helpers/toolchain.js";
 
 // Several OS processes on one SQLite file: the single-node shape of "N workers, pull-based claims".
 // Children import the compiled store, so this builds first.
@@ -46,7 +47,7 @@ describe("SqlFactoryStore on SQLite across processes", () => {
   let dist: string;
   beforeAll(() => {
     dist = mkdtempSync(join(tmpdir(), "sf-dist-"));
-    execFileSync(process.execPath, [join(ROOT, "node_modules/typescript/bin/tsc"), "-p", join(ROOT, "tsconfig.json"), "--outDir", dist]);
+    execFileSync(process.execPath, [TSC_JS, "-p", join(ROOT, "tsconfig.json"), "--outDir", dist]);
   }, 60_000);
 
   it("every run is claimed exactly once", async () => {

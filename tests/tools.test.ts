@@ -413,8 +413,10 @@ describe("Bash", () => {
   it("runs a command in the workdir with only the allowlisted env", async () => {
     process.env.GITHUB_TOKEN = "ghp_should_never_appear_123";
     try {
-      const out = content(await call("Bash", { command: "env; pwd" }));
+      // `export -p` lists every exported variable without using a denied command name.
+      const out = content(await call("Bash", { command: 'echo "GIT_AUTHOR_NAME=$GIT_AUTHOR_NAME"; export -p; pwd' }));
       expect(out).toContain("GIT_AUTHOR_NAME=factory");
+      expect(out).toMatch(/export (-x )?GIT_AUTHOR_NAME=/);
       expect(out).not.toContain("GITHUB_TOKEN");
       expect(out).not.toContain("ghp_should_never_appear_123");
       expect(out).toContain(workdir);
@@ -448,6 +450,65 @@ describe("Bash", () => {
   it("refuses on timeout and on a bad input", async () => {
     refused(await call("Bash", { command: "sleep 5", timeout_ms: 100 }));
     refused(await call("Bash", {}));
+  });
+
+  describe("command deny list", () => {
+    const cases: [string, string][] = [
+      ["gh", "gh auth status"],
+      ["security", "security find-generic-password -s x"],
+      ["git push", "git push origin main"],
+      ["git credential", "git credential fill"],
+      ["printenv", "printenv"],
+      ["env", "env"],
+      ["mysql", "mysql -u root"],
+      ["mysqldump", "mysqldump db"],
+      ["mysqladmin", "mysqladmin status"],
+    ];
+
+    it.each(cases)("refuses %s and names it", async (name, command) => {
+      const r = refused(await call("Bash", { command: `${command}; touch denied-ran.txt` }));
+      expect(r.error).toContain(`"${name}"`);
+      expect(existsSync(join(workdir, "denied-ran.txt"))).toBe(false);
+    });
+
+    it("does not run a refused command at all, and the next call still runs", async () => {
+      const c = ctx();
+      refused(await call("Bash", { command: "touch x.txt; gh auth status" }, c));
+      expect(existsSync(join(workdir, "x.txt"))).toBe(false);
+      expect(content(await call("Bash", { command: "echo still-running" }, c))).toContain("still-running");
+    });
+
+    it("splits on ; & | and newlines", async () => {
+      for (const command of [
+        "echo ok; gh auth status",
+        "echo ok && gh auth status",
+        "echo ok || printenv",
+        "echo ok | env",
+        "true & mysql",
+        "echo ok\ngit push",
+        "echo ok;git  credential fill",
+      ]) {
+        refused(await call("Bash", { command }));
+      }
+    });
+
+    it("skips leading VAR=value words", async () => {
+      expect(refused(await call("Bash", { command: "FOO=1 env" })).error).toContain('"env"');
+      expect(refused(await call("Bash", { command: "A=1 B=two gh pr list" })).error).toContain('"gh"');
+    });
+
+    it("matches whole command names only", async () => {
+      for (const command of [
+        "envsubst --version >/dev/null 2>&1; echo ran",
+        "ghost 2>/dev/null; echo ran",
+        "mysqldumpx 2>/dev/null; echo ran",
+        "git pushx 2>/dev/null; echo ran",
+        "echo gh env printenv; echo ran",
+        "git status >/dev/null; echo ran",
+      ]) {
+        expect(content(await call("Bash", { command }))).toContain("ran");
+      }
+    });
   });
 });
 
