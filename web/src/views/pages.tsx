@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type QueueRow, type RunRow, useApi } from "../api.js";
+import { API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type QueueRow, type RunRow, type UnreviewedMerges, useApi } from "../api.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
@@ -94,6 +94,12 @@ export function FloorPage() {
       >
         {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={2} /> : <QueueTable queue={queue.data.queue} items={map} now={now} limit={10} />}
       </Section>
+      {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
+        <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
+          {o.unreviewed_merges_7d} PRs merged without review in the last 7 days.{" "}
+          <Link href={`${BASE}health`} className={LINK_CLASS}>See them on Health</Link>
+        </p>
+      )}
       {o && (
         <Section title="Last 24 hours">
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -288,20 +294,43 @@ export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
   const health = useApi<Health>(API.health, 30_000);
+  const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   if (health.isError) return <ErrorNote error={health.error} />;
   if (!health.data) return <Loading rows={6} />;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   return (
-    <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
-      <ul className="space-y-1 text-sm">
-        {checks.map((c, i) => (
-          <li key={i} className="flex items-baseline gap-2">
-            <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
-            <span className="min-w-0 text-pretty break-words">{c.msg}</span>
-          </li>
-        ))}
-      </ul>
-    </Section>
+    <>
+      <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
+        <ul className="space-y-1 text-sm">
+          {checks.map((c, i) => (
+            <li key={i} className="flex items-baseline gap-2">
+              <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
+              <span className="min-w-0 text-pretty break-words">{c.msg}</span>
+            </li>
+          ))}
+        </ul>
+      </Section>
+      <div id="unreviewed-merges">
+        <Section title="Merged without review" count={merges.data?.merges.length}>
+          {merges.isError ? <ErrorNote error={merges.error} /> : !merges.data ? <Loading rows={2} /> : merges.data.merges.length === 0 ? (
+            <Empty>No PR has merged without review.</Empty>
+          ) : (
+            <Table label="Merged without review" head={["PR", "Merged by", "Merge commit", "When"]}>
+              {merges.data.merges.map((m) => (
+                <tr key={`${m.project}#${m.pr_number}`}>
+                  <Td className="tabular-nums">
+                    {m.pr_url ? <a href={m.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.pr_number}</a> : `#${m.pr_number}`}
+                  </Td>
+                  <Td className="text-xs break-words">{m.merged_by}</Td>
+                  <Td className="font-mono text-xs">{m.merge_sha}</Td>
+                  <Td className="tabular-nums whitespace-nowrap">{ago(m.recorded_at, now)} ago</Td>
+                </tr>
+              ))}
+            </Table>
+          )}
+        </Section>
+      </div>
+    </>
   );
 }

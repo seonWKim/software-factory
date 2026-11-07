@@ -231,7 +231,8 @@ async function setup(opts: {
 /** The fix step that removes `file` and commits. */
 const fixBy = (file: string): AgentStep => (wd) => removeFile(wd, file, `fix: remove ${file}`);
 
-describe("implement run: checks before push, one fix step", () => {
+// Real git clone/push work per test: 2–5s each alone, more under a full parallel run.
+describe("implement run: checks before push, one fix step", { timeout: 30_000 }, () => {
   for (const c of [
     { name: "a typecheck failure", file: "src/type-error.txt", cmd: TYPECHECK, say: "error TS2322", db: false },
     { name: "a SQLite test failure", file: "src/sqlite-fail.txt", cmd: SQLITE, say: "FAIL tests/store-contract.test.ts > sqlite", db: false },
@@ -410,7 +411,7 @@ describe("implement run: checks before push, one fix step", () => {
   });
 });
 
-describe("the test database's URL stays with the check commands", () => {
+describe("the test database's URL stays with the check commands", { timeout: 30_000 }, () => {
   it("SF_TEST_MYSQL_URL is in every check command's environment and in no agent run's environment", async () => {
     const f = await setup({
       testDatabase: new FakeTestDatabase(),
@@ -457,7 +458,7 @@ describe("the test database's URL stays with the check commands", () => {
   });
 });
 
-describe("TestDatabase plugins", () => {
+describe("TestDatabase plugins", { timeout: 30_000 }, () => {
   /** An admin connection that records every statement. */
   const recorder = () => {
     const queries: string[] = [];

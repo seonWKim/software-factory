@@ -14,6 +14,7 @@ import { THEME_KEY } from "../web/src/theme.js";
 const AT = "2026-11-07T00:00:00.000Z";
 const overview = {
   as_of: AT, stages: { NEW: 1, RUNNING: 2 }, needs_you: 4, running: 1, queued: 2, last_24h: { succeeded: 3, failed: 1, tokens: 1500 },
+  unreviewed_merges_7d: 2,
   factory: { state: "migration_pending", rev: "aaaaaaa1111", target_rev: "bbbbbbb2222", child_pid: 7, since: AT, workers: 3, error: null, pending: ["schema 12"] },
 };
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
@@ -46,6 +47,13 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/workers": { as_of: AT, workers: [{ owner: "host:7:0", running: 1 }] },
   "/api/v1/health": { checked_at: AT, checks: [{ status: "ok", msg: "store reachable" }, { status: "fail", msg: "push access denied" }] },
   "/api/v1/items/wi_1": detail,
+  "/api/v1/unreviewed-merges": {
+    as_of: AT,
+    merges: [
+      { project: "github.com/o/r", pr_number: 9, pr_url: "https://github.com/o/r/pull/9", merge_sha: "abcdef1", merged_by: "github:7", recorded_at: AT },
+      { project: "github.com/o/r", pr_number: 8, pr_url: null, merge_sha: "1234567", merged_by: "unknown", recorded_at: AT },
+    ],
+  },
 };
 let fetched: string[] = [];
 let hidden = false;
@@ -193,6 +201,39 @@ describe("app pages", () => {
     await screen.findByText("push access denied");
     const texts = [...document.querySelectorAll("main li")].map((li) => li.textContent);
     expect(texts[0]).toContain("push access denied");
+  });
+});
+
+describe("unreviewed merges", () => {
+  it("the Floor says how many PRs merged without review and links to Health; hidden at 0", async () => {
+    mount();
+    const line = await screen.findByTestId("unreviewed-merges-line");
+    expect(line.textContent).toContain("2 PRs merged without review in the last 7 days");
+    fireEvent.click(within(line).getByRole("link"));
+    expect(location.pathname).toBe("/app/health");
+    cleanup();
+    (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 0;
+    try {
+      history.replaceState(null, "", "/app/");
+      mount();
+      await screen.findByTestId("factory-banner");
+      expect(screen.queryByTestId("unreviewed-merges-line")).toBeNull();
+    } finally {
+      (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 2;
+    }
+  });
+
+  it("Health lists them in a table: PR (linked only with a URL), merged by, short sha, when", async () => {
+    history.replaceState(null, "", "/app/health");
+    mount();
+    const t = await screen.findByRole("table", { name: "Merged without review" });
+    expect([...t.querySelectorAll("th")].map((h) => h.textContent)).toEqual(["PR", "Merged by", "Merge commit", "When"]);
+    const rows = [...t.querySelectorAll("tbody tr")] as HTMLElement[];
+    expect(rows.map((r) => r.children[0]!.textContent)).toEqual(["#9", "#8"]);
+    expect(rows[0]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
+    expect(rows[1]!.querySelector("a")).toBeNull();
+    expect(rows[0]!.children[1]!.textContent).toBe("github:7");
+    expect(rows[0]!.children[2]!.textContent).toBe("abcdef1");
   });
 });
 
