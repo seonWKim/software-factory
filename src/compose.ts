@@ -2,7 +2,7 @@
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
 import { mkdir, readFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
@@ -564,6 +564,8 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
+    cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
