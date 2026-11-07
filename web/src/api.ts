@@ -118,6 +118,15 @@ export interface ItemRow {
   /** What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows. */
   need?: { reason: string; command: string | null };
   why?: Why;
+  /** The split parent (null for any other item) and this item's place among its phases. */
+  parent_id?: string | null;
+  phase?: number | null;
+  /** The issue number this item waits on, when it is exactly one (a held phase's previous phase, one dependency). */
+  waiting_on_number?: number | null;
+  /** The item's queued or running run; `position` is a queued run's place in the queue. */
+  run?: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
+  /** The item's latest claim decision; `holder` is "#92", `holder_id` the holding item when it has one. */
+  claim?: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
 }
 
 export interface Items {

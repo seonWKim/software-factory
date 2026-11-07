@@ -328,6 +328,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const out = [];
   for (const r of shown) {
     const it = r.item;
+    const decision = r.decision; // the current run's only: an earlier run's hold is stale
     const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
@@ -353,6 +354,25 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       merge_check,
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
+      parent_id: it.parent_id,
+      phase: it.phase,
+      waiting_on_number: r.input.waiting_on_number ?? null,
+      run: r.run && {
+        kind: r.run.kind,
+        status: r.run.status,
+        attempt: r.run.attempt,
+        worker_id: r.run.lease ? await c.text(r.run.lease.owner) : null,
+        started_at: r.run.started_at,
+        position: r.run.status === "queued" ? r.position : null,
+      },
+      claim: decision && {
+        decision: decision.decision,
+        holder: await c.text(decision.holder_ref),
+        holder_id: decision.holder_work_item_id,
+        approved: decision.approved_by !== null,
+        cost: decision.cost,
+        threshold: decision.threshold,
+      },
     });
   }
   // The closed items count in the facets even when the list leaves them out (the Closed option's count).

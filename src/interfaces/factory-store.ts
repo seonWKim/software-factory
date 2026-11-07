@@ -572,6 +572,8 @@ export interface FactoryStore {
   conflictCounts(project: string): Promise<Map<string, number>>;
   /** The item's claim decisions, oldest first. Read-only. */
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>;
+  /** The latest claim decision of each of the items that has one, in one read (the Items page, one read for every row). Read-only. */
+  listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>>;
   /**
    * `/approve` on a held run: bumps the version and writes a state change (reason `coordination_approved`, the
    * approver as actor, detail = run id, holder, cost, threshold) and sets the decision's `approved_by`, in one
