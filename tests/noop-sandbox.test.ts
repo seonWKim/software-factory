@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox, type ProcessRunner } from "../src/impl/sandbox/noop-sandbox.js";
@@ -267,5 +268,39 @@ describe("NoOpSandbox", () => {
       await mover;
       expect(results).toEqual(Array(10).fill(mainSha));
     }, 30_000);
+  });
+});
+
+describe("NoOpSandbox run folder with a read-only node_modules", () => {
+  it("runs vitest to a pass and writes nothing under node_modules, its cache going to .vite-cache in the run folder", async () => {
+    const { root, repo } = repoWithOrigin();
+    const sbx = new NoOpSandbox(join(root, "worktrees"));
+    const h = await sbx.create({ repo, branch: "factory/wi_ro", base_ref: "main" });
+    // The shared node_modules: a folder of links to the owner's packages, so its top level can be made read-only
+    // without touching the owner's files.
+    const real = dirname(dirname(createRequire(import.meta.url).resolve("vitest/package.json")));
+    const nm = join(h.workdir, "node_modules");
+    mkdirSync(nm);
+    for (const e of readdirSync(real).filter((n) => !n.startsWith("."))) symlinkSync(join(real, e), join(nm, e));
+    await sbx.copyIn(h, join(process.cwd(), "vitest.config.ts"), "vitest.config.ts");
+    mkdirSync(join(h.workdir, "tests"));
+    writeFileSync(
+      join(h.workdir, "tests", "small.test.ts"),
+      'import { expect, it } from "vitest";\nit("passes", () => { expect(1 + 1).toBe(2); });\n',
+    );
+    const before = readdirSync(nm).sort();
+    chmodSync(nm, 0o555);
+    try {
+      const r = await sbx.exec(h, ["node", join(real, "vitest", "vitest.mjs"), "run"], {
+        env: { PATH: process.env.PATH!, HOME: root, TMPDIR: tmpdir(), CI: "1" },
+      });
+      expect(r.stderr + r.stdout).toContain("1 passed");
+      expect(r.exit_code).toBe(0);
+      expect(readdirSync(nm).sort()).toEqual(before);
+      expect(existsSync(join(h.workdir, ".vite-cache"))).toBe(true);
+    } finally {
+      chmodSync(nm, 0o755);
+      await sbx.destroy(h);
+    }
   });
 });

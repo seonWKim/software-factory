@@ -14,6 +14,7 @@ Plugins:
   - `destroy` removes the run folder. Nothing is registered in the factory repo, so `git worktree list` there has no entry for it; a second destroy is a no-op.
   - Fetches in the factory repo are serialized per repo path on the host: `create` (which fetches all of `origin`, so an existing `factory/<id>` branch can be resumed) and `updateBase` wait for each other. A fetch that fails with a ref-lock message (`cannot lock ref`, `incorrect old value`, `unable to update local ref`), meaning another git process moved the ref, is retried up to 3 times with backoff (200, 400, 800 ms); any other failure throws at once.
   - Risk: if the factory repo runs `git gc --prune` during a run and drops an object only a clone still needs, that clone can break. Runs are short, so this is accepted.
+  - Vitest in a run folder: its cache goes to `.vite-cache/` in the run folder (`cacheDir` in `vitest.config.ts`, git-ignored), never to `node_modules/.vite`, because a run folder's `node_modules` may be shared and read-only. Vite loads `vitest.config.ts` itself through a temp file in the nearest `node_modules/.vite-temp`, falling back to a file beside the config when that folder is not writable (EACCES); a test proves `vitest run` passes and writes nothing under a read-only `node_modules`. The sandbox code is unchanged.
   - Enable: `"plugins": { "sandbox": "noop", ... }`. Secrets: none. Settings: `worktrees_dir`.
 
 Switch back / disable: `"sandbox": "noop"`. There is no "off": runs need a workspace.
@@ -21,3 +22,4 @@ Switch back / disable: `"sandbox": "noop"`. There is no "off": runs need a works
 ## History
 
 - 2026-11-07: `updateBase` fetched all of `origin` with `--prune`, unserialized, so parallel runs raced on ref locks. Replaced by the base-only, serialized, retried fetch above (#206).
+- 2026-11-07: vitest used Vite's default cache, `node_modules/.vite`, which fails in a run folder whose `node_modules` is shared and read-only. Replaced by `.vite-cache/` in the run folder, as stated under `noop` above (#225).

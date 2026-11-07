@@ -9,3 +9,4 @@ dist/
 .worktrees/
 .factory/
 web/dist/
+.vite-cache/
