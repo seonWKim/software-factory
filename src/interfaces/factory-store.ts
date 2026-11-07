@@ -13,8 +13,11 @@ import type {
   DependencyState,
   Tier,
   Handoff,
+  FiledPattern,
+  FiledPatternId,
   HostSleep,
   ImproveReport,
+  ImproveReportId,
   ImproveWindow,
   Run,
   RunAttempt,
@@ -157,6 +160,9 @@ export interface NewImproveReport extends ImproveWindow {
   groups: ImproveReport["groups"];
   patterns: ImproveReport["patterns"];
 }
+
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref">;
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -558,11 +564,26 @@ export interface FactoryStore {
    */
   enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
 
-  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+  // Improve reports (design §7). One report per improve run; one filed pattern per (project, pattern key).
 
   /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
   recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
   getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+  /** The newest report of `project` (any project when absent), by created_at then ID; null when none. */
+  getLatestImproveReport(project?: string): Promise<ImproveReport | null>;
+  /** The reports of `project` created at or after `since`, oldest first. Read-only. */
+  listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]>;
+  /** Replaces the groups of report `id` (their filing written after the report). Unknown ID: no change. */
+  setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void>;
+  getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
+  /**
+   * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
+   * returned unchanged, unless `replace` names its report: then that row is claimed for `input.report_id` with
+   * no item (a refiled pattern), a conditional update, so of two claims one wins. Returns the row as stored.
+   */
+  claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern>;
+  /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
+  setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
 
   // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
 

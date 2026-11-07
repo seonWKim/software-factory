@@ -549,8 +549,8 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
   // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
-  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
-  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); written by the
+  // improve filing (issue #308). IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
   `
   CREATE TABLE IF NOT EXISTS improve_reports (
     id              TEXT PRIMARY KEY,

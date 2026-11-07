@@ -16,7 +16,7 @@ import { alarmCommand, alarmText, alarmUntil, alarmsFor, openAlarms } from "./al
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
 import type { FactoryStatus } from "./factory-status.js";
 import { githubBudgetSection, readGitHubBudget } from "./github-budget.js";
-import type { HealthMonitor } from "./health.js";
+import { type HealthMonitor, improveSection } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
@@ -161,6 +161,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     filtersSection(f, facetCounts(rows, f)),
     await itemsSection(c, applyFilters(rows, f), f),
     await d.health.section(d.scanner, { refresh: healthRefresh }),
+    await improveSection(await d.store.getLatestImproveReport(), d.scanner),
     await totalsSection(c),
     await costSection(c),
   ];
