@@ -9,8 +9,9 @@
  *   mechanical: the existing conflict path (an agent step, the resolve run) takes it.
  * - Migration numbers: a MySQL step file the branch adds (`migrations/mysql/NNNN-<name>.sql|ts`) whose number
  *   the base already has is moved, with the branch's other new steps, to the next free numbers, and literal
- *   references to the old file name in the files the branch changed follow. Skipped when the branch also changes
- *   a SQLite schema file, whose numbering lives in code and is a real conflict.
+ *   references to the old file name in the files the branch changed follow (a file still in conflict cannot be
+ *   rewritten; `staleStepRefs` names it for the resolve agent). Skipped when the branch also changes a SQLite
+ *   schema file, whose numbering lives in code and is a real conflict.
  */
 
 /** Where MySQL step files live (design §5 MySQL schema steps). */
@@ -159,6 +160,14 @@ export function renameStepRefs(text: string, plan: readonly Renumbering[]): stri
   let out = text;
   for (const r of plan) out = out.replace(new RegExp(`(?<![0-9A-Za-z])${escape(stem(r.from))}(?![0-9A-Za-z-])`, "g"), stem(r.to));
   return out;
+}
+
+/**
+ * Of `files` (path and working-tree text), those that still name an old step after a renumbering: the ones the
+ * rewrite could not change, such as a file still in conflict, so whoever resolves it uses the new name.
+ */
+export function staleStepRefs(files: readonly { path: string; text: string }[], plan: readonly Renumbering[]): string[] {
+  return plan.length === 0 ? [] : files.filter((f) => renameStepRefs(f.text, plan) !== f.text).map((f) => f.path);
 }
 
 /**

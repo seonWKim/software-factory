@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
 import { Controller, DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
@@ -11,6 +12,8 @@ import type { GitHubCredentials } from "../src/interfaces/github-credentials.js"
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
+import { MYSQL_STEPS_DIR } from "../src/core/mechanical.js";
+import { INLINE_STEPS, STEPS_DIR, inlineStepName, stepProblems } from "../src/impl/store/mysql/migrations.js";
 import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
@@ -608,7 +611,8 @@ function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; ba
     }
     if (a[0] === "checkout-index") return ok();
     if (line.startsWith("diff --name-only -z --no-renames --diff-filter=A")) return ok(z(o.added ?? []));
-    if (a[0] === "diff" && a.length === 6 && a[5] === "HEAD") return ok(z(o.changed ?? []));
+    // The branch's changed files: against HEAD after a committed merge, against the index while one is pending.
+    if (a[0] === "diff" && a.length === 6 && (a[5] === "HEAD" || a[4] === "--cached")) return ok(z(o.changed ?? []));
     if (a[0] === "ls-tree") return ok(z(o.baseSteps ?? []));
     if (a[0] === "mv") {
       const [from, to] = [a.at(-2)!, a.at(-1)!];
@@ -621,7 +625,7 @@ function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; ba
     }
     return exec(h, cmd, opts);
   };
-  return { index, log, moves };
+  return { index, log, moves, tree };
 }
 
 /** Only appended lines on both sides: the base adds one History line, the branch another, at the same place. */
@@ -792,5 +796,119 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const [run] = await f.runs(it, "implement");
     expect(run!.outcome).toMatchObject({ status: "failed" });
     expect(JSON.stringify(run!.outcome)).toContain("scope");
+  });
+
+  /** PR #417's case: main took 0039 (`0039-implicit-verdicts.sql`) while the branch added `0039-sync-lease.sql`. */
+  const STEP = `${MYSQL_STEPS_DIR}0039-sync-lease.sql`;
+  const DOC = "docs/design/05-coordination.md";
+  /** The base's step files up to 0039, from the repo itself (later steps on main do not shift these numbers). */
+  const BASE_STEPS = readdirSync(STEPS_DIR)
+    .filter((f) => f === "README.md" || Number(f.slice(0, 4)) <= 39)
+    .map((f) => `${MYSQL_STEPS_DIR}${f}`);
+  const INLINE = INLINE_STEPS.map(inlineStepName).filter((f) => Number(f.slice(0, 4)) <= 39);
+  const renumbering = (sandbox: FakeSandbox, stages: Record<string, Stages> = {}) =>
+    gitIndex(sandbox, {
+      stages,
+      baseSteps: BASE_STEPS,
+      added: [STEP],
+      changed: [STEP, DOC, ...Object.keys(stages)],
+      tree: { [STEP]: "CREATE TABLE IF NOT EXISTS sync_lease (id INT);\n", [DOC]: "MySQL step `0039-sync-lease.sql` adds the lease.\n" },
+    });
+  /** An update whose merge conflicts in docs/design.md (not appended lines only) queues the resolve run. */
+  async function resolveQueued(f: Awaited<ReturnType<typeof withPr>>) {
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design.md"];
+    await f.unmergeable();
+    expect(await f.w1.tick()).toBe(true);
+    await f.controller.tickRuns();
+    expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
+    f.broker.calls = [];
+  }
+  const resolveOnce = async (f: Awaited<ReturnType<typeof withPr>>) => {
+    expect(await f.w1.tick()).toBe(true);
+    await f.controller.tickRuns();
+  };
+  const at = (log: readonly string[], test: (l: string) => boolean, from = 0) => log.findIndex((l, i) => i >= from && test(l));
+
+  it("a resolve run whose merge is clean renumbers the branch's duplicate step before its snapshot, staged: no agent, the checks run after the commit", async () => {
+    const f = await withPr();
+    expect(BASE_STEPS).toContain(`${MYSQL_STEPS_DIR}0039-implicit-verdicts.sql`);
+    const g = renumbering(f.sandbox, { "docs/design.md": { ancestor: "- a\n", base: "- a\n- b\n", branch: "- A\n" } });
+    await resolveQueued(f);
+    // By the time the resolve run merges, the merge is clean: only the step numbers collide.
+    f.sandbox.mergeExit = 0;
+    f.sandbox.conflicts = [];
+    await resolveOnce(f);
+    expect(g.moves).toEqual([`${STEP} → ${MYSQL_STEPS_DIR}0040-sync-lease.sql`]);
+    expect(g.index[DOC]).toBe("MySQL step `0040-sync-lease.sql` adds the lease.\n");
+    const steps = [...BASE_STEPS, ...Object.keys(g.tree).filter((p) => p.startsWith(MYSQL_STEPS_DIR))].map((p) => p.slice(MYSQL_STEPS_DIR.length));
+    expect(stepProblems([...steps, ...INLINE])).toEqual([]);
+    expect(f.agentCalls("resolve")).toBe(0);
+    // Moved before the snapshot, never committed on its own; the worker's merge commit, then install and checks.
+    const mv = at(g.log, (l) => l.startsWith("git mv "));
+    const snapshot = at(g.log, (l) => l.includes(" add -A"), mv);
+    const commit = at(g.log, (l) => l.startsWith("git commit-tree "), snapshot);
+    expect(mv).toBeGreaterThan(-1);
+    expect(snapshot).toBeGreaterThan(mv);
+    expect(commit).toBeGreaterThan(snapshot);
+    expect(g.log.indexOf("npm ci", commit)).toBeGreaterThan(commit);
+    expect(g.log.indexOf("npm test", commit)).toBeGreaterThan(commit);
+    expect(g.log.some((l) => / commit --no-verify -m Renumber/.test(l))).toBe(false);
+    expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed" });
+    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+  });
+
+  it("a resolve run with a real conflict renumbers before the snapshot too, and its prompt lists the conflicting file that still names the old step", async () => {
+    const f = await withPr();
+    const stages: Record<string, Stages> = { "docs/design.md": { ancestor: "- a\n", base: "- a\n- b\n", branch: "- A\n" } };
+    const g = renumbering(f.sandbox, stages);
+    await resolveQueued(f);
+    f.sandbox.files["docs/design.md"] = "<<<<<<< HEAD\n- A, step 0039-sync-lease\n=======\n- a\n- b\n>>>>>>> origin/main\n";
+    f.sandbox.resolveChanged = ["docs/design.md"];
+    let prompt = "";
+    f.runner.script.resolve = (spec) => {
+      prompt = spec.prompt;
+      return { output: { summary: "s", next_steps: "n" } };
+    };
+    await resolveOnce(f);
+    expect(f.agentCalls("resolve")).toBe(1);
+    expect(g.moves).toEqual([`${STEP} → ${MYSQL_STEPS_DIR}0040-sync-lease.sql`]);
+    // The conflicting file has no merged text to rewrite; the agent is told to use the new name.
+    expect(g.index["docs/design.md"]).toBeUndefined();
+    expect(prompt).toContain("## Migration steps renumbered");
+    expect(prompt).toContain("`0039-sync-lease.sql` → `0040-sync-lease.sql`");
+    expect(prompt).toContain("- `docs/design.md`");
+    expect(prompt).not.toContain(`- \`${DOC}\``);
+    const mv = at(g.log, (l) => l.startsWith("git mv "));
+    expect(at(g.log, (l) => l.includes(" add -A"), mv)).toBeGreaterThan(mv);
+    expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed", conflicts: ["docs/design.md"] });
+  });
+
+  it("a resolve run whose renumbering fails restores the index and goes on as before: the checks run, the merge is pushed", async () => {
+    const f = await withPr();
+    const g = renumbering(f.sandbox, { "docs/design.md": { ancestor: "- a\n", base: "- a\n- b\n", branch: "- A\n" } });
+    await resolveQueued(f);
+    f.sandbox.mergeExit = 0;
+    f.sandbox.conflicts = [];
+    const exec = f.sandbox.exec.bind(f.sandbox);
+    f.sandbox.exec = async (h, cmd, opts) =>
+      cmd[0] === "git" && cmd[1] === "mv"
+        ? { exit_code: 128, signal: null, stdout: "", stderr: "fatal: bad source", timed_out: false }
+        : exec(h, cmd, opts);
+    await resolveOnce(f);
+    expect(f.log.lines.some((l) => l.msg.startsWith("migration renumbering failed"))).toBe(true);
+    expect(g.index).toEqual({});
+    // The index saved before the renumber is copied back, then the tracked files and the steps folder follow it.
+    const save = at(g.log, (l) => /^cp -- \S+ \S+\.sf-renumber$/.test(l));
+    const restore = at(g.log, (l) => /^cp -- \S+\.sf-renumber \S+$/.test(l), save);
+    expect(save).toBeGreaterThan(-1);
+    expect(restore).toBeGreaterThan(save);
+    expect(at(g.log, (l) => l.endsWith(" checkout-index -a -f"), restore)).toBeGreaterThan(restore);
+    expect(at(g.log, (l) => l.endsWith(` clean -fdq -- ${MYSQL_STEPS_DIR}`), restore)).toBeGreaterThan(restore);
+    expect(at(g.log, (l) => l.includes(" add -A"), restore)).toBeGreaterThan(restore);
+    expect(f.agentCalls("resolve")).toBe(0);
+    expect(g.log).toContain("npm test");
+    expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed" });
   });
 });

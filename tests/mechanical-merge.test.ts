@@ -6,6 +6,7 @@ import {
   mergeAppendedConflicts,
   renameStepRefs,
   renumberPlan,
+  staleStepRefs,
   stepFile,
   touchesSqliteSchema,
 } from "../src/core/mechanical.js";
@@ -145,5 +146,15 @@ describe("migration renumbering (design §5, issue #297)", () => {
     expect(edited).toEqual(["migrations/mysql/0026-mine.sql", "docs/design/05-coordination.md"]);
     expect(written["docs/design/05-coordination.md"]).toBe("MySQL step `migrations/mysql/0026-mine.sql`.\n");
     expect(written["migrations/mysql/0026-mine.sql"]).toBe("-- 0026-mine\nCREATE TABLE t (id INT);\n");
+  });
+
+  it("after a plan, the files whose text still names an old step are listed (a conflicted file the rewrite skipped)", () => {
+    const plan = [{ from: "migrations/mysql/0039-sync-lease.sql", to: "migrations/mysql/0040-sync-lease.sql" }];
+    const files = [
+      { path: "docs/design.md", text: "<<<<<<< HEAD\n- step 0039-sync-lease\n=======\n- other\n>>>>>>> origin/main\n" },
+      { path: "docs/a.md", text: "step 0040-sync-lease; 0039-implicit-verdicts\n" },
+    ];
+    expect(staleStepRefs(files, plan)).toEqual(["docs/design.md"]);
+    expect(staleStepRefs(files, [])).toEqual([]);
   });
 });
