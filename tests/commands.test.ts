@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, commandFooter, commandPhase, commandSpec,
-  commandState, commandsFor, commandTableMarkdown, helpReply, parseComment, phaseLabel, prCommandsFor, unknownCommandReply,
+  commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, retryPathsReply,
+  unknownCommandReply,
 } from "../src/core/commands.js";
 import { Controller } from "../src/core/controller.js";
 import { CLI_COMMANDS, cliHelpLine } from "../src/core/local-cli.js";
@@ -45,6 +46,47 @@ describe("parseComment", () => {
   it("/reject and /revise keep the rest of the first line and the lines below", () => {
     expect(parseComment("/reject too big\nsplit it")).toEqual(cmd("reject", "too big\nsplit it"));
     expect(parseComment("/revise   \n")).toEqual(cmd("revise"));
+  });
+});
+
+describe("+paths (issue #280)", () => {
+  it("splits +paths and its paths off the first line; the lines below are the note", () => {
+    expect(parseCommandPaths("+paths src/a.ts docs/b.md\nkeep it small\nand tested")).toEqual({ paths: ["src/a.ts", "docs/b.md"], note: "keep it small\nand tested" });
+    expect(parseCommandPaths("+paths `src/a.ts` ./src/a.ts src/dir/")).toEqual({ paths: ["src/a.ts", "src/dir/"], note: "" });
+    expect(parseCommandPaths("keep it small")).toEqual({ paths: [], note: "keep it small" });
+    expect(parseCommandPaths("")).toEqual({ paths: [], note: "" });
+    // Not the flag: a word that only starts with it, or the flag later in the text.
+    expect(parseCommandPaths("+pathsx a")).toEqual({ paths: [], note: "+pathsx a" });
+    expect(parseCommandPaths("see +paths a")).toEqual({ paths: [], note: "see +paths a" });
+  });
+
+  it("refuses no path, an empty, absolute, `..` or glob path, and more than 10", () => {
+    for (const text of ["+paths", "+paths \nnote", "+paths ``", "+paths ./", "+paths /etc/x", "+paths ~/x", "+paths C:/x", "+paths a/../b",
+      "+paths ..", "+paths src/*.ts", "+paths src/a?.ts", "+paths src/{a,b}.ts", "+paths src/[ab].ts",
+      `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}`).join(" ")}`]) {
+      expect({ text, refused: "refuse" in parseCommandPaths(text) }).toEqual({ text, refused: true });
+    }
+    expect(parseCommandPaths(`+paths ${Array.from({ length: 10 }, (_, i) => `f${i}`).join(" ")}`)).toMatchObject({ paths: expect.any(Array) });
+  });
+
+  it("the /retry +paths reply is exact, parses back to the same paths, and is null when no single reply can allow them", () => {
+    const reply = retryPathsReply(["src/a.ts", "docs/b.md", "src/a.ts"])!;
+    expect(reply).toBe("/retry +paths src/a.ts docs/b.md");
+    const parsed = parseComment(reply);
+    expect(parsed).toMatchObject({ kind: "command", name: "retry" });
+    expect(parseCommandPaths(parsed!.kind === "command" ? parsed!.text : "")).toEqual({ paths: ["src/a.ts", "docs/b.md"], note: "" });
+    expect(retryPathsReply([])).toBeNull();
+    expect(retryPathsReply(["a b.ts"])).toBeNull();
+    expect(retryPathsReply(["src/*.ts"])).toBeNull();
+    expect(retryPathsReply(Array.from({ length: 11 }, (_, i) => `f${i}`))).toBeNull();
+  });
+
+  it("/help and the command table show the +paths usage of /approve and /retry", () => {
+    const help = helpReply({ phase: "spec_pending", has_pr: false });
+    expect(help).toContain("`/approve +paths <path>...`");
+    expect(help).toContain("`/retry +paths <path>...`");
+    expect(commandTableMarkdown()).toContain("`/approve +paths <path>...`");
+    expect(commandTableMarkdown()).toContain("`/retry +paths <path>...`");
   });
 });
 
@@ -292,6 +334,29 @@ describe("footers match what the controller accepts", () => {
         expect(refused[0]!.source).toEqual(issueRef(42));
         expect(refused[0]!.body).toContain(`the item is ${phaseLabel(phase)}`);
       }
+    }
+  });
+
+  it("/retry +paths on a failed review or update run is refused with one reply and nothing changes; on a failed implement run it widens", async () => {
+    const { store, source, controller, itemIn } = await harness();
+    let n = 30_000;
+    for (const phase of ["failed_review", "failed_run", "failed_implement"] as const) {
+      n++;
+      const item = await itemIn(phase, phase === "failed_implement" ? null : 42, n);
+      const e: SourceEvent = { kind: "retry_requested", source: issueRef(n), comment_id: String(n), requester: alice, note: "+paths src/a.ts" };
+      await controller.handleEvent(e);
+      // Refused twice: still one reply. (An applied /retry delivered again is refused as no failed run is left.)
+      if (phase !== "failed_implement") await controller.handleEvent(e);
+      const after = (await store.getWorkItem(item.id))!;
+      const refused = source.comments.filter((c) => c.marker === `<!-- factory:refused:${n} -->`);
+      if (phase === "failed_implement") {
+        expect(refused).toEqual([]);
+        expect(after.allowed_paths).toEqual([...item.allowed_paths, "src/a.ts"]);
+        continue;
+      }
+      expect(after).toEqual(item);
+      expect(refused).toHaveLength(1);
+      expect(refused[0]!.body).toContain(`a ${phase === "failed_review" ? "review" : "update"} run`);
     }
   });
 

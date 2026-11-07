@@ -72,6 +72,8 @@ import type {
   ItemMessage,
   LeaseResult,
   ListenerLease,
+  MergeCheck,
+  NewMergeCheck,
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
@@ -1471,6 +1473,42 @@ export class SqlFactoryStore implements FactoryStore {
     return rowToSettingChange(row!);
   }
 
+  // Merge checks (design §5 Merge check, issue #248): one latest row per item, replaced on each check.
+
+  async recordMergeCheck(c: NewMergeCheck): Promise<MergeCheck> {
+    const checked_at = this.now();
+    const values: SqlValue[] = [c.mergeable ? 1 : 0, JSON.stringify(c.conflicts), c.head_sha, c.base_sha, checked_at];
+    const update = () =>
+      this.db.run(
+        "UPDATE merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?",
+        [...values, c.work_item_id],
+      );
+    // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
+    if ((await update()) === 0) {
+      try {
+        await this.db.run(
+          "INSERT INTO merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)",
+          [...values, c.work_item_id],
+        );
+      } catch (err) {
+        if (!this.db.isDuplicateKey(err)) throw err;
+        await update();
+      }
+    }
+    return { ...c, conflicts: [...c.conflicts], checked_at };
+  }
+
+  async getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null> {
+    const [row] = await this.db.all("SELECT * FROM merge_checks WHERE work_item_id = ?", [work_item_id]);
+    return row ? rowToMergeCheck(row) : null;
+  }
+
+  async listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]> {
+    if (work_item_ids.length === 0) return [];
+    const rows = await this.db.all(`SELECT * FROM merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
+    return rows.map(rowToMergeCheck);
+  }
+
   // Worker processes (design §5 Coordination, 2026-11-07)
 
   async reportWorkerProcess(r: WorkerProcessReport): Promise<WorkerProcess> {
@@ -2011,6 +2049,17 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
     started_at,
     ended_at,
     duration_ms: Number.isFinite(start) && Number.isFinite(end) ? end - start : null,
+  };
+}
+
+function rowToMergeCheck(row: Row): MergeCheck {
+  return {
+    work_item_id: row.work_item_id as WorkItemId,
+    mergeable: Number(row.mergeable) === 1,
+    conflicts: JSON.parse(row.conflicts as string) as string[],
+    head_sha: row.head_sha as string,
+    base_sha: row.base_sha as string,
+    checked_at: row.checked_at as Timestamp,
   };
 }
 

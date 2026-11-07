@@ -259,6 +259,8 @@ export async function loadConfig(
       dirname(secretsFile),
       join(stateDir, "db"),
       join(stateDir, "storage"),
+      // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
+      join(stateDir, "test-mysql.url"),
       join(home, ".ssh"),
       join(home, ".aws"),
       join(home, ".config", "gh"),
@@ -452,6 +454,8 @@ export async function build(
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     settings,
+    // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
+    sandbox,
   });
 
   const worker = new WorkerPool({
