@@ -1,7 +1,7 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
-// POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand) and POST /api/v1/pauses/resume
-// (postResume), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session or /api/v1/pauses)
-// in x-csrf-token.
+// POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
+// (postResume) and POST /api/v1/standing (postStanding), each with the per-process CSRF token (from GET
+// /api/v1/settings, /api/v1/session, /api/v1/pauses or /api/v1/standing) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -411,6 +411,36 @@ export interface PausesView {
   csrf_token: string | null;
 }
 
+/** One standing rule of `/api/v1/standing` (design 05-standing-approvals). `last_used_at`: null, not recorded yet. */
+export interface StandingRuleRow {
+  rule: string;
+  gate: string;
+  tier: number;
+  threshold: number;
+  enabled: boolean;
+  set_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  last_used_at: string | null;
+}
+
+/** A proposal to turn a rule on that no one has answered yet. */
+export interface StandingProposalRow {
+  id: string;
+  rule: string;
+  run_length: number;
+  threshold: number;
+  created_at: string;
+}
+
+/** `/api/v1/standing`: the rules and the pending proposals; `csrf_token` is null when the server has no write route. */
+export interface StandingView {
+  as_of: string;
+  csrf_token: string | null;
+  rules: StandingRuleRow[];
+  proposals: StandingProposalRow[];
+}
+
 declare const __FACTORY_REV__: string | null | undefined;
 
 /** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
@@ -486,6 +516,7 @@ export const API = {
   settings: "/api/v1/settings",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
+  standing: "/api/v1/standing",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
@@ -547,6 +578,16 @@ export async function postCommand(token: string, id: string, command: string, no
 export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
   if (r.ok) return { ok: true, ended: r.value.ended === true };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
+export async function postStanding(
+  token: string,
+  body: { rule: string; enabled: boolean; proposal?: string },
+): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
+  if (r.ok) return { ok: true, changed: r.value.changed === true };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

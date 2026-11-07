@@ -1,8 +1,19 @@
 # 5. Coordination: standing approvals
 
+- **The page shows and changes rules** (decision changed 2026-11-08, issue #300, phase 3 of 3 of #293; before: rules
+  and proposals were shown and changed only through `/standing`, see History). The Settings page's "Standing
+  approvals" section lists each rule (gate, tier, the effective threshold, on or off, who set it, created, and last
+  used, which is not recorded yet and shows "not recorded") with an on or off switch, and each pending proposal (its
+  rule not on and not written since the proposal was stored, read from the stored rows alone) with Accept and
+  Decline. Read: `GET /api/v1/standing`; write: `POST /api/v1/standing` with `{ rule, enabled, proposal? }`, behind
+  the resume route's guards and its owner check (`approve_spec`, the `/approve` check), so the page accepts what
+  `/standing accept|decline` accepts and refuses any rule but `spec-t1`. A rule already in the asked state is not
+  written. Each write is the rule row (`set_by` = the factory user ID) and one log line, with no audit row; a stored
+  per-person audit record (enterprise) is a follow-up. Routes and guards: `09-dashboard-app.md`. Solo and
+  enterprise: one code path; solo, the user is the linked local account or `cli_user`; a team member's own ID goes in
+  `set_by`.
 - **A rule acts at the spec gate** (decision changed 2026-11-07, issue #299, phase 2 of 3 of #293; before: phase 1
-  recorded and checked, and nothing acted on a rule, see History). Phase 3 (showing rules and proposals on the status
-  page) is a separate item.
+  recorded and checked, and nothing acted on a rule, see History).
   - **One rule: `spec-t1`.** A rule ID is `<gate>-t<tier>`; the only rule is tier 1 specs at the spec gate
     (`STANDING_TIER`), so a rule never approves a spec above tier 1. `/standing accept|decline` of any other ID is refused.
   - **Proposal.** After an `/approve` (comment, CLI or app request) is applied, the controller reads the spec decisions of
@@ -64,3 +75,6 @@
 - **A rule acts at the spec gate** (decision changed 2026-11-07, issue #299). Before: spec decisions were recorded and
   checked and nothing acted on them; no command accepted or declined a rule, no proposal was posted, and
   `standing_approvals.threshold` was named as a config key to be wired later.
+- **The page shows and changes rules** (decision changed 2026-11-08, issue #300). Before: phase 3 was named as a
+  separate item; rules and proposals were shown and changed only through `/standing`, and the status page had no route
+  for them.
