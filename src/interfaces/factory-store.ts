@@ -26,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -132,6 +135,17 @@ export interface NewImproveReport extends ImproveWindow {
   project: string;
   groups: ImproveReport["groups"];
   patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -516,6 +530,20 @@ export interface FactoryStore {
   /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
   recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
   getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
 
   // Coordination (design §5, 2026-11-03)
 
