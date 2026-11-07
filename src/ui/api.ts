@@ -23,7 +23,8 @@ import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { type Why, deadlocked } from "./why.js";
+import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import type { Why } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -47,13 +48,16 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
 }
 
+/** The API's dependencies: the pause routes' and the overview's system actions'. */
+export type ApiDeps = PauseDeps & SystemDeps;
+
 /** Answers one GET (or HEAD) under /api/v1. */
-export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
+export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   const path = url.pathname.slice("/api/v1".length);
   const c = new ApiCtx(d);
   switch (path) {
     case "/overview":
-      return ok(await overview(c));
+      return ok(await overview(c, url.searchParams));
     case "/items":
       return items(c, url.searchParams);
     case "/runs":
@@ -124,7 +128,7 @@ class ApiCtx {
   readonly w: Withholder;
   readonly now: Date;
 
-  constructor(readonly d: UiDeps) {
+  constructor(readonly d: UiDeps & SystemDeps) {
     this.w = new Withholder(d.scanner);
     this.now = d.clock.now();
   }
@@ -212,12 +216,11 @@ async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
   return out;
 }
 
-async function overview(c: ApiCtx) {
+async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
   const running = await s.listRunsByStatus(["running"], LIST_LIMIT);
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
-  const needs_you = (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await deadlocks(c, [...running, ...queued]));
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
@@ -235,12 +238,22 @@ async function overview(c: ApiCtx) {
     error: await c.text(status.error ?? null),
     pending: status.pending ?? [],
   };
+  // System actions (design §9 Status page): store reads and in-process values only, no forge call.
+  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, dashboardRev: parseRevision(params.get("rev")) });
+  const system_actions = [];
+  for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
+  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
+    /** The git revision this UI server runs; the app compares it with the one built into it. */
+    server_rev: c.d.revision ?? null,
     plugins: c.d.plugins ?? { issues: null, prs: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you,
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
+    system_actions,
+    /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
+    github_token_days: token,
     running: running.length,
     queued: queued.length,
     last_24h: {
@@ -250,25 +263,6 @@ async function overview(c: ApiCtx) {
     },
     unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
-}
-
-/**
- * Open items not blocked on a person whose current run's latest claim decision is a deadlock: they are in Needs
- * you too (issue #310). One claim-decision read per item with an active implement run.
- */
-async function deadlocks(c: ApiCtx, active: readonly Run[]): Promise<number> {
-  const s = c.d.store;
-  const seen = new Set<WorkItemId>();
-  let n = 0;
-  for (const r of active.filter((x) => x.kind === "implement")) {
-    if (seen.has(r.work_item_id)) continue;
-    seen.add(r.work_item_id);
-    const d = (await s.listClaimDecisions(r.work_item_id)).at(-1) ?? null;
-    if (!d || !active.some((x) => x.work_item_id === r.work_item_id && deadlocked(d, x))) continue;
-    const it = await s.getWorkItem(r.work_item_id);
-    if (it && it.stage !== "CLOSED" && it.blocked_on !== "human") n++;
-  }
-  return n;
 }
 
 const MERGES_DEFAULT = 50;
