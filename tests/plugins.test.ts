@@ -8,6 +8,7 @@ import type { WorkerDeps } from "../src/core/worker.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -75,6 +76,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
   test_database: { none: NoTestDatabase },
+  // Optional with no default (issue #172): the default selection builds no forge.
+  forge: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -176,8 +179,14 @@ describe("plugin registry: defaults", () => {
       test_database: "none",
     });
     const ctx = await context(loaded);
+    expect(loaded.plugins).not.toHaveProperty("forge");
     for (const kind of PLUGIN_KINDS) {
       const name = loaded.plugins[kind];
+      if (REGISTRY[kind].optional) {
+        expect(name, kind).toBeUndefined();
+        continue;
+      }
+      if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
       expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
       if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
@@ -490,6 +499,27 @@ describe("plugin registry: existing config keys keep working", () => {
     expect(loaded.store).toEqual({ type: "mysql", host: "db.internal", port: 3307, database: "sf_other", user: "sf_user" });
   });
 
+  it("local commands get the local auth plugin whatever auth selects for GitHub; the per-origin form names both", async () => {
+    const authOf = async (auth: unknown) => {
+      const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+      try {
+        const d = (built.controller as unknown as { d: { auth: unknown; local_auth: unknown } }).d;
+        return [d.auth, d.local_auth];
+      } finally {
+        await built.close();
+      }
+    };
+    const [gh, local] = await authOf("github");
+    expect(gh).toBeInstanceOf(GitHubAuthProvider);
+    expect(local).toBeInstanceOf(LocalAuthProvider);
+    const [gh2, local2] = await authOf({ github_issue: "github", local: "none" });
+    expect(gh2).toBeInstanceOf(GitHubAuthProvider);
+    expect(local2).toBeInstanceOf(NoAuthProvider);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack: "local" } }))).rejects.toThrow(/unknown auth origin "slack"/);
+    await expect(loadConfig(root({ ...REAL, auth: { local: "local" } }))).rejects.toThrow(/auth needs "github_issue"/);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", local: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
+  });
+
   it("top-level auth none gives NoAuthProvider", async () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
     const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
@@ -743,7 +773,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 16 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(16);
+  it("covers 17 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(17);
   });
 });

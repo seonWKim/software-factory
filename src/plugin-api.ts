@@ -6,6 +6,7 @@
 // module only.
 
 import type { Loaded } from "./compose.js";
+import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
@@ -13,6 +14,7 @@ import type { Capability, CapabilitySearch } from "./interfaces/capability-searc
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -43,9 +45,16 @@ export interface Instances {
   awake: KeepAwake;
   github_auth: GitHubCredentials;
   test_database: TestDatabase;
+  forge: Forge;
 }
 
 export type PluginKind = keyof Instances;
+
+/**
+ * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
+ * selects nothing. Never a guard.
+ */
+export type OptionalKind = "forge";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -85,6 +94,7 @@ export interface Contexts {
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
   /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
   test_database: BaseContext & { secrets: SecretStore };
+  forge: BaseContext & { github: GitHubClient };
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
@@ -115,7 +125,10 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   create: PluginFactory<K>;
   /** The secret names this plugin reads (none if left out); see declaredSecrets. */
   secrets?: readonly SecretDeclaration[];
-  /** Absent: not a default. store and auth take none: their top-level config keys always pick one. */
+  /**
+   * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
+   * kinds (forge) take none either: leaving their key out selects nothing.
+   */
   default?: PluginDefault;
 }
 
@@ -137,6 +150,8 @@ export interface InterfaceEntry<K extends PluginKind> {
   configKey: string;
   /** Guards can be switched but never disabled (architecture §5). */
   guard: boolean;
+  /** Optional kinds (forge): no default, and an absent value or "none" selects nothing. Never a guard. */
+  optional: boolean;
   plugins: Readonly<Record<string, PluginFactory<K>>>;
   /**
    * The secret names each plugin reads, one per plugin name (an empty list for none). The SecretStore
@@ -153,13 +168,46 @@ export type Registry = { readonly [K in PluginKind]: InterfaceEntry<K> };
  * One plugin name per interface, as selected by config. `plugins.source` may list several sources (design
  * 2026-11-01): then `sources` holds them all, in config order, and `source` is the first. `plugins.runner` and
  * `plugins.llm` may list a fallback chain (design 2026-11-07) the same way, in `runners` and `llms`. A single
- * name, or a list of one, leaves the list out, so the selection is exactly what one name always gave.
+ * name, or a list of one, leaves the list out, so the selection is exactly what one name always gave. An
+ * optional kind (forge) is absent when config selects none.
  */
-export type Selection = { [K in PluginKind]: string } & {
+export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & { [K in OptionalKind]?: string } & {
   sources?: readonly string[];
   runners?: readonly string[];
   llms?: readonly string[];
+  /** The auth plugin for local commands (CLI, local UI), when `auth` names one per origin (issue #318). */
+  local_auth?: string;
 };
+
+/** The origins `auth` can name a plugin for (issue #318). `slack_thread` waits for a Slack source. */
+const AUTH_ORIGINS = ["github_issue", "local"] as const;
+
+/**
+ * `auth` per command origin (issue #318). A string (the form before) selects the plugin for GitHub comments;
+ * local commands then use `local`. An object maps origins to plugins: `github_issue` is required, `local`
+ * optional (default `local`).
+ */
+export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { github_issue: raw };
+  const given = raw as Record<string, unknown>;
+  const problems: string[] = [];
+  for (const key of Object.keys(given)) {
+    if (!(AUTH_ORIGINS as readonly string[]).includes(key)) {
+      problems.push(`unknown auth origin "${key}"; known origins: ${AUTH_ORIGINS.join(", ")}${suggestion(key, [...AUTH_ORIGINS])}`);
+    }
+  }
+  if (!Object.hasOwn(given, "github_issue")) problems.push('auth needs "github_issue": the auth plugin for GitHub comments');
+  if (problems.length > 0) throw new ConfigKeyError(problems);
+  return Object.hasOwn(given, "local") ? { github_issue: given.github_issue, local: given.local } : { github_issue: given.github_issue };
+}
+
+/**
+ * The auth plugin that authorizes commands from the local CLI and the local UI (issue #318): `auth.local` in the
+ * per-origin form, else `local`, whatever `auth` selects for GitHub comments. Local commands never depend on it.
+ */
+export function selectedLocalAuth(selection: Selection): string {
+  return selection.local_auth ?? "local";
+}
 
 /** Every selected SourceAdapter plugin name, in config order: `sources`, or `[source]` when one is selected. */
 export function selectedSources(selection: Selection): readonly string[] {
@@ -180,7 +228,8 @@ function selectedNames(selection: Selection, kind: PluginKind): readonly string[
   if (kind === "source") return selectedSources(selection);
   if (kind === "runner") return selectedRunners(selection);
   if (kind === "llm") return selectedLlms(selection);
-  return [selection[kind]];
+  const name = selection[kind];
+  return name === undefined ? [] : [name];
 }
 
 /**

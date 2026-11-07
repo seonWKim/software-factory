@@ -8,6 +8,8 @@
 //
 // Guards (SecretStore, EgressScanner, ToolBroker; docs/architecture.md §5, G1–G6) can be switched to
 // another plugin, but never disabled: config that selects nothing for a guard fails at startup.
+//
+// Optional kinds (Forge, issue #172) have no default: leaving their key out, or "none", selects nothing.
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -45,7 +47,8 @@ export type {
   SecretDeclaration,
   Selection,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedRunners, selectedSources } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
+import { authByOrigin } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -54,26 +57,29 @@ interface KindInfo {
   configKey: string;
   /** Guards can be switched but never disabled (architecture §5). */
   guard: boolean;
+  /** Optional kinds take no default; an absent value or "none" selects nothing. Never a guard. */
+  optional: boolean;
 }
 
 /** The interfaces, in order. A new interface is the only reason to edit this file. */
 const KINDS: { readonly [K in PluginKind]: KindInfo } = {
-  store: { interface: "FactoryStore", configKey: "store.type", guard: false },
-  sandbox: { interface: "Sandbox", configKey: "plugins.sandbox", guard: false },
-  runner: { interface: "AgentRunner", configKey: "plugins.runner", guard: false },
-  llm: { interface: "LLMProvider", configKey: "plugins.llm", guard: false },
-  auth: { interface: "AuthProvider", configKey: "auth", guard: false },
-  secrets: { interface: "SecretStore", configKey: "plugins.secrets", guard: true },
-  egress: { interface: "EgressScanner", configKey: "plugins.egress", guard: true },
-  broker: { interface: "ToolBroker", configKey: "plugins.broker", guard: true },
-  storage: { interface: "SharedStorage", configKey: "plugins.storage", guard: false },
-  source: { interface: "SourceAdapter", configKey: "plugins.source", guard: false },
-  capability: { interface: "CapabilitySearch", configKey: "plugins.capability", guard: false },
-  clock: { interface: "Clock", configKey: "plugins.clock", guard: false },
-  updater: { interface: "Updater", configKey: "plugins.updater", guard: false },
-  awake: { interface: "KeepAwake", configKey: "plugins.awake", guard: false },
-  github_auth: { interface: "GitHubCredentials", configKey: "plugins.github_auth", guard: false },
-  test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false },
+  store: { interface: "FactoryStore", configKey: "store.type", guard: false, optional: false },
+  sandbox: { interface: "Sandbox", configKey: "plugins.sandbox", guard: false, optional: false },
+  runner: { interface: "AgentRunner", configKey: "plugins.runner", guard: false, optional: false },
+  llm: { interface: "LLMProvider", configKey: "plugins.llm", guard: false, optional: false },
+  auth: { interface: "AuthProvider", configKey: "auth", guard: false, optional: false },
+  secrets: { interface: "SecretStore", configKey: "plugins.secrets", guard: true, optional: false },
+  egress: { interface: "EgressScanner", configKey: "plugins.egress", guard: true, optional: false },
+  broker: { interface: "ToolBroker", configKey: "plugins.broker", guard: true, optional: false },
+  storage: { interface: "SharedStorage", configKey: "plugins.storage", guard: false, optional: false },
+  source: { interface: "SourceAdapter", configKey: "plugins.source", guard: false, optional: false },
+  capability: { interface: "CapabilitySearch", configKey: "plugins.capability", guard: false, optional: false },
+  clock: { interface: "Clock", configKey: "plugins.clock", guard: false, optional: false },
+  updater: { interface: "Updater", configKey: "plugins.updater", guard: false, optional: false },
+  awake: { interface: "KeepAwake", configKey: "plugins.awake", guard: false, optional: false },
+  github_auth: { interface: "GitHubCredentials", configKey: "plugins.github_auth", guard: false, optional: false },
+  test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false, optional: false },
+  forge: { interface: "Forge", configKey: "plugins.forge", guard: false, optional: true },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];
@@ -141,6 +147,7 @@ function checkDescriptor(file: string, d: unknown): PluginDescriptor {
     if (TOP_LEVEL_KINDS.includes(kind as PluginKind)) {
       throw bad(`${kind} plugins take no default: the top-level "${info.configKey}" config key always picks one`);
     }
+    if (info.optional) throw bad(`${kind} plugins take no default: ${info.interface} is optional, selected only by "${info.configKey}"`);
     const platforms = (dflt as { platforms?: unknown } | null)?.platforms;
     const ok = dflt === true || (Array.isArray(platforms) && platforms.length > 0 && platforms.every((p) => typeof p === "string"));
     if (!ok) throw bad('default must be true or { platforms: ["darwin", ...] }');
@@ -192,7 +199,7 @@ function registryOf(found: readonly Found[]): Registry {
         }
       }
     }
-    if (!info.guard && !TOP_LEVEL_KINDS.includes(kind) && defaults.fallback === undefined) {
+    if (!info.guard && !info.optional && !TOP_LEVEL_KINDS.includes(kind) && defaults.fallback === undefined) {
       const files = mine.length > 0 ? mine.map((f) => f.file).join(", ") : "no plugin files";
       errors.push(`${label} has no default plugin; mark one descriptor \`default: true\` (${files})`);
     }
@@ -280,7 +287,8 @@ export function defaultPlugins(
 }
 
 /**
- * Throws unless `value` names a plugin registered for `kind`. For guards, any disabling value (missing,
+ * Throws unless `value` names a plugin registered for `kind` (optional kinds: selectPlugins skips an off value
+ * before it gets here). For guards, any disabling value (missing,
  * null, false, "", "none", or anything that is not a registered name) fails with the guard message.
  */
 export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown): string {
@@ -357,10 +365,15 @@ export function selectPlugins(
     }
   }
   chosen.store = raw.store.type;
-  chosen.auth = raw.auth;
+  const auth = authByOrigin(raw.auth);
+  chosen.auth = auth.github_issue;
   const out = {} as Selection;
+  if (auth.local !== undefined) out.local_auth = checkPlugin(registry, "auth", auth.local);
   for (const kind of PLUGIN_KINDS) {
-    if (!(LIST_KINDS as readonly string[]).includes(kind)) out[kind] = checkPlugin(registry, kind, chosen[kind]);
+    if ((LIST_KINDS as readonly string[]).includes(kind)) continue;
+    // An optional kind left out or set to an off value selects nothing: the key stays out of the selection.
+    if (registry[kind].optional && DISABLING.has(chosen[kind]) && !Object.hasOwn(registry[kind].plugins, chosen[kind] as string)) continue;
+    out[kind] = checkPlugin(registry, kind, chosen[kind]);
   }
   // A list of one is the single name: the selection stays exactly what it always was.
   const lists = { source: "sources", runner: "runners", llm: "llms" } as const;

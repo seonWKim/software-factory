@@ -1,6 +1,6 @@
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItemId } from "../../core/types.js";
-import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import { localIdentity } from "../../core/local-cli.js";
 import type { CliCommand, FactoryStore } from "../../interfaces/factory-store.js";
 import type { PollResult, PollSource, SourceCloseReason, SourceEvent } from "../../interfaces/source-adapter.js";
 import { commentEvent } from "./comment-event.js";
@@ -64,13 +64,8 @@ export class LocalSource implements PollSource {
   }
 }
 
-/** Provider `local`, subject the actor after `local:`. */
-function identity(actor: string): ExternalIdentity {
-  return { provider: "local", subject: actor.startsWith("local:") ? actor.slice("local:".length) : actor };
-}
-
 /** One command as the event the same comment on GitHub gives (src/impl/source/github-issue-source.ts). */
 function toEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
   const text = typeof c.args.text === "string" ? c.args.text : "";
-  return commentEvent(source, c.key, identity(c.actor), text === "" ? `/${c.command}` : `/${c.command} ${text}`);
+  return commentEvent(source, c.key, localIdentity(c.actor), text === "" ? `/${c.command}` : `/${c.command} ${text}`);
 }

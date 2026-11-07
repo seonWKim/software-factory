@@ -237,11 +237,12 @@ describe("plugin discovery: bad descriptors fail startup", () => {
 });
 
 describe("plugin discovery: the build", () => {
-  it("npm run build empties dist/ before tsc, so a deleted plugin leaves no stale descriptor", () => {
+  it("npm run build compiles into a fresh staging folder, so a deleted plugin leaves no stale descriptor", () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")) as { scripts: Record<string, string> };
-    const build = pkg.scripts.build!;
-    expect(build).toMatch(/rmSync\('dist'/);
-    expect(build.indexOf("rmSync")).toBeLessThan(build.indexOf("tsc"));
+    expect(pkg.scripts.build).toBe("node scripts/build.mjs");
+    const script = readFileSync(join(REPO_ROOT, "scripts", "build.mjs"), "utf8");
+    expect(script).toMatch(/const stagedDist = stagingPath\(dist\)/);
+    expect(script).toMatch(/"--outDir", stagedDist/);
     for (const script of ["factory", "setup"]) expect(pkg.scripts[script], script).toMatch(/npm run (--silent )?build/);
   });
 });

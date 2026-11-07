@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
@@ -11,7 +13,7 @@ import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./sess
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { cliUserConfig } from "./core/config.js";
-import { CLI_COMMANDS, CLI_TOP_WORDS, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
+import { CLI_COMMANDS, CLI_TOP_WORDS, type CliEnvironment, cliIdentity, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -21,13 +23,13 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
-import { selectedSources } from "./plugins.js";
+import { createPlugin, selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
+import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
@@ -78,8 +80,11 @@ const USAGE = `factory <command>
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
 ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
-               local work items (plugins.source includes "local"), acting as cli_user; no GitHub call
-  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
+               local work items (plugins.source includes "local"), acting as the CLI identity (cli_user, else
+               local:<git user.email>, else local:<OS user>, else local:anonymous), authorized by the local auth
+               plugin (auth.local, default "local"); no GitHub call
+  issue        create / comment / edit <number> --body-file <path> / title / sub-issue through the factory's
+               GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
@@ -90,7 +95,7 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
-  const app = await build(loaded);
+  const app = await build(loaded, { signal });
   const loops = [];
   if (cmd !== "worker") loops.push(app.controller.run(signal));
   if (cmd !== "controller") loops.push(app.worker.run(signal));
@@ -127,7 +132,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
-        const app = await build(loaded);
+        const app = await build(loaded, { signal: stop.signal });
         await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
@@ -209,8 +214,10 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
             store,
             base: settingsBase(loaded),
             repo: { owner, name },
-            // Only for --project: the configured repo's key, from the forge (design 2026-11-01).
+            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07).
             resolveProject: async () => {
+              const stored = await storeProjectResolver(store, { owner, name })();
+              if (stored) return stored;
               const p = new Plugins(loaded);
               const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
               return resolveProject(github, { owner, name });
@@ -227,8 +234,9 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
     }
     case "ui": {
-      // An ID, never a display name: the OS login of the local owner, as `factory settings` stores it.
-      const parts = await buildUiParts(loaded, { actor: `local:${userInfo().username}` });
+      // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
+      // sees one user for the UI and the terminal.
+      const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
       const ui = await startUi(
         {
           store: parts.store,
@@ -242,11 +250,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
-          health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
+          // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
+          health: new HealthMonitor(
+            async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))],
+            parts.clock,
+          ),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // The configured shared storage, read only by the transcript view (byte ranges, design §9).
+          storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
           // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
           commands: parts.commands,
         },
@@ -377,6 +391,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     case "retry":
     case "revise":
     case "reject":
+    case "users":
       return localCli(loaded, cmd, args);
     case "canary": {
       const report = await runCanary(loaded);
@@ -389,6 +404,24 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
   }
 }
 
+/** What the environment says about the operator (issue #318): git's user.email in the repo, then the OS user. */
+async function cliEnvironment(root: string): Promise<CliEnvironment> {
+  let gitEmail: string | null = null;
+  try {
+    const r = await promisify(execFile)("git", ["config", "user.email"], { cwd: root, timeout: 5000 });
+    gitEmail = r.stdout.trim() || null;
+  } catch {
+    gitEmail = null;
+  }
+  let osUser: string | null = null;
+  try {
+    osUser = userInfo().username || null;
+  } catch {
+    osUser = process.env.USER || process.env.USERNAME || null;
+  }
+  return { gitEmail, osUser };
+}
+
 /**
  * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
@@ -399,13 +432,14 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
     console.error(action.error);
     return 1;
   }
-  let user;
+  let cliUser;
   try {
-    user = cliUserConfig(loaded.file);
+    cliUser = cliUserConfig(loaded.file);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;
   }
+  const identity = cliIdentity(cliUser, await cliEnvironment(loaded.root));
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const store = await buildStatsStore(loaded);
   try {
@@ -415,7 +449,7 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
     const r = await runLocalCli(
       {
         store,
-        user,
+        identity,
         project: async () => (await resolveProject())?.key ?? null,
         read: (path) => readFile(path, "utf8"),
         newId: () => randomUUID(),
@@ -423,7 +457,8 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
       action,
     );
     for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
-    if (r.code === 0 && action.action !== "list" && action.action !== "show" && !selectedSources(loaded.plugins).includes("local")) {
+    const writes = action.action === "create" || action.action === "command";
+    if (r.code === 0 && writes && !selectedSources(loaded.plugins).includes("local")) {
       console.error('note: plugins.source does not include "local", so the controller does not read local items yet');
     }
     return r.code;
@@ -447,7 +482,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
       const r = await addCase(
         {
           store,
-          project: await resolveProject(github, { owner, name }),
+          project: (await storeProjectResolver(store, { owner, name })()) ?? (await resolveProject(github, { owner, name })),
           github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
           scanner: await p.scanner(secrets),
           casesDir: join(loaded.root, "golden", "cases"),
