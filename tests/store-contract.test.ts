@@ -852,6 +852,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await sorted()).toEqual(before);
     });
 
+    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+      const { store, clock } = await make();
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      const next = later(clock, 60_000);
+      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+      // The same due time again, also with another next time: already taken, nothing moves.
+      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+    });
+
+    it("a stall right after a model_stall pause ended before its probe time starts a new pause", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 60_000), "model_stall");
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.pauseClaims(later(clock, 60_000), "model_stall")).toMatchObject({ started: true });
+      expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
+    });
+
+    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+      const { store, clock } = await make();
+      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      await store.endClaimPause("model_stall");
+      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
     it("endClaimPause refuses model_stall_since and model_answered, which are not pauses of their own", async () => {
       const { store } = await make();
       await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);

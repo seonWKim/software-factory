@@ -56,7 +56,6 @@ import {
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
-  MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
   SESSION_RELEASED,
@@ -622,23 +621,25 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, one short prompt on the cheap
-   * model class through the LLM provider. An answer ends the pause (`model_answered`), so claims resume; no
-   * answer (an error, a refusal, a throw or no reply within stall_ms) moves the pause probe_interval_ms later.
-   * Both are store writes that only move times later, so two replicas probing at once end in the same state.
+   * The stall pause's probe (design §5 Restarts): once its probe time has passed, any live controller may probe
+   * it, and the store's conditional move of the probe time (`takeStallProbe`) lets one replica ask per due time.
+   * One short prompt on the cheap model class through the LLM provider: an answer ends the pause as
+   * `endClaimPause("model_stall")` does (`model_answered`), so claims resume; no answer (an error, a refusal, a
+   * throw or no reply within stall_ms) keeps it and moves the probe probe_interval_ms after the failed probe.
    * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
    */
   private async probeStep(): Promise<void> {
     const due = await this.d.store.getClaimPause(MODEL_STALL);
+    const interval = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
     if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
+    if (!(await this.d.store.takeStallProbe(due, iso(this.d.clock.now().getTime() + interval))).taken) return;
     const answered = this.d.llm ? await this.probe(this.d.llm) : true;
-    const now = this.d.clock.now().getTime();
     if (answered) {
-      await this.d.store.pauseClaims(iso(now), MODEL_ANSWERED);
+      await this.d.store.endClaimPause(MODEL_STALL);
       this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(now + (this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms)), MODEL_STALL);
+    const next = await this.d.store.pauseClaims(iso(this.d.clock.now().getTime() + interval), MODEL_STALL);
     this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
   }
 
