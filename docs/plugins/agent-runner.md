@@ -8,6 +8,7 @@ Plugins:
   - Enable: `"plugins": { "runner": "claude-code", ... }`.
   - Secrets: `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) from the `SecretStore`, passed to the harness only. Settings: `models` (a model name for each of `cheap`, `standard` and `strong`, all three required; shipped: `haiku`, `sonnet`, `opus`), `run_timeout_ms`; the `claude` CLI on `PATH`. Which class each run uses is `model_by` (design §4), not a plugin setting.
   - Granted tools (`exposes_tools`): a run with `tool_grants` gets one MCP server, `factory_tools`, a bridge that forwards each call over a private Unix socket to the worker process, which checks the grant and the lease, calls the broker and scans the result. Other runners refuse a run with grants.
+  - Sandbox network: `sandbox.network.allowLocalBinding: true`, so tests that start a local server (`listen 127.0.0.1`) pass inside the run; before, they failed with `listen EPERM` and agents finished without a green run. Only localhost: no `sandbox.network.allowedDomains` entry is set, so `registry.npmjs.org` and every other host stay denied (in `-p` mode nobody can approve one). Dependencies are installed by the factory before the run (`repo.install_command`); the prompts tell agents not to run `npm install`, `npm ci` or `npx` for a missing package, and to run tests through `npm test` (`npm test -- <file>` for one file) so vitest gets `--configLoader runner` (`docs/plugins/sandbox.md`). The harness env sets `npm_config_update_notifier=false`: npm's own update check otherwise asks the registry on every `npm` and `npx` call, which the sandbox denies and reports in every tool result. `tests/claude-runner-tools.test.ts` pins the network block. `deny_paths` also holds `<state_dir>/test-mysql.url`, the owner's local test MySQL login, since a run can now connect to localhost.
   - Rate limits: a Claude result with `api_error_status: 429` (usage or rate limit) is reported as the general `rate_limited` status, with `reset_at` when the message gives a reset time (an `|<epoch>` suffix, or `resets 12:10pm (Area/City)`). The worker then pauses every claim until that time, or for `retry_max_ms` when there is none (design §5 Restarts). All Claude CLI text parsing stays in this runner.
 
 - `openai-compatible`: `OpenAICompatibleRunner`, its own chat-completions tool loop against any OpenAI-style endpoint, through the shared client in `src/impl/openai/` (no vendor SDK, no harness). Not a default: chosen by name only.
@@ -32,6 +33,7 @@ Switch back / disable: `"runner": "claude-code"`. There is no "off".
 
 ## History
 
+- **Sandbox network** (2026-11-07). Before: the harness settings had no `sandbox.network` block, so sandboxed commands could not bind or connect on localhost, and every test that starts a local server failed inside the run.
 - **Fallback chain** (2026-11-07). Before: `plugins.runner` took one name only.
 - **Runners** (2026-11-07, issue #194): added `openai-compatible`, with Bash refused per call. Before: `claude-code` was the only runner.
 - **Granted tools** (2026-11-07, issue #164). Before: the runner threw on any run with grants.

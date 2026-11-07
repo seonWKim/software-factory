@@ -259,6 +259,8 @@ export async function loadConfig(
       dirname(secretsFile),
       join(stateDir, "db"),
       join(stateDir, "storage"),
+      // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
+      join(stateDir, "test-mysql.url"),
       join(home, ".ssh"),
       join(home, ".aws"),
       join(home, ".config", "gh"),
