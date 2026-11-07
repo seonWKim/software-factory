@@ -13,6 +13,7 @@ import type {
   Tier,
   Handoff,
   Run,
+  RunAttempt,
   RunId,
   RunInput,
   RunKind,
@@ -144,7 +145,8 @@ export interface TransitionInput {
    * Stop every `running` run of this item, of any kind, in the same transaction: status `cancelled`, lease
    * cleared, no outcome, unacknowledged. The worker holding one gets `lease_lost` on its next heartbeat and
    * on completeRun (so its outcome is not stored), and the tool broker refuses its calls, so nothing it does
-   * afterwards is pushed. Used when an item closes from its source (design §4).
+   * afterwards is pushed. Used when an item closes from its source (design §4). Each stopped run's open
+   * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
 }
@@ -352,6 +354,7 @@ export interface FactoryStore {
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
+   * Every claim, a resume included, writes one `running` attempt record (design §6) in the same transaction.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**
@@ -369,7 +372,7 @@ export interface FactoryStore {
   /**
    * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
    * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
-   * (it is not finished). lease_lost when the run is no longer ours.
+   * (it is not finished). lease_lost when the run is no longer ours. Closes the claim's attempt record as `paused`.
    */
   pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume }): Promise<LeaseResult>;
   /**
@@ -389,7 +392,10 @@ export interface FactoryStore {
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
-  /** Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`. */
+  /**
+   * Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`.
+   * Closes the attempt record that claim opened (same token): status, error code, failure class, tokens.
+   */
   completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult>;
   /** Finished runs the controller has not applied yet, oldest first. */
   listUnacknowledgedRuns(limit: number): Promise<Run[]>;
@@ -397,10 +403,16 @@ export interface FactoryStore {
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
    * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
+   * In every case the claim's attempt record closes as `lease_expired`, failure class `infra`, tokens 0.
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
   listRuns(id: WorkItemId): Promise<Run[]>;
+  /**
+   * Every attempt record (one per claim, design §6) of the item's runs: runs in listRuns order, each run's
+   * attempts in attempt order. Read-only.
+   */
+  listRunAttempts(id: WorkItemId): Promise<RunAttempt[]>;
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
   listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
   /**

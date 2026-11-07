@@ -298,4 +298,54 @@ export const MIGRATIONS: readonly string[] = [
     at           TEXT NOT NULL
   );
   `,
+  // 18: run attempts (design §6, issue #207). One row per claim of a run, the claim that resumes a paused run
+  // included; `lease_token` is the claim's fencing token, so only that claim's completion closes its row. Never
+  // returned by the store. Backfill: every run with attempt >= 1 gets one row numbered by its attempt, from the run
+  // row (status, start, finish, lease owner, outcome). A queued run with attempt >= 1 was paused (`paused`) or
+  // reaped (`lease_expired`); failure class is failureClass(), tokens outcomeTokens() (src/core).
+  `
+  CREATE TABLE run_attempts (
+    run_id         TEXT NOT NULL REFERENCES runs(id),
+    attempt        INTEGER NOT NULL,
+    lease_token    INTEGER NOT NULL,
+    worker_id      TEXT,
+    status         TEXT NOT NULL,
+    started_at     TEXT,
+    finished_at    TEXT,
+    error_code     TEXT,
+    failure_class  TEXT,
+    tokens         INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, attempt)
+  );
+  INSERT INTO run_attempts (run_id, attempt, lease_token, worker_id, status, started_at, finished_at, error_code, failure_class, tokens)
+  SELECT id, attempt, lease_token, lease_owner,
+    CASE WHEN status <> 'queued' THEN status WHEN paused_at IS NOT NULL THEN 'paused' ELSE 'lease_expired' END,
+    started_at,
+    CASE WHEN status = 'running' THEN NULL ELSE COALESCE(finished_at, paused_at, updated_at) END,
+    CASE
+      WHEN status = 'failed' THEN json_extract(outcome, '$.error_code')
+      WHEN status = 'queued' AND paused_at IS NULL THEN 'lease_expired'
+    END,
+    CASE
+      WHEN status = 'failed' THEN CASE
+        WHEN json_extract(outcome, '$.error_code') = 'rate_limited' THEN 'rate_limited'
+        WHEN json_extract(outcome, '$.error_code') = 'agent_stalled' THEN 'stalled'
+        WHEN json_extract(outcome, '$.infra') = 1 THEN 'infra'
+        ELSE 'task'
+      END
+      WHEN status = 'queued' AND paused_at IS NULL THEN 'infra'
+    END,
+    CASE
+      WHEN status = 'succeeded' THEN CASE
+        WHEN json_type(outcome, '$.data.tokens') IN ('integer', 'real') AND json_extract(outcome, '$.data.tokens') >= 0
+          THEN json_extract(outcome, '$.data.tokens')
+        ELSE 0
+      END
+      WHEN status = 'failed' AND json_type(outcome, '$.usage') = 'object' THEN
+        COALESCE(json_extract(outcome, '$.usage.input_tokens'), 0) + COALESCE(json_extract(outcome, '$.usage.output_tokens'), 0)
+        + COALESCE(json_extract(outcome, '$.usage.cache_read_tokens'), 0) + COALESCE(json_extract(outcome, '$.usage.cache_write_tokens'), 0)
+      ELSE 0
+    END
+  FROM runs WHERE attempt >= 1;
+  `,
 ];

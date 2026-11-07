@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   Run,
+  RunAttempt,
+  RunAttemptStatus,
   RunId,
   RunKind,
   RunOutcome,
@@ -35,6 +37,7 @@ import type {
   WorkerId,
   WorkerPause,
 } from "../../../core/types.js";
+import { outcomeTokens } from "../../../core/types.js";
 import {
   type CoordinationSettings,
   type DependencyLink,
@@ -45,7 +48,7 @@ import {
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
-import { IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE } from "../../../core/policy.js";
+import { IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, failureClass } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
@@ -97,6 +100,7 @@ import {
   rowToDependencyEdge,
   rowToHandoff,
   rowToRun,
+  rowToRunAttempt,
   rowToStateChange,
   rowToUnreviewedMerge,
   rowToVerdict,
@@ -505,7 +509,11 @@ export class SqlFactoryStore implements FactoryStore {
            WHERE id = ? AND status = 'queued'`,
           [input.worker_id, this.after(input.lease_ms), now, now, id],
         );
-        if (claimed === 1) return this.selectRun(tx, id);
+        if (claimed === 1) {
+          const run = (await this.selectRun(tx, id))!;
+          await this.openAttempt(tx, run, now);
+          return run;
+        }
       }
       return null;
     });
@@ -782,6 +790,7 @@ export class SqlFactoryStore implements FactoryStore {
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [now, pause.paused_by, pause.session_id, JSON.stringify(pause.resume), now, runId, token],
       );
+      if (paused === 1) await this.closeAttempt(tx, runId, token, "paused", now);
       return paused === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
   }
@@ -809,6 +818,7 @@ export class SqlFactoryStore implements FactoryStore {
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [outcome.status, JSON.stringify(outcome), now, now, runId, token],
       );
+      if (completed === 1) await this.closeAttempt(tx, runId, token, outcome.status, now, outcome);
       return completed === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
   }
@@ -828,7 +838,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, attempt, lease_token, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -839,15 +849,16 @@ export class SqlFactoryStore implements FactoryStore {
       };
       for (const run of expired) {
         const item = await this.selectItem(tx, run.work_item_id as WorkItemId);
+        let moved: number;
         if (item?.stage === "CLOSED") {
           // A closed item never runs again: its expired run is cancelled, not requeued.
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [now, run.id as string],
           );
         } else if (Number(run.attempt) >= max_attempts) {
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
              WHERE id = ? AND status = 'running'`,
@@ -856,12 +867,14 @@ export class SqlFactoryStore implements FactoryStore {
         } else {
           // Same backoff as any other retry, so a lasting outage does not use up the attempts at once.
           const not_before = backoff_ms ? this.after(backoff_ms(Number(run.attempt))) : null;
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [not_before, now, run.id as string],
           );
         }
+        // Whatever happens to the run, the claim whose lease ran out ended there (design §6).
+        if (moved === 1) await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
       }
       return expired.map((r) => r.id as RunId);
     });
@@ -874,6 +887,16 @@ export class SqlFactoryStore implements FactoryStore {
   async listRuns(id: WorkItemId): Promise<Run[]> {
     const rows = await this.db.all(`SELECT * FROM runs WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToRun);
+  }
+
+  async listRunAttempts(id: WorkItemId): Promise<RunAttempt[]> {
+    const { seq } = this.db.dialect;
+    const rows = await this.db.all(
+      `SELECT a.* FROM run_attempts a JOIN runs r ON r.id = a.run_id WHERE r.work_item_id = ?
+       ORDER BY r.created_at, r.${seq}, a.attempt`,
+      [id],
+    );
+    return rows.map(rowToRunAttempt);
   }
 
   async listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]> {
@@ -1378,9 +1401,44 @@ export class SqlFactoryStore implements FactoryStore {
         "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
         [now, r.id as string, status],
       );
-      if (n === 1) cancelled.push(r.id as RunId);
+      if (n === 1) {
+        cancelled.push(r.id as RunId);
+        if (status === "running") await this.closeAttempt(tx, r.id as RunId, null, "cancelled", now);
+      }
     }
     return cancelled;
+  }
+
+  /**
+   * The attempt record of a claim that just committed in `tx` (design §6): numbered after the run's last record,
+   * so a resume of a paused run gets its own; keyed to the claim's lease token for the close.
+   */
+  private async openAttempt(tx: SqlExecutor, run: Run, now: Timestamp): Promise<void> {
+    const [last] = await tx.all("SELECT MAX(attempt) AS n FROM run_attempts WHERE run_id = ?", [run.id]);
+    await tx.run(
+      `INSERT INTO run_attempts (run_id, attempt, lease_token, worker_id, status, started_at, finished_at, error_code,
+         failure_class, tokens) VALUES (?, ?, ?, ?, 'running', ?, NULL, NULL, NULL, 0)`,
+      [run.id, Number(last?.n ?? 0) + 1, run.lease!.token, run.lease!.owner, now],
+    );
+  }
+
+  /**
+   * Closes the run's open attempt record. `token`: only the record that claim opened (completeRun, pauseRun, the
+   * reaper); null: whichever is open (a cancel, which holds no token). A failed outcome gives its error code,
+   * failureClass() and outcomeTokens(); a reaped claim gives lease_expired and infra; anything else neither.
+   */
+  private async closeAttempt(
+    tx: SqlExecutor, runId: RunId, token: number | null, status: Exclude<RunAttemptStatus, "running">, now: Timestamp,
+    outcome: RunOutcome | null = null,
+  ): Promise<void> {
+    const failed = outcome?.status === "failed" ? outcome : null;
+    const error_code = failed ? failed.error_code : status === "lease_expired" ? "lease_expired" : null;
+    const failure_class = failed ? failureClass(failed) : status === "lease_expired" ? "infra" : null;
+    await tx.run(
+      `UPDATE run_attempts SET status = ?, finished_at = ?, error_code = ?, failure_class = ?, tokens = ?
+       WHERE run_id = ? AND status = 'running'${token === null ? "" : " AND lease_token = ?"}`,
+      [status, now, error_code, failure_class, outcomeTokens(outcome), runId, ...(token === null ? [] : [token])],
+    );
   }
 
   /** Returns the new run, or null if the idempotency key already existed. */
