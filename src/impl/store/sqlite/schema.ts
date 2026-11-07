@@ -461,30 +461,31 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // 26: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run: its
   // window and its groups; `failure_groups` and `one_run_patterns` are JSON text (run IDs and item IDs per error code
-  // and normalized detail). `filed_patterns`: a pattern filed from a report, one per (project, pattern_key); created
-  // empty, nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back
+  // and normalized detail). `filed_patterns`: a pattern filed from a report, one per (project_key, pattern_key); created
+  // empty, nothing writes it yet. `project_key` holds only project keys (never owner/name), so the project-key data
+  // step has nothing to rewrite. IF NOT EXISTS: safe to run again on a database whose recorded version was set back
   // below 26.
   `
   CREATE TABLE IF NOT EXISTS improve_reports (
     run_id            TEXT PRIMARY KEY REFERENCES runs(id),
-    project           TEXT NOT NULL,
+    project_key       TEXT NOT NULL,
     window_start      TEXT NOT NULL,
     window_end        TEXT NOT NULL,
     failure_groups    TEXT NOT NULL,
     one_run_patterns  TEXT NOT NULL,
     created_at        TEXT NOT NULL
   );
-  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project, created_at);
+  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project_key, created_at);
   CREATE TABLE IF NOT EXISTS filed_patterns (
     id             TEXT PRIMARY KEY,
-    project        TEXT NOT NULL,
+    project_key    TEXT NOT NULL,
     pattern_key    TEXT NOT NULL,
     error_code     TEXT NOT NULL,
     detail         TEXT NOT NULL,
     report_run_id  TEXT NOT NULL REFERENCES improve_reports(run_id),
     link           TEXT,
     created_at     TEXT NOT NULL,
-    UNIQUE (project, pattern_key)
+    UNIQUE (project_key, pattern_key)
   );
   `,
 ];

@@ -567,7 +567,7 @@ describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
     const mysqlSql = readFileSync(join(STEPS_DIR, IMPROVE_FILE), "utf8");
     const sqlite = MIGRATIONS[IMPROVE_STEP - 1]!;
     expect(createdColumns(sqlite, "improve_reports")).toEqual([
-      "run_id", "project", "window_start", "window_end", "failure_groups", "one_run_patterns", "created_at",
+      "run_id", "project_key", "window_start", "window_end", "failure_groups", "one_run_patterns", "created_at",
     ]);
     for (const t of IMPROVE_TABLES) expect(createdColumns(mysqlSql, t), t).toEqual(createdColumns(sqlite, t));
   });

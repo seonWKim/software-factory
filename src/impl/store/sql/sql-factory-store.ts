@@ -1537,7 +1537,7 @@ export class SqlFactoryStore implements FactoryStore {
     const created_at = this.now();
     const inserted = await this.insertOnce(
       this.db,
-      `INSERT INTO improve_reports (run_id, project, window_start, window_end, failure_groups, one_run_patterns, created_at)
+      `INSERT INTO improve_reports (run_id, project_key, window_start, window_end, failure_groups, one_run_patterns, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [r.run_id, r.project, r.window_start, r.window_end, JSON.stringify(r.groups), JSON.stringify(r.singles), created_at],
     );
@@ -1552,7 +1552,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listImproveReports(project: string, limit: number): Promise<ImproveReport[]> {
     const rows = await this.db.all(
-      "SELECT * FROM improve_reports WHERE project = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+      "SELECT * FROM improve_reports WHERE project_key = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
       [project, limit],
     );
     return rows.map(rowToImproveReport);
@@ -2104,7 +2104,7 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
 function rowToImproveReport(row: Row): ImproveReport {
   return {
     run_id: row.run_id as RunId,
-    project: row.project as string,
+    project: row.project_key as string,
     window_start: row.window_start as Timestamp,
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as FailureGroup[],
