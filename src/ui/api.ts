@@ -7,7 +7,7 @@
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached.
 
 import { conflictCounts } from "../core/resolve.js";
-import type { Run, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, RunAttempt, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
@@ -156,10 +156,15 @@ async function item(c: ApiCtx, id: WorkItemId) {
   if (!it) return null;
   const changes = await s.listStateChanges(id);
   const runs = await s.listRuns(id);
+  // One record per claim (design §6), listed under its run in attempt order.
+  const attemptsOf = new Map<string, RunAttempt[]>();
+  for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
   for (const r of runs) {
+    const attempts = [];
+    for (const a of attemptsOf.get(r.id) ?? []) attempts.push(await attemptRow(c, a));
     runRows.push({
       id: r.id,
       kind: r.kind,
@@ -173,6 +178,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
         r.outcome?.status === "failed"
           ? { code: await c.text(r.outcome.error_code, "run_outcome"), detail: await c.text(r.outcome.detail, "run_outcome") }
           : null,
+      attempts,
     });
   }
   return {
@@ -214,6 +220,20 @@ async function stateChange(c: ApiCtx, sc: StateChange) {
     for (const [k, v] of Object.entries(sc.detail)) detail[k] = await c.text(String(v));
   }
   return { version: sc.version, at: sc.at, actor: { kind: sc.actor.kind, id: await c.text(sc.actor.id) }, reason: await c.text(sc.reason), changes, detail };
+}
+
+/** One claim of a run: the worker id and error code pass the Withholder; the fencing token is not in the record. */
+async function attemptRow(c: ApiCtx, a: RunAttempt) {
+  return {
+    attempt: a.attempt,
+    worker_id: await c.text(a.worker_id),
+    status: a.status,
+    started_at: a.started_at,
+    finished_at: a.finished_at,
+    error_code: await c.text(a.error_code, "run_outcome"),
+    failure_class: a.failure_class,
+    tokens: a.tokens,
+  };
 }
 
 /** A run for /runs: who holds it and until when, never its fencing token. */
