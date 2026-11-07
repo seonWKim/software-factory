@@ -1377,15 +1377,15 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         clock.advance(1000);
       }
       const newest = [...ids].reverse();
-      const p1 = (await store.readTablePage({ table: "work_items", limit: 3 }))!;
+      const p1 = (await store.listTableRows({ table: "work_items", limit: 3 }))!;
       expect(p1).toMatchObject({ total: 7, limit: 3, offset: 0 });
       expect(p1.rows.map((r) => r.id)).toEqual(newest.slice(0, 3));
-      const p3 = (await store.readTablePage({ table: "work_items", limit: 3, offset: 6 }))!;
+      const p3 = (await store.listTableRows({ table: "work_items", limit: 3, offset: 6 }))!;
       expect(p3.rows.map((r) => r.id)).toEqual(newest.slice(6));
       expect(p3.total).toBe(7);
       // Without a time column the primary key orders, descending.
       for (const c of ["b", "c", "a"]) await store.advanceCursor(c, null, "v");
-      expect((await store.readTablePage({ table: "cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
+      expect((await store.listTableRows({ table: "cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
       // Every column comes back, numbers as numbers.
       expect(p1.rows[0]).toMatchObject({ version: 1, title: null });
     });
@@ -1393,10 +1393,10 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     it("no limit gives 50 rows; a limit above 200 is capped at 200", async () => {
       const { store } = await make();
       for (let n = 0; n < 205; n++) await store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v");
-      const def = (await store.readTablePage({ table: "cursors" }))!;
+      const def = (await store.listTableRows({ table: "cursors" }))!;
       expect(def.rows).toHaveLength(50);
       expect(def).toMatchObject({ limit: 50, total: 205 });
-      const big = (await store.readTablePage({ table: "cursors", limit: 1000 }))!;
+      const big = (await store.listTableRows({ table: "cursors", limit: 1000 }))!;
       expect(big.rows).toHaveLength(200);
       expect(big.limit).toBe(200);
     });
@@ -1407,23 +1407,23 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const q = (await store.createWorkItem({ ...issue(1), problem: quoted }, system)).item;
       await store.createWorkItem(issue(2), system);
       await store.createWorkItem({ ...issue(3), problem: "problem 2" }, system);
-      const hit = (await store.readTablePage({ table: "work_items", filter: { column: "problem", value: quoted } }))!;
+      const hit = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: quoted } }))!;
       expect(hit.total).toBe(1);
       expect(hit.rows.map((r) => r.id)).toEqual([q.id]);
-      const two = (await store.readTablePage({ table: "work_items", filter: { column: "problem", value: "problem 2" } }))!;
+      const two = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "problem 2" } }))!;
       expect(two.total).toBe(2);
       expect(two.rows.every((r) => r.problem === "problem 2")).toBe(true);
-      const inject = (await store.readTablePage({ table: "work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
+      const inject = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
       expect(inject).toMatchObject({ total: 0, rows: [] });
       // A number column matches its text form.
-      expect((await store.readTablePage({ table: "work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
+      expect((await store.listTableRows({ table: "work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
     });
 
     it("an unknown table or filter column is refused with null", async () => {
       const { store } = await make();
-      expect(await store.readTablePage({ table: "nope" })).toBeNull();
-      expect(await store.readTablePage({ table: "work_items; DROP TABLE runs" })).toBeNull();
-      expect(await store.readTablePage({ table: "work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
+      expect(await store.listTableRows({ table: "nope" })).toBeNull();
+      expect(await store.listTableRows({ table: "work_items; DROP TABLE runs" })).toBeNull();
+      expect(await store.listTableRows({ table: "work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
       expect((await store.listTables()).map((t) => t.name)).toContain("runs");
     });
   });

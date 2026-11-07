@@ -1551,7 +1551,7 @@ export class SqlFactoryStore implements FactoryStore {
     return out;
   }
 
-  async readTablePage(input: TablePageInput): Promise<TablePage | null> {
+  async listTableRows(input: TablePageInput): Promise<TablePage | null> {
     const t = (await this.catalog()).find((c) => c.name === input.table);
     if (!t) return null;
     if (input.filter && !t.columns.includes(input.filter.column)) return null;

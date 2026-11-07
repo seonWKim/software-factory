@@ -650,7 +650,7 @@ export interface FactoryStore {
    * filter). `limit` defaults to TABLE_PAGE_DEFAULT and is capped at TABLE_PAGE_MAX; `offset` defaults to 0.
    * Null, with no row read, when the table or the filter's column is not in the schema.
    */
-  readTablePage(input: TablePageInput): Promise<TablePage | null>;
+  listTableRows(input: TablePageInput): Promise<TablePage | null>;
 }
 
 /** Rows a table page returns when no limit is given. */
