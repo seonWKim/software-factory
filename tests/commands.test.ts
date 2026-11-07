@@ -81,12 +81,14 @@ describe("+paths (issue #280)", () => {
     expect(retryPathsReply(Array.from({ length: 11 }, (_, i) => `f${i}`))).toBeNull();
   });
 
-  it("/help and the command table show the +paths usage of /approve and /retry", () => {
+  it("/help and the command table show the +paths usage of /approve, /retry and /resolve", () => {
     const help = helpReply({ phase: "spec_pending", has_pr: false });
-    expect(help).toContain("`/approve +paths <path>...`");
-    expect(help).toContain("`/retry +paths <path>...`");
-    expect(commandTableMarkdown()).toContain("`/approve +paths <path>...`");
-    expect(commandTableMarkdown()).toContain("`/retry +paths <path>...`");
+    for (const usage of ["`/approve +paths <path>...`", "`/retry +paths <path>...`", "`/resolve +paths <path>...`"]) {
+      expect(help).toContain(usage);
+      expect(commandTableMarkdown()).toContain(usage);
+    }
+    // The usage column stays `/resolve [notes]`; `+paths` is in its description, as for /retry.
+    expect(helpReply({ phase: "merge_conflict", has_pr: true })).toContain("`/resolve [notes]` **(now)**");
   });
 });
 
@@ -134,7 +136,7 @@ describe("command table", () => {
 
   it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
     const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
-      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+      commandPhase({ stage, blocked_on: "human", blocked_reason, change_ref: null });
     expect(at("RUNNING", "run_failed:implement:diff_too_large")).toBe("too_large");
     expect(at("RUNNING", "run_failed:implement:no_commits")).toBe("failed_implement");
     expect(at("RUNNING", "max_attempts")).toBe("failed_implement");
@@ -193,7 +195,7 @@ describe("command table", () => {
     expect(commandsFor({ phase: "agent_needs_human", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).toContain("resolve");
     expect(commandsFor({ phase: "repeated_failure", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).not.toContain("resolve");
     const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
-      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+      commandPhase({ stage, blocked_on: "human", blocked_reason, change_ref: null });
     for (const stage of ["NEW", "RUNNING", "REVIEW"] as const) {
       expect(at(stage, "agent_needs_human")).toBe("agent_needs_human");
       expect(at(stage, "repeated_failure")).toBe("repeated_failure");
@@ -268,6 +270,7 @@ describe("footers match what the controller accepts", () => {
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },
     merge_conflict: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" },
     other_blocked: { stage: "RUNNING", blocked_on: "ci", blocked_reason: "something" },
+    merged: { stage: "CLOSED", close_reason: "completed", merge_sha: "m1" },
     closed: { stage: "CLOSED", close_reason: "rejected" },
   };
   const ACTING: CommandName[] = ["approve", "reject", "revise", "retry", "budget", "verdict"];
@@ -294,7 +297,7 @@ describe("footers match what the controller accepts", () => {
       const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
       const setup = {
         id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
-        patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },
+        patch: { ...PATCHES[phase], change_ref: pr === null ? null : String(pr), tier: 2 as const },
         ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
       };
       // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.
@@ -353,8 +356,8 @@ describe("footers match what the controller accepts", () => {
       const after = (await store.getWorkItem(item.id))!;
       const refused = source.comments.filter((c) => c.marker === `<!-- factory:refused:${n} -->`);
       const listed = commandFooter(state).startsWith("On the change") && commandFooter(state).includes("`/revise <feedback>`");
-      if (phase === "closed") {
-        // A closed item's PR: no change and no reply.
+      if (phase === "closed" || phase === "merged") {
+        // A closed item's PR, merged or not: no change and no reply.
         expect(refused).toEqual([]);
         expect(after).toEqual(item);
         continue;

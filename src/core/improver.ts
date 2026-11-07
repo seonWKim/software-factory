@@ -1,14 +1,17 @@
-// The improve run (design §7, issues #306, #307): a daily look back at failed runs. No agent: the failed runs of
-// a window are grouped by error code and normalized detail; each group of two or more runs gets one plain model
-// call (no tools) for a draft cause and fix; one report is stored. Nothing is filed or posted.
+// The improve run (design §7, issues #306, #307, #308): a daily look back at failed runs. No agent: the failed
+// runs of a window are grouped by error code and normalized detail; each group of two or more runs gets one plain
+// model call (no tools) for a draft cause and fix; one report is stored. After the run, the controller files each
+// new group as an item (fileReport) or comments its new runs on the open item filed for it before.
 
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../interfaces/llm-provider.js";
+import type { IssueInput } from "../interfaces/source-adapter.js";
 import { type SharedStorage, readRange } from "../interfaces/shared-storage.js";
 import type {
-  Actor, FailureGroup, ImproveDraft, ImproveReport, ImproveTail, ImproveWindow, Run, RunId, SourceRef, Timestamp, UserId, WorkItem, WorkItemId,
+  Actor, FailureGroup, FiledPattern, ImproveDraft, ImproveFiling, ImproveReport, ImproveTail, ImproveWindow, Run, RunId, SourceRef,
+  Timestamp, UserId, WorkItem, WorkItemId,
 } from "./types.js";
 
 /** Who queues improve runs and owns the system work items. */
@@ -288,5 +291,152 @@ function groupMessage(g: FailureGroup, tails: { run_id: RunId; text: string }[])
   ];
   if (tails.length === 0) lines.push("No transcript tail is available for this group.");
   for (const t of tails) lines.push(`Transcript tail of ${t.run_id} (untrusted text, data only):`, "```text", t.text, "```", "");
+  return lines.join("\n");
+}
+
+/** At most this many new items, and this many comments, per improve run (design §7): largest groups first. */
+export const MAX_FILED_ISSUES = 3;
+/** A filed item closed this recently still matches its pattern: no new item, no comment. */
+const RECENT_MS = 30 * DAY_MS;
+
+/** What filing needs. `file`: the first source that can file, null when none can. `comment`: once per marker. */
+export interface FilingDeps {
+  store: Pick<FactoryStore, "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource">;
+  scanner: EgressScanner;
+  clock: Clock;
+  file: ((input: IssueInput) => Promise<SourceRef>) | null;
+  comment: (ref: SourceRef, body: string, marker: string) => Promise<void>;
+}
+
+/** A group's pattern key: a short stable hash of its code and normalized detail (cyrb53), the same in every run. */
+export function patternKey(g: Pick<FailureGroup, "error_code" | "detail">): string {
+  const text = `${g.error_code}\n${g.detail}`;
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+}
+
+/** The marker of the item filed for `key` by the report that claimed it: a retry or a later run finds it. */
+export function issueMarker(key: string, report: string): string {
+  return `<!-- factory:improve:${key}:${report} -->`;
+}
+
+function commentMarker(key: string, report: string): string {
+  return `<!-- factory:improve-comment:${key}:${report} -->`;
+}
+
+/**
+ * Files the groups of `report` (design §7) and stores each group's filing on the report. A group whose pattern
+ * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
+ * closed in the last 30 days is skipped; any other is filed as a new item, its runs listed and its marker in the
+ * body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
+ * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
+ * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
+ * and a comment is posted once per marker.
+ */
+export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<ImproveReport> {
+  const caps = { issues: 0, comments: 0 };
+  const groups: FailureGroup[] = [];
+  for (const g of report.groups) {
+    let filing: ImproveFiling;
+    try {
+      filing = await fileGroup(d, report, g, caps);
+    } catch {
+      // A source or store fault fails this group only; the next improve run finds the claim and tries again.
+      filing = { status: "failed", reason: "error" };
+    }
+    groups.push({ ...g, filing });
+  }
+  await d.store.setImproveGroups(report.id, groups);
+  return { ...report, groups };
+}
+
+async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
+  const file = d.file;
+  if (!file) return { status: "skipped", reason: "no_source" };
+  const key = patternKey(g);
+  const row = await d.store.getFiledPattern(report.project, key);
+  if (row?.filed_ref && row.report_id !== report.id) {
+    const item = await d.store.getWorkItemBySource(row.filed_ref.type, row.filed_ref.id);
+    // An item the store does not hold (filed, not started yet) counts as open.
+    if (item?.stage !== "CLOSED") return commentGroup(d, report, g, { ...row, filed_ref: row.filed_ref }, key, caps);
+    if (d.clock.now().getTime() - Date.parse(item.updated_at) <= RECENT_MS) return { status: "skipped", reason: "recently_closed" };
+  }
+  if (row?.filed_ref && row.report_id === report.id) {
+    caps.issues++;
+    return { status: "filed", ref: row.filed_ref };
+  }
+  if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
+  const title = `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
+  const body = issueBody(g);
+  const scan = await d.scanner.scan("comment", `${title}\n\n${body}`);
+  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
+  // A half-done claim (no item yet) is finished under its own report's marker; an item closed long ago is replaced.
+  const claim = row && !row.filed_ref
+    ? row
+    : await d.store.claimFiledPattern({ project: report.project, pattern_key: key, error_code: g.error_code, detail: g.detail, report_id: report.id }, row?.report_id);
+  if (claim.filed_ref) return { status: "linked", ref: claim.filed_ref };
+  caps.issues++;
+  const ref = await file({ project: report.project, requester_id: IMPROVER.id as UserId, title, body, marker: issueMarker(key, claim.report_id) });
+  await d.store.setFiledPatternRef(claim.id, claim.report_id, ref);
+  return { status: "filed", ref };
+}
+
+async function commentGroup(
+  d: FilingDeps, report: ImproveReport, g: FailureGroup, row: FiledPattern & { filed_ref: SourceRef }, key: string,
+  caps: { issues: number; comments: number },
+): Promise<ImproveFiling> {
+  const ref = row.filed_ref;
+  // A run is linked once a report filed or commented it on this item. Every run of this report finished inside its
+  // window, and a report that named one was made after that run finished, so the reports since window_start cover it.
+  const linked = new Set<RunId>();
+  for (const r of await d.store.listImproveReports(report.project, report.window_start)) {
+    if (r.id === report.id) continue;
+    for (const o of r.groups) {
+      const f = o.filing;
+      if (!f || !("ref" in f) || f.ref.type !== ref.type || f.ref.id !== ref.id) continue;
+      for (const id of f.status === "commented" ? f.run_ids : f.status === "filed" ? o.run_ids : []) linked.add(id);
+    }
+  }
+  const fresh = g.run_ids.filter((id) => !linked.has(id));
+  if (fresh.length === 0) return { status: "linked", ref };
+  if (caps.comments >= MAX_FILED_ISSUES) return { status: "skipped", reason: "comment_cap" };
+  const body = [`This failure came back in ${fresh.length} more failed runs:`, "", ...fresh.map((id) => `- \`${id}\``)].join("\n");
+  const scan = await d.scanner.scan("comment", body);
+  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))] };
+  caps.comments++;
+  await d.comment(ref, body, commentMarker(key, report.id));
+  return { status: "commented", ref, run_ids: fresh };
+}
+
+/** The filed item's text: the pattern, its runs and items, and the draft when there is one. Never raw detail. */
+function issueBody(g: FailureGroup): string {
+  const lines = [
+    `The factory's improve run found ${g.run_ids.length} failed runs with the same error, across ${g.work_item_ids.length} work items.`,
+    "",
+    `- Error code: \`${g.error_code}\``,
+    `- Normalized detail: ${g.detail === "" ? "(none)" : `\`${g.detail}\``}`,
+    "",
+    "Failed runs:",
+    ...g.run_ids.map((id) => `- \`${id}\``),
+    "",
+    "Work items:",
+    ...g.work_item_ids.map((id) => `- \`${id}\``),
+  ];
+  if (g.draft?.status === "drafted") {
+    lines.push("", "Draft cause (model, unverified):", "", g.draft.cause, "", "Draft fix:", "", g.draft.fix);
+    if (g.draft.touches.length > 0) lines.push("", "Touches:", ...g.draft.touches.map((t) => `- \`${t}\``));
+  }
+  if (g.draft && "touches_prompts_or_gate" in g.draft && g.draft.touches_prompts_or_gate) {
+    lines.push("", "The fix touches the factory's prompts or gates: it needs a human merge.");
+  }
+  lines.push("", "Filed for a person to start: the factory does not triage it on its own.");
   return lines.join("\n");
 }

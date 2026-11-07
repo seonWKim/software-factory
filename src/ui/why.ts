@@ -5,7 +5,8 @@
 //
 // Precedence, first match wins: closed, blocked on a person or the budget, a deadlock claim, running, a claim
 // pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
-// queue position, and last nothing (no run moves it).
+// queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
+// sentence (withAlarms), whichever rule gave it.
 
 import { IMPLEMENT_KINDS } from "../core/policy.js";
 import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
@@ -159,4 +160,9 @@ export function whyWaiting(x: WhyInput): Why {
   if (run && x.not_before) return why("not_before", `Retry waits until ${when(x.not_before)}`, "factory");
   if (run) return why("queued", run.position ? `Queued at position ${run.position}` : `Queued ${run.kind}`, "factory");
   return why("idle", "Nothing moves it: no run is queued", "human");
+}
+
+/** The sentence with each open alarm that affects the item named after it (design 09-status-page); as is with none. */
+export function withAlarms(w: Why, alarms: readonly string[]): Why {
+  return alarms.length === 0 ? w : why(w.code, [w.text, ...alarms].join(". "), w.next_actor);
 }

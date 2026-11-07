@@ -3,7 +3,7 @@
 What it does: the forge is where pull requests live. The `Forge` interface (`src/interfaces/forge.ts`) is the factory's only way to PRs (issue #273, phase 2 of #172):
 
 - **PR events.** `poll(cursor)` returns the PR events (`pr_merged`, `pr_closed`, `pr_open`, `pr_unmergeable`, `pr_changes_requested`) and the next cursor. The controller polls it on `poll_interval_ms`, under its own guard (a forge that fails does not stop the sources' intake in the same tick, and its cursor does not move), through the cursor `forge:<ref type>` (`forge:github_issue`). The poll sources are read first and the forge after them, and the forge's events are handled first, so a merge that closed its issue is applied before the issue's close. While that cursor is empty the forge's `handover_cursor` is its first cursor (below).
-- **PR facts.** `prChecks` (the checks on a PR's head commit), `prFiles` (the paths a PR changes), `labelAddedBy` (who put a label on a PR), `commitAuthor` (the forge account behind a commit).
+- **PR facts.** `prChecks` (the checks on a PR's head commit), `prFiles` (the paths a PR changes), `labelAddedBy` (who put a label on a PR), `commitAuthor` (the forge account behind a commit), `commitsBetween(from_sha, to_sha)` (how many commits a push from `from_sha` to `to_sha` added, or null when the forge cannot say; read once per person's push to a factory PR, for the reason of its implicit `changes` verdict, design 04-gate-commands). All read-only.
 - **PR writes.** `postPrComment` (one comment per marker on a PR), `setPrStatus` (the item's status on its PR), `closePr` (close a factory PR after one comment). A PR comment is an item thread entry whose outbox row targets the forge's PR ref (`prRef`, rows of type `ref_type`); the outbox step posts it through the forge, recognising the ref with `prNumberOf`, whatever source the item came from. So a Slack or local item's PR gets its comments and labels on the PR.
 
 **Which forge.** No forge plugin is a default. `plugins.forge` left out follows the sources (derived in `src/compose.ts`, `withForgeDefault`; not a setting): `github` when `plugins.source` lists `github-issues`, none otherwise. One rule for both use cases:
@@ -21,12 +21,15 @@ Plugins:
   - `github.history_since` (optional, a date like `2026-01-01` or a UTC time; anything else fails at startup naming the setting): checks merges back to that time. Older than `start`, it moves `start` back once: that poll reads closed PRs back to it, at most 5 pages of 100, with one GET per merged PR, and the cursor records the value so a restart does not read it again. Not older (or already applied), it is ignored, with one warning naming the setting.
   - Upgrade (`handover_cursor`: `intake:github_issue`): before issue #273 the PR position (`pulls`, `start`, `history_since`, `reviews`, `review_ids`) lived in the GitHub source's cursor, under the same names. The forge's first poll starts from that cursor, so a merge during the upgrade is not missed and one already applied is not applied again (a boundary PR may come back; handling is idempotent). A fresh install has no such cursor: the forge starts empty and reads one page of closed PRs.
   - PR comments and labels go through a `GitHubIssueSource` with the store (`postComment` and `setStatus` on the PR ref; PRs share the issues API), so they use the same posted-comment and label-state records as issue ones (design 05-sources, GitHub sync records). build() passes the store, the Clock and a log beside the forge context; built without them (`Plugins.forge(github)` alone) it records nothing and cannot poll.
+  - `commitsBetween`: one GET of the compare endpoint (`/compare/<from>...<to>`), its `ahead_by`. A 404 or 422 (a sha GitHub does not know, e.g. after a force-push) or no count gives null; any other failure throws, and the controller then records the count as unknown.
   - Enable: list `github-issues` in `plugins.source`, or set `"plugins": { "forge": "github", ... }`.
   - Secrets: none of its own (the shared client's `GitHubCredentials`).
 
 Switch back / disable: drop `github-issues` from `plugins.source` and leave `plugins.forge` out, or set it to `"none"` with no `github-issues`.
 
 ## History
+
+- **`commitsBetween`** (new method, 2026-11-08, issue #316). Before: the forge could name a commit's author but not count the commits in a push.
 
 - **The forge reads PRs** (decision changed 2026-11-07, issue #273, phase 2 of #172). Before: selecting a forge only loaded it; the controller read every PR event and PR fact from the `github-issues` source and sent PR comments and PR status to the `github_issue` adapter, and `plugins.forge` left out meant no forge.
 - **An optional Forge** (new decision, 2026-11-07, issue #272, phase 1 of #172). Before: the PR facts lived only on the `github-issues` source, and every non-guard kind needed a default plugin.

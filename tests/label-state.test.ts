@@ -64,7 +64,7 @@ describe("status catch-up on start", () => {
 
   it("keeps label state per item and target: a current issue label does not hide a stale PR label", async () => {
     const { store, clock } = await newStore();
-    await itemIn(store, 7, { stage: "REVIEW", pr_number: 42 });
+    await itemIn(store, 7, { stage: "REVIEW", change_ref: "42" });
     const first = controllerOn(store, clock);
     await first.controller.catchUpStatus();
     expect(labelWrites(first.github).sort()).toEqual(["POST /repos/o/r/issues/42/labels", "POST /repos/o/r/issues/7/labels"]);
@@ -84,7 +84,7 @@ describe("status catch-up on start", () => {
   for (const backend of BACKENDS) {
     it(`two controllers starting at once on one store make one label write per item and target (${backend.name})`, async () => {
       const { store, clock } = await backend.make();
-      for (let n = 1; n <= 5; n++) await itemIn(store, n, n % 2 === 0 ? { stage: "REVIEW", pr_number: 100 + n } : {});
+      for (let n = 1; n <= 5; n++) await itemIn(store, n, n % 2 === 0 ? { stage: "REVIEW", change_ref: String(100 + n) } : {});
       const a = controllerOn(store, clock);
       const b = controllerOn(store, clock);
       await Promise.all([a.controller.catchUpStatus(), b.controller.catchUpStatus()]);

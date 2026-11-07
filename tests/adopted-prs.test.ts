@@ -255,9 +255,40 @@ describe("a person's push to a factory or adopted PR", () => {
     const manual = (await f.store.listRuns(it.id)).filter((r) => r.kind === "manual");
     expect(manual).toHaveLength(1);
     expect(manual[0]!.outcome).toMatchObject({ data: { actor: { kind: "user", id: "github:1" }, from_sha: "base", to_sha: "h9" } });
-    expect((await f.store.getWorkItem(it.id))!).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", version: it.version });
+    // The implicit `changes` verdict bumps the version once (design §4); no stage or blocked field changes.
+    expect((await f.store.getWorkItem(it.id))!).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", version: it.version + 1 });
+    expect((await f.store.listStateChanges(it.id)).at(-1)).toMatchObject({ reason: "implicit_verdict", actor: { kind: "user", id: "github:1" } });
     // The factory PR is not adopted a second time.
     expect(await f.store.listWorkItems(10)).toHaveLength(1);
+  });
+
+  it("on a factory PR: the implicit changes verdict gives the forge's commit count, or says it is unknown", async () => {
+    const f = await factory();
+    const src = issueRef(61);
+    await f.poll({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.work();
+    await f.poll({ kind: "spec_approved", source: src, comment_id: "300", approver: alice });
+    await f.work();
+    const it = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    const open = (sha: string) => prOpen(42, { head_branch: `factory/${it.id}`, head_sha: sha, source: prRef(42), author: alice });
+
+    f.forge.commitCounts["base..h2"] = 3;
+    await f.poll(open("h2"));
+    await f.poll(open("h3")); // h2..h3: the forge cannot say
+    await f.poll(open("h3"));
+    expect(f.forge.betweenCalls).toEqual(["base..h2", "h2..h3"]);
+    expect((await f.store.listVerdicts(it.id)).map((v) => [v.verdict, v.severity, v.implicit, v.pr_head, v.reason])).toEqual([
+      ["changes", "minor", true, "h2", "a person pushed 3 commits to the PR"],
+      ["changes", "minor", true, "h3", "a person pushed to the PR; the commit count is unknown"],
+    ]);
+  });
+
+  it("on an adopted PR: a person's push records no verdict", async () => {
+    const f = await factory();
+    await f.poll(prOpen(50));
+    await f.poll(prOpen(50, { head_sha: "h2" }));
+    expect(await f.store.listVerdicts((await f.item(50))!.id)).toEqual([]);
+    expect(f.forge.betweenCalls).toEqual([]);
   });
 
   it("is not looked at while a run of the item is running (the factory may be pushing)", async () => {

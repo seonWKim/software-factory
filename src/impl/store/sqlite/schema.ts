@@ -549,8 +549,8 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
   // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
-  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
-  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); written by the
+  // improve filing (issue #308). IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
   `
   CREATE TABLE IF NOT EXISTS improve_reports (
     id              TEXT PRIMARY KEY,
@@ -652,5 +652,25 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE command_inbox ADD COLUMN mirror INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
   CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
+  `,
+  // 38: restart history (design 05-restarts). One row per unexpected child exit the supervisor recorded: its time,
+  // its reason and when the store saw it. `restart_key` (the time and a hash of the reason) makes a second write of
+  // the same restart a no-op. No backfill: older restarts were never stored. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS child_restarts (
+    restart_key  TEXT PRIMARY KEY,
+    at           TEXT NOT NULL,
+    reason       TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS child_restarts_at ON child_restarts (at);
+  `,
+  // 39: implicit verdicts (design §4 and §6, issue #316). `implicit`: 1 for a verdict the factory read from a PR event
+  // (merge, a person's push, a revert), 0 for a `/verdict` comment and on every older row. `pr_head`: the PR head
+  // commit the verdict is about, NULL on older rows and for a revert; the index serves the one-verdict-per-head read.
+  `
+  ALTER TABLE verdicts ADD COLUMN implicit INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE verdicts ADD COLUMN pr_head TEXT;
+  CREATE INDEX IF NOT EXISTS verdicts_head ON verdicts (work_item_id, pr_head);
   `,
 ];

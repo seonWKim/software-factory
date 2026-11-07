@@ -321,6 +321,13 @@ export class FakeForge implements Forge {
   async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
     return this.commitAuthors[sha] ?? null;
   }
+  /** The commit count per `${from}..${to}` (absent: null, unknown). Every range asked for is recorded in `betweenCalls`. */
+  commitCounts: Record<string, number> = {};
+  betweenCalls: string[] = [];
+  async commitsBetween(from_sha: string, to_sha: string): Promise<number | null> {
+    this.betweenCalls.push(`${from_sha}..${to_sha}`);
+    return this.commitCounts[`${from_sha}..${to_sha}`] ?? null;
+  }
 }
 
 /**

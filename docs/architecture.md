@@ -37,7 +37,7 @@ graph TB
       TR["Triage"]
       IM["Implementer"]
       RV["Reviewer"]
-      IMP["Improver (Phase 3)"]
+      IMP["Improver: daily improve run, files recurring failures"]
     end
   end
 
@@ -366,4 +366,5 @@ What the docs say, and the gaps the canary test (G6) must cover:
 
 ## History
 
+- **The improver is built** (2026-11-08, issue #308). Before: the agent-plane box read "Improver (Phase 3)". Now the daily improve run groups failed runs, drafts a cause and fix per group with one plain model call (no agent, no sandbox), and the controller files each new group as an item through the source, or comments on the open item filed for it (design §7).
 - **Toolchain caches are read-only** (2026-11-08, issue #334). Changes G1 (before: the agent env held only the fixed entries, the git identity and the slot env; nothing in config could add one) and §5's file access (before: the agent could read only its workdir and `writable_paths`, so a Gradle, Maven or Cargo build found an empty home-level cache and could not download).
