@@ -89,7 +89,7 @@ import {
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
-  type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
+  type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunInput, type RunKind, type SourceRef, type SourceType,
   type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
@@ -261,6 +261,10 @@ const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
+/** A review with nothing to review: no commits ahead of the base, or an empty diff (issue #223). */
+const EMPTY_DIFF = "empty_diff";
+/** A review run's `no_agent`: its head is the one the last verdict was for, so it ran no agent (issue #223). */
+const UNCHANGED_HEAD = "unchanged_head";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
@@ -304,7 +308,7 @@ const PR_CLOSE_PENDING = "pr_close_pending";
 const CHECKS_PENDING = "checks_pending";
 /** Items waiting on checks looked at per tick. */
 const CHECKS_BATCH = 50;
-/** Failed check names kept per decision, and characters per name. */
+/** Check names kept per decision and per review input, and characters per name. */
 const MAX_CHECK_NAMES = 20;
 const MAX_CHECK_NAME_CHARS = 100;
 /** Rejected items finished per intake tick. */
@@ -1182,7 +1186,7 @@ export class Controller {
         },
       },
       { kind: "user", id: author.user_id },
-      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review` } },
+      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review`, input: await this.reviewInput(e.pr_number, null) } },
     );
     if (!created) return;
     this.d.log.info("PR adopted", { ...log, work_item_id: item.id });
@@ -2769,12 +2773,16 @@ export class Controller {
             actor: SYSTEM,
             reason: "implemented",
             ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+            enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.reviewInput(pr, it.id) },
           };
         }
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
+          // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
+          if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
+          if (data.no_agent === UNCHANGED_HEAD) return ack("review_unchanged_head");
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -2837,7 +2845,7 @@ export class Controller {
             reason: "resolved",
             detail: { run_id: run.id },
             ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
+            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}`, input: await this.reviewInput(it.pr_number, it.id) },
           };
         }
         case "manual":
@@ -2847,9 +2855,10 @@ export class Controller {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+          const input = await this.reviewInput(Number(data.pr_number), it.id);
           return {
             patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
-            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input },
           };
         }
         case "update": {
@@ -2921,6 +2930,23 @@ export class Controller {
       reason: "run_failed",
       ack_run: run.id,
     };
+  }
+
+  /**
+   * A review with nothing to review (issue #223): the PR branch has no commits ahead of the base (already merged)
+   * or its diff is empty. No agent ran. The item blocks on a human with `empty_diff`; the one comment is keyed on
+   * the item, so a repeated run posts nothing.
+   */
+  private async emptyDiff(it: WorkItem, run: Run, tokens: number): Promise<Decision> {
+    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
+    await this.comment(it, EMPTY_DIFF, [
+      `PR #${it.pr_number} has no changes against \`${this.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
+      "",
+      "Close the PR if its change is already on the base, or push the missing commits to its branch.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return { patch, actor: SYSTEM, reason: EMPTY_DIFF, detail: { run_id: run.id }, ack_run: run.id };
   }
 
   /**
@@ -3090,6 +3116,27 @@ export class Controller {
     }
   }
 
+  /**
+   * A review run's input (design §4, issue #223): the PR's CI results through the forge, at most MAX_CHECK_NAMES
+   * checks of MAX_CHECK_NAME_CHARS. No forge: no checks ran (an empty list). A read error: null (logged), so the
+   * prompt says the results could not be read; the review still runs.
+   */
+  private async reviewInput(pr_number: number | null, work_item_id: WorkItemId | null): Promise<RunInput> {
+    const forge = this.forge;
+    if (!forge || pr_number === null) return { ci_checks: [] };
+    try {
+      const results = await forge.prCheckResults(pr_number);
+      return { ci_checks: results.slice(0, MAX_CHECK_NAMES).map((r) => ({ name: r.name.slice(0, MAX_CHECK_NAME_CHARS), result: r.result })) };
+    } catch (err) {
+      this.d.log.warn("reading PR check results failed", {
+        ...(work_item_id ? { work_item_id } : {}),
+        pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return { ci_checks: null };
+    }
+  }
+
   /** A checks comment naming the failed checks; the names are forge text (G5), so they are left out if the scan flags them. */
   private async checksComment(it: WorkItem, key: string, names: string[], body: (list: string) => string): Promise<void> {
     const list = names.length ? `: ${names.map((n) => `\`${n.replace(/`/g, "'")}\``).join(", ")}` : "";
@@ -3181,13 +3228,15 @@ export class Controller {
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
+    // A retried review keeps the CI results read when it was queued (issue #223).
+    const input = wip ? { wip } : run.kind === "review" ? run.input : null;
     return {
       patch: restart,
       actor: SYSTEM,
       reason: cls === "rate_limited" ? "run_rate_limited" : cls === "stalled" ? "run_stalled" : "run_retry_scheduled",
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
-      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(wip ? { input: { wip } } : {}) },
+      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(input ? { input } : {}) },
     };
   }
 

@@ -1,5 +1,5 @@
 import type { WorkStatus } from "../core/status-label.js";
-import type { SourceRef, SourceType } from "../core/types.js";
+import type { PrCheckResult, SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
 // The forge: where changes live (one implementation today). Optional: config may select none (plugins.forge). Since
@@ -121,8 +121,13 @@ export interface Forge {
    * failures are the caller's to log and must not block a transition.
    */
   setPrStatus(source: SourceRef, status: WorkStatus, pr_number: number): Promise<void>;
-  /** The checks on PR `pr_number`'s current head commit (design §5 CI gate). Read-only. */
+  /** The checks on PR `pr_number`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
   prChecks(pr_number: number): Promise<PrChecks>;
+  /**
+   * Each check on PR `pr_number`'s current head commit with its result; empty when none ran. Read when a review is
+   * queued, for the review prompt (design §4, issue #223). Throws when the forge cannot be read. Read-only.
+   */
+  prCheckResults(pr_number: number): Promise<PrCheckResult[]>;
   /** The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only. */
   prFiles(pr_number: number): Promise<string[]>;
   /** Who last added label `label` to PR `pr_number`, or null when nobody did or the forge does not say. Read-only. */
