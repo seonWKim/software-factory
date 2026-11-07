@@ -4,9 +4,9 @@ import {
 } from "../src/core/policy.js";
 import type { Run, RunOutcome, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { GitHubClient, GitHubError, GitHubRateLimitError } from "../src/impl/github/github-client.js";
-import { GitHubPermissionGrant } from "../src/impl/grant/github-permission.js";
+import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";

@@ -232,9 +232,9 @@ describe("settings: a project may only tighten a gate", () => {
       expect(err.message).toContain('removes the global floor "src/core/"');
     });
     it("lowering a tier fails at startup", async () => {
-      const floors = GLOBAL_FLOORS.map((f) => (f.prefix === "src/impl/broker/" ? { ...f, tier: 2 } : f));
+      const floors = GLOBAL_FLOORS.map((f) => (f.prefix === "src/impl/github/github-tool-broker.ts" ? { ...f, tier: 2 } : f));
       const err = await loadError(withProject({ floors }));
-      expect(err.message).toContain('lowers the floor "src/impl/broker/" to tier 2, below the global tier 4');
+      expect(err.message).toContain('lowers the floor "src/impl/github/github-tool-broker.ts" to tier 2, below the global tier 4');
     });
     it("a bad project floor tier fails like a top-level one", async () => {
       const err = await loadError(withProject({ floors: [...GLOBAL_FLOORS, { prefix: "x/", tier: 9 }] }));
@@ -292,7 +292,7 @@ describe("settings: doctor and status page", () => {
     expect(lines).toContain(`setting for ${ID}: max_attempts = 2 (project)`);
     expect(lines).toContain(`setting for ${ID}: max_diff_lines = 5000 (defaults)`);
     expect(lines).toContain(`setting for ${ID}: budgets = no limits (built-in)`);
-    expect(lines.find((l) => l.includes("floors ="))).toContain("src/impl/broker/≥4");
+    expect(lines.find((l) => l.includes("floors ="))).toContain("src/impl/github/github-tool-broker.ts≥4");
   });
 
   it("describeSettings has one line per key with the layer", () => {

@@ -4,7 +4,7 @@ What it does: gives a factory user roles on a project, and may deny one. Kind `g
 
 Plugins:
 
-- `github-permission`: `GitHubPermissionGrant`. Write, maintain or admin on the configured repository gives `approver`; triage or read gives `requester`; no access gives nothing. Asked for every GitHub account of the user (its `github:<id>` and any linked GitHub account). Denies nothing. The default.
+- `github-permission`: `GitHubPermissionGrant`, in `src/impl/github/github-permission.grant.ts`. Write, maintain or admin on the configured repository gives `approver`; triage or read gives `requester`; no access gives nothing. Asked for every GitHub account of the user (its `github:<id>` and any linked GitHub account). Denies nothing. The default.
   - Enable: `"permissions": { "grants": ["github-permission"] }`, or leave `permissions` out. Secrets: none of its own; it calls GitHub through the shared client, whose credential comes from `GitHubCredentials`.
 - `static`: `StaticGrant`. Roles and denies written in config, by factory user ID and project key (`*` for every project). No remote call.
   - Enable: `"permissions": { "grants": ["github-permission", "static"], "static": { "roles": { "github:12345": { "*": ["approver"] } }, "deny": { "github:666": ["*"] } } }`. Secrets: none. A role other than `requester` or `approver`, a key that is not a user ID (`<provider>:<id>`), or an unknown key fails at startup.

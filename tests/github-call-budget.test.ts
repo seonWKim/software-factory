@@ -6,7 +6,7 @@ import { GitHubClient, GitHubError, githubBudgetShare, githubMinRemaining } from
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, recordingLog, slackRef, waitFor } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
