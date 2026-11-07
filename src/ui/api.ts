@@ -89,8 +89,21 @@ async function overview(c: ApiCtx) {
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
+  // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
+  const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
+  const factory = status === undefined ? undefined : status === null ? null : {
+    state: status.state,
+    rev: status.rev,
+    target_rev: status.target_rev,
+    child_pid: status.child_pid,
+    since: status.since,
+    workers: status.workers,
+    error: await c.text(status.error ?? null),
+    pending: status.pending ?? [],
+  };
   return {
     as_of: c.now.toISOString(),
+    ...(factory === undefined ? {} : { factory }),
     stages,
     needs_you,
     running: running.length,

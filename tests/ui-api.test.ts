@@ -184,7 +184,7 @@ describe("ui api: items", () => {
       "?tier=2", "?kind=triage", "?kind=implement", "?unblocks=1", "?q=merge", "?q=%233", "?q=leaky", "?state=needs&tier=3",
     ];
     for (const q of queries) {
-      const page = await get(d, `/${q}`);
+      const page = await get(d, `/classic${q}`);
       expect(page.status, q).toBe(200);
       const api = await json<{ total: number; items: { id: string }[] }>(d, `/api/v1/items${q}`);
       expect(api.items.map((i) => i.id), q).toEqual(htmlKeys(page.body));
@@ -211,7 +211,7 @@ describe("ui api: items", () => {
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
     expect(api.facets.state.needs).toBe(3);
     expect(api.facets.stage.CLOSED).toBe(0);
-    const page = (await get(d, "/")).body;
+    const page = (await get(d, "/classic")).body;
     expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
     expect(page).toContain(`>All (${api.facets.allStates})</option>`);
   });
@@ -223,7 +223,7 @@ describe("ui api: items", () => {
       expect(r.status, q).toBe(400);
       expect(r.headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(r.body).error, q).toMatch(/^Unknown /);
-      expect((await get(d, `/?${q}`)).status, q).toBe(400);
+      expect((await get(d, `/classic?${q}`)).status, q).toBe(400);
     }
   });
 
@@ -276,7 +276,7 @@ describe("ui api: runs, queue, workers, overview, health", () => {
       [1, "triage", items.queued.id],
       [2, "triage", items.queued2.id],
     ]);
-    const rows = sectionOf((await get(d, "/")).body, "queue").split("<tr").length - 2; // minus the leading text and the header row
+    const rows = sectionOf((await get(d, "/classic")).body, "queue").split("<tr").length - 2; // minus the leading text and the header row
     expect(body.queue.length).toBe(rows);
   });
 
@@ -326,7 +326,7 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     expect(o).toMatchObject({ needs_you: 3, running: 3, queued: 2, last_24h: { succeeded: 1, failed: 1, tokens: 1234 } });
     expect(o.stages).toEqual({ NEW: 3, READY: 1, RUNNING: 2, REVIEW: 2, CLOSED: 1 });
 
-    const page = (await get(d, "/")).body;
+    const page = (await get(d, "/classic")).body;
     expect(page).toContain(`<title>(${o.needs_you}) software-factory status</title>`);
     const totals = sectionOf(page, "totals");
     const cell = (k: string) => Number(new RegExp(`<th scope="row">${k}</th><td>(\\d+)</td>`).exec(totals)![1]);
