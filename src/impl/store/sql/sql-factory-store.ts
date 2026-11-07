@@ -126,7 +126,6 @@ import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {
-  WORK_ITEM_COLUMNS,
   diffPatch,
   newId,
   newWorkItem,
@@ -141,7 +140,7 @@ import {
   rowToUnreviewedMerge,
   rowToVerdict,
   rowToWorkItem,
-  workItemValues,
+  workItemInsert,
 } from "./rows.js";
 
 /**
@@ -188,10 +187,10 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { item: existing, created: false };
 
       const item = newWorkItem(input, this.now());
-      const values = workItemValues(item, await changeFields(tx, item.project, item.pr_number));
+      const { columns, values } = workItemInsert(item, await changeFields(tx, item.project, item.pr_number));
       const inserted = await this.insertOnce(
         tx,
-        `INSERT INTO work_items (${WORK_ITEM_COLUMNS}) VALUES (${placeholders(values.length)})`,
+        `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
         values,
       );
       // A concurrent intake of the same source committed first.

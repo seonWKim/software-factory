@@ -2187,6 +2187,21 @@ describe("migration 31 (change fields) on an existing SQLite database", () => {
     expect(CHANGE_MIGRATION).toBeGreaterThan(0);
   });
 
+  it("an item without a PR inserts as before: the change columns are listed only with a PR number", async () => {
+    // A schema from before the migration, as tests of older steps build (tests/session-migration.test.ts on MySQL).
+    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
+    const raw = new DatabaseSync(path);
+    for (const m of MIGRATIONS.slice(0, CHANGE_MIGRATION - 1)) raw.exec(m);
+    raw.close();
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ id: item.id, pr_number: null });
+    } finally {
+      await store.close();
+    }
+  });
+
   it("backfills change_ref and change_url from pr_number and the label, adds the indexes; pr_number-only rows still resolve", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
     const clock = new FakeClock();
