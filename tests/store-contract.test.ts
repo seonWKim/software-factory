@@ -1358,6 +1358,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const names = tables.map((t) => t.name);
       expect(names).toEqual([...names].sort());
       for (const t of DOMAIN_TABLES) expect(names, t).toContain(t);
+      // The item thread and the command inbox (migration 24, issue #281).
+      for (const t of ["item_thread", "command_inbox"]) expect(DOMAIN_TABLES, t).toContain(t);
       if (name === "sqlite") expect(names).toEqual([...DOMAIN_TABLES, "schema_migrations"].sort());
       else expect(names).toContain("schema_migrations");
       const byName = new Map(tables.map((t) => [t.name, t]));

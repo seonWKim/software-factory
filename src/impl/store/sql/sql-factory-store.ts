@@ -1503,7 +1503,7 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
   }
 
-  // Local work items (issue #198)
+  // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
     return this.db.transaction(async (tx) => {
@@ -1511,7 +1511,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, message: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO item_messages (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO item_thread (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
         [input.work_item_id, input.marker, input.body, this.now()],
       );
       return { created, message: (await this.selectItemMessage(tx, input.work_item_id, input.marker))! };
@@ -1519,7 +1519,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
-    const rows = await this.db.all("SELECT * FROM item_messages WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
+    const rows = await this.db.all("SELECT * FROM item_thread WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
     return rows.map(rowToItemMessage);
   }
 
@@ -1529,7 +1529,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, command: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO cli_commands (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO command_inbox (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
         [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
       );
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
@@ -1537,7 +1537,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(`SELECT * FROM cli_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
+    const rows = await this.db.all(`SELECT * FROM command_inbox WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
       after_seq,
     ]);
     return rows.map(rowToCliCommand);
@@ -1656,7 +1656,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
-    const [row] = await q.all("SELECT * FROM item_messages WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
+    const [row] = await q.all("SELECT * FROM item_thread WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
     return row ? rowToItemMessage(row) : null;
   }
 
@@ -1666,7 +1666,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
-    const [row] = await q.all("SELECT * FROM cli_commands WHERE command_key = ?", [key]);
+    const [row] = await q.all("SELECT * FROM command_inbox WHERE command_key = ?", [key]);
     return row ? rowToCliCommand(row) : null;
   }
 
