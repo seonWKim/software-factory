@@ -33,7 +33,7 @@
     "llm": "claude-cli",
     "source": ["github-issues", "local"],
     "storage": "fs",
-    "capability": "list-all",
+    "capability": "bm25",
     "clock": "system",
     "updater": "git-worktree",
     "github_auth": "app",

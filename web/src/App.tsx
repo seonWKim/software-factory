@@ -43,6 +43,9 @@ function SideLinks({ label, pages, current }: { label: string; pages: readonly P
             <Link
               href={BASE + p.path}
               aria-current={p === current ? "page" : undefined}
+              // Below sm only the icon shows: the title and name keep each link named.
+              title={p.label}
+              aria-label={p.label}
               className={cn(
                 "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800",
                 p === current && "bg-zinc-100 font-medium dark:bg-zinc-800",

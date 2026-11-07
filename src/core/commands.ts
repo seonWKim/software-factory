@@ -16,6 +16,7 @@ export type CommandPhase =
   | "max_revisions"
   | "implementing"
   | "dependency_hold"
+  | "dependency_closed"
   | "floor_tier"
   | "too_large"
   | "failed_implement"
@@ -31,7 +32,8 @@ export type CommandPhase =
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
-  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "floor_tier", "too_large",
+  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "floor_tier",
+  "too_large",
   "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
@@ -111,8 +113,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/retry",
     description:
       "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
-      "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths",
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
+      "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
+      "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed",
+    // At a dependency closed unmerged it reads the dependencies again and releases the item if they merged (design §5).
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed"],
     needs_pr: false,
     changes_state: true,
   },
@@ -166,6 +170,9 @@ export function commandSpec(name: CommandName): CommandSpec {
   return BY_NAME.get(name)!;
 }
 
+/** blocked_reason prefix (with `blocked_on: human`) of an item whose dependency closed without a merge (design §5). */
+export const DEPENDENCY_CLOSED = "dependency_closed";
+
 /** Block reasons whose step `/retry` reads from the stage (or, for the agent blocks, from the item's runs first). */
 const STAGE_RETRY_REASONS: readonly (string | null)[] = ["max_attempts", "max_restart", AGENT_NEEDS_HUMAN, REPEATED_FAILURE];
 
@@ -194,6 +201,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.blocked_on === "human") {
     if (it.blocked_reason === AGENT_NEEDS_HUMAN) return "agent_needs_human";
     if (it.blocked_reason === REPEATED_FAILURE) return "repeated_failure";
+    if (it.blocked_reason?.startsWith(`${DEPENDENCY_CLOSED}:`)) return "dependency_closed";
     const kind = failedRunKind(it as WorkItem);
     if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
     if (kind === "review") return "failed_review";
@@ -289,6 +297,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   max_revisions: "spec at the revision limit",
   implementing: "implementing",
   dependency_hold: "waiting for a dependency to merge",
+  dependency_closed: "blocked: a dependency was closed without a merge",
   floor_tier: "blocked by the floor check",
   too_large: "blocked: the change was too large",
   failed_implement: "blocked by a failed implement run",

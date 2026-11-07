@@ -1,4 +1,4 @@
--- Host sleeps (design §5 Host sleep, issue #218): the same table as SQLite migration 27. One row per sleep a worker
+-- Host sleeps (design §5 Host sleep, issue #218): the same table as SQLite migration 28. One row per sleep a worker
 -- saw (one of its waits ended more than 60 s late), keyed by (worker_id, woke_at), so recording one again keeps one
 -- row. `run_id`: the run the worker held, NULL for an idle tick. Ids, a timestamp and a number only.
 -- Safe to rerun: the table is created only when missing.

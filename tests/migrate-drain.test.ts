@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { NoneUpdater } from "../src/impl/updater/none.js";
 import { SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../src/interfaces/updater.js";
 import { supervisorLive, withDrain } from "../src/migrate-drain.js";
 import { waitFor } from "./helpers/fakes.js";
@@ -42,6 +43,17 @@ describe("migrate: drain handshake with factory dev", () => {
       expect(s.request()).toBeNull();
     }
     expect(await supervisorLive(stateDir({ state: "running" }).dir, () => true)).toBe(true);
+  });
+
+  it("an in-place (updater none) status has no supervisor_pid: not a live supervisor, so migrate applies at once", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-drain-"));
+    const run = async () => ({ exit_code: 0, signal: null, stdout: "c1\n", stderr: "", timed_out: false });
+    const updater = new NoneUpdater({ repoPath: dir, run, env: {}, clock: new FakeClock(), log: { info() {}, warn() {}, error() {} }, statusFile: join(dir, SUPERVISOR_STATUS_FILE) });
+    await updater.start();
+    const status = JSON.parse(readFileSync(join(dir, SUPERVISOR_STATUS_FILE), "utf8")) as Record<string, unknown>;
+    expect(status).toMatchObject({ state: "running", child_pid: process.pid });
+    expect(status).not.toHaveProperty("supervisor_pid");
+    expect(await supervisorLive(dir, () => true)).toBe(false);
   });
 
   it("asks for a drain, applies only once migration_ready and the request was read, then asks for a start", async () => {

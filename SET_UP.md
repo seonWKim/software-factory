@@ -95,7 +95,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check |
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
 | `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice; on its PR: waiting for a human merge, blocked by a failed review run |
-| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
+| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
@@ -258,6 +258,13 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
    ```
 
    Those are the only grants: the user may create, use and drop databases whose names start with `sf_test_`, and nothing else. It has no access to `software_factory` or any other database, no `GRANT OPTION`, and no global privileges. The pattern needs the backslashes: an unescaped `_` matches any character.
+   What the MySQL suite needs, by test:
+
+   | Grant | Needed by | Without it |
+   |---|---|---|
+   | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
+   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file; CI's `test-mysql` job (root) still runs it |
+
 2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
 
    ```sh
@@ -271,6 +278,17 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
 What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
 
 For `npm run test:mysql` on your own machine, the same URL can go in `.factory/test-mysql.url` (ignored by git).
+
+## Run the factory on your project
+
+The checked-in `factory.config.json` is this repository's own config. To point the factory at another repository, keep your config outside the factory checkout, so `dev`'s updater (which runs `origin/<base_branch>`) never replaces it:
+
+1. Make a folder for it, e.g. `~/factory/my-app/`, and copy `factory.config.json` into it.
+2. Edit at least `repo.owner`, `repo.name`, `repo.path` (your project's checkout; relative paths resolve from the folder you start the factory in), `repo.base_branch`, `repo.test_command` / `repo.check_commands`, `floors` and `store`. For one machine, `"store": { "type": "sqlite" }` needs no database.
+3. Check it: `npm run factory -- doctor --config ~/factory/my-app/factory.config.json`. The first line names the config file in use.
+4. Start: `npm run factory -- dev --config ~/factory/my-app/factory.config.json` (or `export FACTORY_CONFIG=…`; `--config` wins when both are set). Every command takes the flag.
+
+With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. Solo use (SQLite) may set any key; on a shared MySQL store, `dials`, `floors`, `plugins`, `permissions` and `auth` always come from the checked-in file. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
 
 ## Routine
 

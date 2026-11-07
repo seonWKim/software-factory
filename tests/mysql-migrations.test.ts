@@ -293,7 +293,9 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
       app = await compiledApp();
     }, 120_000);
 
-    it("dev, worker, controller, status, ui and golden add exit non-zero with `npm run migrate`; doctor FAILs; nothing is applied", async () => {
+    it("dev, worker, controller, status, ui and golden add exit non-zero with `npm run migrate`; doctor FAILs; nothing is applied", async (ctx) => {
+      const missing = await missingE2eGrant();
+      if (missing) ctx.skip(missing);
       const db = await newEmptyMysqlDatabase();
       const c = await db.connect();
       await buildLegacy(c);
@@ -504,6 +506,41 @@ function workDir(store: Record<string, unknown>): string {
   cpSync(join(REPO, "prompts"), join(dir, "prompts"), { recursive: true });
   return dir;
 }
+
+/** Why the end-to-end test skips: the test user cannot create the throwaway MySQL user it needs. */
+export function missingCreateUserMessage(user: string): string {
+  return `skipped: MySQL test user '${user}' lacks the global CREATE USER grant (and GRANT OPTION) this test needs to create a throwaway user; run it as an admin such as CI's root. See SET_UP.md, "Local test MySQL".`;
+}
+
+/** True when SHOW GRANTS output holds a global CREATE USER (or ALL PRIVILEGES) together with GRANT OPTION. */
+export function grantsAllowCreateUser(grants: string[]): boolean {
+  return grants.some((g) => /\bON \*\.\*/.test(g) && /\b(CREATE USER|ALL PRIVILEGES)\b/.test(g) && /WITH GRANT OPTION/.test(g));
+}
+
+/** The skip message when the test user cannot run CREATE USER, else undefined. Creates nothing. */
+async function missingE2eGrant(): Promise<string | undefined> {
+  const u = new URL(MYSQL_URL!);
+  const c = await mysql.createConnection({ host: u.hostname, port: Number(u.port || 3306), user: decodeURIComponent(u.username), password: decodeURIComponent(u.password) });
+  try {
+    const [rows] = await c.query("SHOW GRANTS FOR CURRENT_USER()");
+    const grants = (rows as Record<string, string>[]).map((r) => Object.values(r)[0] ?? "");
+    return grantsAllowCreateUser(grants) ? undefined : missingCreateUserMessage(decodeURIComponent(u.username));
+  } finally {
+    await c.end();
+  }
+}
+
+describe("e2e skip message", () => {
+  it("names the missing grant, the test user and SET_UP.md", () => {
+    expect(missingCreateUserMessage("sf_test")).toBe(
+      "skipped: MySQL test user 'sf_test' lacks the global CREATE USER grant (and GRANT OPTION) this test needs to create a throwaway user; run it as an admin such as CI's root. See SET_UP.md, \"Local test MySQL\".",
+    );
+  });
+  it("accepts an admin's grants and rejects the sf_test grants", () => {
+    expect(grantsAllowCreateUser(["GRANT ALL PRIVILEGES ON *.* TO `root`@`%` WITH GRANT OPTION"])).toBe(true);
+    expect(grantsAllowCreateUser(["GRANT USAGE ON *.* TO `sf_test`@`localhost`", "GRANT ALL PRIVILEGES ON `sf\\_test\\_%`.* TO `sf_test`@`localhost`"])).toBe(false);
+  });
+});
 
 /** A MySQL user with a password (the store needs MYSQL_PASSWORD) and a secret file that names it. */
 async function mysqlEnv(database: string, onCleanup: (f: () => Promise<void>) => void) {

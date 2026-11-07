@@ -21,7 +21,7 @@ export interface FactoryState {
 export interface Overview {
   as_of: string;
   stages: Record<string, number>;
-  /** Open items blocked on a person: "Needs you (N)". */
+  /** Open items blocked on a person, plus those whose run started past a deadlock: "Needs you (N)". */
   needs_you: number;
   running: number;
   queued: number;
@@ -64,6 +64,18 @@ export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
   return !!m && m.state !== "mergeable";
 }
 
+/**
+ * Why an item waits (design §9, issue #310): one sentence, who moves it next, and the same-repo issue numbers
+ * the sentence names as `#N`. `ref_url` + a number is that issue's URL; null: show the number without a link.
+ */
+export interface Why {
+  code: string;
+  text: string;
+  next_actor: "human" | "factory" | "other_item" | "none";
+  refs: number[];
+  ref_url: string | null;
+}
+
 export interface ItemRow {
   id: string;
   source: SourceRef;
@@ -87,6 +99,7 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  why?: Why;
 }
 
 export interface Items {
@@ -117,6 +130,17 @@ export interface QueueRow {
   attempt: number;
   created_at: string;
   not_before: string | null;
+  /** Why its item waits; null when the item is gone. */
+  why?: Why | null;
+}
+
+/** One phase of a split parent, as the item API lists it. */
+export interface PhaseRow {
+  id: string;
+  phase: number;
+  title: string | null;
+  stage: string;
+  source: SourceRef;
 }
 
 export interface ItemDetail {
@@ -135,10 +159,18 @@ export interface ItemDetail {
     token_cost: number;
     pr_number: number | null;
     pr_url: string | null;
+    /** The posted spec comment; null before triage posts it. */
+    spec_comment_url?: string | null;
+    /** A phase of a split spec: its parent's id and its place in merge order; both null on any other item. */
+    parent_id?: string | null;
+    phase?: number | null;
+    /** A split parent's phases in phase order; empty for any other item. */
+    phases?: PhaseRow[];
     version: number;
     created_at: string;
     updated_at: string;
     merge_check?: MergeCheckView | null;
+    why?: Why;
   };
   timeline: {
     version: number;

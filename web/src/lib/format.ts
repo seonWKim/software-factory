@@ -31,7 +31,33 @@ export function tokens(n: number | null | undefined): string {
   return String(n);
 }
 
-export const shortRev = (rev: string | null | undefined) => (rev ? rev.slice(0, 7) : "unknown");
+const DURATION_UNITS = [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000], ["s", 1000], ["ms", 1]] as const;
+
+/** 5400000 → "1h 30m"; 1800000 → "30m"; 1500 → "1s 500ms"; 0 → "0s". Every non-zero unit, largest first. */
+export function duration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return String(ms);
+  const parts: string[] = [];
+  let left = Math.round(ms);
+  for (const [unit, size] of DURATION_UNITS) {
+    const n = Math.floor(left / size);
+    left -= n * size;
+    if (n > 0) parts.push(`${n}${unit}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : "0s";
+}
+
+/** True only for an absolute http: or https: URL: the only links the app draws from stored text. */
+export function isHttpUrl(url: string | null | undefined): url is string {
+  if (!url) return false;
+  try {
+    const p = new URL(url).protocol;
+    return p === "http:" || p === "https:";
+  } catch {
+    return false;
+  }
+}
+
+export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : "unknown");
 
 /** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
 export const LEVEL_LABELS: Record<string, string> = {

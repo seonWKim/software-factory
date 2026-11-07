@@ -471,9 +471,37 @@ export const MIGRATIONS: readonly string[] = [
     created_at  TEXT NOT NULL
   );
   `,
-  // 27: host sleeps (design §5 Host sleep, issue #218). One row per sleep a worker saw: one of its waits ended more
+  // 27: GitHub sync records (design §5, GitHub call budget). `posted_comments`: one row per (source id, marker): the
+  // comment's ID, URL and body hash once posted, and the failed posts (`attempts`, `next_attempt_at`) of the
+  // controller's backoff. `label_states`: the status label last written per (source id, target), `target` being
+  // `issue` or `pr:<n>`, with the claim (`claim_*`) of the write in progress. IF NOT EXISTS: safe to run again below 27.
+  `
+  CREATE TABLE IF NOT EXISTS posted_comments (
+    source_id        TEXT NOT NULL,
+    marker           TEXT NOT NULL,
+    comment_id       TEXT,
+    url              TEXT,
+    body_hash        TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (source_id, marker)
+  );
+  CREATE TABLE IF NOT EXISTS label_states (
+    source_id     TEXT NOT NULL,
+    target        TEXT NOT NULL,
+    status        TEXT,
+    claim_token   TEXT,
+    claim_status  TEXT,
+    claim_until   TEXT,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (source_id, target)
+  );
+  `,
+  // 28: host sleeps (design §5 Host sleep, issue #218). One row per sleep a worker saw: one of its waits ended more
   // than 60 s late. Keyed by (worker_id, woke_at), so recording one again keeps one row. `run_id`: the run the
-  // worker held, null for an idle tick. Ids, a timestamp and a number only. IF NOT EXISTS: safe to run again.
+  // worker held, null for an idle tick. Ids, a timestamp and a number only. IF NOT EXISTS: safe to run again below 28.
   `
   CREATE TABLE IF NOT EXISTS host_sleeps (
     worker_id  TEXT NOT NULL,

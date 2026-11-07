@@ -64,6 +64,19 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
     expect(claimDecision([h("running")])).toBe("held");
   });
 
+  it("running and PR holds come before waiting ones whatever the cost, so the first hold is the one that decides", () => {
+    const holder = (kind: Holder["kind"], files: string[], id: string): Holder =>
+      ({ work_item_id: id, project: "p", ref: id, kind, files, fallback: false });
+    const cand = { work_item_id: "wi_a", project: "p", files: ["SET_UP.md", "src/core/worker.ts", "lib/a.ts"] };
+    const holds = holdsOn(cand, [
+      holder("waiting", ["SET_UP.md", "src/core/worker.ts", "lib/a.ts"], "wi_queued"), // 7.0
+      holder("pr", ["SET_UP.md"], "wi_pr"), // 3.0
+      holder("running", ["SET_UP.md", "lib/a.ts"], "wi_running"), // 4.0
+    ], none, S);
+    expect(holds.map((h) => [h.holder.work_item_id, h.cost])).toEqual([["wi_running", 4], ["wi_pr", 3], ["wi_queued", 7]]);
+    expect(claimDecision(holds)).toBe("held");
+  });
+
   it("the hold reason the comment and the dashboard show", () => {
     const shared = [pathWeight("src/core/worker.ts", new Map([["src/core/worker.ts", 6]]), S)];
     expect(holdReason({ holder_ref: "#92", shared, cost: 4, threshold: 2.5, fallback: false })).toBe(
