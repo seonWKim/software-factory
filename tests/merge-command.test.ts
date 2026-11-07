@@ -19,7 +19,7 @@ const WRITER = "github:1" as UserId;
 const READER = "github:666" as UserId;
 const HEAD = "a".repeat(40);
 const PR = 42;
-const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: PR, tier: 2 };
+const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(PR), tier: 2 };
 
 async function harness(opts: { merge?: boolean; forge?: boolean } = {}) {
   const { store, clock } = await newStore();
@@ -129,8 +129,8 @@ describe("merge command: the GitHub forge path (fake forge)", () => {
 describe("merge command: refusals before any merge", () => {
   it("is refused when the item is not ready to merge: no forge read, no merge, no stage or block change", async () => {
     const h = await harness();
-    const it1 = await h.itemIn({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", pr_number: PR }, 1);
-    const reviewing = await h.itemIn({ stage: "REVIEW", pr_number: PR }, 2);
+    const it1 = await h.itemIn({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", change_ref: String(PR) }, 1);
+    const reviewing = await h.itemIn({ stage: "REVIEW", change_ref: String(PR) }, 2);
     await expectRefused(h, it1, await h.merge(it1), /the item is spec waiting for approval; `merge` applies only when it is waiting for a human merge/);
     await expectRefused(h, reviewing, await h.merge(reviewing, WRITER, "m2"), /the item is in review/);
     expect(h.forge.checkCalls).toEqual([]);
@@ -173,10 +173,10 @@ describe("merge command: refusals before any merge", () => {
     const h = await harness();
     const { item } = await h.store.createWorkItem({
       source: { type: "github_issue", id: "o/r#77", link: "https://github.com/o/r/pull/77" }, requester_id: WRITER, project: PROJECT_KEY,
-      problem: "p", resources: [], adopted: { pr_number: 77, head_branch: "feature", head_sha: HEAD, allowed_paths: [], tier: null },
+      problem: "p", resources: [], adopted: { change_ref: "77", head_branch: "feature", head_sha: HEAD, allowed_paths: [], tier: null },
     }, { kind: "system", id: "system:test" });
     const r = await h.store.transition({
-      id: item.id, expected_version: item.version, actor: { kind: "system", id: "t" }, reason: "setup", patch: { ...MERGE_PENDING, pr_number: 77 },
+      id: item.id, expected_version: item.version, actor: { kind: "system", id: "t" }, reason: "setup", patch: { ...MERGE_PENDING, change_ref: "77" },
     });
     if (!r.ok) throw new Error("setup failed");
     await expectRefused(h, r.item, await h.merge(r.item), /the factory merges only the PRs it opened; merge PR #77 on the forge/);
@@ -211,7 +211,7 @@ describe("merge command: off by default", () => {
   it("the size of a ready PR is kept on its review_passed change only when merging is on", async () => {
     for (const merge of [true, false]) {
       const h = await harness({ merge });
-      const it1 = await h.itemIn({ stage: "REVIEW", pr_number: PR, tier: 2 }, 1);
+      const it1 = await h.itemIn({ stage: "REVIEW", change_ref: String(PR), tier: 2 }, 1);
       const { run } = await h.store.enqueueRun({ work_item_id: it1.id, kind: "review", idempotency_key: "rv" });
       const claimed = await h.store.claimRun({ worker_id: "w" as never, kinds: ["review"], lease_ms: 60_000 });
       expect(claimed?.id).toBe(run.id);

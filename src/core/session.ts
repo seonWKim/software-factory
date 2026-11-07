@@ -119,7 +119,7 @@ export class Sessions {
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
     const { stage, blocked_on: on } = item;
     if (stage === "CLOSED") return `the item is closed (${item.close_reason ?? "no reason"})`;
-    if (stage === "REVIEW") return `the item is in review${item.pr_number !== null ? ` (PR #${item.pr_number})` : ""}; send changes as \`/revise <feedback>\` on the PR`;
+    if (stage === "REVIEW") return `the item is in review${item.change_ref !== null ? ` (PR #${item.change_ref})` : ""}; send changes as \`/revise <feedback>\` on the PR`;
     if (stage === "READY") return "the item waits for its spec to be approved: reply `/approve` on the issue first (or `/revise` to change the spec)";
     if (stage === "NEW" && on !== "none") return `the item is held (${on}: ${item.blocked_reason ?? ""})`;
     if (stage === "NEW" && !withSpec) return "the item has no spec yet: pass --spec <file>, or wait for triage and `/approve`";
@@ -253,9 +253,12 @@ export class Sessions {
     const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
     const pr = await this.d.broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
     if (!pr.ok) return this.refuseFinish(file, [`pr: ${pr.error_code}: ${pr.message}`.slice(0, 500)]);
-    const number = Number((pr.content as { number?: unknown }).number);
+    const opened = pr.content as { number?: unknown; url?: unknown };
+    const number = Number(opened.number);
+    // The forge's PR link, stored as the item's change_url (design 02).
+    const pr_url = typeof opened.url === "string" ? opened.url : null;
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: number } });
-    const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data: { pr_number: number, commits, files: paths.slice(0, MAX_PR_FILES) } });
+    const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data: { pr_number: number, pr_url, commits, files: paths.slice(0, MAX_PR_FILES) } });
     if (!done.ok) return refused("refused: the session ended before it could complete; the PR is open");
     await this.d.files.remove(item.id);
     await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on the forge now

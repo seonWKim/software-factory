@@ -51,14 +51,14 @@ async function item(f: F, adopted = false): Promise<WorkItem> {
   const { item } = await f.store.createWorkItem(
     {
       source: issueRef(7), requester_id: "github:1" as WorkItem["requester_id"], project: PROJECT_KEY, problem: "p", resources: [],
-      ...(adopted ? { adopted: { pr_number: 42, head_branch: "feature/x", head_sha: "h1", allowed_paths: ["a"], tier: 1 } } : {}),
+      ...(adopted ? { adopted: { change_ref: "42", head_branch: "feature/x", head_sha: "h1", allowed_paths: ["a"], tier: 1 } } : {}),
     },
     system,
   );
   if (adopted) return item;
   const r = await f.store.transition({
     id: item.id, expected_version: item.version, actor: system, reason: "test",
-    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 },
+    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" },
   });
   if (!r.ok) throw new Error(r.reason);
   const h = await f.store.recordPrHead({ id: item.id, expected_head: null, head_sha: "h1", manual: null });

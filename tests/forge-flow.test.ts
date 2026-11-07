@@ -139,7 +139,7 @@ async function github(o: { withForge: boolean }) {
     );
     await store.transition({
       id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 42, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "42", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     return item.id;
   };

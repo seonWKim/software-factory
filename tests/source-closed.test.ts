@@ -306,7 +306,7 @@ describe("closing the source issue stops its work item", () => {
     // Put the item where a merged PR finds it.
     await f.store.transition({
       id: it.id, expected_version: it.version, actor: { kind: "system", id: "system:test" }, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 42, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "42", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     await intake(
       f,
@@ -325,7 +325,7 @@ describe("closing the source issue: close reason and the open PR", () => {
     const it = await item(f);
     await f.store.transition({
       id: it.id, expected_version: it.version, actor: { kind: "system", id: "system:test" }, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 42, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "42", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     return it.id;
   }

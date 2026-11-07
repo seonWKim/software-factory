@@ -109,7 +109,7 @@ describe("session start", () => {
     it("for a CLOSED item, an item in REVIEW, a READY item (naming /approve), no allowed_paths, or no write permission", async () => {
       const h = await harness();
       expect(await unchanged(h, (await h.running(1, ["src/a/"], 2, { stage: "CLOSED", close_reason: "wont_do" })).id)).toMatch(/closed/);
-      expect(await unchanged(h, (await h.running(2, ["src/a/"], 2, { stage: "REVIEW", pr_number: 5 })).id)).toMatch(/in review \(PR #5\)/);
+      expect(await unchanged(h, (await h.running(2, ["src/a/"], 2, { stage: "REVIEW", change_ref: "5" })).id)).toMatch(/in review \(PR #5\)/);
       const ready = await h.running(3, ["src/a/"], 2, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
       expect(await unchanged(h, ready.id)).toContain("`/approve`");
       expect(await unchanged(h, (await h.running(4, [])).id)).toMatch(/no allowed_paths/);
@@ -289,6 +289,17 @@ describe("session finish", () => {
     expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 300, pr_files: ["src/a/x.ts"] });
     expect((await h.runs(h.it0.id, "review")).map((x) => x.status)).toEqual(["queued"]);
     expect((await h.store.listStateChanges(h.it0.id)).at(-1)).toMatchObject({ reason: "session_finished" });
+  });
+
+  it("the PR the session opened stores change_url from the open result", async () => {
+    const h = await started();
+    const url = "https://github.example/o/r/pull/42";
+    h.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    expect((await h.sessions.finish({ tokens: 300 })).ok).toBe(true);
+    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
+    expect(run.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
+    await h.controller.tickRuns();
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
   });
 
   it("finish again after a success, or after a failed push, creates no second PR and no second review run", async () => {

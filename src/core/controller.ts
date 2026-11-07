@@ -8,6 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
+import { prNumber } from "./change-ref.js";
 import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
@@ -308,7 +309,7 @@ const CATCH_UP_LIMIT = 1000;
 /** How long the state of a dependency the store does not track, read from the forge, is reused (issue #254). */
 export const DEPENDENCY_STATE_TTL_MS = 10 * 60_000;
 /** Patch fields that can change an item's status or where it is shown. */
-const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
+const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "change_ref"] as const;
 /**
  * A rejected item whose source still needs the reject comment and the close: `CLOSED` with
  * `blocked_on: upstream` and this reason until both are done (design §4, gate commands).
@@ -712,10 +713,10 @@ export class Controller {
     const principal = await this.authorize(who, "approve_merge", item.id);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
-    else if (!awaitingMerge(item) || item.pr_number !== null) {
+    else if (!awaitingMerge(item) || item.change_ref !== null) {
       const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
-      refusal = item.pr_number !== null
-        ? `${item.id} has PR #${item.pr_number}: merge the PR instead`
+      refusal = item.change_ref !== null
+        ? `${item.id} has PR #${item.change_ref}: merge the PR instead`
         : `${item.id} is not waiting for a merge (${at}); \`factory merge\` applies once its review passed (merge_pending)`;
     } else if (!canMergeLocal(this.d.sandbox)) refusal = "this controller has no sandbox that can merge locally";
     else {
@@ -725,7 +726,7 @@ export class Controller {
       });
       if (r.merged) {
         const actor: Actor = { kind: "user", id: principal.user_id };
-        const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.pr_number === null
+        const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
           ? {
               patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
               actor,
@@ -844,7 +845,8 @@ export class Controller {
     if (item.stage === "CLOSED" && item.merge_sha !== null) return null;
     const forge = this.forge;
     if (!forge || this.cfg.forge_merge !== true) {
-      const pr = item.pr_number === null ? "the PR" : `PR #${item.pr_number}`;
+      const n = prNumber(item);
+      const pr = n === null ? "the PR" : `PR #${n}`;
       return `merging from the factory is off for this project (\`plugins.forge\` is not set in factory.config.json); merge ${pr} on the forge`;
     }
     const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
@@ -860,7 +862,7 @@ export class Controller {
     this.d.log.info("merged from the factory", { work_item_id: item.id, pr_number: ready.pr_number, user_id: principal.user_id });
     const sha = merge_sha;
     await this.decide(item.id, (it) => {
-      if (it.stage === "CLOSED" || it.pr_number !== ready.pr_number) return null;
+      if (it.stage === "CLOSED" || prNumber(it) !== ready.pr_number) return null;
       return {
         patch: { stage: "CLOSED", close_reason: "completed", merge_sha: sha, blocked_on: "none", blocked_reason: null },
         actor: { kind: "user", id: principal.user_id },
@@ -882,12 +884,13 @@ export class Controller {
     it: WorkItem,
   ): Promise<{ pr_number: number; branch: string; head_sha: string; merged: string | null } | Refusal> {
     const phase = commandPhase(it);
-    if (phase !== "merge_pending" || it.pr_number === null) {
+    const pr_number = prNumber(it);
+    if (phase !== "merge_pending" || pr_number === null) {
       return { refuse: `the item is ${phaseLabel(phase)}; \`merge\` applies only when it is ${phaseLabel("merge_pending")}` };
     }
-    if (it.origin !== "factory") return { refuse: `the factory merges only the PRs it opened; merge PR #${it.pr_number} on the forge` };
+    if (it.origin !== "factory") return { refuse: `the factory merges only the PRs it opened; merge PR #${pr_number} on the forge` };
     if (it.last_head_sha === null) return { refuse: "the factory has no record of the head its review read; merge on the forge" };
-    const pr = { pr_number: it.pr_number, branch: branchFor(it, this.cfg.branch_prefix), head_sha: it.last_head_sha };
+    const pr = { pr_number, branch: branchFor(it, this.cfg.branch_prefix), head_sha: it.last_head_sha };
     const state = await forge.prMergeState(pr.pr_number, pr.branch);
     if (state.state === "merged") return { ...pr, merged: state.merge_sha ?? it.last_head_sha };
     if (state.state === "closed") return { refuse: `PR #${pr.pr_number} is closed` };
@@ -1156,7 +1159,7 @@ export class Controller {
           await this.setStatus(item.source, "triaging", null);
           // Edges first, so a claim holds the implement run even before the next coordination tick.
           await this.guard("dependencies", async () => void (await this.refreshEdges(item, this.issueTime(e.updated_at))));
-        } else if (item.stage !== "CLOSED" && item.pr_number === null) {
+        } else if (item.stage !== "CLOSED" && item.change_ref === null) {
           // An edited issue (issue #254): its links are read again only when it changed since they were read.
           await this.guard("dependencies", () => this.relinkIfChanged(item, e.updated_at));
         }
@@ -1209,7 +1212,7 @@ export class Controller {
   private async startUpdate(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): Promise<void> {
     const key = `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
     await this.decide(id, async (it) => {
-      if (!awaitingMerge(it) || it.pr_number !== pr_number) return null;
+      if (!awaitingMerge(it) || prNumber(it) !== pr_number) return null;
       const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
       if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
       return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
@@ -1231,11 +1234,11 @@ export class Controller {
     if (!this.merges) return;
     const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: MERGE_CHECK_BATCH });
     // Factory branches only: an adopted PR's branch is a person's, which the factory never updates.
-    const ready = waiting.filter((it) => awaitingMerge(it) && it.pr_number !== null && it.head_branch === null);
+    const ready = waiting.filter((it) => awaitingMerge(it) && it.change_ref !== null && it.head_branch === null);
     const { repo, branch_prefix, poll_interval_ms } = this.cfg;
     await this.merges.step(ready, { repo: repo.path, base_ref: repo.base_branch, branch_prefix, poll_interval_ms }, (it, c) => {
       this.d.log.info("merge check conflict", { work_item_id: it.id, files: c.conflicts.length });
-      return this.startUpdate(it.id, it.pr_number!, c.head_sha, c.base_sha);
+      return this.startUpdate(it.id, prNumber(it)!, c.head_sha, c.base_sha);
     });
   }
 
@@ -1255,7 +1258,7 @@ export class Controller {
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
     if (e.kind === "pr_merged") await this.mergeVerdict(item, e, merger ? actor : null);
     await this.decide(item.id, (it) => {
-      if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
+      if (it.stage === "CLOSED" || prNumber(it) !== e.pr_number) return null;
       return e.kind === "pr_merged"
         ? {
             patch: { stage: "CLOSED", close_reason: "completed", merge_sha: e.merge_sha, blocked_on: "none", blocked_reason: null },
@@ -1279,7 +1282,7 @@ export class Controller {
    * merger does not resolve to a user.
    */
   private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
-    if (it.origin !== "factory" || it.stage === "CLOSED" || it.pr_number !== e.pr_number) return;
+    if (it.origin !== "factory" || it.stage === "CLOSED" || prNumber(it) !== e.pr_number) return;
     const id = it.id;
     const log = { work_item_id: id, pr_number: e.pr_number };
     if (!merger) {
@@ -1322,7 +1325,7 @@ export class Controller {
     if (e.fork) return null;
     const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) return this.d.store.getWorkItem(id as WorkItemId);
-    const it = await this.d.store.getWorkItemByPr(this.project(), e.pr_number);
+    const it = await this.d.store.getWorkItemByPr(this.project(), String(e.pr_number));
     return it?.origin === "adopted" ? it : null;
   }
 
@@ -1331,7 +1334,7 @@ export class Controller {
     const merger = e.merger ? await this.d.auth.resolve(e.merger) : null;
     const { created } = await this.d.store.recordUnreviewedMerge({
       project: this.project(),
-      pr_number: e.pr_number,
+      change_ref: String(e.pr_number),
       merge_sha: e.merge_sha,
       merger_id: merger?.user_id ?? null,
     });
@@ -1348,7 +1351,7 @@ export class Controller {
     const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) {
       const it = await this.d.store.getWorkItem(id as WorkItemId);
-      if (it && it.pr_number === e.pr_number) await this.recordHead(it, e);
+      if (it && prNumber(it) === e.pr_number) await this.recordHead(it, e);
       return;
     }
     const known = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
@@ -1389,7 +1392,7 @@ export class Controller {
         problem: `${e.title}\n\n${e.body}`.trim(),
         resources: [e.source.link],
         adopted: {
-          pr_number: e.pr_number,
+          change_ref: String(e.pr_number),
           head_branch: e.head_branch,
           head_sha: e.head_sha,
           allowed_paths: files,
@@ -1422,7 +1425,7 @@ export class Controller {
       id: it.id,
       expected_head: it.last_head_sha,
       head_sha: e.head_sha,
-      manual: { actor, pr_number: e.pr_number },
+      manual: { actor, change_ref: String(e.pr_number) },
     });
     if (r.ok && r.run) {
       this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
@@ -1511,8 +1514,8 @@ export class Controller {
     const id = workItemIdFromBranch(pr.head_branch, this.cfg.branch_prefix);
     const it = id
       ? await this.d.store.getWorkItem(id as WorkItemId)
-      : await this.d.store.getWorkItemByPr(this.project(), pr.pr_number).then((x) => (x?.origin === "adopted" ? x : null));
-    return it && it.pr_number === pr.pr_number ? it : null;
+      : await this.d.store.getWorkItemByPr(this.project(), String(pr.pr_number)).then((x) => (x?.origin === "adopted" ? x : null));
+    return it && prNumber(it) === pr.pr_number ? it : null;
   }
 
   /**
@@ -1548,7 +1551,7 @@ export class Controller {
     it: WorkItem,
     f: { text: string; actor: Actor; reason: string; pr_number: number; key: { comment_id: string } | { review_id: string } },
   ): Promise<Decision | Refusal> {
-    if (it.stage === "CLOSED" || it.pr_number !== f.pr_number) return null;
+    if (it.stage === "CLOSED" || prNumber(it) !== f.pr_number) return null;
     const [field, value] = Object.entries(f.key)[0] as [string, string];
     const done = (await this.d.store.listStateChanges(it.id)).some(
       (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
@@ -1716,7 +1719,7 @@ export class Controller {
       const close_reason: CloseReason = e.state_reason === "completed" ? "completed" : "wont_do";
       await this.decide(item.id, (it) => {
         if (it.stage === "CLOSED") return null;
-        const closesPr = it.pr_number !== null && this.forge !== null;
+        const closesPr = it.change_ref !== null && this.forge !== null;
         return {
           patch: {
             stage: "CLOSED",
@@ -1741,22 +1744,23 @@ export class Controller {
    */
   private async finishPrClose(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
-    if (!it || !prClosePending(it) || it.pr_number === null) return;
+    const pr_number = it ? prNumber(it) : null;
+    if (!it || !prClosePending(it) || pr_number === null) return;
     const forge = this.forge;
     if (!forge) return;
     try {
       const r = await forge.closePr({
-        pr_number: it.pr_number,
+        pr_number,
         closed: it.source,
         marker: `<!-- factory:pr-closed:${it.id} -->`,
         body: (closer) =>
           closer?.login ? `Closed because the issue was closed by @${closer.login}.` : "Closed because the issue was closed.",
       });
-      this.d.log.info("pr closed after source close", { work_item_id: it.id, pr_number: it.pr_number, result: r });
+      this.d.log.info("pr closed after source close", { work_item_id: it.id, pr_number, result: r });
     } catch (err) {
       this.d.log.warn("closing the PR after the source closed failed; retried on a later tick", {
         work_item_id: it.id,
-        pr_number: it.pr_number,
+        pr_number,
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
       return;
@@ -1785,15 +1789,16 @@ export class Controller {
   }
 
   /**
-   * The note and the `+paths` of an `/approve` or `/retry` (design §4, issue #280); none for other commands. The
-   * whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is split off
-   * and checked; the note is what is left, capped. A finding or a bad path refuses the command.
+   * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
+   * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
+   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command.
    */
   private async commandInput(id: WorkItemId, e: CommandEvent): Promise<{ note: string | null; paths: string[] } | Refusal> {
-    if (e.kind !== "spec_approved" && e.kind !== "retry_requested") return { note: null, paths: [] };
-    const scanned = await this.approvalNote(id, e.note, COMMAND[e.kind]);
+    if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
+    const text = e.kind === "resolve_requested" ? e.notes : e.note;
+    const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
     if ("refuse" in scanned) return scanned;
-    const split = parseCommandPaths(e.note ?? "");
+    const split = parseCommandPaths(text ?? "");
     if ("refuse" in split) return split;
     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
     return { note: note || null, paths: split.paths };
@@ -2054,7 +2059,7 @@ export class Controller {
     if (e.target.kind === "issue") return this.d.store.getWorkItemBySource(e.target.source.type, e.target.source.id);
     const id = workItemIdFromBranch(e.target.head_branch, this.cfg.branch_prefix);
     const item = id ? await this.d.store.getWorkItem(id as WorkItemId) : null;
-    return item && (item.pr_number === null || item.pr_number === e.target.pr_number) ? item : null;
+    return item && (item.change_ref === null || prNumber(item) === e.target.pr_number) ? item : null;
   }
 
   /** Re-read → check → recordVerdict, retrying on version conflicts. Returns the refusal reason, else null. */
@@ -2070,9 +2075,9 @@ export class Controller {
       if ((await this.d.store.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
       // A merged PR still takes a verdict (design §4); a closed one that was not merged does not.
       if (it.stage === "CLOSED" && it.merge_sha === null) {
-        return it.pr_number === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
+        return it.change_ref === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
       }
-      if (it.pr_number === null) return "the work item has no PR yet";
+      if (it.change_ref === null) return "the work item has no PR yet";
       const r = await this.d.store.recordVerdict({
         id,
         expected_version: it.version,
@@ -2107,7 +2112,9 @@ export class Controller {
     tag: StateChangeDetail | null = null,
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
-    if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
+    if (e.kind === "resolve_requested") {
+      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
+    }
     if (e.kind === "revise_requested" && e.pr) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
     }
@@ -2140,8 +2147,8 @@ export class Controller {
       phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
-      const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
-        ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.pr_number}`
+      const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
+        ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
         : "";
       return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})${onPr}` };
     }
@@ -2538,7 +2545,7 @@ export class Controller {
       if (it) targets.add(it.id);
     }
     for (const n of refs.pr_numbers) {
-      const it = await this.d.store.getWorkItemByPr(project, n);
+      const it = await this.d.store.getWorkItemByPr(project, String(n));
       if (it) targets.add(it.id);
     }
     const detail = { reverting_commit: e.sha, reverting_pr: refs.reverting_pr };
@@ -2566,7 +2573,7 @@ export class Controller {
   private async linkFixForward(id: WorkItemId, text: string): Promise<void> {
     const project = this.project();
     for (const n of parseFixReferences(text)) {
-      const original = await this.d.store.getWorkItemByPr(project, n);
+      const original = await this.d.store.getWorkItemByPr(project, String(n));
       if (!original || original.id === id) continue;
       await this.decide(id, (it) =>
         it.fixes_pr !== null
@@ -2656,7 +2663,7 @@ export class Controller {
    */
   private async coordinateItem(id: WorkItemId, network: boolean): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
-    if (!it || it.stage !== "RUNNING" || it.pr_number !== null) return;
+    if (!it || it.stage !== "RUNNING" || it.change_ref !== null) return;
     if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
     await this.applyDependencies(it.id, await this.readDependencies(it, network ? "due" : "stored"));
   }
@@ -2699,7 +2706,7 @@ export class Controller {
     if (v.kind === "cycle") return `the dependencies form a cycle: ${v.cycle.map(short).join(" → ")}; remove one of the links, then reply \`/retry\``;
     const blockedReason = it.blocked_reason;
     const refusal = await this.decide(it.id, (cur) => {
-      if (cur.stage !== "RUNNING" || cur.pr_number !== null || cur.blocked_on !== "human" || cur.blocked_reason !== blockedReason) return null;
+      if (cur.stage !== "RUNNING" || cur.change_ref !== null || cur.blocked_on !== "human" || cur.blocked_reason !== blockedReason) return null;
       const next = { ...cur, restart_count: cur.restart_count + 1 };
       return {
         patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
@@ -2823,7 +2830,7 @@ export class Controller {
   /** The transition (and comment) a dependency verdict asks for; nothing when the item already shows it. */
   private async applyDependencies(id: WorkItemId, v: DependencyVerdict): Promise<void> {
     await this.decide(id, async (it) => {
-      if (it.stage !== "RUNNING" || it.pr_number !== null || (it.blocked_on !== "none" && it.blocked_on !== "dependency")) return null;
+      if (it.stage !== "RUNNING" || it.change_ref !== null || (it.blocked_on !== "none" && it.blocked_on !== "dependency")) return null;
       const short = (d: string) => shortRef(d, it.source.id);
       switch (v.kind) {
         case "clear":
@@ -3038,7 +3045,8 @@ export class Controller {
           return {
             patch: {
               stage: "REVIEW",
-              pr_number: pr,
+              change_ref: pr === null ? null : String(pr),
+              ...prUrlOf(data),
               token_cost: tokens,
               ...(files ? { pr_files: files } : {}),
               ...(it.blocked_on === "dependency" ? { blocked_on: "none" as const, blocked_reason: null } : {}),
@@ -3107,7 +3115,7 @@ export class Controller {
           if (auto) {
             const counts = await this.conflictCountsOf(it, 0);
             await this.prComment(it, `auto-resolved:${run.id}`, [
-              `The factory resolved the merge conflict on PR #${it.pr_number} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
+              `The factory resolved the merge conflict on PR #${it.change_ref} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
               "",
               conflictCountsLine(counts),
             ].join("\n"));
@@ -3118,7 +3126,7 @@ export class Controller {
             reason: "resolved",
             detail: { run_id: run.id },
             ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}`, input: await this.reviewInput(it.pr_number, it.id) },
+            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}`, input: await this.reviewInput(prNumber(it), it.id) },
           };
         }
         case "manual":
@@ -3130,7 +3138,7 @@ export class Controller {
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
           const input = await this.reviewInput(Number(data.pr_number), it.id);
           return {
-            patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
+            patch: { stage: "REVIEW", change_ref: String(data.pr_number), ...prUrlOf(data), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
             ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input },
           };
         }
@@ -3146,7 +3154,7 @@ export class Controller {
             case "tests_failed":
               // The worker's PR comment names the failure; this one offers the command that applies now.
               await this.prComment(it, `update-tests-failed:${run.id}`, [
-                `The base branch merged cleanly into PR #${it.pr_number}, but the tests failed on the updated branch, so nothing was pushed.`,
+                `The base branch merged cleanly into PR #${it.change_ref}, but the tests failed on the updated branch, so nothing was pushed.`,
                 "Comment `/resolve [notes]` to let an agent fix it, or fix it by hand.",
                 "",
                 footerAfter(it, CONFLICT_PATCH),
@@ -3213,7 +3221,7 @@ export class Controller {
   private async emptyDiff(it: WorkItem, run: Run, tokens: number): Promise<Decision> {
     const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
     await this.comment(it, EMPTY_DIFF, [
-      `PR #${it.pr_number} has no changes against \`${this.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
+      `PR #${it.change_ref} has no changes against \`${this.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
       "",
       "Close the PR if its change is already on the base, or push the missing commits to its branch.",
       "",
@@ -3333,19 +3341,19 @@ export class Controller {
       if (it.origin === "adopted") {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
         await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
+          `PR #${it.change_ref} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
         return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
       }
       const loop = it.loop_count + 1;
       if (loop >= this.cfg.max_loops) {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
         await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
-          `PR #${it.pr_number} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+          `PR #${it.change_ref} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
         return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
       }
       const next = { ...it, loop_count: loop };
       await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-        `PR #${it.pr_number} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.cfg.max_loops}).`);
+        `PR #${it.change_ref} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.cfg.max_loops}).`);
       return {
         patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
         actor: SYSTEM,
@@ -3360,10 +3368,10 @@ export class Controller {
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
     const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
     // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
-    const local = it.pr_number === null && it.origin !== "adopted";
+    const local = it.change_ref === null && it.origin !== "adopted";
     const ready = local
       ? `The local branch \`${branchFor(it, this.cfg.branch_prefix)}\` passed review (tier ${tier}).`
-      : `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
+      : `PR #${it.change_ref} passed review (tier ${tier}) and its checks passed.`;
     const text = missing.length > 0
       ? [
         `${ready} It is **incomplete**: the implementer reports work the spec asks for that it does not do. Merging it does not finish this issue.`,
@@ -3385,9 +3393,10 @@ export class Controller {
    */
   private async prSize(it: WorkItem): Promise<{ lines_changed: number; files_changed: number } | null> {
     const forge = this.forge;
-    if (!forge || this.cfg.forge_merge !== true || it.pr_number === null || it.origin !== "factory") return null;
+    const n = prNumber(it);
+    if (!forge || this.cfg.forge_merge !== true || n === null || it.origin !== "factory") return null;
     try {
-      const s = await forge.prMergeState(it.pr_number, branchFor(it, this.cfg.branch_prefix));
+      const s = await forge.prMergeState(n, branchFor(it, this.cfg.branch_prefix));
       return s.lines === null || s.files === null ? null : { lines_changed: s.lines, files_changed: s.files };
     } catch (err) {
       this.d.log.warn("reading the PR size failed", { work_item_id: it.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
@@ -3398,13 +3407,14 @@ export class Controller {
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
   private async readChecks(it: WorkItem): Promise<PrChecks> {
     const forge = this.forge;
-    if (!forge || it.pr_number === null) return { state: "passed" };
+    const pr_number = prNumber(it);
+    if (!forge || pr_number === null) return { state: "passed" };
     try {
-      return await forge.prChecks(it.pr_number);
+      return await forge.prChecks(pr_number);
     } catch (err) {
       this.d.log.warn("reading PR checks failed", {
         work_item_id: it.id,
-        pr_number: it.pr_number,
+        pr_number,
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
       return { state: "pending" };
@@ -3550,7 +3560,7 @@ export class Controller {
     if (attempt === null) {
       const counts = await this.conflictCountsOf(it, 1);
       await this.prComment(it, `auto-resolve-limit:${run.id}`, [
-        `PR #${it.pr_number} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
+        `PR #${it.change_ref} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
@@ -3606,7 +3616,7 @@ export class Controller {
         ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
         : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
-      `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
+      `Nothing was pushed; PR #${it.change_ref} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
       "",
@@ -3640,11 +3650,12 @@ export class Controller {
    * no forge, it goes to the item's own source.
    */
   private async prComment(it: WorkItem, key: string, body: string): Promise<void> {
-    if (it.pr_number === null || !this.forge) {
+    const pr_number = prNumber(it);
+    if (pr_number === null || !this.forge) {
       await this.comment(it, key, body);
       return;
     }
-    const pr = this.forge.prRef(it.pr_number);
+    const pr = this.forge.prRef(pr_number);
     const marker = `<!-- factory:${key} -->`;
     await this.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
   }
@@ -4042,7 +4053,7 @@ export class Controller {
     await this.comment(it, `budget:${run.idempotency_key}`, checkpointComment({
       tier: next.tier,
       stage: next.stage,
-      pr_number: next.pr_number,
+      pr_number: prNumber(next),
       runs,
       tokens: next.token_cost,
       budget,
@@ -4130,7 +4141,8 @@ export class Controller {
   private async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
     if (!current(null)) await this.setStatus(it.source, status, null);
-    if (it.pr_number !== null && it.origin !== "adopted" && !current(it.pr_number)) await this.setStatus(it.source, status, it.pr_number);
+    const pr_number = prNumber(it);
+    if (pr_number !== null && it.origin !== "adopted" && !current(pr_number)) await this.setStatus(it.source, status, pr_number);
   }
 
   /**
@@ -4405,9 +4417,10 @@ function quote(text: string): string {
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
  * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
- * /resolve would otherwise be a silent no-op. The notes go on the run for the worker; they are untrusted.
+ * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
+ * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
  */
-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean): Decision | Refusal {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, note: string | null, w: Widening): Decision | Refusal {
   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
   if (!conflictPending(it) && !asked) {
@@ -4418,11 +4431,11 @@ function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAske
   }
   const next = { ...it, restart_count: it.restart_count + 1 };
   return {
-    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count, ...w.patch },
     actor,
     reason: "resolve_requested",
-    detail: { comment_id: e.comment_id },
-    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: e.notes } },
+    detail: { comment_id: e.comment_id, ...w.detail },
+    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: note ?? "" } },
   };
 }
 
@@ -4470,11 +4483,16 @@ function floorCommand(
   };
 }
 
+/** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
+function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
+  return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
+}
+
 /**
  * The command footer for a comment posted before its transition: the commands for the state the item will
  * be in once `patch` applies (design §4). Same table as the parser and the controller's checks.
  */
-function footerAfter(it: WorkItem, patch: Partial<Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number">>): string {
+function footerAfter(it: WorkItem, patch: Partial<Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref">>): string {
   return commandFooter(commandState({ ...it, ...patch }));
 }
 

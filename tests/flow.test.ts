@@ -80,6 +80,26 @@ describe("CI check gate before merge_pending", () => {
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["review_passed"]);
   });
 
+  it("the PR the worker opened stores change_url from the open result, through the run outcome", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const url = "https://github.example/o/r/pull/42";
+    f.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    const src = issueRef(62);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "301", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    const implement = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
+    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
+  });
+
   it("checks pending: the item stays in REVIEW with no merge_pending until they pass", async () => {
     const f = await toReview([{ state: "pending" }]);
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", pr_number: 42, loop_count: 0 });
@@ -1278,6 +1298,7 @@ describe("/revise after a failed implement run", () => {
 });
 
 describe("/resolve on a merge conflict", () => {
+  const SECRET = "known-secret-value-0123456789";
   const CONFLICT = [
     "export const a = 1;",
     "<<<<<<< HEAD",
@@ -1301,7 +1322,7 @@ describe("/resolve on a merge conflict", () => {
       review: review("pass"),
       resolve: () => ({ output: { summary: "kept both gates", next_steps: "none" } }),
     });
-    const f = await factory(runner);
+    const f = await factory(runner, [SECRET]);
     const src = issueRef(n);
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await f.step();
@@ -1550,6 +1571,98 @@ describe("/resolve on a merge conflict", () => {
     expect(refusals(f)).toEqual([]);
   });
 
+  it("/resolve +paths at merge_conflict_pending widens allowed_paths and queues one resolve run whose notes are the lines below", async () => {
+    const f = await conflicted(75);
+    f.source.queue.push(resolveEvent(f, "7501", "+paths tests/x.test.ts\nKeep both imports"));
+    await f.controller.tickIntake();
+    const item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
+    const runs = (await f.store.listRuns(f.item.id)).filter(byPerson);
+    expect(runs.map((r) => [r.status, r.input])).toEqual([["queued", { notes: "Keep both imports" }]]);
+    const row = (await f.store.listStateChanges(f.item.id)).at(-1)!;
+    expect(row).toMatchObject({ reason: "resolve_requested", detail: { comment_id: "7501", added_paths: JSON.stringify(["tests/x.test.ts"]) } });
+    expect(row.changes.allowed_paths).toBeDefined();
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("/resolve +paths with no lines below gives the run empty notes; a covered path is not added again", async () => {
+    const f = await conflicted(76);
+    f.source.queue.push(resolveEvent(f, "7601", "+paths .github/workflows/x.yml"));
+    await f.controller.tickIntake();
+    const item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+    expect(item.allowed_paths).toEqual(f.item.allowed_paths);
+    expect((await f.store.listRuns(f.item.id)).filter(byPerson).map((r) => r.input)).toEqual([{ notes: "" }]);
+    expect(refusals(f)).toEqual([]);
+  });
+
+  it("/resolve +paths with a bad path, or more than 10, is refused with one reply each and nothing changes", async () => {
+    const f = await conflicted(77);
+    const before = await snapshot(f);
+    const bad = ["+paths", "+paths /etc/passwd", "+paths tests/../x.ts", "+paths tests/*.ts",
+      `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
+    bad.forEach((notes, i) => f.source.queue.push(resolveEvent(f, `77b${i}`, notes)));
+    await f.controller.tickIntake();
+    expect(await snapshot(f)).toEqual(before);
+    for (let i = 0; i < bad.length; i++) {
+      const r = f.source.comments.filter((c) => c.marker === `<!-- factory:refused:77b${i} -->`);
+      expect(r).toHaveLength(1);
+      expect(r[0]!.body).toContain("`/resolve` was not applied");
+      expect(r[0]!.body).toContain("`+paths`");
+    }
+  });
+
+  it("a /resolve note is egress-scanned (refused once, nothing stored) and capped at 2000 characters", async () => {
+    const f = await conflicted(80);
+    const before = await snapshot(f);
+    const e = resolveEvent(f, "8001", `+paths tests/x.test.ts\nuse ${SECRET}`);
+    f.source.queue.push(e, e);
+    await f.controller.tickIntake();
+    expect(await snapshot(f)).toEqual(before);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("`/resolve` was not applied");
+    expect(refusals(f)[0]!.body).not.toContain(SECRET);
+
+    f.source.queue.push(resolveEvent(f, "8002", "x".repeat(5000)));
+    await f.controller.tickIntake();
+    expect((await f.store.listRuns(f.item.id)).filter(byPerson).map((r) => r.input)).toEqual([{ notes: "x".repeat(2000) }]);
+  });
+
+  it("/resolve +paths on an item not waiting on a merge conflict is refused and nothing changes", async () => {
+    const f = await conflicted(81);
+    const it0 = (await f.store.getWorkItem(f.item.id))!;
+    const r = await f.store.transition({
+      id: it0.id, expected_version: it0.version, actor: { kind: "system", id: "test" }, reason: "test_setup",
+      patch: { blocked_reason: "merge_pending" },
+    });
+    if (!r.ok) throw new Error("setup");
+    const before = await snapshot(f);
+    f.source.queue.push(resolveEvent(f, "8101", "+paths tests/x.test.ts"));
+    await f.controller.tickIntake();
+    expect(await snapshot(f)).toEqual(before);
+    expect(refusals(f)).toHaveLength(1);
+    expect(refusals(f)[0]!.body).toContain("not waiting on a merge conflict");
+  });
+
+  it("/resolve +paths answering a resolve run's agent_needs_human widens allowed_paths and queues one resolve run", async () => {
+    const f = await conflicted(82);
+    const resolve = f.runner.script.resolve!;
+    f.runner.script.resolve = () => ({ output: { needs_human: { reason: "r", question: "q" } } });
+    f.source.queue.push(resolveEvent(f, "8201"));
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+    f.runner.script.resolve = resolve;
+    f.source.queue.push(resolveEvent(f, "8202", "+paths tests/x.test.ts\nThe test imports the moved file"));
+    await f.controller.tickIntake();
+    const item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
+    const queued = (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
+    expect(queued.map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "The test imports the moved file" }]]);
+    expect(refusals(f)).toEqual([]);
+  });
+
   it("scope gate: a changed file outside the conflicts and allowed_paths fails out_of_scope, pushes nothing, re-blocks with a comment; a later /resolve is accepted", async () => {
     const f = await conflicted(74);
     f.sandbox.resolveChanged = ["src/gate.ts", ".github/workflows/new.yml", "package.json", "src/extra.ts"];
@@ -1737,7 +1850,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
     const moved = await store.transition({
       id: created.id, expected_version: 1, actor: { kind: "system", id: "test" }, reason: "test_setup",
       patch: {
-        stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42,
+        stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42",
         allowed_paths: ["src/"], done_criteria: ["gate works"], scope: "gate only",
       },
     });

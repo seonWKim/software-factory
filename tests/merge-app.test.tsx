@@ -170,7 +170,7 @@ describe("Merge button: confirm, then merging, then gone or refused", () => {
 });
 
 describe("item API: the merge view", () => {
-  const READY: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42, tier: 2, pr_files: ["a.ts", "b.ts"] };
+  const READY: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42", tier: 2, pr_files: ["a.ts", "b.ts"] };
 
   async function apiWith(merge: boolean | undefined) {
     const { store } = await newStore();

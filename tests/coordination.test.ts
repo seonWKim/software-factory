@@ -175,7 +175,7 @@ describe("status label and command phase of a hold", () => {
   });
 
   it("a dependency hold has its own phase, named in words", () => {
-    const phase = commandPhase({ stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #92 to merge", pr_number: null });
+    const phase = commandPhase({ stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #92 to merge", change_ref: null });
     expect(phase).toBe("dependency_hold");
     expect(phaseLabel(phase)).toBe("waiting for a dependency to merge");
   });

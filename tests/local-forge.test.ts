@@ -75,7 +75,7 @@ async function harness(make: (branch: string) => { repo: string; head: string } 
   const { repo, head } = make(branch);
   const r = await store.transition({
     id: item.id, expected_version: item.version, actor, reason: "setup",
-    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 7, tier: 2 },
+    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "7", tier: 2 },
   });
   if (!r.ok) throw new Error("setup failed");
   await store.recordPrHead({ id: item.id, expected_head: null, head_sha: head, manual: null });
