@@ -45,13 +45,18 @@ export interface ChatSuccess {
 }
 
 /**
- * - `rate_limited`: HTTP 429. `reset_at` (ISO-8601 UTC) when Retry-After gave seconds or an HTTP date.
+ * - `provider_setup`: a non-2xx whose body's `error.code` (or `error.type`) is one of PROVIDER_SETUP_CODES, at any
+ *   HTTP status (a 429 `insufficient_quota` too): the account or config needs a person, waiting does not help.
+ * - `rate_limited`: any other HTTP 429. `reset_at` (ISO-8601 UTC) when Retry-After gave seconds or an HTTP date.
  * - `aborted`: the caller's AbortSignal fired.
  * - `http_error`: any other non-2xx status.
  * - `network_error`: no HTTP response (connection refused, reset, DNS).
  * - `bad_response`: a 2xx whose body is not a chat completion.
  */
-export type ChatFailureCode = "rate_limited" | "aborted" | "http_error" | "network_error" | "bad_response";
+export type ChatFailureCode = "provider_setup" | "rate_limited" | "aborted" | "http_error" | "network_error" | "bad_response";
+
+/** The provider error codes that need a person to fix the account or the config (design §5 Restarts). */
+export const PROVIDER_SETUP_CODES: readonly string[] = ["insufficient_quota", "invalid_api_key", "model_not_found"];
 
 export interface ChatFailure {
   ok: false;
@@ -59,7 +64,7 @@ export interface ChatFailure {
   /** The HTTP status, when there was a response. */
   status?: number;
   reset_at?: string;
-  /** What went wrong, for logs. The API key is redacted from it. */
+  /** What went wrong, for logs, with the provider's own message when its body had one. The API key is redacted from it. */
   message: string;
 }
 
@@ -95,6 +100,19 @@ const MAX_DETAIL = 300;
 
 function redact(text: string, key: string): string {
   return key === "" ? text : text.split(key).join("[redacted]");
+}
+
+/** The body's `error` object: its code (or type, as some providers send only that) and message. */
+function providerError(bodyText: string): { code: string; message: string } {
+  let body: unknown;
+  try {
+    body = JSON.parse(bodyText);
+  } catch {
+    return { code: "", message: "" };
+  }
+  const e = isObject(body) && isObject(body.error) ? body.error : {};
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return { code: str(e.code) || str(e.type), message: str(e.message).trim() };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -173,12 +191,19 @@ export async function chatCompletion(opts: ChatCallOptions): Promise<ChatResult>
     return fail("network_error", `reading the response failed: ${errorText(err)}`, { status: res.status });
   }
 
-  if (res.status === 429) {
-    const reset_at = retryAfterResetAt(res.headers.get("retry-after"), now());
-    return fail("rate_limited", "rate limited (HTTP 429)", { status: 429, ...(reset_at ? { reset_at } : {}) });
-  }
   if (res.status < 200 || res.status > 299) {
-    const detail = bodyText.trim().slice(0, MAX_DETAIL);
+    // The key is redacted before the cap, so a cut can never leave part of it.
+    const capped = (text: string) => redact(text, apiKey).slice(0, MAX_DETAIL);
+    const provider = providerError(bodyText);
+    const said = provider.message ? `: ${capped(provider.message)}` : "";
+    if (PROVIDER_SETUP_CODES.includes(provider.code)) {
+      return fail("provider_setup", `${provider.code} (HTTP ${res.status})${said}`, { status: res.status });
+    }
+    if (res.status === 429) {
+      const reset_at = retryAfterResetAt(res.headers.get("retry-after"), now());
+      return fail("rate_limited", `rate limited (HTTP 429)${said}`, { status: 429, ...(reset_at ? { reset_at } : {}) });
+    }
+    const detail = capped(bodyText.trim());
     return fail("http_error", `HTTP ${res.status}${detail ? `: ${detail}` : ""}`, { status: res.status });
   }
 
