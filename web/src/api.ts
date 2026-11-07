@@ -1,5 +1,6 @@
-// The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its one write is
-// POST /api/v1/settings (postSettings), with the per-process CSRF token from GET /api/v1/settings.
+// The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
+// POST /api/v1/settings (postSettings) and POST /api/v1/pauses/resume (postResume), each with the per-process
+// CSRF token from its GET (/api/v1/settings, /api/v1/pauses).
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -234,6 +235,18 @@ export interface DataPageBody {
   run_items: Record<string, string>;
 }
 
+/** One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time. */
+export interface PauseRow {
+  name: string;
+  ends_at: string;
+}
+
+/** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
+export interface PausesView {
+  pauses: PauseRow[];
+  csrf_token: string | null;
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -244,6 +257,8 @@ export const API = {
   health: "/api/v1/health",
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
+  pauses: "/api/v1/pauses",
+  resume: "/api/v1/pauses/resume",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
@@ -284,6 +299,23 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
     // An error without a JSON body: say the status.
   }
   if (res.ok && value.ok) return { ok: true, lines: value.lines ?? [] };
+  return { ok: false, error: value.error ?? `HTTP ${res.status}` };
+}
+
+/** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
+export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
+  const res = await fetch(API.resume, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": token },
+    body: JSON.stringify({ name }),
+  });
+  let value: { ended?: boolean; error?: string } = {};
+  try {
+    value = (await res.json()) as typeof value;
+  } catch {
+    // An error without a JSON body: say the status.
+  }
+  if (res.ok) return { ok: true, ended: value.ended === true };
   return { ok: false, error: value.error ?? `HTTP ${res.status}` };
 }
 
