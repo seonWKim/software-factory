@@ -30,6 +30,7 @@ import { failingTests, stripAnsi } from "./output-summary.js";
 import {
   MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
 } from "./mechanical.js";
+import { runImprove } from "./improver.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -141,7 +142,7 @@ const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
@@ -640,6 +641,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
+    if (run.kind === "improve") return this.improve(run, item);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
@@ -663,6 +665,12 @@ export class Worker {
     } finally {
       if (!keep && this.scratch.get(run)?.kept?.folder !== handle.id) await this.d.sandbox.destroy(handle);
     }
+  }
+
+  /** The improve run (design §7): no sandbox, no agent, no model. Stores one report; the outcome names it. */
+  private async improve(run: Run, item: WorkItem): Promise<Record<string, unknown>> {
+    const report = await runImprove(this.d.store, run, item);
+    return { report_id: report.id, groups: report.groups.length, patterns: report.patterns.length };
   }
 
   /**
