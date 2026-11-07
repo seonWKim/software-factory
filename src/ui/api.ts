@@ -5,13 +5,15 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The one write route, POST
-// /api/v1/settings, is handled in settings-api.ts behind server.ts's write guards; GET /api/v1/settings is here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The two write routes, POST
+// /api/v1/settings (settings-api.ts) and POST /api/v1/items/:id/commands (commands.ts), are handled behind
+// server.ts's write guards; GET /api/v1/settings and GET /api/v1/session are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
@@ -19,6 +21,7 @@ import { type UiDeps, runTokens } from "./pages.js";
 import { readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { Withholder } from "./withhold.js";
+import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -57,6 +60,10 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return ok(await d.health.report(d.scanner));
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/session": {
+      const session = readSession(d, c.now);
+      return session ? ok(session) : apiError(404, "Not found.");
+    }
     case "/data/tables":
       return data(await dataTables(c.data()));
   }
@@ -216,6 +223,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const f = parsed.filters;
   const rows = await listRows({ store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, f);
   const shown = applyFilters(rows, f);
+  const checks = new Map<string, MergeCheck>();
+  for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
   for (const r of shown) {
     const it = r.item;
@@ -240,6 +249,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       version: it.version,
       dependents: r.dependents,
       conflicts: r.conflicts,
+      merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
     });
   }
   return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets: facetCounts(rows, f) });
@@ -305,6 +315,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
+      merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
     },
     timeline,
     runs: runRows,
@@ -313,6 +324,32 @@ async function item(c: ApiCtx, id: WorkItemId) {
       const parts = runParts(stored, id, r.id);
       return parts.length > 0 ? [[r.id, parts] as const] : [];
     })),
+    commands: itemCommands(it, runs),
+    replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
+  };
+}
+
+/** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */
+function readyToMerge(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
+}
+
+/**
+ * The local merge check of a ready-to-merge item (null for any other item): `mergeable` or `conflicts` from its
+ * stored result, or `checking` while it has none, or while the result is for an older head than the one the
+ * factory last recorded. File names pass the Withholder, each on its own.
+ */
+async function mergeCheckRow(c: ApiCtx, it: WorkItem, m: MergeCheck | null) {
+  if (!readyToMerge(it)) return null;
+  const current = m !== null && (it.last_head_sha === null || it.last_head_sha === m.head_sha);
+  const conflicts: string[] = [];
+  if (current) for (const f of m.conflicts) conflicts.push((await c.text(f))!);
+  return {
+    state: !current ? ("checking" as const) : m.mergeable ? ("mergeable" as const) : ("conflicts" as const),
+    conflicts,
+    head_sha: m?.head_sha ?? null,
+    base_sha: m?.base_sha ?? null,
+    checked_at: m?.checked_at ?? null,
   };
 }
 

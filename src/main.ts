@@ -17,6 +17,7 @@ import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, 
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
+import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
@@ -62,7 +63,7 @@ const USAGE = `factory <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
-  ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
@@ -121,13 +122,13 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
   switch (cmd) {
     case "dev": {
       if (process.env[SUPERVISED_ENV] === "1" && process.send) {
-        // Child of the supervisor: a drain (IPC) stops claiming; SIGTERM stays the hard stop.
+        // Child of the supervisor: a drain (IPC) stops the controller and claiming; SIGTERM stays the hard stop.
         const channel = processChannel();
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
         const app = await build(loaded);
-        await runDevChild(app, channel, stop.signal);
+        await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
       }
@@ -248,10 +249,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           settings: parts.settings,
           // The configured shared storage, read only by the transcript view (byte ranges, design §9).
           storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
+          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
+          commands: parts.commands,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (Settings is the only write; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();

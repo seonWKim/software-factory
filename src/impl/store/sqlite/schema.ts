@@ -446,4 +446,17 @@ export const MIGRATIONS: readonly string[] = [
   WHERE NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.seq = c.seq OR i.command_key = c.command_key)
   ORDER BY c.seq;
   `,
+  // 25: merge checks (issue #248, design §5 Merge check). One row per item: its latest local merge check against
+  // the base. `mergeable` is 0 or 1; `conflicts` is JSON text (the conflicting paths). Every replica reads it.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 25.
+  `
+  CREATE TABLE IF NOT EXISTS merge_checks (
+    work_item_id  TEXT PRIMARY KEY REFERENCES work_items(id),
+    mergeable     INTEGER NOT NULL,
+    conflicts     TEXT NOT NULL,
+    head_sha      TEXT NOT NULL,
+    base_sha      TEXT NOT NULL,
+    checked_at    TEXT NOT NULL
+  );
+  `,
 ];

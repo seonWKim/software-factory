@@ -18,6 +18,7 @@ import type { HealthMonitor } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiSettings } from "./settings-api.js";
+import type { UiCommands } from "./commands.js";
 import { Withholder } from "./withhold.js";
 
 export { STAGES } from "./filters.js";
@@ -55,6 +56,11 @@ export interface UiDeps {
    * transcript route is a 404.
    */
   storage?: SharedStorage;
+  /**
+   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): ui.user_id
+   * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
+   */
+  commands?: UiCommands;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
