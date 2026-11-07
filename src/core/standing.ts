@@ -1,7 +1,12 @@
-// Standing approvals, phase 1 (design 05-standing-approvals): the detail every spec decision records, and a pure
-// run check per (gate, tier). Nothing here changes a gate: the check only reports.
+// Standing approvals (design 05-standing-approvals): the detail every spec decision records, a pure run check per
+// (gate, tier), and the pure parts of acting on it: rule IDs, the `/standing` arguments, when a proposal is due and
+// which allowed paths a rule never approves. The controller does the reads, writes and posts.
 
-import type { Actor, GateOutcome, SpecKind, StandingGate, StateChange, StateChangeDetail, Tier, WorkItem } from "./types.js";
+import { floorTier } from "./policy.js";
+import type { Floor } from "./settings.js";
+import type {
+  Actor, GateOutcome, SpecKind, StandingGate, StandingRule, StateChange, StateChangeDetail, Tier, WorkItem,
+} from "./types.js";
 import { SPLIT_APPROVED } from "./split.js";
 
 export const SPEC_GATE: StandingGate = "spec";
@@ -116,4 +121,110 @@ export function checkRuns(events: readonly GateEvent[], threshold: number): RunC
   return [...runs.values()]
     .sort((a, b) => (a.gate < b.gate ? -1 : a.gate > b.gate ? 1 : a.tier - b.tier))
     .map((r) => ({ ...r, reached: r.run_length >= threshold }));
+}
+
+// Acting on the run (phase 2, issue #299).
+
+/** The only tier a rule exists for: a rule never approves a spec above tier 1. */
+export const STANDING_TIER: Tier = 1;
+
+/** The state-change reason of a spec a rule approved. Not a human decision, so the run check does not read it. */
+export const STANDING_APPROVED = "standing_approved";
+
+/** The rule ID a person types: `<gate>-t<tier>`, e.g. `spec-t1`. */
+export function ruleId(gate: StandingGate, tier: Tier): string {
+  return `${gate}-t${tier}`;
+}
+
+/** The rule an ID names, or null when it names none a rule can exist for (only `spec-t1`). */
+export function parseRuleId(id: string): { gate: StandingGate; tier: Tier } | null {
+  return id.trim().toLowerCase() === ruleId(SPEC_GATE, STANDING_TIER) ? { gate: SPEC_GATE, tier: STANDING_TIER } : null;
+}
+
+/** The actor of an approval by a rule: `standing:<rule-id>`. The owner who turned it on is in the detail. */
+export function standingActor(gate: StandingGate, tier: Tier): Actor {
+  return { kind: "system", id: `standing:${ruleId(gate, tier)}` };
+}
+
+/** What `/standing` asks for: the rules' state, or to accept or decline one rule. */
+export type StandingRequest = { action: "show" } | { action: "accept" | "decline"; gate: StandingGate; tier: Tier };
+
+const STANDING_USAGE = "reply `/standing`, `/standing accept <rule>` or `/standing decline <rule>`";
+
+/** The text after `/standing` (first line only), or why it is refused. */
+export function parseStanding(text: string): StandingRequest | { refuse: string } {
+  const words = (text.split(/\r?\n/)[0] ?? "").trim().split(/\s+/).filter((w) => w !== "");
+  if (words.length === 0) return { action: "show" };
+  const action = words[0]!.toLowerCase();
+  if ((action !== "accept" && action !== "decline") || words.length !== 2) return { refuse: STANDING_USAGE };
+  const rule = parseRuleId(words[1]!.replace(/^`([^`]*)`$/, "$1"));
+  if (!rule) return { refuse: `the only rule is \`${ruleId(SPEC_GATE, STANDING_TIER)}\` (tier ${STANDING_TIER} specs at the spec gate)` };
+  return { action, ...rule };
+}
+
+/** The rule of (gate, tier) among `rules`, or undefined. */
+export function findRule(rules: readonly StandingRule[], gate: StandingGate, tier: Tier): StandingRule | undefined {
+  return rules.find((r) => r.gate === gate && r.tier === tier);
+}
+
+/**
+ * The run whose proposal is due now, or null. Due when the run of (spec, STANDING_TIER) equals the threshold (the
+ * approval that reached it; later ones are past it), the latest of `own` (the item just decided) is an unchanged
+ * approval at that tier, the rule is not on, and it was not declined during this run. A run that resets and
+ * reaches the threshold again is due again.
+ */
+export function dueProposal(
+  events: readonly GateEvent[],
+  own: readonly GateEvent[],
+  threshold: number,
+  rule: StandingRule | undefined,
+): RunCheck | null {
+  const last = own.at(-1);
+  if (!last || last.gate !== SPEC_GATE || last.tier !== STANDING_TIER || last.outcome !== "approved" || last.spec_changed) return null;
+  const run = checkRuns(events, threshold).find((r) => r.gate === SPEC_GATE && r.tier === STANDING_TIER);
+  if (!run || run.run_length !== threshold) return null;
+  if (rule?.enabled) return null;
+  if (rule && rule.updated_at >= runStart(events, SPEC_GATE, STANDING_TIER)) return null;
+  return run;
+}
+
+/** When the current run of (gate, tier) started: the time of its first approval, or "" when it has none. */
+function runStart(events: readonly GateEvent[], gate: StandingGate, tier: Tier): string {
+  const own = events.filter((e) => e.gate === gate && e.tier === tier).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  let start = "";
+  for (const e of own) {
+    if (e.outcome === "approved" && !e.spec_changed) start ||= e.at;
+    else start = "";
+  }
+  return start;
+}
+
+/**
+ * What a rule never approves, by category: the factory's own gates, prompts, permissions, tools and guard
+ * settings. Configured floor paths are the sixth category. Repo-relative prefixes; a folder ends in `/`.
+ */
+export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
+  gates: [
+    "src/core/controller.ts", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
+    "src/core/merge-check.ts", "src/core/standing.ts",
+  ],
+  prompts: ["prompts/"],
+  permissions: ["src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/"],
+  tools: ["src/core/tools/", "src/impl/broker/"],
+  guard_settings: [
+    "factory.config.json", "src/core/config.ts", "src/core/settings.ts", "src/config-keys.ts", "src/plugins.ts",
+    "src/impl/egress/", "src/impl/secrets/",
+  ],
+};
+
+/**
+ * The first protected category `paths` touch, or null. A path touches a prefix the way it touches a floor
+ * (`floorTier`): it is under the prefix, or it covers it (`src/` covers `src/impl/grant/`). `floors`: the item's
+ * configured floors, the `floor_paths` category.
+ */
+export function protectedCategory(paths: readonly string[], floors: readonly Floor[]): string | null {
+  for (const [category, prefixes] of Object.entries(PROTECTED_PATHS)) {
+    if (floorTier(paths, prefixes.map((prefix) => ({ prefix, tier: STANDING_TIER }))) !== null) return category;
+  }
+  return floorTier(paths, floors) !== null ? "floor_paths" : null;
 }

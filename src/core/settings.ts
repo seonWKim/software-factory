@@ -276,6 +276,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count",
   "alarm_window_minutes",
   "alarm_restart_count",
+  "standing_approvals.threshold",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -316,6 +317,7 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   alarm_repeat_count: "Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert.",
   alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
   alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
+  "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -357,6 +359,7 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   alarm_repeat_count: "the next alarm step (each poll)",
   alarm_window_minutes: "the next alarm step (each poll)",
   alarm_restart_count: "the next alarm step (each poll)",
+  "standing_approvals.threshold": "the controller's next spec approval",
 };
 
 export interface SettableValues {
@@ -381,6 +384,7 @@ export interface SettableValues {
   alarm_repeat_count: number;
   alarm_window_minutes: number;
   alarm_restart_count: number;
+  "standing_approvals.threshold": number;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -404,6 +408,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy,
   ...ALARM_DEFAULTS,
+  "standing_approvals.threshold": 10,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";

@@ -61,7 +61,8 @@ import {
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
+  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
+  SESSION_LOST, failureClass, pathsOverlap, probePauseOf,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -516,15 +517,16 @@ export class SqlFactoryStore implements FactoryStore {
       // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED, NETWORK, NETWORK_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
       const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
       if (active(RATE_LIMIT_PAUSE)) return null;
-      // A stall pauses every claim until a probe answers, not until a time (design §5 Restarts).
-      if (stallInEffect(pauses.get(MODEL_STALL), pauses.get(MODEL_ANSWERED))) return null;
+      // A stall or a dead network pauses every claim until a probe passes, not until a time (design §5 Restarts).
+      const probing = (p: ProbePause) => probeInEffect(pauses.get(p), pauses.get(PROBE_PAUSES[p].answered));
+      if (probing(MODEL_STALL) || probing(NETWORK)) return null;
       // `workers pause`: this loop's own row or the all-flag stops its claims (design §5 Pause), read under the lock.
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
@@ -753,8 +755,9 @@ export class SqlFactoryStore implements FactoryStore {
     // `started` for every name but rate_limit: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
-    if (name === MODEL_STALL) return this.pauseForStall(resume_at);
-    if (name === MODEL_STALL_SINCE) throw new Error("model_stall_since is written by the store when a stall pause starts");
+    const probe = probePauseOf(name);
+    if (probe === name) return this.pauseForProbe(probe, resume_at);
+    if (probe !== null && name === PROBE_PAUSES[probe].since) throw new Error(`${name} is written by the store when a ${probe} pause starts`);
     return this.db.transaction(async (tx) => {
       if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
         return result(true, true, resume_at);
@@ -776,46 +779,59 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /**
-   * The stall pause (design §5 Restarts), under the claim lock so a claim, a stall and a probe never interleave.
-   * It is in effect while its row's time (the next probe) is after the last answered probe, whatever the clock
-   * says. Not in effect: this call starts one (`started`) and writes when it began (`model_stall_since`). In
+   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a
+   * probe never interleave. It is in effect while its row's time (the next probe) is after its answered row, whatever
+   * the clock says. Not in effect: this call starts one (`started`) and writes when it began (its since row). In
    * effect: only a later probe time moves it.
    */
-  private async pauseForStall(resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
-    const { forUpdate } = this.db.dialect;
+  private async pauseForProbe(pause: ProbePause, resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
+    const { since: sinceRow } = PROBE_PAUSES[pause];
     return this.db.transaction(async (tx) => {
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const rows = new Map(
-        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
-          .map((r) => [r.name as string, r.resume_at as Timestamp]),
-      );
-      const current = rows.get(MODEL_STALL);
-      const answered = rows.get(MODEL_ANSWERED);
-      if (current !== undefined && stallInEffect(current, answered)) {
+      const { current, answered } = await this.probeRows(tx, pause, true);
+      if (current !== undefined && probeInEffect(current, answered)) {
         if (resume_at <= current) return { extended: false, started: false, resume_at: current };
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, MODEL_STALL]);
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, pause]);
         return { extended: true, started: false, resume_at };
       }
       // A probe time not after the last answer would start a pause that is already over.
       if (answered !== undefined && resume_at <= answered) return { extended: false, started: false, resume_at: current ?? resume_at };
-      const now = this.now();
-      for (const [name, at] of [[MODEL_STALL, resume_at], [MODEL_STALL_SINCE, now]] as const) {
-        if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
-          await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
-        }
-      }
+      await this.setPauseRows(tx, [[pause, resume_at], [sinceRow, this.now()]]);
       return { extended: true, started: true, resume_at };
     });
   }
 
+  /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
+  private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
+    if (lock) await tx.all(`SELECT name FROM claim_locks WHERE name = ?${this.db.dialect.forUpdate}`, [CLAIM_LOCK]);
+    const answeredRow = PROBE_PAUSES[pause].answered;
+    const rows = new Map(
+      (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
+        .map((r) => [r.name as string, r.resume_at as Timestamp]),
+    );
+    const current = rows.get(pause);
+    const answered = rows.get(answeredRow);
+    return { ...(current !== undefined && { current }), ...(answered !== undefined && { answered }) };
+  }
+
+  /** Writes each claim_pauses row, inserting the ones not there yet. */
+  private async setPauseRows(tx: SqlExecutor, rows: readonly (readonly [string, Timestamp])[]): Promise<void> {
+    for (const [name, at] of rows) {
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
+      }
+    }
+  }
+
   async getClaimPause(name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<Timestamp | null> {
-    if (name === MODEL_STALL || name === MODEL_STALL_SINCE) {
-      // In effect until a probe answers, not until a time: the probe time is returned also once it passed.
+    const probe = probePauseOf(name);
+    if (probe !== null && name !== PROBE_PAUSES[probe].answered) {
+      // In effect until a probe passes, not until a time: the probe time is returned also once it passed.
+      const { since, answered } = PROBE_PAUSES[probe];
       const rows = new Map(
-        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [MODEL_STALL, MODEL_STALL_SINCE, MODEL_ANSWERED]))
+        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [probe, since, answered]))
           .map((r) => [r.name as string, r.resume_at as Timestamp]),
       );
-      if (!stallInEffect(rows.get(MODEL_STALL), rows.get(MODEL_ANSWERED))) return null;
+      if (!probeInEffect(rows.get(probe), rows.get(answered))) return null;
       return rows.get(name) ?? null;
     }
     const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
@@ -824,48 +840,43 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }> {
-    if (name === MODEL_STALL_SINCE || name === MODEL_ANSWERED) throw new Error(`${name} is not a pause of its own; end model_stall`);
-    if (name === MODEL_STALL) return this.endStall();
-    // Conditional: only a row still in effect moves, so a second call, or one with no pause, writes nothing.
+    const probe = probePauseOf(name);
+    if (probe !== null && probe !== name) throw new Error(`${name} is not a pause of its own; end ${probe}`);
+    if (probe !== null) return this.endProbe(probe);
+    // Conditional: only a row still in effect moves, so a second call, or one with no pause in effect, writes nothing.
     const now = this.now();
     const ended = await this.db.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ?", [now, name, now]);
     return { ended: ended === 1 };
   }
 
   /**
-   * Ends a stall pause as an answered probe would, under the claim lock: model_answered and the probe time both
-   * move to the earlier of the probe time and now. Never a future answer, so a stall right after starts a pause.
+   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the
+   * earlier of the probe time and now. Never a future answer, so a failure right after starts a pause.
    */
-  private async endStall(): Promise<{ ended: boolean }> {
-    const { forUpdate } = this.db.dialect;
+  private async endProbe(pause: ProbePause): Promise<{ ended: boolean }> {
     return this.db.transaction(async (tx) => {
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const rows = new Map(
-        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
-          .map((r) => [r.name as string, r.resume_at as Timestamp]),
-      );
-      const probeAt = rows.get(MODEL_STALL);
-      if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
+      const { current, answered } = await this.probeRows(tx, pause, true);
+      if (current === undefined || !probeInEffect(current, answered)) return { ended: false };
       const now = this.now();
-      const at = probeAt < now ? probeAt : now;
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, at]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_ANSWERED]);
-      }
-      await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_STALL]);
+      const at = current < now ? current : now;
+      await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
       return { ended: true };
     });
   }
 
-  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
-    // Under the claim lock, as every stall write: a pause ended meanwhile is never moved back into effect.
-    const { forUpdate } = this.db.dialect;
+  async claimProbe(name: ProbePause, due: Timestamp, next: Timestamp): Promise<boolean> {
+    // Under the claim lock, as every probe pause write: a pause ended meanwhile is never moved back into effect.
+    // Conditional on the probe time the caller read: of replicas that saw the same due probe, one write lands.
     return this.db.transaction(async (tx) => {
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const [answered] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [MODEL_ANSWERED]);
-      if (!stallInEffect(due, answered?.resume_at as Timestamp | undefined) || next <= due) return { taken: false };
-      const taken = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, MODEL_STALL, due]);
-      return { taken: taken === 1 };
+      const { answered } = await this.probeRows(tx, name, true);
+      if (!probeInEffect(due, answered) || next <= due) return false;
+      return (await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
     });
+  }
+
+  /** @deprecated Use claimProbe("model_stall", …); see FactoryStore.takeStallProbe for the removal plan. */
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    return { taken: await this.claimProbe(MODEL_STALL, due, next) };
   }
 
   // Worker pauses (design §5 Pause)
@@ -911,7 +922,7 @@ export class SqlFactoryStore implements FactoryStore {
   async pauseRun(
     runId: RunId,
     token: number,
-    pause: { paused_by: string; session_id: string | null; resume: RunResume },
+    pause: { paused_by: string; session_id: string | null; resume: RunResume | null },
   ): Promise<LeaseResult> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
@@ -920,7 +931,7 @@ export class SqlFactoryStore implements FactoryStore {
         `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = NULL,
            paused_at = ?, paused_by = ?, session_id = ?, pause_state = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
-        [now, pause.paused_by, pause.session_id, JSON.stringify(pause.resume), now, runId, token],
+        [now, pause.paused_by, pause.session_id, pause.resume === null ? null : JSON.stringify(pause.resume), now, runId, token],
       );
       if (paused === 1) await this.closeAttempt(tx, runId, token, "paused", now);
       return paused === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
@@ -2440,8 +2451,8 @@ const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
  */
 const PREFLIGHT_ACCESS_PAUSE: ClaimPauseName = "preflight_access";
 
-/** A stall pause is in effect while its next probe time is after the last answered probe (none: always). */
-function stallInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
+/** A probe pause is in effect while its next probe time is after the last answered probe (none: always). */
+function probeInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
   return probeAt !== undefined && probeAt > (answeredAt ?? "");
 }
 

@@ -38,13 +38,22 @@ function pidAlive(pid: number): boolean {
 }
 
 /**
- * The stall pause line (design §5 Restarts): `agents paused: model not answering since <time>, next probe at
- * <time>` while the `model_stall` claim pause is in effect, else null. `factory status` prints it above the
- * item table.
+ * The probe pause lines (design §5 Restarts), one per pause in effect, else null: `agents paused: model not
+ * answering since <time>, next probe at <time>` for `model_stall`, `agents paused: network not reachable since
+ * <time>; runs start again once a probe passes` for `network` (the why-it-waits wording). `factory status` prints
+ * them above the item table.
  */
 export async function modelStallLine(store: Pick<FactoryStore, "getClaimPause">): Promise<string | null> {
-  const [since, next] = await Promise.all([store.getClaimPause("model_stall_since"), store.getClaimPause("model_stall")]);
-  return since === null || next === null ? null : `agents paused: model not answering since ${since}, next probe at ${next}`;
+  const [since, next, network] = await Promise.all([
+    store.getClaimPause("model_stall_since"),
+    store.getClaimPause("model_stall"),
+    store.getClaimPause("network_since"),
+  ]);
+  const lines = [
+    ...(since === null || next === null ? [] : [`agents paused: model not answering since ${since}, next probe at ${next}`]),
+    ...(network === null ? [] : [`agents paused: network not reachable since ${network}; runs start again once a probe passes`]),
+  ];
+  return lines.length === 0 ? null : lines.join("\n");
 }
 
 /**
@@ -56,8 +65,8 @@ export async function projectKeyChecks(store: Pick<FactoryStore, "getCursor">, r
   return [{ ok: false, warn: true, msg: `project key of ${repo.owner}/${repo.name} not stored yet: the factory waits for GitHub to resolve it (see the GitHub API line)` }];
 }
 
-/** The same line as a failing check, for the dashboard's Health panel; none without a stall pause. */
+/** The same lines as failing checks, one each, for the dashboard's Health panel; none without a probe pause. */
 export async function modelStallChecks(store: Pick<FactoryStore, "getClaimPause">): Promise<Check[]> {
-  const line = await modelStallLine(store);
-  return line === null ? [] : [{ ok: false, msg: line }];
+  const lines = await modelStallLine(store);
+  return lines === null ? [] : lines.split("\n").map((msg) => ({ ok: false, msg }));
 }

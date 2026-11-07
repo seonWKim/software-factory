@@ -20,6 +20,9 @@ import {
   type ProjectSettings,
   type SettingsLayers,
   describeSettings,
+  isProjectSettableKey,
+  keyRefusal,
+  parseSettable,
   resolveSettings,
   settingsFor,
   settingsLayers,
@@ -416,5 +419,30 @@ describe("settings: descriptions", () => {
     const p: Record<PrOnlyKey, string> = prOnly;
     expect(Object.keys(s)).not.toContain("max_loops");
     expect(Object.keys(p)).not.toContain("plugins");
+  });
+});
+
+describe("settings: standing_approvals.threshold", () => {
+  const KEY = "standing_approvals.threshold";
+  const base = { file: {}, layers: { defaults: {}, projects: {} } };
+  const row = (value: string) => ({ key: KEY, project: "", value });
+
+  it("is a global settable key, 10 by default, read live through resolveSettings", () => {
+    expect(SETTABLE_KEYS).toContain(KEY);
+    expect(isProjectSettableKey(KEY)).toBe(false);
+    expect(keyRefusal(KEY)).toBeNull();
+    expect(resolveSettings(base, []).values[KEY]).toBe(10);
+    expect(resolveSettings(base, [row("4")]).values[KEY]).toBe(4);
+  });
+
+  it.each([0, -1, 2.5, "10", true, null, {}])("refuses %j on set and when stored overrides load", (bad) => {
+    expect(() => parseSettable(KEY, bad)).toThrow(`${KEY} must be a positive integer`);
+    const r = resolveSettings(base, [row(JSON.stringify(bad))]);
+    expect(r.values[KEY]).toBe(10);
+    expect(r.ignored).toContainEqual(expect.objectContaining({ key: KEY }));
+  });
+
+  it("is not a config file key: the file cannot hold a second value for it", () => {
+    expect(unknownConfigKeys({ standing_approvals: { threshold: 10 } })).toHaveLength(1);
   });
 });
