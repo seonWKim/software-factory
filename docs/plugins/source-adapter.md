@@ -23,6 +23,16 @@ Plugins:
   - Secrets: none. Settings: none.
   - Switch back: `"source": "github-issues"` (or drop `"local"` from the list).
 
+- `slack`: `SlackSource` (issue #109). A stream source of type `slack_thread` on Slack Socket Mode, through `SlackWebClient` (`src/impl/source/slack-client.ts`): Node's built-in `WebSocket` and `fetch`, no Slack SDK.
+  - Intake: a mention of the bot in a listed channel gives one `item_requested` for its thread, source id `slack:<team id>:<channel id>:<thread ts>`; the title is the first line of the mention without the bot mention. A message in a channel not on the list, a bot's message, an edit, and a top-level message without a mention start nothing (acked at once, never stored). Each pushed event's `dedupe_key` is Slack's event id (a button press: `action:<action ts>`), so a replay after a reconnect is one inbox row. Acks follow the inbox write, as for every stream source.
+  - Replies in the item's thread and button presses become the same events as a GitHub comment (the `local` source's `commentEvent` parser): `/approve`, `/reject <reason>`, `/revise <feedback>`, `/retry`, `/resolve`, `/budget`, `/help`, `/verdict`, unknown commands, plain comments (`/link` included). A message that mentions the bot is intake only, never also a command. Identities are provider `slack`, subject the Slack user id; no display name or user name is read, stored or logged. The controller's `AuthProvider` check decides every one; outside GitHub, `/help` and unknown commands are checked too, and an unknown account gets the refusal reply in the thread.
+  - Buttons: a message that ends with the command footer gets one button per command that takes no text and applies now (approve, retry, resolve, budget, help), read from that footer, which is built from the command table in `src/core/commands.ts`. A plain-language suggestion gets Confirm (carries the suggested command, which then runs as if typed) and Cancel (starts nothing).
+  - `postComment`: reads the thread's replies (`conversations.replies` with metadata) and posts nothing when a message carries the marker in its metadata (`factory_comment`), so each marker posts at most once; returns the thread's link. Everything posted (text and button values) passes the `EgressScanner` first. A blocked message is not posted and never retried in any form: the thread gets one fixed withheld notice that carries the same marker, and the log line names the rule only. `markSeen`, `setStatus` and `closeIssue` do nothing (no `reactions:write` scope, no labels, threads do not close).
+  - Once the item has a PR, the controller posts its link in the thread once (marker `pr-link:<number>`); review, checks and the merge run on GitHub as for any item.
+  - Enable: add the `slack` block with `channels`, a non-empty list of channel IDs (`C…` or `G…`, never names; any other key fails at startup), and list the source next to GitHub: `"source": ["github-issues", "slack"]`. One-time Slack app setup: SET_UP.md, "Slack threads".
+  - Secrets: `SLACK_APP_TOKEN` (app-level token, `connections:write`: opens the Socket Mode connection) and `SLACK_BOT_TOKEN` (bot token: reads thread replies, posts messages). Read from the `SecretStore` only inside `SlackWebClient`, at the point of use, into the Authorization header; never into an event, a log line, an error or a message. It reads no GitHub credential. `build()` passes every source the secret store, the egress scanner and the clock beyond the typed source context.
+  - Switch back: `"source": "github-issues"` (or drop `"slack"` from the list). The `slack` block may stay; it is still checked.
+
 Other sources may implement `setStatus` as a no-op.
 
 **Several sources.** `plugins.source` takes one name or a list of names:
@@ -53,4 +63,5 @@ Switch back / disable: `"source": "github-issues"` (or drop the other names from
 ## History
 
 - **Several sources** (changed 2026-11-01). Before: `plugins.source` took one name and every comment, 👀, status and close went through that one adapter.
+- **Slack source** (added 2026-11-01, issue #109). Before: no real stream source existed; Slack items could only come from the test-only fakes.
 - **`local` tables** (changed 2026-11-07, issue #281). Before: `poll` and `postComment` read and wrote migration 21's local-only command and message tables; now they use `command_inbox` and `item_thread` through the same store methods.

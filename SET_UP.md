@@ -122,6 +122,30 @@ Work items can also come from your terminal instead of a GitHub issue. Add `"loc
 
 `task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it as it applies the same comment on GitHub: the same permission check and the same refusal text. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. The controller resolves the CLI user as the local account (provider `local`, subject `<cli_user>`) through `auth`: with `"auth": "github"` that account must be linked to the factory user, and no CLI command links it yet, so until then the controller refuses CLI commands as not linked. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
+### Slack threads (optional, one time)
+
+Work items can also start from a Slack thread: mention the bot in a listed channel and the thread becomes the item. The spec, status and failure messages come back in that thread with buttons for the commands that apply now (Approve, Retry, Resolve, Continue (budget), Help); `/reject`, `/revise` and `/verdict` are typed as thread replies. Every button and typed command goes through the same permission check as a GitHub comment, so link your Slack account first (`/link <code>` as a reply in a thread). The pull request, review and merge stay on GitHub; the thread gets a link to the PR. Slack stays off until you do all of this:
+
+1. Create the app from a manifest at <https://api.slack.com/apps> ("Create New App", "From an app manifest"). The manifest needs:
+   - `settings.socket_mode_enabled: true` (Socket Mode on: no public URL) and `settings.interactivity.is_enabled: true` (interactivity on, for the buttons).
+   - Bot scopes `app_mentions:read`, `channels:history` and `chat:write`, and nothing else.
+   - Bot events `app_mention` and `message.channels`.
+2. Under "Basic Information", "App-Level Tokens", create a token with the `connections:write` scope. It starts with `xapp-`; put it in `~/.config/software-factory/.env` as `SLACK_APP_TOKEN=...`.
+3. Install the app to the workspace. Copy the "Bot User OAuth Token" (starts with `xoxb-`) into the same file as `SLACK_BOT_TOKEN=...`. Neither token goes in the repository or in `factory.config.json`.
+4. Invite the bot to each channel it should listen in (`/invite @<bot>` in the channel).
+5. Find each channel's ID: open the channel, click its name, and copy the ID at the bottom of the "About" tab (it starts with `C`). Channel names are never used.
+6. In `factory.config.json`, add the channel IDs and select the source next to GitHub:
+
+   ```json
+   "slack": { "channels": ["C0123ABCD"] },
+   "plugins": { "source": ["github-issues", "slack"], ... }
+   ```
+
+   `slack` takes only `channels`; any other key, a channel name or an empty list fails at startup.
+7. Run `npm run setup` again: it lists the two Slack tokens and checks they are set.
+
+To switch Slack off, drop `"slack"` from `plugins.source` (the `slack` block may stay). Details: docs/plugins/source-adapter.md, `slack`.
+
 ### Status labels
 
 Each work item's issue carries exactly one status label, and so does its PR once there is one. The factory sets it on every change of state, and again for every open item when it starts. Names are `status_label_prefix` (in `factory.config.json`, default `sf: `) plus the name below. The factory creates a missing one on first use; `doctor` only warns about a missing one.

@@ -17,7 +17,7 @@ graph TB
   subgraph SURF["Surfaces"]
     direction LR
     GH["GitHub: issues, PRs, reviews"]
-    SL["Slack (later)"]
+    SL["Slack (stream plugin)"]
     CLI["factory CLI"]
     UI["factory ui: read-only status page"]
   end
@@ -65,7 +65,7 @@ graph TB
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
 | `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
 | `SecretStore` | `~/.config/software-factory/.env` (outside the repo) | Vault / cloud secret manager |
-| `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
+| `SourceAdapter` | GitHub issues via REST / `gh`; Slack threads via Socket Mode (`slack`) | GitLab |
 | `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
 | `ToolBroker` (G2) | GitHub REST + `git push` in the worker process | same, per tool |
@@ -237,7 +237,9 @@ graph LR
 - **Ordering.** Appends of one source type lock its lease row, so they commit one at a time in seq order and a reader never moves its cursor past a row that commits later. Seqs are never reused (SQLite `AUTOINCREMENT`, InnoDB's persisted counter).
 - **Reconnects.** When the stream ends or fails, the listener reconnects with exponential backoff (1 s doubling to 60 s; it starts over after a connection that stored an event). It logs once per state change (lease taken, waiting, connected, disconnected, lease lost), not once per retry.
 - **Retention.** On the poll interval, the controller deletes inbox rows that are older than `inbox_retention_days` (default 14) **and** at or below the source's inbox cursor. A source with no cursor keeps every row.
-- Out of scope so far: webhook HTTP endpoints (they would write to the same inbox) and any real stream plugin (Slack).
+- **Slack is a stream plugin** (`slack`, issue #109): Socket Mode intake from the channels in the `slack` config block, written to the inbox like any pushed event, deduplicated on Slack's event id. Its replies, buttons and refusals go back to the item's thread.
+- **Routing by source type.** Every item records its source type (`github_issue`, `slack_thread`, `local`). The controller sends the item's comments, 👀, status and close to the adapter of that type, and a command's reply to the source it came from; PR status, review and the merge go to the `github_issue` adapter whatever the item's source, since PRs live on GitHub. A Slack item gets its PR's link in its thread once.
+- Out of scope so far: webhook HTTP endpoints (they would write to the same inbox).
 
 ## 5. Secret isolation
 
