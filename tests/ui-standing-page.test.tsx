@@ -60,6 +60,8 @@ describe("Standing approvals section (stubbed API)", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
         posts.push({ url, init });
+        // A write answers after a while, as on a loaded machine: the item's buttons stay disabled until it does.
+        await new Promise((r) => setTimeout(r, 50));
         return json(answer.status, answer.body);
       }
       if (url === "/api/v1/settings") return json(200, settings);
@@ -89,9 +91,13 @@ describe("Standing approvals section (stubbed API)", () => {
     await show();
     const proposals = screen.getByRole("list", { name: "Pending proposals" });
     const li = proposals.querySelector<HTMLElement>('li[data-proposal="sp_1"]')!;
+    const decline = within(li).getByRole("button", { name: "Decline" }) as HTMLButtonElement;
     fireEvent.click(within(li).getByRole("button", { name: "Accept" }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    fireEvent.click(within(li).getByRole("button", { name: "Decline" }));
+    // The buttons are disabled while the Accept write is in flight; Decline is clicked once it answers.
+    expect(decline.disabled).toBe(true);
+    await waitFor(() => expect(decline.disabled).toBe(false));
+    fireEvent.click(decline);
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(posts.map((p) => JSON.parse(String(p.init.body)))).toEqual([
       { rule: "spec-t1", enabled: true, proposal: "sp_1" },
