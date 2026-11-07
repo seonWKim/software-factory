@@ -370,7 +370,7 @@ function parseJsonResult(stdout: string): ClaudeJsonResult | null {
 }
 
 /** The longest part of the CLI's rate-limit text a rate_limited result keeps as its error. */
-export const RATE_LIMIT_DETAIL_CHARS = 500;
+const RATE_LIMIT_DETAIL_CHARS = 500;
 
 /** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
 export const DEFAULT_STALL_MS = 300_000;
