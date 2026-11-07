@@ -7,7 +7,7 @@ import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, bran
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import type { Run, RunId, SourceRef, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { TRUSTED_GIT_ENV } from "./worker.js";
+import { TRUSTED_GIT_ENV, prTitle } from "./worker.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -345,10 +345,6 @@ export function isTokenCount(n: number): boolean {
   return Number.isSafeInteger(n) && n >= 0;
 }
 
-function prTitle(item: WorkItem): string {
-  const title = item.title?.replace(/\s+/g, " ").trim();
-  return `factory: ${title || (item.problem.split("\n")[0] ?? "").slice(0, 80)}`;
-}
 
 function prBody(item: WorkItem, run: Run, checked: string[]): string {
   const issue = item.source.id.split("#")[1];
