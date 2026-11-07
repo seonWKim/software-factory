@@ -110,7 +110,21 @@ If you have write permission and reply in plain words on an open work item's iss
 
 ### Local tasks from the command line
 
-Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`) and set `cli_user` in `factory.config.json` to your factory user ID (e.g. `"cli_user": "github:12345"`); every command below acts as that user, and with no `cli_user` each one prints an error and exits with code 1. Run them as `npm run --silent factory -- <command>`. None of them calls GitHub.
+Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`). Run the commands as `npm run --silent factory -- <command>`. None of them calls GitHub, and they work the same whether GitHub is selected, unreachable or rate limited.
+
+Who you are: `cli_user` in `factory.config.json` if you set it (optional), else `local:<git user.email>`, else `local:<OS user name>`, else `local:anonymous`. The local UI uses the same identity. Git's `user.name` is not used, because it is a display name.
+
+Who may act: local commands (the CLI and the local UI) are checked by the local auth plugin, never by GitHub's. GitHub comments are still checked by the `auth` plugin for GitHub. The first identity to run a writing command (`task create`, `approve`, `retry`, `revise`, `reject`, `users add`/`remove`) becomes the local **owner**.
+
+| | Solo (default, zero setup) | Team (many developers on one shared store) |
+|---|---|---|
+| Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
+| Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
+| May approve, retry, revise, reject | The owner | The owner and every `approver` |
+| May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
+| `anonymous` | Read and create only: never the owner, never an approver | The same |
+
+A `permissions.static.deny` still refuses a local user. On a shared store the identity comes from each person's environment (git config, OS user), so anyone who can run the CLI against the store can set it: the store's credentials are the trust boundary.
 
 - `factory task create --title <t> --body-file <f>`: Create a local work item from a title and a body file; prints its work item ID.
 - `factory task list`: List local work items: ID, title, stage and blocked reason.
@@ -119,8 +133,11 @@ Work items can also come from your terminal instead of a GitHub issue. Add `"loc
 - `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+- `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
+- `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
+- `factory users remove <user_id>`: Owner only: remove a local user's role.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it as it applies the same comment on GitHub: the same permission check and the same refusal text. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. The controller resolves the CLI user as the local account (provider `local`, subject `<cli_user>`) through `auth`: with `"auth": "github"` that account must be linked to the factory user, and no CLI command links it yet, so until then the controller refuses CLI commands as not linked. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
 ### Status labels
 
@@ -275,6 +292,14 @@ For `npm run test:mysql` on your own machine, the same URL can go in `.factory/t
 ### Status page
 
 `npm run factory -- ui` serves the factory app at <http://127.0.0.1:4310/> (it redirects to `/app/`; the port is `ui.port` in `factory.config.json`): Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue and Health. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+
+**Commands from the page (`ui.user_id`).** To let the page send item commands, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
+
+```json
+"ui": { "port": 4310, "user_id": "github:12345" }
+```
+
+Every command sent from the page acts as that user, with that user's permissions: the controller runs the same permission check as for a comment from that user, and refuses (with a reply on the issue and in the item's replies) what that user may not do. Anyone who can open the page on this machine acts as that user, so set it only on a machine you alone use. Without `ui.user_id` the page cannot send commands (the endpoint answers 503); it still shows everything. An empty or non-string value stops startup with an error naming `ui.user_id`. The checked-in config does not set it; keep your own ID out of the repository. Only `approve` is applied from the page today; any other command is recorded and answered with a refusal pointing at the issue.
 
 The list's order:
 1. Ready to merge

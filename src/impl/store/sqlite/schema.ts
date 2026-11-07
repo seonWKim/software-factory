@@ -459,12 +459,24 @@ export const MIGRATIONS: readonly string[] = [
     checked_at    TEXT NOT NULL
   );
   `,
-  // 26: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
+  // 26: local users (issue #318). Who may act from the local CLI and UI under the `local` auth plugin: one row per
+  // factory user ID with its role (`owner`, `approver`, `requester`). `owner_slot` is 1 on the owner's row and NULL
+  // on every other, so UNIQUE allows one owner. IF NOT EXISTS: safe to run again below 26.
+  `
+  CREATE TABLE IF NOT EXISTS local_users (
+    user_id     TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,
+    owner_slot  INTEGER UNIQUE,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+  `,
+  // 27: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
   // the source issue's updated_at it was read at; NULL on edges from before (the controller reads them once more).
   `
   ALTER TABLE dependency_edges ADD COLUMN source_updated_at TEXT;
   `,
-  // 27: the same read time on the item (issue #254), so an item whose issue has no links also records when its
+  // 28: the same read time on the item (issue #254), so an item whose issue has no links also records when its
   // links were read. NULL: never read with a time, or marked stale; the controller reads its links on the next poll.
   `
   ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;

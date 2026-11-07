@@ -9,7 +9,12 @@ Do:
 4. If the change alters a design decision or a plugin, check that its topic files under `docs/design/` or
    `docs/plugins/` were updated (current decision first, the replaced one under History), and that the indexes
    (`docs/design.md`, `docs/plugins.md`) hold no decision text: one line or row per topic only.
-5. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
+5. Check maintainability in the diff itself. Each of these is a finding of kind `code`:
+   - the change leaves dead code, unused exports or a replaced code path behind
+   - it duplicates an existing helper instead of reusing it
+   - it adds a third copy of a block
+   Note cleanup chances outside the change in `summary`, not as findings.
+6. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
