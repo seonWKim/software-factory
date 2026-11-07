@@ -383,11 +383,17 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return undefined;
-    throw err;
-  });
+  // Optional prompt files: a missing one is not an error.
+  const optional = (name: string) =>
+    readFile(join(codeRoot, "prompts", name), "utf8").catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+  const resolvePrompt = await optional("resolve.md");
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
+  const ownerDefaults = await optional("owner-defaults.md");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
