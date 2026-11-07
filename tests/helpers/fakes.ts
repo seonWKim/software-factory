@@ -745,6 +745,7 @@ export async function pipeline(opts: {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const runner = new FakeRunner({
@@ -754,7 +755,7 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner , repeated_failure_rule: false });
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner , repeated_failure_rule: false });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
@@ -777,7 +778,7 @@ export async function pipeline(opts: {
   const item = async (it: WorkItem) => (await store.getWorkItem(it.id))!;
   const runs = async (it: WorkItem, kind?: Run["kind"]) => (await store.listRuns(it.id)).filter((r) => !kind || r.kind === kind);
   const agentCalls = (role: AgentRunSpec["role"]) => runner.specs.filter((s) => s.role === role).length;
-  return { config: cfg, clock, store, source, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
+  return { config: cfg, clock, store, source, forge, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
 }
 
 /** `factory session`'s local records (src/core/session.ts), in memory instead of under state_dir. */

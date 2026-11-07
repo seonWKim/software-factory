@@ -35,7 +35,7 @@ function root(config: Record<string, unknown>): string {
 const withForge = (forge: unknown): Record<string, unknown> => ({ ...REAL, plugins: { ...(REAL.plugins as object), forge } });
 /** The checked-in config with `source` instead of its sources, and `forge` when given (absent: left out). */
 const withSources = (source: unknown, ...forge: unknown[]): Record<string, unknown> => {
-  const { forge: _, ...plugins } = { ...(REAL.plugins as Record<string, unknown>), source };
+  const { forge: _, ...plugins }: Record<string, unknown> = { ...(REAL.plugins as Record<string, unknown>), source };
   return { ...REAL, plugins: forge.length ? { ...plugins, forge: forge[0] } : plugins };
 };
 
@@ -151,7 +151,7 @@ describe("forge: building", () => {
     const made: string[] = [];
     const registry = withPlugin(REGISTRY, "forge", "spy", () => {
       made.push("spy");
-      return new GitHubForge({} as never);
+      return {} as Forge;
     });
     return { registry, made };
   };
@@ -168,7 +168,7 @@ describe("forge: building", () => {
   it("a selected forge is built through the registry", async () => {
     const { registry, made } = spyRegistry();
     const loaded = await loadConfig(root(withForge("spy")), { registry });
-    expect(await new Plugins(loaded).forge(github)).toBeInstanceOf(GitHubForge);
+    expect(await new Plugins(loaded).forge(github)).toEqual({});
     expect(made).toEqual(["spy"]);
   });
 

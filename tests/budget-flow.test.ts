@@ -10,7 +10,7 @@ import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, gates, issueRef, mallory, prompts, recordingLog, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 
@@ -45,6 +45,7 @@ async function factory(opts: {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const broker = new FakeBroker();
   const runner = new FakeRunner({
     triage: opts.triage ?? (() => used(100, triageSpec)),
@@ -53,7 +54,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const controllerFor = (c: FactoryConfig) =>
-    new Controller({ store, source, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
+    new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
   const controller = controllerFor(config);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(),
@@ -83,7 +84,7 @@ async function factory(opts: {
   const budgetComments = () => source.comments.filter((c) => c.marker.startsWith("<!-- factory:budget:"));
   const refusals = () => source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
   return {
-    config, clock, store, source, broker, runner, log, controller, controllerFor, worker, src,
+    config, clock, store, source, forge, broker, runner, log, controller, controllerFor, worker, src,
     step, submit, say, budget, reject, item, reasons, budgetComments, refusals,
   };
 }
@@ -372,7 +373,7 @@ describe("outcome and history", () => {
     const it0 = await f.submit();
     await f.budget(null);
     await f.step();
-    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${it0.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${it0.id}`, merge_sha: "m1", merger: alice });
     await f.controller.tickIntake();
     expect(await f.item(it0)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     expect((await f.store.listBudgetCheckpoints(it0.id))[0]).toMatchObject({ answer: "continued_suggested", outcome: "merged" });
