@@ -272,6 +272,17 @@ What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQ
 
 For `npm run test:mysql` on your own machine, the same URL can go in `.factory/test-mysql.url` (ignored by git).
 
+## Run the factory on your project
+
+The checked-in `factory.config.json` is this repository's own config. To point the factory at another repository, keep your config outside the factory checkout, so `dev`'s updater (which runs `origin/<base_branch>`) never replaces it:
+
+1. Make a folder for it, e.g. `~/factory/my-app/`, and copy `factory.config.json` into it.
+2. Edit at least `repo.owner`, `repo.name`, `repo.path` (your project's checkout; relative paths resolve from the folder you start the factory in), `repo.base_branch`, `repo.test_command` / `repo.check_commands`, `floors` and `store`. For one machine, `"store": { "type": "sqlite" }` needs no database.
+3. Check it: `npm run factory -- doctor --config ~/factory/my-app/factory.config.json`. The first line names the config file in use.
+4. Start: `npm run factory -- dev --config ~/factory/my-app/factory.config.json` (or `export FACTORY_CONFIG=…`; `--config` wins when both are set). Every command takes the flag.
+
+With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. Solo use (SQLite) may set any key; on a shared MySQL store, `dials`, `floors`, `plugins`, `permissions` and `auth` always come from the checked-in file. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
+
 ## Routine
 
 | When | Command |
