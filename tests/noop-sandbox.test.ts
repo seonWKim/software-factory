@@ -320,20 +320,10 @@ describe("NoOpSandbox run folder with a read-only node_modules", () => {
     }
   }
 
-  // Known gap (#225): with the default `bundle` config loader, Vite writes the bundled vitest.config.ts to
-  // node_modules/.vite-temp before any setting in vitest.config.ts applies, so `npm test` as it stands fails here
-  // (EPERM on the host, EACCES in this fake). Only the command can change that (`--configLoader runner`), and
-  // package.json is outside this change. When `scripts.test` gains the flag, this test fails: turn `it.fails` into `it`.
-  it.fails("runs the run folder's own `npm test` command to a pass, writing nothing under node_modules", async () => {
-    const { r, added, tempFiles } = await vitestInReadOnlyRunFolder([]);
-    expect(r.stderr + r.stdout).toContain("1 passed");
-    expect(r.exit_code).toBe(0);
-    expect(added).toEqual([]);
-    expect(tempFiles).toEqual([]);
-  });
-
-  it("with --configLoader runner, passes and writes nothing under node_modules, its cache going to .vite-cache in the run folder", async () => {
-    const { r, added, tempFiles, cache } = await vitestInReadOnlyRunFolder(["--configLoader", "runner"]);
+  // `scripts.test` uses `--configLoader runner` (#225): Vite's default `bundle` loader would write the bundled
+  // vitest.config.ts to node_modules/.vite-temp before any config setting applies, which fails here.
+  it("runs the run folder's own `npm test` command to a pass, writing nothing under node_modules, its cache going to .vite-cache", async () => {
+    const { r, added, tempFiles, cache } = await vitestInReadOnlyRunFolder([]);
     expect(r.stderr + r.stdout).toContain("1 passed");
     expect(r.exit_code).toBe(0);
     expect(added).toEqual([]);
