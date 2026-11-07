@@ -1237,6 +1237,11 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToUnreviewedMerge);
   }
 
+  async countUnreviewedMergesSince(since: Timestamp): Promise<number> {
+    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM unreviewed_merges WHERE at >= ?", [since]);
+    return Number(row!.n);
+  }
+
   // Handoffs
 
   async appendHandoff(
