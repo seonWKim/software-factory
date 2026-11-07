@@ -73,7 +73,8 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent, syncedCommand } from "./command-inbox.js";
-import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
+import { commandText } from "./checks.js";
+import { LOCAL_SOURCE_TYPE, MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
 import { isCliCommandKey, localIdentity } from "./local-cli.js";
 import { enqueueImprove, fileReport, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
@@ -343,7 +344,7 @@ const MIRROR_BATCH = 50;
 /** Outbox rows delivered per tick at most (issue #282). */
 const OUTBOX_BATCH = 50;
 /** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
-const LOCAL_TYPE: SourceType = "local";
+const LOCAL_TYPE = LOCAL_SOURCE_TYPE;
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 /** A command name safe to quote in a reply: anything else is called "the command". */
@@ -698,10 +699,13 @@ export class Controller {
    * `factory merge <id>` through the command inbox (and later by other callers, never a second path). Authorized
    * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push
-   * and no checkout; a conflict leaves the item in merge_pending and the reply names the files. A merge closes the
-   * item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
-   * automatic: only a human's command calls it. Safe to run twice: a branch the base already contains moves
-   * nothing and closes the item with the base's commit; `key` keys the reply.
+   * and no checkout of the live repo, after `repo.install_command` and `repo.test_command` pass on the merged result
+   * in a temporary worktree; a conflict or a failed test leaves the item in merge_pending, the base unchanged, and
+   * the reply names the files or the command. A merge closes the item (completed, its merge sha) with the approver
+   * as its actor and releases the items waiting on it: one conditional update of the item (merge_pending to
+   * CLOSED), so two replicas merging it at once give one merge and one close, and only the one that closed it
+   * replies. Never automatic: only a human's command calls it. Safe to run twice: a branch the base already
+   * contains moves nothing and closes the item with the base's commit; `key` keys the reply.
    */
   async mergeLocal(id: WorkItemId, who: ExternalIdentity, key: string): Promise<void> {
     const item = await this.d.store.getWorkItem(id);
@@ -721,17 +725,27 @@ export class Controller {
       const r = await this.d.sandbox.mergeLocal({
         repo: repo.path, base_ref: repo.base_branch, branch, identity: this.cfg.agent_git_identity,
         message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} with \`factory merge\`.`,
+        checks: { commands: [repo.install_command, repo.test_command], timeout_ms: this.cfg.run_timeout_ms },
       });
       if (r.merged) {
         const actor: Actor = { kind: "user", id: principal.user_id };
-        const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
-          ? {
-              patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
-              actor,
-              reason: "local_merged",
-              detail: { branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}) },
-            }
-          : null));
+        // Whether this call's update closed the item: another replica's merge of the same item may have closed it first.
+        let closes = false;
+        const lost = await this.decide(item.id, (it) => {
+          closes = awaitingMerge(it) && it.change_ref === null;
+          return closes
+            ? {
+                patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+                actor,
+                reason: "local_merged",
+                detail: { branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}) },
+              }
+            : null;
+        });
+        if (lost === null && !closes) {
+          this.d.log.info("local merge already applied", { work_item_id: item.id, merge_sha: r.sha });
+          return;
+        }
         if (lost === null) {
           this.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: principal.user_id });
           await this.post(item, item.source, `Merged \`${branch}\` into the local \`${repo.base_branch}\` as \`${r.sha.slice(0, 12)}\` (no push). The item is closed.`, `<!-- factory:local-merged:${key} -->`);
@@ -746,6 +760,13 @@ export class Controller {
           ...r.conflicts.map((f) => `- \`${f}\``),
           "",
           `\`${branch}\` is a local branch of this repository: merge \`${repo.base_branch}\` into it and commit the resolution there, then run \`factory merge ${item.id}\` again`,
+        ].join("\n");
+      } else if ("failed" in r) {
+        const f = r.failed;
+        refusal = [
+          `\`${commandText(f.command)}\` ${f.how} on \`${branch}\` merged into the local \`${repo.base_branch}\`, so nothing moved and the item still waits for a merge`,
+          ...(f.tail ? ["", "```", f.tail, "```", ""] : []),
+          `Fix it on \`${branch}\`, then run \`factory merge ${item.id}\` again`,
         ].join("\n");
       } else refusal = r.refused;
     }
@@ -3058,11 +3079,13 @@ export class Controller {
           return ack("run_ignored");
         case "interactive": {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
+          // No PR (a local item's session, design 05-sources): it reviews and merges as its local branch.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
-          const input = await this.reviewInput(Number(data.pr_number), it.id);
+          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
+          const input = await this.reviewInput(pr, it.id);
           return {
-            patch: { stage: "REVIEW", change_ref: String(data.pr_number), ...prUrlOf(data), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
+            patch: { stage: "REVIEW", change_ref: pr === null ? null : String(pr), ...prUrlOf(data), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
             ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input },
           };
         }

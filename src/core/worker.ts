@@ -33,6 +33,7 @@ import {
   MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
 } from "./mechanical.js";
 import { runImprove } from "./improver.js";
+import { type LocalParts, localPartsFor } from "./local-merge.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -65,6 +66,12 @@ export interface WorkerDeps {
   sandbox: Sandbox;
   runner: AgentRunner;
   broker: ToolBroker;
+  /**
+   * The broker and sandbox local items use while a forge plugin is selected (design 05-sources, Local items beside a
+   * forge): compose builds them beside `broker` and `sandbox`. Absent: every item uses `broker` and `sandbox` (no
+   * forge plugin is selected, so they are the local ones).
+   */
+  local?: LocalParts;
   scanner: EgressScanner;
   storage: SharedStorage;
   /**
@@ -381,11 +388,26 @@ export class Worker {
   private runModels: { table: ModelTable; names?: ModelNames } | undefined;
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   private readonly scratch = new WeakMap<Run, RunScratch>();
+  /**
+   * The broker and sandbox of the run being executed, by its item's source type (localPartsFor): the local ones for
+   * a local item beside a forge, else the selected ones. Every push, PR, preflight and sandbox call of the run goes
+   * through them. Scratch for one run, like `cfg`.
+   */
+  private parts: LocalParts;
 
   constructor(private readonly d: WorkerDeps) {
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     this.cfg = this.live.config();
     this.runModels = d.settings ? this.live.models() : d.models;
+    this.parts = { broker: d.broker, sandbox: d.sandbox };
+  }
+
+  private get broker(): ToolBroker {
+    return this.parts.broker;
+  }
+
+  private get sandbox(): Sandbox {
+    return this.parts.sandbox;
   }
 
   get id(): WorkerId {
@@ -478,9 +500,17 @@ export class Worker {
     this.meters.set(run, usage);
     let outcome: RunOutcome | null = null;
     let paused: RunPaused | null = null;
+    this.parts = { broker: this.d.broker, sandbox: this.d.sandbox };
     try {
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
+      // A local item beside a forge runs the local path: the local broker (no remote, no PR), the local base branch
+      // and branches, no origin fetch (design 05-sources, Local items beside a forge).
+      const local = localPartsFor(item, this.d.local);
+      if (local) {
+        this.parts = local;
+        this.cfg = { ...this.cfg, local_only: true };
+      }
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
       // One class for every agent step of the run, the merge-conflict steps of an implement run included.
       const model = isModelRunKind(run.kind) ? this.modelFor(run.kind, item) : null;
@@ -653,7 +683,7 @@ export class Worker {
       this.d.log.info("run paused", { ...log, paused_by: p.by, session: p.session_id !== null, wip: resume?.head ?? null });
       return true;
     }
-    if (p.handle) await this.d.sandbox.destroy(p.handle).catch(() => undefined);
+    if (p.handle) await this.sandbox.destroy(p.handle).catch(() => undefined);
     return false;
   }
 
@@ -720,7 +750,7 @@ export class Worker {
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
     const plan = await this.resumePlan(run);
     const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
-    const handle = plan?.folder ?? kept?.handle ?? (await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
+    const handle = plan?.folder ?? kept?.handle ?? (await this.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
     // The folder lives until the run ends, whatever the outcome; only a pause, or a stopped run that keeps it for
     // its retry, keeps it (design §5 Pause, Restarts).
     let keep = false;
@@ -736,7 +766,7 @@ export class Worker {
       }
       throw err;
     } finally {
-      if (!keep && this.scratch.get(run)?.kept?.folder !== handle.id) await this.d.sandbox.destroy(handle);
+      if (!keep && this.scratch.get(run)?.kept?.folder !== handle.id) await this.sandbox.destroy(handle);
     }
   }
 
@@ -774,9 +804,9 @@ export class Worker {
   private async keptFolder(run: Run): Promise<{ handle: SandboxHandle; session: string } | null> {
     const wip = run.input?.wip;
     const kept = continues(wip) && wip.session?.host === this.host ? wip.session : null;
-    if (!kept || !this.d.sandbox.reattach) return null;
+    if (!kept || !this.sandbox.reattach) return null;
     this.scratch.get(run)?.sessions.add(kept.id);
-    const here = await this.d.sandbox.reattach(kept.folder).catch(() => null);
+    const here = await this.sandbox.reattach(kept.folder).catch(() => null);
     if (!here) return null;
     const handle = { ...here, ...(kept.base_sha ? { base_sha: kept.base_sha } : {}) };
     const session = this.d.runner.hasSession ? await this.d.runner.hasSession(kept.id).catch(() => false) : false;
@@ -784,7 +814,7 @@ export class Worker {
     const usable = head !== null && head.exit_code === 0 && head.stdout.trim() === wip!.head;
     this.d.log.info("stopped run continues", { run_id: run.id, same_host: true, folder: usable, session });
     if (usable) return { handle, session: kept.id };
-    await this.d.sandbox.destroy(handle).catch(() => undefined);
+    await this.sandbox.destroy(handle).catch(() => undefined);
     return null;
   }
 
@@ -798,14 +828,14 @@ export class Worker {
   private async resumePlan(run: Run): Promise<ResumePlan | null> {
     const state = PAUSABLE_KINDS.includes(run.kind) ? run.resume : null;
     if (!state) return null;
-    const here = state.host === this.host && this.d.sandbox.reattach
-      ? await this.d.sandbox.reattach(state.folder).catch(() => null)
+    const here = state.host === this.host && this.sandbox.reattach
+      ? await this.sandbox.reattach(state.folder).catch(() => null)
       : null;
     const session = here && run.session_id && this.d.runner.hasSession
       ? ((await this.d.runner.hasSession(run.session_id).catch(() => false)) ? run.session_id : null)
       : null;
     const keep = here !== null && (session !== null || run.kind === "implement");
-    if (here && !keep) await this.d.sandbox.destroy(here);
+    if (here && !keep) await this.sandbox.destroy(here);
     this.d.log.info("paused run resumes", {
       run_id: run.id, same_host: state.host === this.host, folder: keep, session: session !== null,
     });
@@ -1013,12 +1043,12 @@ export class Worker {
     const db = await this.database(run);
     let content: { number: number; url?: string } | null = null;
     try {
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
+      const pushed = await this.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
       // A broker with no PR tool (the local one): the branch is the review's input and `factory merge` its merge.
       if (this.hasTool("github.open_pr")) {
-        const pr = await this.d.broker.call(ctx, "github.open_pr", {
+        const pr = await this.broker.call(ctx, "github.open_pr", {
           branch,
           base_ref: base,
           title: prTitle(item),
@@ -1082,7 +1112,7 @@ export class Worker {
    */
   private async branchDiff(handle: SandboxHandle, baseSha: string, dirs: string): Promise<DiffStat> {
     const head = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])).trim();
-    const made = await this.d.sandbox.exec(handle, ["mktemp", "-d"], { env: this.d.toolEnv });
+    const made = await this.sandbox.exec(handle, ["mktemp", "-d"], { env: this.d.toolEnv });
     const dir = made.stdout.trim();
     if (made.exit_code !== 0 || dir === "") throw new Error(`mktemp: ${made.stderr.trim()}`);
     const isolated = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -1095,7 +1125,7 @@ export class Worker {
       });
       return diffStat(numstat);
     } finally {
-      await this.d.sandbox.exec(handle, ["rm", "-rf", "--", dir], { env: this.d.toolEnv }).catch(() => undefined);
+      await this.sandbox.exec(handle, ["rm", "-rf", "--", dir], { env: this.d.toolEnv }).catch(() => undefined);
     }
   }
 
@@ -1142,7 +1172,7 @@ export class Worker {
     const commits = head === start ? 0 : (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
     if (commits === 0) return failure;
     const s = this.scratch.get(run);
-    const session = s?.step_session && this.d.sandbox.reattach && this.d.runner.hasSession
+    const session = s?.step_session && this.sandbox.reattach && this.d.runner.hasSession
       ? { id: s.step_session, host: this.host, folder: handle.id, start, base_sha: handle.base_sha ?? null }
       : null;
     const wip: ContinueWip = {
@@ -1203,10 +1233,12 @@ export class Worker {
    * failed refresh is logged and the run still succeeds. No stored notes (older runs, adopted PRs): no change.
    */
   private async refreshPr(run: Run, item: WorkItem, ctx: ToolCallContext, branch: string, checks: readonly string[]): Promise<void> {
+    // A broker with no PR tool (the local one): the item has no PR body to refresh.
+    if (!this.hasTool("github.open_pr")) return;
     const notes = lastPrNotes(await this.d.store.listRuns(item.id));
     if (!notes) return;
     try {
-      const r = await this.d.broker.call(ctx, "github.open_pr", {
+      const r = await this.broker.call(ctx, "github.open_pr", {
         branch,
         base_ref: this.cfg.repo.base_branch,
         title: prTitle(item),
@@ -1267,8 +1299,8 @@ export class Worker {
     }
     const file = `${dirs.split("\n").at(-1)}/sf-pause.bundle`;
     const made = await this.gitRaw(handle, ["bundle", "create", file, `${start}..HEAD`]);
-    const text = made.exit_code === 0 ? await this.d.sandbox.exec(handle, ["sh", "-c", 'base64 < "$1"', "sh", file], { env: this.d.toolEnv }) : null;
-    await this.d.sandbox.exec(handle, ["rm", "-f", "--", file], { env: this.d.toolEnv });
+    const text = made.exit_code === 0 ? await this.sandbox.exec(handle, ["sh", "-c", 'base64 < "$1"', "sh", file], { env: this.d.toolEnv }) : null;
+    await this.sandbox.exec(handle, ["rm", "-f", "--", file], { env: this.d.toolEnv });
     if (!text || text.exit_code !== 0) {
       this.d.log.warn("pause: git bundle failed; no bundle kept", { run_id: run.id });
       return null;
@@ -1291,7 +1323,7 @@ export class Worker {
       return false;
     }
     const file = `${gitDir}/sf-resume.bundle`;
-    const wrote = await this.d.sandbox.exec(handle, ["sh", "-c", 'base64 -d > "$1"', "sh", file], {
+    const wrote = await this.sandbox.exec(handle, ["sh", "-c", 'base64 -d > "$1"', "sh", file], {
       env: this.d.toolEnv,
       stdin: new TextDecoder().decode(data),
     });
@@ -1299,7 +1331,7 @@ export class Worker {
     const got = fetched.exit_code === 0
       ? await this.gitRaw(handle, ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"])
       : fetched;
-    await this.d.sandbox.exec(handle, ["rm", "-f", "--", file], { env: this.d.toolEnv });
+    await this.sandbox.exec(handle, ["rm", "-f", "--", file], { env: this.d.toolEnv });
     if (got.exit_code !== 0 || got.stdout.trim() !== state.head) {
       this.d.log.warn("paused run: the WIP bundle did not restore; starting from the branch", { run_id: run.id });
       return false;
@@ -1320,11 +1352,11 @@ export class Worker {
     const { repo } = this.cfg;
     // A broker with no forge (the local one) has no preflight: only the base fetch below is checked.
     if (this.hasTool("github.preflight")) {
-      const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
+      const forge = await this.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
       if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
     }
     try {
-      await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+      await this.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
     } catch (err) {
       throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
     }
@@ -1378,7 +1410,7 @@ export class Worker {
     if (failure.code === "lease_lost") return failure;
     let kept = resumed;
     if (!resumed) {
-      const pushed = await this.d.broker
+      const pushed = await this.broker
         .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: this.cfg.repo.base_branch })
         .catch((e: unknown) => ({ ok: false as const, error_code: "exception", message: e instanceof Error ? e.message : "unknown" }));
       kept = pushed.ok;
@@ -1415,7 +1447,7 @@ export class Worker {
     const { repo } = this.cfg;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
-    const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+    const fresh = await this.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
     await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec()]);
     const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
     if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
@@ -1483,7 +1515,7 @@ export class Worker {
     if (left.length === 0) throw new RunFailure("git_failed", `git merge: ${again.stderr.trim()}`, true);
     const files: ConflictFile[] = [];
     for (const path of left) {
-      const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
+      const r = await this.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
       files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
     }
     const second = await this.conflictStep({ ...step, conflicts: left }, "resolve", {
@@ -1778,7 +1810,7 @@ export class Worker {
       "",
       `Nothing was pushed to the change's branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
     ].join("\n");
-    const posted = await this.d.broker.call(ctx, "github.comment", {
+    const posted = await this.forgeComment(ctx, {
       number: Number(item.source.id.split("#")[1]),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
@@ -1797,7 +1829,7 @@ export class Worker {
   private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
     const db = await this.database(run);
     const round = await runChecks({
-      sandbox: this.d.sandbox,
+      sandbox: this.sandbox,
       handle,
       commands: o.commands ?? checkCommands(this.cfg.repo),
       ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
@@ -1931,7 +1963,7 @@ export class Worker {
       },
       write: async (path, text) => {
         const mode = (await entries(path)).find((x) => x.stage === 2 || x.stage === 0)?.mode ?? "100644";
-        const hashed = await this.d.sandbox.exec(handle, ["git", "hash-object", "-w", "--stdin"], {
+        const hashed = await this.sandbox.exec(handle, ["git", "hash-object", "-w", "--stdin"], {
           env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
           stdin: text,
         });
@@ -2098,7 +2130,7 @@ export class Worker {
     const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
-    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+    const handle = await this.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
     const comment = async (body: string) => {
@@ -2166,7 +2198,7 @@ export class Worker {
       const passed = checks.results.map((r) => `\`${commandText(r.command)}\``).join(", ");
 
       const merge_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", {
+      const pushed = await this.broker.call(ctx, "github.push_branch", {
         workdir: handle.workdir,
         branch,
         base_ref: repo.base_branch,
@@ -2182,7 +2214,7 @@ export class Worker {
       );
       return { result: "pushed", merge_sha, head_sha, base_sha };
     } finally {
-      await this.d.sandbox.destroy(handle);
+      await this.sandbox.destroy(handle);
     }
   }
 
@@ -2205,7 +2237,7 @@ export class Worker {
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
     const identity = gitIdentity(this.cfg.agent_git_identity);
-    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+    const handle = await this.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
     try {
@@ -2232,14 +2264,14 @@ export class Worker {
       if (conflicts.length > 0 && !mechanical) await this.recordConflicts(item, baseSha, conflicts);
 
       // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
-      const cp = await this.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: this.d.toolEnv });
+      const cp = await this.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: this.d.toolEnv });
       if (cp.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${cp.stderr.trim()}`, true);
       const before = await this.snapshot(handle, index);
       let tree = before;
       if (conflicts.length > 0 && !mechanical) {
         const files: ConflictFile[] = [];
         for (const path of conflicts) {
-          const r = await this.d.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
+          const r = await this.sandbox.exec(handle, ["cat", "--", path], { env: this.d.toolEnv });
           files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
         }
         const notes = run.input?.notes ?? "";
@@ -2280,14 +2312,14 @@ export class Worker {
       const now = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
 
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
+      const pushed = await this.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
       const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
       await this.refreshPr(run, item, ctx, branch, checkedLines(passed, { fixed: false, skipped: null }));
       return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha };
     } finally {
-      await this.d.sandbox.destroy(handle);
+      await this.sandbox.destroy(handle);
     }
   }
 
@@ -2333,7 +2365,7 @@ export class Worker {
   private async gate(run: Run, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal, check: boolean): Promise<void> {
     const db = check ? await this.database(run) : null;
     const round = await runChecks({
-      sandbox: this.d.sandbox,
+      sandbox: this.sandbox,
       handle,
       commands: [cmd],
       env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
@@ -2354,7 +2386,7 @@ export class Worker {
    */
   private async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
     const round = await runChecks({
-      sandbox: this.d.sandbox,
+      sandbox: this.sandbox,
       handle,
       commands: [cmd],
       env: { ...this.d.toolEnv, ...this.slotEnv() },
@@ -2486,7 +2518,7 @@ export class Worker {
    * the check is skipped. Best effort, never a failure (design §5 Sandbox).
    */
   private async liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
-    const r = await this.d.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
+    const r = await this.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
       env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
     }).catch(() => null);
     return r?.exit_code === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
@@ -2660,12 +2692,12 @@ export class Worker {
 
   /** Every worker git call in a run folder: the trusted env ranks above whatever the run's .git/config says. */
   private gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
-    return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
+    return this.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
   }
 
-  /** Whether the broker serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
+  /** Whether the run's broker serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
   private hasTool(name: string): boolean {
-    return this.d.broker.allTools().some((t) => t.name === name);
+    return this.broker.allTools().some((t) => t.name === name);
   }
 
   /**
@@ -2683,7 +2715,7 @@ export class Worker {
    */
   private async forgeComment(ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
     if (!this.hasTool("github.comment")) return { ok: true, content: null };
-    return this.d.broker.call(ctx, "github.comment", args);
+    return this.broker.call(ctx, "github.comment", args);
   }
 
   /**

@@ -19,6 +19,7 @@ import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { Controller } from "./core/controller.js";
+import type { LocalParts } from "./core/local-merge.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
@@ -51,7 +52,7 @@ import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
+  type BaseContext, type Contexts, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
 } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
@@ -674,6 +675,19 @@ export class Plugins {
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
   }
+  /**
+   * What local items run with while a GitHub plugin is selected (design 05-sources, Local items beside GitHub): the
+   * `local` broker (or the selected one, when that is `local`) and the selected sandbox plugin built as with no GitHub
+   * plugin selected (no origin fetch, the local base branch and branches). Both through the same registry: no new
+   * plugin and no setting, since every setup can file local items. Undefined with no GitHub plugin selected: the
+   * selected broker and sandbox are the local ones then.
+   */
+  async localParts(selected: ToolBroker, ctx: Omit<Contexts["broker"], keyof BaseContext>): Promise<LocalParts | undefined> {
+    if (this.loaded.config.local_only === true) return undefined;
+    const base = { ...this.base, loaded: { ...this.loaded, config: { ...this.loaded.config, local_only: true as const } } };
+    const broker = this.loaded.plugins.broker === "local" ? selected : await createPlugin(this.loaded.registry, "broker", "local", { ...base, ...ctx });
+    return { broker, sandbox: await createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, base) };
+  }
   githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
     return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
   }
@@ -742,6 +756,7 @@ export async function build(
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
+  const local = await p.localParts(broker, { github, credentials, secrets, store, scanner, clock });
   const runner = await p.runner(sandbox, secrets, { broker, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
@@ -806,6 +821,7 @@ export async function build(
     sandbox,
     runner,
     broker,
+    ...(local ? { local } : {}),
     scanner,
     storage,
     llm,
@@ -941,6 +957,8 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
 export interface SessionParts {
   clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubClient; config: FactoryConfig;
+  /** Local items' broker and sandbox beside a selected GitHub plugin (Plugins.localParts); SessionDeps.local. */
+  local?: LocalParts;
   close(): Promise<void>;
 }
 
@@ -961,11 +979,12 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const local = await p.localParts(broker, { github, credentials, secrets, store, scanner, clock });
   const { project, refreshed } = await projectAtStartup(loaded, { store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();
-  return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
+  return { clock, store, scanner, sandbox, broker, ...(local ? { local } : {}), auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
 }
 
 /**

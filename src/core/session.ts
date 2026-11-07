@@ -1,6 +1,7 @@
 import { checkedLines, commandText, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
+import { LOCAL_SOURCE_TYPE, type LocalParts, localPartsFor } from "./local-merge.js";
 import type { Logger } from "./log.js";
 import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
@@ -18,6 +19,8 @@ import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
 // `factory session` (design §5, 2026-11-01): the owner's own LLM session on an item, as one `interactive` run. `finish`
 // runs the worker's pre-push gates and `repo.test_command`, then pushes and opens the PR only through the broker; the
 // controller applies the end like any run outcome. The LLM runs as the owner, outside the run-folder rule (an exception).
+// A local item's session uses the local broker and sandbox (design 05-sources, Local items beside a forge): its branch
+// is committed locally, with no push and no PR, and `factory merge` merges it after review.
 
 /** The local record of an open session (under state_dir). Holds a lease token, never a credential. */
 export interface SessionFile { work_item_id: WorkItemId; run_id: RunId; token: number; branch: string; folder: { id: string; workdir: string; base_sha: string | null } }
@@ -29,11 +32,19 @@ export interface SessionIssue { source: SourceRef; title: string; body: string; 
 /** The configured repo's issue `number`, or null when there is none: `session start` creates its item. `type`: its items' source type. */
 export interface IssueLookup { type: SourceType; issue(number: number): Promise<SessionIssue | null> }
 
-/** `toolEnv`: non-secret env for git and the test command. `owner`: the lease owner, `session:<host>:<pid>`, never a worker id. */
+/**
+ * `toolEnv`: non-secret env for git and the test command. `owner`: the lease owner, `session:<host>:<pid>`, never a worker id.
+ * `local`: the broker and sandbox of local items while a forge plugin is selected (as WorkerDeps.local); absent with
+ * a forge plugin selected, a session on a local item is refused rather than pushed through the forge's broker.
+ */
 export interface SessionDeps {
   store: FactoryStore; sandbox: Sandbox; broker: ToolBroker; scanner: EgressScanner; auth: AuthProvider; clock: Clock; config: FactoryConfig; log: Logger;
   files: SessionFiles; issues: IssueLookup; toolEnv: Readonly<Record<string, string>>; owner: string; learned?: LearnedSettingsSource;
+  local?: LocalParts;
 }
+
+/** A session's broker and sandbox for its item; `local`: the item is local, so it has no PR. */
+type ItemParts = LocalParts & { local: boolean };
 
 /** `ok: false`: refused, and nothing the command would write was written (a finish records its reasons only). */
 export interface SessionResult { ok: boolean; lines: string[] }
@@ -100,12 +111,14 @@ export class Sessions {
       : { blocked_on: "none", blocked_reason: null };
     const source = spec ? "owner" : await this.specSource(it.id);
     if ((patch.allowed_paths ?? it.allowed_paths).length === 0) return refused("refused: the item has no allowed_paths, so a session could not pass the scope gate");
+    const parts = this.partsFor(it);
+    if ("refuse" in parts) return refused(`refused: ${parts.refuse}`);
 
     const branch = branchFor(it, cfg.branch_prefix);
-    const handle = await this.d.sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
+    const handle = await parts.sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
     const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: transcript?.url ?? null });
     if (!r.ok) {
-      await this.d.sandbox.destroy(handle).catch(() => undefined);
+      await parts.sandbox.destroy(handle).catch(() => undefined);
       return refused(`refused: ${await this.storeRefusal(r)}`);
     }
     const file: SessionFile = { work_item_id: it.id, run_id: r.run.id, token: r.run.lease!.token, branch, folder: { id: handle.id, workdir: handle.workdir, base_sha: handle.base_sha ?? null } };
@@ -114,6 +127,19 @@ export class Sessions {
     const lines = [`session started on ${it.id} (${it.source.id}), run ${r.run.id}, actor ${actor.id}`, `spec: ${source}${r.cancelled.length > 0 ? "; the queued triage run was cancelled" : ""}`];
     lines.push(`branch: ${branch}`, `run folder: ${handle.workdir}`, `lease until ${r.run.lease!.expires_at}; kept while this runs. Ctrl-C: the lease expires and the item is released.`);
     return { ok: true, file, lines: [...(created ? [`created work item ${it.id} for ${it.source.id}`] : []), ...lines, `finish with: factory session finish ${it.id}`] };
+  }
+
+  /**
+   * The broker and sandbox of a session on `item`, by its source type (localPartsFor): a local item's are the local
+   * ones, every other item's the selected ones. Refused: a local item while a forge plugin is selected and no local
+   * parts were given, since the selected broker would push it to the remote and open a PR.
+   */
+  private partsFor(item: WorkItem): ItemParts | { refuse: string } {
+    const local = localPartsFor(item, this.d.local);
+    if (local) return { ...local, local: true };
+    const isLocal = item.source.type === LOCAL_SOURCE_TYPE;
+    if (isLocal && this.d.config.local_only !== true) return { refuse: `${item.id} is a local item, and this session has no local broker beside the forge's; nothing was pushed` };
+    return { broker: this.d.broker, sandbox: this.d.sandbox, local: isLocal };
   }
 
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
@@ -167,7 +193,8 @@ export class Sessions {
     if (!run || !item) return refused("the session's run or item is gone from the store");
     const last = run.last_finish;
     const blocked = item.blocked_on !== "none" ? `, blocked on ${item.blocked_on}: ${item.blocked_reason ?? ""}` : "";
-    const finish = !last ? "none yet" : last.ok ? `${last.at} passed, PR #${last.pr_number}` : `${last.at} refused: ${last.reasons.join("; ")}`;
+    const passed = last?.pr_number === null ? "passed, committed locally" : `passed, PR #${last?.pr_number}`;
+    const finish = !last ? "none yet" : last.ok ? `${last.at} ${passed}` : `${last.at} refused: ${last.reasons.join("; ")}`;
     return { ok: true, lines: [
       `item: ${item.id} (${item.source.id}) ${item.stage}${blocked}`, `run: ${run.id} ${run.status}, actor ${run.actor_id ?? "unknown"}`,
       `lease: ${run.lease ? `expires ${run.lease.expires_at}` : "none (the session has ended)"}`, `branch: ${f.file.branch}; run folder: ${f.file.folder.workdir}`,
@@ -202,17 +229,21 @@ export class Sessions {
   /**
    * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
-   * pass: push and PR through the broker only, then the run completes as succeeded and the controller moves the item
-   * to REVIEW with a review run. Safe to run again after a failed push: the broker reuses the branch's open PR.
+   * pass: push and PR through the broker only (a local item: the local broker commits its local branch, and no PR is
+   * opened), then the run completes as succeeded and the controller moves the item to REVIEW with a review run. Safe
+   * to run again after a failed push: the broker reuses the branch's open PR.
    */
   async finish(o: { id?: WorkItemId; tokens?: number; signal?: AbortSignal }): Promise<SessionResult> {
     const open = await this.tokens(o);
     if ("refuse" in open) return refused(open.refuse);
     const { file, item } = open;
+    const parts = this.partsFor(item);
+    if ("refuse" in parts) return refused(`refused: ${parts.refuse}`);
+    const { sandbox, broker } = parts;
     const stored: SandboxHandle = { id: file.folder.id, workdir: file.folder.workdir };
-    const handle = this.d.sandbox.reattach ? await this.d.sandbox.reattach(file.folder.id) : stored;
+    const handle = sandbox.reattach ? await sandbox.reattach(file.folder.id) : stored;
     if (!handle) return refused(`refused: the run folder ${file.folder.workdir} is gone`);
-    const git = (args: string[]) => this.git(handle, args);
+    const git = (args: string[]) => this.git(sandbox, handle, args);
     const cfg = this.d.config;
     const reasons: string[] = [];
     let paths: string[] = [];
@@ -238,32 +269,38 @@ export class Sessions {
     const test = commandText(cfg.repo.test_command);
     if (reasons.length > 0) return this.refuseFinish(file, reasons, [`tests: \`${test}\` not run (an earlier gate failed)`]);
     const signal = o.signal ?? new AbortController().signal;
-    const checked = await runChecks({ sandbox: this.d.sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
+    const checked = await runChecks({ sandbox, handle, commands: [cfg.repo.test_command], env: { ...this.d.toolEnv }, timeout_ms: cfg.run_timeout_ms, signal, redact: [] });
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
     if (checked.failed) return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`]);
 
     // Every gate passed: push and PR through the broker, which fences on this run's lease and scans what it sends.
     const ctx: ToolCallContext = { run_id: file.run_id, work_item_id: item.id, lease_token: file.token };
     const head = (await git(["rev-parse", "HEAD"])).trim();
-    const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
+    const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
     if (!pushed.ok) return this.refuseFinish(file, [`push: ${pushed.error_code}: ${pushed.message}`.slice(0, 500)]);
     // The factory's own push, so the next poll does not take it for a person's (design 2026-11-01).
     if (!(await this.d.store.recordPushedHead(file.run_id, file.token, head)).ok) return refused("refused: the session ended while pushing");
     const lines = checkedLines(checked.results, { fixed: false, skipped: null });
-    const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
-    const pr = await this.d.broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
-    if (!pr.ok) return this.refuseFinish(file, [`pr: ${pr.error_code}: ${pr.message}`.slice(0, 500)]);
-    const opened = pr.content as { number?: unknown; url?: unknown };
-    const number = Number(opened.number);
-    // The forge's PR link, stored as the item's change_url (design 02).
-    const pr_url = typeof opened.url === "string" ? opened.url : null;
+    let pr: { number: number; url: string | null } | null = null;
+    // A local item has no PR: its local branch is the review's input and `factory merge` its merge.
+    if (!parts.local) {
+      const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
+      const opened = await broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
+      if (!opened.ok) return this.refuseFinish(file, [`pr: ${opened.error_code}: ${opened.message}`.slice(0, 500)]);
+      const content = opened.content as { number?: unknown; url?: unknown };
+      // The forge's PR link, stored as the item's change_url (design 02).
+      pr = { number: Number(content.number), url: typeof content.url === "string" ? content.url : null };
+    }
+    const number = pr?.number ?? null;
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: number } });
-    const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data: { pr_number: number, pr_url, commits, files: paths.slice(0, MAX_PR_FILES) } });
-    if (!done.ok) return refused("refused: the session ended before it could complete; the PR is open");
+    const data = { ...(pr ? { pr_number: pr.number, pr_url: pr.url } : {}), commits, files: paths.slice(0, MAX_PR_FILES) };
+    const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data });
+    if (!done.ok) return refused(`refused: the session ended before it could complete; ${pr ? "the PR is open" : "the local branch is committed"}`);
     await this.d.files.remove(item.id);
-    await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on the forge now
+    await sandbox.destroy(handle).catch(() => undefined); // everything in it is on the branch now
     this.d.log.info("session finished", { work_item_id: item.id, run_id: file.run_id, pr_number: number });
-    return { ok: true, lines: [...lines, `pushed ${file.branch} and opened PR #${number}; the item goes to review next`] };
+    const end = pr ? `pushed ${file.branch} and opened PR #${pr.number}` : `committed ${file.branch} as a local branch (no push, no PR)`;
+    return { ok: true, lines: [...lines, `${end}; the item goes to review next`] };
   }
 
   /** The run fails `abandoned`; the controller releases the item. The remote branch and the run folder are kept. */
@@ -310,8 +347,8 @@ export class Sessions {
   }
 
   /** Trusted git in the run folder: the env ranks above the folder's own git config, as for the worker's calls. */
-  private async git(handle: SandboxHandle, args: string[]): Promise<string> {
-    const r = await this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
+  private async git(sandbox: Sandbox, handle: SandboxHandle, args: string[]): Promise<string> {
+    const r = await sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV } });
     if (r.exit_code !== 0) throw new GitError(`git ${args[0] ?? ""}: ${r.stderr.trim()}`);
     return r.stdout;
   }

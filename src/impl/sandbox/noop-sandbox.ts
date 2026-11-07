@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { type CheckResult, runChecks } from "../../core/checks.js";
 import type { LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
@@ -192,10 +193,12 @@ export class NoOpSandbox implements Sandbox {
 
   /**
    * The local merge (design 05-sources, Local startup): `branch` into the local `base_ref` of the factory repo,
-   * with no checkout at all. merge-tree writes the merged tree and commit-tree the merge commit, both only objects;
-   * then `refs/heads/<base_ref>` moves conditionally on the base that was merged (another merge in between is
-   * refused, nothing lost). No push, no hook, no worktree, no index: the owner's checkout keeps its HEAD and status.
-   * A base branch checked out in any worktree is refused: moving it would change that checkout's status.
+   * with no checkout of the live repo. merge-tree writes the merged tree and commit-tree the merge commit, both only
+   * objects; `checks` run on that commit in a temporary worktree (checkMerge), and a failure moves nothing; then
+   * `refs/heads/<base_ref>` moves conditionally on the base that was merged. A move another merge of the same branch
+   * won is that merge (`already`); one another branch's merge won is refused, nothing lost. No push, no hook: the
+   * owner's checkout keeps its HEAD, index and status. A base branch checked out in any worktree is refused: moving
+   * it would change that checkout's status.
    */
   async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
     for (const b of [spec.base_ref, spec.branch]) {
@@ -221,9 +224,39 @@ export class NoOpSandbox implements Sandbox {
     const who = spec.identity;
     const identity = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
     const sha = (await this.git(spec.repo, ["commit-tree", tree.tree, "-p", base, "-p", head, "-m", spec.message], true, identity)).stdout.trim();
+    const failed = spec.checks && spec.checks.commands.length > 0 ? await this.checkMerge(spec.repo, sha, spec.checks) : null;
+    if (failed) return { merged: false, failed };
     const moved = await this.git(spec.repo, ["update-ref", "-m", spec.message.split("\n")[0]!, `refs/heads/${spec.base_ref}`, sha, base], false);
-    if (moved.exit_code !== 0) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
-    return { merged: true, sha, already: false };
+    if (moved.exit_code === 0) return { merged: true, sha, already: false };
+    const now = await this.localCommit(spec.repo, spec.base_ref);
+    if (now !== null && (await this.git(spec.repo, ["merge-base", "--is-ancestor", head, now], false)).exit_code === 0) {
+      return { merged: true, sha: now, already: true };
+    }
+    return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
+  }
+
+  /**
+   * The local merge's checks on the merge commit `sha`, in a temporary worktree: a detached `git worktree add` under
+   * the worktrees dir (beside the run folders, never the live checkout), with the empty hooks folder so no checkout
+   * hook runs, removed again whatever the outcome. Run as the worker's gates run, in order with the base env; the
+   * first failing command, or null when all pass.
+   */
+  private async checkMerge(repo: string, sha: string, checks: NonNullable<LocalMergeSpec["checks"]>): Promise<CheckResult | null> {
+    const hooks = await this.emptyHooks();
+    const id = `merge_${randomUUID().slice(0, 8)}`;
+    const workdir = join(this.worktreesDir, id);
+    await this.git(repo, ["-c", `core.hooksPath=${hooks}`, "worktree", "add", "--quiet", "--detach", workdir, sha]);
+    try {
+      const round = await runChecks({
+        sandbox: this, handle: { id, workdir }, commands: checks.commands, env: baseEnv(), timeout_ms: checks.timeout_ms,
+        signal: new AbortController().signal, redact: [],
+      });
+      return round.failed;
+    } finally {
+      await this.git(repo, ["worktree", "remove", "--force", workdir], false);
+      await rm(workdir, { recursive: true, force: true });
+      await this.git(repo, ["worktree", "prune"], false);
+    }
   }
 
   /** The commit of the factory repo's local branch `branch`, or null when there is none. */
