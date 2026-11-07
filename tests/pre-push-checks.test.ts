@@ -312,6 +312,58 @@ describe("implement run: checks before push, one fix step", { timeout: 30_000 },
     expect(comments[0]!.number).toBe(5);
   });
 
+  it("the checks_failed detail names the failing vitest tests as file > name, at most 10; the output tail keeps the FAIL lines", async () => {
+    const names = Array.from({ length: 12 }, (_, i) => `tests/t${i + 1}.test.ts > case ${i + 1}`);
+    const fixture = [
+      " RUN  v4.1.12 /w",
+      "",
+      " ❯ tests/t1.test.ts (2 tests | 1 failed) 4ms",
+      "",
+      "⎯⎯⎯⎯⎯⎯⎯ Failed Tests 12 ⎯⎯⎯⎯⎯⎯⎯",
+      "",
+      ...names.flatMap((n) => [` FAIL  ${n}`, "AssertionError: expected 1 to be 2", ""]),
+      " Test Files  12 failed (12)",
+      "      Tests  12 failed | 1 passed (13)",
+    ].join("\n");
+    const VITEST = ["sh", "-c", "if [ -f src/vitest.txt ]; then cat src/vitest.txt; exit 1; fi", "vitest"];
+    const f = await setup({
+      checks: [VITEST],
+      implement: (wd) => commitFile(wd, "src/vitest.txt", `${fixture}\n`, "add failing tests"),
+      fix: () => undefined,
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
+    if (run.outcome?.status !== "failed") throw new Error("expected a failed run");
+    const detail = run.outcome.detail;
+    expect(detail).toContain(`\`${VITEST.join(" ")}\` exited 1 after one fix step`);
+    expect(detail).toContain("failing tests: ");
+    let at = -1;
+    for (const n of names.slice(0, 10)) {
+      const i = detail.indexOf(n);
+      expect(i, n).toBeGreaterThan(at);
+      at = i;
+    }
+    for (const n of names.slice(10)) expect(detail).not.toContain(n);
+    // The output tail is kept as before, with vitest's FAIL summary lines.
+    expect(run.outcome.output_tail).toContain(` FAIL  ${names[11]}`);
+    expect(run.outcome.output_tail).toContain("Tests  12 failed | 1 passed (13)");
+  });
+
+  it("a failing test name the egress scan flags makes the outcome egress_blocked, as for any other detail", async () => {
+    const token = `ghp_${"C".repeat(36)}`;
+    const f = await setup({
+      checks: [["sh", "-c", "if [ -f src/leak.txt ]; then cat src/leak.txt; exit 1; fi", "leaky"]],
+      implement: (wd) => commitFile(wd, "src/leak.txt", ` FAIL  tests/leak.test.ts > reads ${token}\n`, "add a fault"),
+      fix: () => undefined,
+      scanner: new PatternEgressScanner(async () => []),
+    });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "egress_blocked" });
+    expect(JSON.stringify(run.outcome)).not.toContain(token);
+  });
+
   it("the failed run keeps its commits on a wip branch, and the retry starts from them", async () => {
     let fixes = 0;
     const f = await setup({

@@ -26,7 +26,7 @@ import {
   failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
-import { stripAnsi } from "./output-summary.js";
+import { failingTests, stripAnsi } from "./output-summary.js";
 import {
   MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
 } from "./mechanical.js";
@@ -251,6 +251,9 @@ const PAUSE_NEXT_STEPS = "continue the work item from the WIP commit; finished s
 
 /** Transcript scan rules that fail the run: a real secret value, or the canary a test agent was told to find (G6). */
 const TRANSCRIPT_FAIL_RULES: readonly string[] = ["known_secret", "factory_canary"];
+
+/** The most failing test names a `checks_failed` detail lists. */
+const MAX_FAILING_TESTS = 10;
 
 function tail(s: string): string {
   const clean = stripAnsi(s);
@@ -1425,7 +1428,10 @@ export class Worker {
       marker: `<!-- factory:checks:${run.id} -->`,
     });
     if (!posted.ok) this.d.log.warn("checks failed comment failed", { run_id: run.id, error_code: posted.error_code });
-    throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})`.slice(0, 500), false, {
+    // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
+    const tests = failingTests(second.tail, MAX_FAILING_TESTS);
+    const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
+    throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
       output_tail: second.tail,
     });
   }
