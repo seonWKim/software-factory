@@ -7,6 +7,7 @@ import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
+import { Sessions } from "../src/core/session.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
@@ -19,9 +20,10 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef,
+  mallory, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
-import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // A local task end to end (issue #200): filed and approved from the CLI, read by the `local` source, applied by
 // the controller, built, reviewed, merged. Since issue #318 local commands are authorized by the `local` auth
@@ -322,5 +324,47 @@ describe("local task flow", () => {
     expect(await f.refusals(id)).toHaveLength(1);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     expect(await f.store.listLocalUsers()).toEqual([]);
+  });
+});
+
+describe("factory session on a local item, with the GitHub broker selected", () => {
+  async function sessions(o: { local: boolean }) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const sandbox = new FakeSandbox();
+    sandbox.changedFiles = ["src/a/x.ts"];
+    const ghBroker = new FakeBroker();
+    // The local broker's one tool: it commits the local branch and has no PR tool.
+    const localBroker = new FakeBroker();
+    localBroker.tools = localBroker.tools.filter((t) => t.name === "github.push_branch");
+    const s = new Sessions({
+      store, sandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent, files: new MemorySessionFiles(),
+      issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1", ...(o.local ? { local: { broker: localBroker, sandbox } } : {}),
+    });
+    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const { item } = await store.createWorkItem({ ...issue(1), source: { type: "local", id: "local:1", link: "" } }, system);
+    const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { stage: "RUNNING", allowed_paths: ["src/a/"], tier: 2, done_criteria: ["x"] } });
+    expect(r.ok).toBe(true);
+    return { store, s, ghBroker, localBroker, controller, id: item.id };
+  }
+
+  it("finish commits the local branch through the local broker, opens no PR, and the item goes to review with no change_ref", async () => {
+    const h = await sessions({ local: true });
+    expect((await h.s.start({ target: h.id, person: alice })).ok).toBe(true);
+    const done = await h.s.finish({});
+    expect(done.ok).toBe(true);
+    expect(done.lines.at(-1)).toContain("no push, no PR");
+    expect(h.localBroker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
+    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
+    await h.controller.tickRuns();
+    expect(await h.store.getWorkItem(h.id)).toMatchObject({ stage: "REVIEW", change_ref: null });
+  });
+
+  it("with no local route given, a local item's session is refused before any broker call", async () => {
+    const h = await sessions({ local: false });
+    const r = await h.s.start({ target: h.id, person: alice });
+    expect(r.ok).toBe(false);
+    expect(r.lines.join("\n")).toContain("only through the local broker");
+    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
   });
 });

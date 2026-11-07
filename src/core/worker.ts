@@ -118,7 +118,7 @@ export interface WorkerDeps {
    */
   host?: string;
   /**
-   * The local broker and a local-mode sandbox, for local items when `broker` and `sandbox` serve GitHub (design
+   * The local broker and a local-mode sandbox, for local items when `broker` and `sandbox` serve the forge (design
    * 05-sources, Local items). Compose always sets it. Absent: `broker` and `sandbox` serve every item.
    */
   local?: LocalRoute;

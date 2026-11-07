@@ -63,7 +63,7 @@ describe.each(BACKENDS)("local merge on a shared store: $name", ({ make }) => {
       store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
       sandbox: new NoOpSandbox(join(root, `wt${n}`), undefined, undefined, { local: true }), repeated_failure_rule: false,
     });
-    const who = { provider: "local", subject: "me@example.com" };
+    const who = { provider: "local" as const, subject: "me@example.com" };
     await Promise.all([replica(1).mergeLocal(id, who, "k1"), replica(2).mergeLocal(id, who, "k2")]);
 
     const main = git(repo, "rev-parse", "main");
