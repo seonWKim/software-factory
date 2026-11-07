@@ -609,4 +609,21 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;
   `,
+  // 35: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
+  // `change_url`: https://<label>/pull/<n> for a GitHub project key whose label cursor exists, else NULL (the same
+  // string as prUrl in src/main.ts). Backfilled from pr_number; the store writes them with pr_number from now on.
+  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 35.
+  `
+  ALTER TABLE work_items ADD COLUMN change_ref TEXT;
+  ALTER TABLE work_items ADD COLUMN change_url TEXT;
+  ALTER TABLE unreviewed_merges ADD COLUMN change_ref TEXT;
+  UPDATE work_items SET change_ref = CAST(pr_number AS TEXT) WHERE pr_number IS NOT NULL AND change_ref IS NULL;
+  UPDATE work_items SET change_url = 'https://' || (SELECT c.value FROM cursors c WHERE c.name = 'project_label:' || work_items.project)
+    || '/pull/' || pr_number
+  WHERE pr_number IS NOT NULL AND change_url IS NULL AND substr(project, 1, 7) = 'github:'
+    AND EXISTS (SELECT 1 FROM cursors c WHERE c.name = 'project_label:' || work_items.project);
+  UPDATE unreviewed_merges SET change_ref = CAST(pr_number AS TEXT) WHERE change_ref IS NULL;
+  CREATE INDEX IF NOT EXISTS work_items_change ON work_items (project, change_ref);
+  CREATE UNIQUE INDEX IF NOT EXISTS unreviewed_merges_change ON unreviewed_merges (project, change_ref);
+  `,
 ];

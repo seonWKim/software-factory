@@ -282,4 +282,6 @@ export interface Prompts {
   review: string;
   /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
   resolve?: string;
+  /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
+  improve?: string;
 }

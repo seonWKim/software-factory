@@ -4,7 +4,7 @@ import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable,
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
-import type { Logger } from "./log.js";
+import type { LogFields, Logger } from "./log.js";
 import {
   BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText,
   failingTestFiles, redact, runChecks, toolchainMissing, withTestFiles,
@@ -24,7 +24,7 @@ import {
 } from "./outputs.js";
 import {
   AGENT_STALLED, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
-  failureClass, isCovered, wipBranchFor,
+  NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
@@ -45,6 +45,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
+import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
@@ -65,6 +66,11 @@ export interface WorkerDeps {
   broker: ToolBroker;
   scanner: EgressScanner;
   storage: SharedStorage;
+  /**
+   * Plain completions with no tools: the improve run's one draft call per failure group (design §7). Absent: the
+   * improve run asks no model and its groups carry no draft. Compose always passes the `plugins.llm` chain.
+   */
+  llm?: LLMProvider;
   clock: Clock;
   config: FactoryConfig;
   prompts: Prompts;
@@ -223,6 +229,9 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: "0",
 };
 
+/** The most paths one live-checkout report names; `count` gives the total. */
+const LIVE_REPORT_PATHS = 20;
+
 const TRUSTED_GIT_KEYS = new Set([
   "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
   "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
@@ -249,6 +258,9 @@ class RunFailure extends Error {
     super(detail);
   }
 }
+
+/** The paused_by of a run the network pause put back in the queue: the system, not a person. */
+export const NETWORK_PAUSED_BY = "system:network";
 
 /**
  * `workers pause` stopped the run's agent (design §5 Pause). Not a failure: the run goes back to `queued` with no
@@ -469,10 +481,11 @@ export class Worker {
     } catch (err) {
       if (err instanceof RunPaused) paused = err;
       else {
-        outcome =
-          err instanceof RunFailure
-            ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra, usage }
-            : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true, usage };
+        // A DNS or connect error from git, the sandbox or the forge becomes network_unavailable (design §5 Restarts).
+        const failed = err instanceof RunFailure
+          ? { ...classifyNetwork(err.code, err.message), infra: err.infra, extra: err.extra }
+          : { ...classifyNetwork("exception", err instanceof Error ? err.message : ""), infra: true, extra: {} };
+        outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
       this.meters.delete(run);
@@ -498,6 +511,10 @@ export class Worker {
     const scan = await this.d.scanner.scan("run_outcome", JSON.stringify(outcome));
     if (!scan.clean) {
       outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false, usage };
+    }
+    if (outcome.status === "failed" && outcome.error_code === NETWORK_UNAVAILABLE) {
+      await this.requeueForNetwork(run, token, outcome.detail, log);
+      return;
     }
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
@@ -566,6 +583,23 @@ export class Worker {
     };
     if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", { ...log, ...result });
     else this.d.log.info("run done", { ...log, status: outcome.status, ...result });
+  }
+
+  /**
+   * A run that could not reach its host (design §5 Restarts, network pause): not a failure. Every claim pauses
+   * (`network`) before the run goes back to the queue, first probe after 30 s; `started` comes from the store's
+   * conditional write, so one worker logs the warning. The run is requeued with no outcome and its attempt
+   * unchanged (pauseRun with nothing to resume), so no limit, retry or block ever sees it. Only the host is logged.
+   */
+  private async requeueForNetwork(run: Run, token: number, detail: string, log: LogFields): Promise<void> {
+    const host = detail.replace(/^could not reach /, "");
+    const pause = await this.d.store.pauseClaims(this.after(NETWORK_PROBE_MS.first), NETWORK);
+    if (pause.started) {
+      this.d.log.warn(`network unavailable: all runs paused, first probe at ${pause.resume_at}`, { ...log, host, resume_at: pause.resume_at });
+    }
+    const r = await this.d.store.pauseRun(run.id, token, { paused_by: NETWORK_PAUSED_BY, session_id: null, resume: null });
+    if (r.ok) this.d.log.info("run requeued: network unavailable", { ...log, host });
+    else this.d.log.warn("lease lost before the run was requeued; nothing stored", log);
   }
 
   /**
@@ -668,7 +702,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
-    if (run.kind === "improve") return this.improve(run, item);
+    if (run.kind === "improve") return this.improve(run, item, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
@@ -694,9 +728,28 @@ export class Worker {
     }
   }
 
-  /** The improve run (design §7): no sandbox, no agent, no model. Stores one report; the outcome names it. */
-  private async improve(run: Run, item: WorkItem): Promise<Record<string, unknown>> {
-    const report = await runImprove(this.d.store, run, item);
+  /**
+   * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
+   * counts toward the run's. Stores one report; the outcome names it.
+   */
+  private async improve(run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const { llm } = this.d;
+    const meter = this.meters.get(run);
+    const metered: LLMProvider | undefined = llm && {
+      complete: async (req) => {
+        const res = await llm.complete(req);
+        if (meter) addUsage(meter, res.usage);
+        return res;
+      },
+    };
+    const report = await runImprove(
+      {
+        store: this.d.store, storage: this.d.storage, scanner: this.d.scanner, signal,
+        ...(metered ? { llm: metered } : {}), ...(this.d.prompts.improve !== undefined ? { prompt: this.d.prompts.improve } : {}),
+      },
+      run,
+      item,
+    );
     return { report_id: report.id, groups: report.groups.length, patterns: report.patterns.length };
   }
 
@@ -2295,6 +2348,7 @@ export class Worker {
     }
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
+    const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
       run_id: run.id,
       work_item_id: item.id,
@@ -2315,6 +2369,7 @@ export class Worker {
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
+    await this.reportLiveCheckout(run, handle, liveBefore, step);
     // One line per time a gate hook sent the agent back (design §4, issue #302); the worker's gates still decide.
     for (const b of result.gate_blocks ?? []) {
       if (b.hook === "stop" && s) s.stop_blocks = (s.stop_blocks ?? 0) + 1;
@@ -2357,11 +2412,46 @@ export class Worker {
       throw new RunFailure(PROVIDER_SETUP, clean ? said : "the provider's message is withheld: the egress scan flagged it", false,
         clean ? { output_tail: tail(result.transcript) } : {});
     }
+    // A model request that could not reach its host (the runner's `network_unavailable: ` error): the network pause.
+    if (result.status === "failed" && result.error?.startsWith(`${NETWORK_UNAVAILABLE}: `)) {
+      throw new RunFailure(NETWORK_UNAVAILABLE, result.error.slice(NETWORK_UNAVAILABLE.length + 2), true);
+    }
     // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
     }
     return result;
+  }
+
+  /**
+   * The untracked, not ignored files in the live checkout (`repo.path`, the owner's checkout), from a trusted git
+   * call through the sandbox. Null when git cannot list them (a sandbox that cannot see the host checkout): then
+   * the check is skipped. Best effort, never a failure (design §5 Sandbox).
+   */
+  private async liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
+    const r = await this.d.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
+      env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
+    }).catch(() => null);
+    return r?.exit_code === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
+  }
+
+  /**
+   * After an agent step: the files that appeared in the live checkout while it ran (untracked files there before
+   * the step are not reported) are logged with the run id. The run goes on: the file may be the owner's or
+   * another run's, and the harness and tool guards are what stop a write (design §5 Sandbox).
+   */
+  private async reportLiveCheckout(run: Run, handle: SandboxHandle, before: Set<string> | null, step: string | undefined): Promise<void> {
+    if (!before) return;
+    const after = await this.liveUntracked(handle);
+    const added = [...(after ?? [])].filter((p) => !before.has(p)).sort();
+    if (added.length === 0) return;
+    this.d.log.warn("files appeared in the live checkout during an agent step", {
+      run_id: run.id,
+      step: step ?? "",
+      checkout: this.cfg.repo.path,
+      paths: added.slice(0, LIVE_REPORT_PATHS).join(","),
+      count: added.length,
+    });
   }
 
   /**

@@ -401,9 +401,10 @@ export interface FactoryStore {
    * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first by kind
    * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
-   * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
-   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued; while the
-   * `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and resolve claim).
+   * skipped, never blocking the runs after it. Returns null while the `rate_limit`, `model_stall` or `network`
+   * claim pause is in effect; while the `forge_auth` pause is, implement-type runs (implement, update) are skipped
+   * and stay queued; while the `github_rate_limit` pause is, implement-type and review runs are skipped and stay
+   * queued (triage and resolve claim).
    * Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
    * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not
    * satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an
@@ -436,8 +437,10 @@ export interface FactoryStore {
    * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
    * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
    * (it is not finished). lease_lost when the run is no longer ours. Closes the claim's attempt record as `paused`.
+   * `resume` null: nothing to reattach (the network pause requeues a run whose folder is gone), the next claim
+   * starts it afresh, still with `attempt` unchanged.
    */
-  pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume }): Promise<LeaseResult>;
+  pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume | null }): Promise<LeaseResult>;
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
@@ -446,24 +449,31 @@ export interface FactoryStore {
    * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
    * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
    * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
-   * The `rate_limit` result has no `started`.
+   * The `rate_limit` result has no `started`. The probe pauses (`model_stall`, `network`) stay in effect past
+   * their time until a probe passes; `started` also writes their since row.
    */
   pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }>;
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
-   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
-   * `model_answered` row and its probe time move to the earlier of the probe time and now, as an answered probe
-   * would, so `model_stall_since` reads null too and a stall right after starts a new pause.
-   * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
-   * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
+   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. A probe pause (`model_stall`,
+   * `network`) in effect: its row and its answered row (`model_answered`, `network_answered`) move to the earlier
+   * of the probe time and now, as a passing probe does, so its since row reads null too and a failure right after
+   * starts a new pause. `ended` is true when a pause was in effect. A pause not in effect (none, already over, a
+   * second call) changes no row. The since and answered rows are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
   /**
-   * Takes the probe of a due `model_stall` pause (design §5 Restarts): while the pause is in effect with probe
-   * time `due`, moves it to `next` and returns `taken`. Conditional, so among replicas that read the same due
-   * time exactly one probes it; a moved, ended or missing pause changes no row and is never started again.
+   * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time
+   * `due`, moves it to `next` with one conditional write under the claim lock, true for the one caller whose write
+   * landed. Only that replica probes; every other one sees false (another took it, the time moved, or the pause
+   * ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
+   */
+  claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
+  /**
+   * @deprecated claimProbe("model_stall", due, next) replaces it; no source file calls it. Removal plan in design
+   * §5 Restarts (docs/design/05-restarts.md): move the store contract tests to claimProbe, then delete it.
    */
   takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
@@ -572,6 +582,8 @@ export interface FactoryStore {
   conflictCounts(project: string): Promise<Map<string, number>>;
   /** The item's claim decisions, oldest first. Read-only. */
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>;
+  /** The latest claim decision of each of the items that has one, in one read (the Items page, one read for every row). Read-only. */
+  listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>>;
   /**
    * `/approve` on a held run: bumps the version and writes a state change (reason `coordination_approved`, the
    * approver as actor, detail = run id, holder, cost, threshold) and sets the decision's `approved_by`, in one
