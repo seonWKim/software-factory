@@ -60,7 +60,7 @@ graph TB
 | Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
 |---|---|---|
 | `FactoryStore` | `SqlFactoryStore` (all store logic, once) over a `SqlDriver`: `MysqlDriver` (default, any number of nodes), `SqliteDriver` (one machine, tests) | `MysqlDriver` on managed MySQL (RDS / Cloud SQL) |
-| `Sandbox` | `NoOpSandbox`: git worktree on the host | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
+| `Sandbox` | `NoOpSandbox`: a clone per run on the host (with no GitHub plugin: the local base branch, no origin fetch) | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
 | `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
@@ -68,7 +68,7 @@ graph TB
 | `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
 | `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
-| `ToolBroker` (G2) | GitHub REST + `git push` in the worker process | same, per tool |
+| `ToolBroker` (G2) | GitHub REST + `git push` in the worker process; `local`: the run's branch as a local branch of the factory repo, no remote | same, per tool |
 | `EgressScanner` (G5) | Known secret values + patterns | + a managed secret scanner |
 | `Clock` | `SystemClock` (tests: `FakeClock`) | `SystemClock` |
 
@@ -151,6 +151,34 @@ sequenceDiagram
 ```
 
 The controller never runs an agent and the worker never decides a transition. They meet only in the store: the controller **enqueues runs**, workers **claim runs**.
+
+**With no GitHub plugin selected** (`docs/design/05-sources.md`, Local startup), the same flow runs on the machine alone: no GitHub credential is read, no repository lookup or origin fetch is made, and no PR exists.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant OP as Operator (CLI)
+  participant C as Controller
+  participant ST as FactoryStore
+  participant W as Worker
+  participant R as Factory repo (local branches)
+
+  OP->>C: factory dev
+  C->>ST: connect, migrate, store the local project key (local:local:<hash>)
+  OP->>ST: factory task create (local item, triage queued)
+  W->>R: Sandbox.create from refs/heads/<base> (no fetch)
+  W->>ST: triage done
+  C->>ST: READY, spec in the item thread
+  OP->>ST: factory approve <id> (command inbox)
+  C->>ST: RUNNING, enqueue implement
+  W->>R: local broker: run branch → refs/heads/factory/<id> (no remote)
+  C->>ST: REVIEW, no pr_number, enqueue review
+  W->>R: review reads the local branch diff
+  C->>ST: merge_pending (no PR checks)
+  OP->>ST: factory merge <id> (approver role)
+  C->>R: Sandbox: merge commit, move refs/heads/<base> (no push, no checkout)
+  C->>ST: CLOSED, completed, merge_sha
+```
 
 ## 4. Horizontal scalability
 
