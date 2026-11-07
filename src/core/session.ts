@@ -7,7 +7,7 @@ import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, bran
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { TRUSTED_GIT_ENV, prTitle } from "./worker.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor } from "./worker.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -16,7 +16,8 @@ import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
 
 // `factory session` (design §5, 2026-11-01): the owner's own LLM session on an item, as one `interactive` run. `finish`
-// runs the worker's pre-push gates and `repo.test_command`, then pushes and opens the PR only through the broker; the
+// runs the worker's pre-push gates and `repo.test_command`, then pushes and opens the PR only through the broker (a local
+// item: commits its local branch through the local broker, no PR, as the worker does); the
 // controller applies the end like any run outcome. The LLM runs as the owner, outside the run-folder rule (an exception).
 
 /** The local record of an open session (under state_dir). Holds a lease token, never a credential. */
@@ -29,10 +30,13 @@ export interface SessionIssue { source: SourceRef; title: string; body: string; 
 /** The configured repo's issue `number`, or null when there is none: `session start` creates its item. `type`: its items' source type. */
 export interface IssueLookup { type: SourceType; issue(number: number): Promise<SessionIssue | null> }
 
-/** `toolEnv`: non-secret env for git and the test command. `owner`: the lease owner, `session:<host>:<pid>`, never a worker id. */
+/**
+ * `toolEnv`: non-secret env for git and the test command. `owner`: the lease owner, `session:<host>:<pid>`, never a worker id.
+ * `local`: the local broker and sandbox for local items, as the worker's (routeFor); absent: `broker` and `sandbox` serve every item.
+ */
 export interface SessionDeps {
   store: FactoryStore; sandbox: Sandbox; broker: ToolBroker; scanner: EgressScanner; auth: AuthProvider; clock: Clock; config: FactoryConfig; log: Logger;
-  files: SessionFiles; issues: IssueLookup; toolEnv: Readonly<Record<string, string>>; owner: string; learned?: LearnedSettingsSource;
+  files: SessionFiles; issues: IssueLookup; toolEnv: Readonly<Record<string, string>>; owner: string; learned?: LearnedSettingsSource; local?: LocalRoute;
 }
 
 /** `ok: false`: refused, and nothing the command would write was written (a finish records its reasons only). */
@@ -41,6 +45,7 @@ export interface SessionResult { ok: boolean; lines: string[] }
 export const SESSION_STARTED = "session_started";
 const MAX_PR_FILES = 500;
 const refused = (...lines: string[]): SessionResult => ({ ok: false, lines });
+const LOCAL_NEEDS_LOCAL_BROKER = "a local item is committed only through the local broker, and this session was given only the forge's; nothing goes to the forge for it";
 
 export class Sessions {
   constructor(private readonly d: SessionDeps) {}
@@ -102,7 +107,7 @@ export class Sessions {
     if ((patch.allowed_paths ?? it.allowed_paths).length === 0) return refused("refused: the item has no allowed_paths, so a session could not pass the scope gate");
 
     const branch = branchFor(it, cfg.branch_prefix);
-    const handle = await this.d.sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
+    const handle = await routeFor(this.d, it).sandbox.create({ repo: cfg.repo.path, branch, base_ref: cfg.repo.base_branch });
     const r = await this.d.store.startSession({ id: it.id, expected_version: it.version, actor, patch, reason: SESSION_STARTED, detail: { spec_source: source }, owner: this.d.owner, lease_ms: cfg.lease_ms, transcript_url: transcript?.url ?? null });
     if (!r.ok) {
       await this.d.sandbox.destroy(handle).catch(() => undefined);
@@ -118,6 +123,7 @@ export class Sessions {
 
   private async startRefusal(item: WorkItem, withSpec: boolean): Promise<string | null> {
     const { stage, blocked_on: on } = item;
+    if (this.forgeForLocal(item)) return LOCAL_NEEDS_LOCAL_BROKER;
     if (stage === "CLOSED") return `the item is closed (${item.close_reason ?? "no reason"})`;
     if (stage === "REVIEW") return `the item is in review${item.change_ref !== null ? ` (PR #${item.change_ref})` : ""}; send changes as \`/revise <feedback>\` on the PR`;
     if (stage === "READY") return "the item waits for its spec to be approved: reply `/approve` on the issue first (or `/revise` to change the spec)";
@@ -202,8 +208,9 @@ export class Sessions {
   /**
    * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
-   * pass: push and PR through the broker only, then the run completes as succeeded and the controller moves the item
-   * to REVIEW with a review run. Safe to run again after a failed push: the broker reuses the branch's open PR.
+   * pass: push and PR through the item's broker only (a local item: its local branch, no PR), then the run completes
+   * as succeeded and the controller moves the item to REVIEW with a review run. Safe to run again after a failed
+   * push: the broker reuses the branch's open PR.
    */
   async finish(o: { id?: WorkItemId; tokens?: number; signal?: AbortSignal }): Promise<SessionResult> {
     const open = await this.tokens(o);
@@ -242,28 +249,36 @@ export class Sessions {
     if (o.signal?.aborted) return this.refuseFinish(file, ["tests: stopped before they finished"]);
     if (checked.failed) return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`]);
 
+    if (this.forgeForLocal(item)) return this.refuseFinish(file, [LOCAL_NEEDS_LOCAL_BROKER]);
     // Every gate passed: push and PR through the broker, which fences on this run's lease and scans what it sends.
     const ctx: ToolCallContext = { run_id: file.run_id, work_item_id: item.id, lease_token: file.token };
     const head = (await git(["rev-parse", "HEAD"])).trim();
-    const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
+    const { broker } = routeFor(this.d, item);
+    const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
     if (!pushed.ok) return this.refuseFinish(file, [`push: ${pushed.error_code}: ${pushed.message}`.slice(0, 500)]);
     // The factory's own push, so the next poll does not take it for a person's (design 2026-11-01).
     if (!(await this.d.store.recordPushedHead(file.run_id, file.token, head)).ok) return refused("refused: the session ended while pushing");
     const lines = checkedLines(checked.results, { fixed: false, skipped: null });
     const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
-    const pr = await this.d.broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
-    if (!pr.ok) return this.refuseFinish(file, [`pr: ${pr.error_code}: ${pr.message}`.slice(0, 500)]);
-    const opened = pr.content as { number?: unknown; url?: unknown };
-    const number = Number(opened.number);
-    // The forge's PR link, stored as the item's change_url (design 02).
-    const pr_url = typeof opened.url === "string" ? opened.url : null;
+    // A broker with no PR tool (the local one): the local branch is the review's input and `factory merge` its merge.
+    let number: number | null = null;
+    let pr_url: string | null = null;
+    if (hasTool(broker, "github.open_pr")) {
+      const pr = await broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
+      if (!pr.ok) return this.refuseFinish(file, [`pr: ${pr.error_code}: ${pr.message}`.slice(0, 500)]);
+      const opened = pr.content as { number?: unknown; url?: unknown };
+      number = Number(opened.number);
+      // The forge's PR link, stored as the item's change_url (design 02).
+      pr_url = typeof opened.url === "string" ? opened.url : null;
+    }
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: number } });
     const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data: { pr_number: number, pr_url, commits, files: paths.slice(0, MAX_PR_FILES) } });
-    if (!done.ok) return refused("refused: the session ended before it could complete; the PR is open");
+    if (!done.ok) return refused(`refused: the session ended before it could complete; ${number === null ? "the branch is committed" : "the PR is open"}`);
     await this.d.files.remove(item.id);
-    await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on the forge now
+    await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on its branch now
     this.d.log.info("session finished", { work_item_id: item.id, run_id: file.run_id, pr_number: number });
-    return { ok: true, lines: [...lines, `pushed ${file.branch} and opened PR #${number}; the item goes to review next`] };
+    const done_line = number === null ? `committed the local branch ${file.branch} (no push, no PR)` : `pushed ${file.branch} and opened PR #${number}`;
+    return { ok: true, lines: [...lines, `${done_line}; the item goes to review next`] };
   }
 
   /** The run fails `abandoned`; the controller releases the item. The remote branch and the run folder are kept. */
@@ -280,6 +295,12 @@ export class Sessions {
   private async refuseFinish(file: SessionFile, reasons: string[], lines: string[] = []): Promise<SessionResult> {
     await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: false, reasons, pr_number: null } });
     return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`));
+  }
+
+  /** Whether a local item would reach the forge's broker: no local route given and the broker opens PRs. Never allowed. */
+  private forgeForLocal(item: WorkItem): boolean {
+    const route = routeFor(this.d, item);
+    return route.local && hasTool(route.broker, "github.open_pr");
   }
 
   /** The one session meant: `id`, else the only open one on this machine. */
