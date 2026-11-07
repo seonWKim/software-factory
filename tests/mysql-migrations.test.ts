@@ -3,21 +3,25 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import mysql from "mysql2/promise";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { BACKUP_REMINDER, SQLITE_MIGRATE_MESSAGE, parseMigrateArgs, runMigrate } from "../src/impl/store/mysql/migrate-command.js";
-import { BASELINE_STATE, MysqlMigrations, type Queryable, pendingMessage } from "../src/impl/store/mysql/migrations.js";
+import {
+  BASELINE_STATE, type DataStep, INLINE_STEPS, MysqlMigrations, type Queryable, type Row, STEPS_DIR, type StepDb, pendingMessage, readSteps,
+} from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { BASELINE } from "../src/impl/store/mysql/schema.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
+import { projectLabelCursor } from "../src/core/project.js";
 import { type Run, type RunUsage, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { MYSQL_URL, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
+import { MYSQL_URL, OTHER_PROJECT_KEY, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
 
 const REPO = process.cwd();
@@ -123,6 +127,69 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     await c.query("UPDATE schema_state SET state = 19 WHERE id = 1");
     await new MysqlMigrations(c, { dir }).apply(() => undefined);
     expect((await Promise.all(ids.map((id) => seed.listRunAttempts(id)))).flat()).toHaveLength(attempts.length);
+  });
+
+  it("the change-fields step adds the columns and keys, backfills like SQLite, and a second apply changes nothing", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const c = await db.connect();
+    await new MysqlMigrations(c).apply(() => undefined);
+    const clock = new FakeClock();
+    const seed = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => seed.close());
+    const label = "github.com/o/r";
+    const adoptedIn = (n: number, project: string) => ({
+      ...issue(n), project, adopted: { pr_number: n, head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
+    });
+    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, label);
+    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), system)).item;
+    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), system)).item;
+    const plain = (await seed.createWorkItem(issue(8), system)).item;
+    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 11, merge_sha: "m", merger_id: null });
+    // Back to the state before the step: no change columns or keys, every row as it was.
+    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")!;
+    await c.query("ALTER TABLE work_items DROP INDEX work_items_change, DROP COLUMN change_ref, DROP COLUMN change_url");
+    await c.query("ALTER TABLE unreviewed_merges DROP INDEX unreviewed_merges_change, DROP COLUMN change_ref");
+    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [step.from]);
+    const dir = mysqlStepsUpTo(step.number);
+    expect((await new MysqlMigrations(c, { dir }).status()).pending.map((p) => p.label)).toEqual([step.file]);
+    await new MysqlMigrations(c, { dir }).apply(() => undefined);
+    expect(await state(c)).toBe(step.number);
+
+    const row = async (table: string, id: string) => (await seed.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
+    expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: `https://${label}/pull/5` });
+    expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
+    expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
+    expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
+    expect(await rows(c, `SELECT table_name AS t, index_name AS i, non_unique AS u, GROUP_CONCAT(column_name ORDER BY seq_in_index) AS cols
+      FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name IN ('work_items_change', 'unreviewed_merges_change')
+      GROUP BY table_name, index_name, non_unique ORDER BY table_name`)).toEqual([
+      { t: "unreviewed_merges", i: "unreviewed_merges_change", u: 0, cols: "project,change_ref" },
+      { t: "work_items", i: "work_items_change", u: 1, cols: "project,change_ref" },
+    ]);
+
+    // A second apply: nothing to plan, no column or key added, no row updated.
+    const data = ((await import(pathToFileURL(join(STEPS_DIR, step.file)).href)) as { default: DataStep }).default;
+    const ran: [string, number][] = [];
+    const stepDb: StepDb = {
+      all: async (sql, params) => (await c.query(sql, params ? [...params] : []))[0] as Row[],
+      run: async (sql, params) => {
+        const n = ((await c.query(sql, params ? [...params] : []))[0] as { affectedRows: number }).affectedRows;
+        ran.push([sql.split(" ").slice(0, 2).join(" "), n]);
+        return n;
+      },
+    };
+    expect(await data.plan(stepDb)).toEqual([]);
+    const before = await snapshot(c);
+    await data.apply(stepDb);
+    expect(ran.every(([sql, n]) => sql === "UPDATE work_items" || sql === "UPDATE unreviewed_merges" ? n === 0 : false), JSON.stringify(ran)).toBe(true);
+    expect(await snapshot(c)).toEqual(before);
+
+    // A run that failed midway left one key out: the next apply adds only that.
+    await c.query("ALTER TABLE work_items DROP INDEX work_items_change");
+    expect(await data.plan(stepDb)).toEqual([{ add_key: "work_items.work_items_change" }]);
+    ran.length = 0;
+    await data.apply(stepDb);
+    expect(ran.map(([sql]) => sql).filter((sql) => !sql.startsWith("UPDATE"))).toEqual(["CREATE INDEX"]);
   });
 
   it("existing database at the current schema: creates schema_state, records 11, runs no schema or data statements", async () => {
@@ -471,13 +538,15 @@ interface App {
 let built: App | undefined;
 
 /**
- * src/ compiled to a throwaway root with the repo's migrations/mysql (.sql steps), run as `node dist/main.js`.
+ * src/ compiled to a throwaway root with the repo's migrations/mysql, run as `node dist/main.js`. The `.ts` steps
+ * are compiled to dist/migrations/mysql/ as `npm run build` does: built code loads only the compiled file.
  * The shipped steps, not an empty folder: startup reads tables later steps add (unreviewed_merges, 0012).
  */
 async function compiledApp(): Promise<App> {
   if (built) return built;
   const root = mkdtempSync(join(tmpdir(), "sf-app-"));
   execFileSync(process.execPath, tscArgs("-p", join(REPO, "tsconfig.json"), "--outDir", join(root, "dist")), { stdio: "pipe" });
+  execFileSync(process.execPath, tscArgs("-p", join(REPO, "tsconfig.migrations.json"), "--outDir", join(root, "dist")), { stdio: "pipe" });
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
   symlinkSync(NODE_MODULES, join(root, "node_modules"));
   cpSync(join(REPO, "migrations", "mysql"), join(root, "migrations", "mysql"), { recursive: true });
