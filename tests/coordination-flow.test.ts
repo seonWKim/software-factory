@@ -436,7 +436,7 @@ describe("dependency links re-read only when the issue changed (issue #254)", ()
     expect(f.client.linkReads(3)).toEqual([]);
   });
 
-  it("a failed read of a changed issue's links marks them stale; the next coordination pass reads them once", async () => {
+  it("a failed read of a changed issue's links marks them stale; a coordination pass 10 minutes later reads them once", async () => {
     const f = await tenImplementing();
     f.client.open = f.client.open.filter((i) => i.number === 4).map((i) => ({ ...i, updated_at: T1 }));
     f.client.errors["/repos/o/r/issues/4"] = 500;
@@ -447,10 +447,35 @@ describe("dependency links re-read only when the issue changed (issue #254)", ()
     f.client.answers["/repos/o/r/issues/51"] = { number: 51, state: "open" };
     f.client.open = [];
     f.client.calls = [];
+    // Not retried at once.
+    await f.controller.tickCoordination();
+    expect(f.client.linkReads(4)).toEqual([]);
+    f.clock.advance(DEPENDENCY_STATE_TTL_MS);
     await f.controller.tickCoordination();
     await f.controller.tickCoordination();
     expect(f.client.linkReads(4)).toHaveLength(3);
     expect(await f.get(f.ids[3]!)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for #51 to merge" });
+  });
+
+  it("links that keep failing (a 403 outage) are read once per 10 minutes, not once per poll", async () => {
+    const f = await tenImplementing();
+    f.client.open = f.client.open.filter((i) => i.number === 4).map((i) => ({ ...i, updated_at: T1 }));
+    f.client.errors["/repos/o/r/issues/4"] = 403;
+    await f.controller.tickIntake();
+    expect(f.client.linkReads(4)).toHaveLength(1);
+    f.client.open = [];
+    f.client.calls = [];
+    for (let i = 0; i < 9; i++) {
+      await f.controller.tickCoordination();
+      f.clock.advance(60_000);
+    }
+    expect(f.client.linkReads(4)).toEqual([]);
+    f.clock.advance(DEPENDENCY_STATE_TTL_MS);
+    await f.controller.tickCoordination();
+    await f.controller.tickCoordination();
+    expect(f.client.linkReads(4)).toEqual(["GET /repos/o/r/issues/4"]);
+    expect(await f.store.dependencyLinksReadAt(f.ids[3]!)).toBeNull();
+    expect(await f.get(f.ids[3]!)).toMatchObject({ blocked_on: "none" });
   });
 
   it("an untracked dependency's state is read from the forge at most once per 10 minutes", async () => {

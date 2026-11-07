@@ -323,6 +323,11 @@ export class Controller {
    * process, only a cache: a replica without it asks the forge once.
    */
   private readonly dependencyStates = new Map<string, { state: DependencyState | null; at: number }>();
+  /**
+   * When each item's last failed link read was, so a coordination pass does not read its stale links again before
+   * DEPENDENCY_STATE_TTL_MS (issue #254). Per process, only a throttle: a replica without it reads once.
+   */
+  private readonly linkFailures = new Map<WorkItemId, number>();
   /** True until the start-up status catch-up ran in full; a low request budget defers it (issue #254). */
   private catchUpPending = true;
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
@@ -2065,13 +2070,13 @@ export class Controller {
 
   /**
    * The item's dependency verdict after its edges and their states are read and stored: `stored` reads only the
-   * store; `due` also reads the forge for links never read with a time and for outside states past
-   * DEPENDENCY_STATE_TTL_MS, both skipped under a low request budget (issue #254); `now` reads the forge whatever
+   * store; `due` also reads the forge for links never read with a time (none within DEPENDENCY_STATE_TTL_MS of a
+   * failed read) and for outside states past DEPENDENCY_STATE_TTL_MS, both skipped under a low request budget (issue #254); `now` reads the forge whatever
    * the cache (a human `/retry`, one read per edge).
    */
   private async readDependencies(it: WorkItem, read: "stored" | "due" | "now"): Promise<DependencyVerdict> {
     const relink = read === "now"
-      || (read === "due" && (await this.d.store.dependencyLinksReadAt(it.id)) === null && !this.lowBudget());
+      || (read === "due" && !this.linkReadFailedRecently(it.id) && (await this.d.store.dependencyLinksReadAt(it.id)) === null && !this.lowBudget());
     const edges = relink
       ? await this.refreshEdges(it, iso(this.d.clock.now().getTime()))
       : await this.d.store.listDependencyEdges({ work_item_id: it.id });
@@ -2118,7 +2123,7 @@ export class Controller {
   /**
    * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored with `read_at`, the
    * issue's updated_at they were read at; else (no such source, or the source failed: logged, and the links
-   * marked stale so the next coordination pass reads them again) the stored ones.
+   * marked stale so a coordination pass reads them again once DEPENDENCY_STATE_TTL_MS has passed) the stored ones.
    */
   private async refreshEdges(it: WorkItem, read_at: Timestamp): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
     const adapter = this.byType.get(it.source.type);
@@ -2128,16 +2133,25 @@ export class Controller {
       links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
     } catch (err) {
       this.d.log.warn("dependency links not read: stored edges apply", { work_item_id: it.id, error: (err as Error).message });
+      this.linkFailures.set(it.id, this.d.clock.now().getTime());
       await this.d.store.markDependencyLinksStale(it.id);
       return this.d.store.listDependencyEdges({ work_item_id: it.id });
     }
+    this.linkFailures.delete(it.id);
     return this.d.store.replaceDependencyEdges(it.id, links, read_at);
+  }
+
+  /** Whether the item's links failed to read less than DEPENDENCY_STATE_TTL_MS ago; older failures are dropped. */
+  private linkReadFailedRecently(id: WorkItemId): boolean {
+    const now = this.d.clock.now().getTime();
+    for (const [k, at] of this.linkFailures) if (now - at >= DEPENDENCY_STATE_TTL_MS) this.linkFailures.delete(k);
+    return this.linkFailures.has(id);
   }
 
   /**
    * One fresh read of an existing item's links when the issue's `updated_at` moved past the time they were read at
    * (or they never were with a time, whatever the delivery's `updated_at`); nothing when it did not. A failed read marks them stale (refreshEdges), so
-   * the next coordination pass reads them again instead of waiting for another edit.
+   * a coordination pass DEPENDENCY_STATE_TTL_MS later reads them again instead of waiting for another edit.
    */
   private async relinkIfChanged(it: WorkItem, updated_at: string | undefined): Promise<void> {
     const adapter = this.byType.get(it.source.type);
