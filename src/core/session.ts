@@ -63,7 +63,7 @@ export class Sessions {
     if (transcript && "refuse" in transcript) return refused(transcript.refuse);
 
     const principal = await this.d.auth.resolve(o.person);
-    if (!principal) return refused("refused: your GitHub account is not linked to a factory user");
+    if (!principal) return refused("refused: your account is not linked to a factory user");
     const allowed = await this.d.auth.authorize(principal, "approve_spec", { kind: "project", id: cfg.project.key });
     if (!allowed.allow) return refused(`refused: a session needs write permission on the repository (${allowed.reason})`);
     const actor = { kind: "user" as const, id: principal.user_id };

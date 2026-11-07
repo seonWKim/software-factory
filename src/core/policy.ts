@@ -102,18 +102,18 @@ export const CHECKS_ENV_LIMIT = 2;
 export const RATE_LIMITED = "rate_limited";
 
 /**
- * The error code of a GitHub REST rate limit (decided 2026-11-07): a 403 or 429 that names the primary or the
+ * The error code of a forge REST rate limit (decided 2026-11-07): a 403 or 429 that names the primary or the
  * secondary limit, or the client's own refusal with no calls left before the reset. Not an attempt and not a
  * restart (failureClass `rate_limited`); it sets the `github_rate_limit` claim pause until the reset, and its retry
  * waits for the later of its backoff and the pause end. Never `forge_auth`: the credentials were not refused.
  */
 export const GITHUB_RATE_LIMITED = "github_rate_limited";
-/** The claim pause of a GitHub rate limit: no implement, update or review claim, and no GitHub poll, until it ends. */
+/** The claim pause of a forge rate limit: no implement, update or review claim, and no forge poll, until it ends. */
 export const GITHUB_RATE_LIMIT = "github_rate_limit" as const;
 
 const RESETS_AT = "GitHub rate limit, calls resume at ";
 
-/** The broker's message for a GitHub rate limit: the check or tool, then the reset time the worker reads back. */
+/** The broker's message for a forge rate limit: the check or tool, then the reset time the worker reads back. */
 export function githubRateLimitMessage(what: string, reset_at: string): string {
   return `${what}: ${RESETS_AT}${reset_at}`;
 }
@@ -236,7 +236,7 @@ export const IMPLEMENT_PAUSE_CODES = [FORGE_AUTH, PREFLIGHT_ACCESS] as const;
 /**
  * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
  * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed
- * access check or a GitHub rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
+ * access check or a forge rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
  */
 export function retryNotBefore(o: {
   cls: FailureClass;
@@ -360,7 +360,7 @@ export function branchFor(item: Pick<WorkItem, "id"> & Partial<Pick<WorkItem, "h
 }
 
 /**
- * The label that keeps a pull request a person opened out of the factory (design 2026-11-01). It counts only
+ * The label that keeps a change a person opened out of the factory (design 2026-11-01). It counts only
  * when the person who added it has write permission (`approve_spec`), and only before adoption.
  */
 export const SKIP_LABEL = "factory: skip";

@@ -45,7 +45,7 @@ export interface StatsReport {
   /** Factory items only, one row per tier 1–5 plus untiered. */
   tiers: StatsRow[];
   /**
-   * CLOSED adopted items (pull requests a person opened, design 2026-11-01), whatever their tier; `tier` is
+   * CLOSED adopted items (changes a person opened, design 2026-11-01), whatever their tier; `tier` is
    * null. Absent in reports built before it existed.
    */
   adopted?: StatsRow;
@@ -119,7 +119,7 @@ export function formatStatsText(report: StatsReport): string {
     ...rows.map(line),
     "",
     `items: CLOSED work items per tier. rate: feedback ÷ items, shown from min_sample ${report.config.min_sample} items.`,
-    ...(report.adopted ? ["adopted: CLOSED pull requests a person opened and the factory adopted, any tier; not in the tier rows."] : []),
+    ...(report.adopted ? ["adopted: CLOSED changes a person opened and the factory adopted, any tier; not in the tier rows."] : []),
     `weights: none ${w.none}, minor ${w.minor}, major ${w.major}, critical ${w.critical}.`,
     "/reject and /retry count applied commands only (spec_rejected, retry_requested); refused commands are not counted.",
     ...(report.interactive ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens reported (factory session).`] : []),

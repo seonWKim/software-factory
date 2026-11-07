@@ -7,10 +7,10 @@ import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source. The controller reads that log and applies each command with the same
- * authorize check and the same replies as the GitHub comment, through the auth plugin for local commands (`local`
- * by default, issue #318); a command on a GitHub item is also mirrored to its issue, best effort, once GitHub
+ * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
+ * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
- * writing command becomes the local owner; `users` lets the owner give others roles. No GitHub call.
+ * writing command becomes the local owner; `users` lets the owner give others roles. No sync source call.
  */
 
 /** Where the CLI identity came from, for `users list`. */
@@ -216,7 +216,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!item) return fail(`no work item ${a.id}`);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
-      // An item of a sync source (GitHub) gets the command mirrored on its issue later; a local item has no other surface.
+      // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface.
       const mirror = item.source.type !== "local";
       const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
       return {
