@@ -28,4 +28,10 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 - No in-process state that another replica would need. Every state transition is a conditional update in the store; every handler must be safe to run twice.
 - New states go into `blocked_on` / `blocked_reason` / `close_reason` before anyone adds a new `stage`.
 - Design changes: update the topic file in `docs/design/` that holds the decision (e.g. `docs/design/05-restarts.md`) in the same change: the current decision first, the replaced one as a line under its History heading, and say which decision changed. Never put decision text or history in the index `docs/design.md`; add a line there only for a new topic file.
+- Keep the code maintainable as it grows: leave every change at least as small and clear as you found it.
+  - Delete what you replace: no dead code, unused exports, commented-out blocks or old paths kept "just in case".
+  - Reuse before adding: search for an existing helper, type or plugin before writing a new one.
+  - Duplication in two places is a warning; in three, extract it.
+  - When a feature is replaced, deprecate it in its topic file with a removal plan, then remove it. Don't keep two ways of doing the same thing.
+  - Prefer fewer settings, states and code paths. A new one needs a reason recorded in its topic file.
 - When the factory works on this repo: changes to its own gates, prompts, permissions or tools always need a human merge, whatever the tier.
