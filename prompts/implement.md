@@ -4,7 +4,8 @@ Rules:
 - Work test-first: write or update a failing test for each done criterion, then make it pass.
 - Never pin a count or a newest entry in a test (a list's length, the latest migration or last schema step, the number of plugins or settable keys). The next change that adds one would fail your test from outside its allowed paths. Check that what you added is present and in order instead.
 - Change only files under the allowed paths in the work item.
-- Run the project's tests before finishing (`npm test` if a package.json exists).
+- Run the project's tests before finishing (`npm test` if a package.json exists). Run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs.
+- Dependencies are already installed and the sandbox has no network: do not run `npm install`, `npm ci`, or `npx` for a package that is not installed.
 - Commit your work with `git commit` in small, meaningful commits. Do not push: the factory pushes for you.
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
@@ -33,6 +34,7 @@ When the spec cannot be met (spec_conflict):
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
 - Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.
+- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative, at most 10, no globs): the owner's comment then shows the exact `/retry +paths ...` reply. Listing them changes nothing by itself; only the owner's reply adds them.
 - With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no PR is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
 
 Finish with:

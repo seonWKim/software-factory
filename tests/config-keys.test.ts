@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
 import {
   ConfigKeyError,
   STORE_KEYS,
@@ -78,7 +78,7 @@ describe("config keys: unknown keys fail at load", () => {
     ["dials", "dials.zzzzzz", ["spec_gate_min_tier", "auto_merge_max_tier"]],
     ["models", "models.zzzzzz", ["cheap", "standard", "strong"]],
     ["agent_git_identity", "agent_git_identity.zzzzzz", ["name", "email"]],
-    ["ui", "ui.zzzzzz", ["port"]],
+    ["ui", "ui.zzzzzz", ["port", "user_id"]],
   ];
   for (const [block, path, keys] of nested) {
     it(`an unknown key inside ${block} fails against ${block}'s own keys`, async () => {
@@ -117,6 +117,54 @@ describe("config keys: unknown keys fail at load", () => {
     expect(loaded.file).toEqual(REAL);
     expect(loaded.store.type).toBe("mysql");
     expect(loaded.config.repo.owner).toBe("seonWKim");
+  });
+});
+
+describe("config keys: ui.user_id (issue #227)", () => {
+  it("is optional: the checked-in config does not set it, and without it the page's commands have no actor", async () => {
+    expect(REAL.ui === undefined || !Object.hasOwn(REAL.ui as object, "user_id")).toBe(true);
+    expect(uiUserId(undefined)).toBeNull();
+    expect(uiUserId({ port: 4310 })).toBeNull();
+  });
+
+  it("a non-empty string loads and is the commands actor", async () => {
+    const loaded = await loadConfig(root({ ...SQLITE, ui: { user_id: "github:7" } }));
+    expect(uiUserId(loaded.file.ui)).toBe("github:7");
+  });
+
+  it("an empty or non-string value stops startup with an error naming the key", async () => {
+    for (const user_id of ["", "   ", 7, true, null, [], {}]) {
+      const err = await loadError({ ...SQLITE, ui: { user_id } });
+      expect(err.message, JSON.stringify(user_id)).toContain("ui.user_id");
+    }
+  });
+
+  it("each UI process makes its own random token, shared by both write routes and not in the store or on disk", async () => {
+    const dir = root({ ...SQLITE, ui: { user_id: "github:7" } });
+    const loaded = await loadConfig(dir);
+    const first = await buildUiParts(loaded, { actor: "local:me" });
+    let second: Awaited<ReturnType<typeof buildUiParts>> | undefined;
+    try {
+      expect(first.commands.actor).toBe("github:7");
+      expect(first.commands.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(first.commands.token).toBe(first.settings.csrfToken);
+      second = await buildUiParts(loaded, { actor: "local:me" });
+      expect(second.commands.token).not.toBe(first.commands.token);
+      const tables = await first.store.listTables();
+      for (const t of tables) {
+        const page = await first.store.listTableRows({ table: t.name, limit: 200 });
+        expect(JSON.stringify(page), t.name).not.toContain(first.commands.token);
+      }
+    } finally {
+      await first.close();
+      await second?.close();
+    }
+    const walk = (d: string): string[] =>
+      readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+    for (const f of walk(dir)) {
+      expect(readFileSync(f).includes(first.commands.token), f).toBe(false);
+      expect(readFileSync(f).includes(second!.commands.token), f).toBe(false);
+    }
   });
 });
 

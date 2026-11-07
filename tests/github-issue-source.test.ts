@@ -109,6 +109,8 @@ describe("GitHubIssueSource", () => {
       comment(47, "/", "2026-11-01T00:00:08Z"),
       comment(48, "/ approve", "2026-11-01T00:00:09Z"),
       comment(49, "/retry please", "2026-11-01T00:00:10Z"),
+      comment(50, "/retry +paths src/a.ts docs/b.md\nkeep it small", "2026-11-01T00:00:11Z"),
+      comment(51, "/approve +paths src/a.ts", "2026-11-01T00:00:12Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
@@ -122,7 +124,10 @@ describe("GitHubIssueSource", () => {
       { kind: "plain_comment", source: issueRef(7), comment_id: "46", author: alice, body: "thanks!" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "47", author: alice, body: "/" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "48", author: alice, body: "/ approve" },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice },
+      // /retry notes and +paths (issue #280) are passed on as typed; the controller splits and checks them.
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice, note: "please" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: alice, note: "+paths src/a.ts docs/b.md\nkeep it small" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: alice, note: "+paths src/a.ts" },
     ]);
   });
 
@@ -646,19 +651,34 @@ describe("GitHubIssueSource: status labels", () => {
     expect(statusLabels("x/").find((l) => l.status === "done")!.name).toBe("x/done");
   });
 
-  it("creates the label, adds it, then removes only other fixed-set status labels", async () => {
+  it("reads the labels, creates the label, adds it, then removes only other fixed-set status labels", async () => {
     const { client, source } = make();
     client.issueLabels.set(7, ["factory", "sf: triaging", "sf: custom", "bug"]);
     await source.setStatus(issueRef(7), "needs_approval", null);
 
     const def = statusLabels("sf: ").find((l) => l.status === "needs_approval")!;
     expect(client.calls).toEqual([
+      { method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined },
       { method: "POST", path: "/repos/o/r/labels", body: { name: "sf: needs approval", color: def.color, description: def.description } },
       { method: "POST", path: "/repos/o/r/issues/7/labels", body: { labels: ["sf: needs approval"] } },
-      { method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined },
       { method: "DELETE", path: `/repos/o/r/issues/7/labels/${enc("sf: triaging")}`, body: undefined },
     ]);
     expect(client.issueLabels.get(7)).toEqual(["factory", "sf: custom", "bug", "sf: needs approval"]);
+  });
+
+  it("makes one read and no write when the labels are already right (GitHub call budget)", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["factory", "sf: implementing"]);
+    await source.setStatus(issueRef(7), "implementing", null);
+    expect(client.calls).toEqual([{ method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined }]);
+  });
+
+  it("only removes the stale status label when the target is already there", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["sf: implementing", "sf: triaging"]);
+    await source.setStatus(issueRef(7), "implementing", null);
+    expect(client.calls.map((c) => c.method)).toEqual(["GET", "DELETE"]);
+    expect(client.issueLabels.get(7)).toEqual(["sf: implementing"]);
   });
 
   it("treats an existing label (422 already exists) as created, and changes nothing on a repeat call", async () => {
