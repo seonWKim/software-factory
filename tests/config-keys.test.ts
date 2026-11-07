@@ -257,6 +257,31 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     expect((await loadError({ ...SQLITE, hotspot_paths: ["ok", ""] })).message).toContain("hotspot_paths must be a list of non-empty paths");
   });
 
+  it("mechanical_paths and mechanical_weight load with their defaults, and compose passes them into the coordination config", async () => {
+    const { coordinationConfig } = await import("../src/core/config.js");
+    const { DEFAULT_MECHANICAL } = await import("../src/core/coordination.js");
+    const defaults = ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
+    expect(DEFAULT_MECHANICAL).toEqual(defaults);
+    expect(coordinationConfig({})).toMatchObject({ mechanical: defaults, mechanical_weight: 0.25 });
+    expect(REAL).toMatchObject({ mechanical_paths: defaults, mechanical_weight: 0.25 });
+    expect(TOP_LEVEL_KEYS).toEqual(expect.arrayContaining(["mechanical_paths", "mechanical_weight"]));
+    const loaded = await loadConfig(root(SQLITE));
+    expect(loaded.config.coordination).toMatchObject({ max_cost: 2.5, hotspot_weight: 3, mechanical: defaults, mechanical_weight: 0.25 });
+    const custom = await loadConfig(root({ ...SQLITE, mechanical_paths: ["gen/"], mechanical_weight: 0.5, max_coordination_cost: 4 }));
+    expect(custom.config.coordination).toMatchObject({ max_cost: 4, mechanical: ["gen/"], mechanical_weight: 0.5 });
+  });
+
+  it.each([0, 1, 1.5, -0.25, "0.25", null])("mechanical_weight %j fails at startup: it must be above 0 and below 1.0", async (value) => {
+    const err = await loadError({ ...SQLITE, mechanical_weight: value });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("mechanical_weight must be a number above 0 and below 1.0");
+  });
+
+  it("mechanical_paths must be a list of non-empty paths", async () => {
+    expect((await loadError({ ...SQLITE, mechanical_paths: ["ok", ""] })).message).toContain("mechanical_paths must be a list of non-empty paths");
+    expect((await loadError({ ...SQLITE, mechanical_paths: "docs/" })).message).toContain("mechanical_paths must be a list of non-empty paths");
+  });
+
   it("the checked-in config loads with the coordination keys", async () => {
     await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });
@@ -358,5 +383,19 @@ describe("config keys: path_companions (design 04-triage.md)", () => {
     expect(err.message).toContain("path_companions[1].when");
     expect(err.message).toContain('path_companions[1] has unknown key "extra"');
     expect(err.message).not.toContain("path_companions[0]");
+  });
+});
+
+describe("github.history_since (design §5, Merges)", () => {
+  it("is accepted in the github block, as a date or a UTC time", async () => {
+    await expect(loadConfig(root({ ...SQLITE, github: { history_since: "2026-01-01" } }))).resolves.toBeTruthy();
+    await expect(loadConfig(root({ ...SQLITE, github: { history_since: "2026-01-01T12:30:00Z" } }))).resolves.toBeTruthy();
+  });
+
+  it("an invalid value fails at startup, naming the setting", async () => {
+    for (const history_since of ["last week", "2026-13-45", 20260101, "2026-01-01 00:00"]) {
+      const err = await loadError({ ...SQLITE, github: { history_since } });
+      expect(err.message).toContain("github.history_since");
+    }
   });
 });

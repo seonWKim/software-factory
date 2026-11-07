@@ -12,6 +12,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { readFactoryStatus } from "../src/ui/factory-status.js";
+import { NoneUpdater } from "../src/impl/updater/none.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
 import { parseFilters } from "../src/ui/filters.js";
@@ -707,6 +708,18 @@ describe("ui: factory status banner", () => {
     expect(await readFactoryStatus(file, 3, () => true)).toMatchObject({ state: "draining", workers: 3 });
     expect(await readFactoryStatus(file, 3, () => false)).toMatchObject({ state: "stopped", child_pid: null });
   });
+
+  it("an in-place (updater none) running status with a live pid shows Factory running, not Factory stopped", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const dir = mkdtempSync(join(tmpdir(), "sf-ui-status-"));
+    const file = join(dir, "supervisor.json");
+    const run = async () => ({ exit_code: 0, signal: null, stdout: "aaaaaaa1111\n", stderr: "", timed_out: false });
+    await new NoneUpdater({ repoPath: dir, run, env: {}, clock, log: { info() {}, warn() {}, error() {} }, statusFile: file }).start();
+    const banner = section((await get(await startOn(store, clock, () => readFactoryStatus(file, 3)), "/classic")).body, "factory");
+    expect(banner).toContain("Factory running");
+    expect(banner).not.toContain("Factory stopped");
+  });
 });
 
 describe("ui: split phases wait, never stuck", () => {
@@ -735,6 +748,28 @@ describe("ui: split phases wait, never stuck", () => {
     expect(badge("Parent")).toContain("waits on 2 issues");
     expect(badge("Phase 2")).not.toContain("stuck");
     expect(badge("Parent")).not.toContain("stuck");
+  });
+});
+
+describe("ui: a split's sub-tasks on the item page (design 04)", () => {
+  it("lists the sub-tasks in phase order, each linked to its own page, and (none) without any", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const local = (id: string) => ({ type: "local" as const, id, link: `local:${id}` });
+    const parent = (await store.createWorkItem({ ...issue(1), source: local("local-p"), title: "Parent" }, system)).item;
+    const two = (await store.createWorkItem(
+      { ...issue(3), source: local("local-p-phase-2"), title: "Phase 2/2: B", parent: { id: parent.id, phase: 2 }, hold: { blocked_on: "upstream", blocked_reason: "phase_hold" } },
+      system,
+    )).item;
+    const one = (await store.createWorkItem({ ...issue(2), source: local("local-p-phase-1"), title: "Phase 1/2: A", parent: { id: parent.id, phase: 1 } }, system)).item;
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const subs = section((await renderItem(deps, parent.id))!, "subtasks");
+    const href = (id: WorkItemId) => `<a href="/items/${encodeURIComponent(id)}">`;
+    expect(subs).toContain(`${href(one.id)}Phase 1/2: A</a>`);
+    expect(subs).toContain(`${href(two.id)}Phase 2/2: B</a>`);
+    expect(subs.indexOf(href(one.id))).toBeLessThan(subs.indexOf(href(two.id)));
+    expect(subs).toMatch(/Phase 2\/2: B<\/a><\/td><td>NEW<\/td><td>phase_hold/);
+    expect(section((await renderItem(deps, one.id))!, "subtasks")).toContain("(none)");
   });
 });
 

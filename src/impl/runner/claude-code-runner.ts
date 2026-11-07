@@ -258,17 +258,20 @@ export class ClaudeCodeRunner implements AgentRunner {
       watch.stop();
     }
 
-    // Usage is read whenever stdout holds the CLI's result event, also on timeout, stall and abort.
+    // Usage is read whenever stdout holds the CLI's result event, also on timeout, stall and abort. A killed run
+    // prints none: then the per-message usage its stream reported before the kill (design §5 Restarts).
     const parsed = parseJsonResult(result.stdout);
-    const usage = usageOf(parsed);
-    if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage };
+    const stream = streamFacts(result.stdout, new Set(spec.tools.filter((t) => t.capability !== "read").map((t) => t.name)));
+    const usage = parsed ? usageOf(parsed) : stream.usage;
+    const did_work = stream.did_work;
+    if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage, did_work };
     if (watch.stalled) {
       const error = watch.stalled === "first_output"
         ? `no model output within first_output_ms (${firstOutputMs} ms)`
         : `no model output for stall_ms (${stallMs} ms) with no tool call open`;
-      return { status: "stalled", output: null, transcript: result.stdout, usage, error };
+      return { status: "stalled", output: null, transcript: result.stdout, usage, error, did_work };
     }
-    if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage };
+    if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage, did_work };
 
     if (parsed === null) {
       return {
@@ -277,24 +280,28 @@ export class ClaudeCodeRunner implements AgentRunner {
         transcript: result.stdout + result.stderr,
         usage,
         error: `claude exited ${result.exit_code} without JSON output`,
+        did_work,
       };
     }
 
     if (parsed.api_error_status === 429) {
-      const reset_at = parseRateLimitReset(typeof parsed.result === "string" ? parsed.result : "", (this.opts.now ?? (() => new Date()))());
+      const text = typeof parsed.result === "string" ? parsed.result : "";
+      const reset_at = parseRateLimitReset(text, (this.opts.now ?? (() => new Date()))());
       return {
         status: "rate_limited",
         output: null,
         transcript: result.stdout,
         usage,
-        error: "rate_limited",
+        // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
+        error: text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited",
+        did_work,
         ...(reset_at ? { reset_at } : {}),
       };
     }
     if (parsed.is_error || result.exit_code !== 0) {
-      return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error" };
+      return { status: "failed", output: null, transcript: result.stdout, usage, error: parsed.subtype ?? "error", did_work };
     }
-    return { status: "completed", output: parsed.structured_output ?? parsed.result, transcript: result.stdout, usage };
+    return { status: "completed", output: parsed.structured_output ?? parsed.result, transcript: result.stdout, usage, did_work };
   }
 
   /** A stored session is `<CLAUDE_CONFIG_DIR>/projects/<folder key>/<id>.jsonl`; readable means resumable. */
@@ -366,6 +373,9 @@ function parseJsonResult(stdout: string): ClaudeJsonResult | null {
   }
   return parseObject(stdout) as ClaudeJsonResult | null;
 }
+
+/** The longest part of the CLI's rate-limit text a rate_limited result keeps as its error. */
+const RATE_LIMIT_DETAIL_CHARS = 500;
 
 /** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
 export const DEFAULT_STALL_MS = 300_000;
@@ -476,6 +486,42 @@ function usageOf(parsed: ClaudeJsonResult | null): Required<AgentRunResult["usag
     cost_usd: typeof cost === "number" && Number.isFinite(cost) ? cost : null,
     model: models[0]?.[0] ?? null,
   };
+}
+
+/**
+ * What the stream says without a result event (design §5 Restarts): the usage of every `assistant` message,
+ * counted once per message id (the CLI prints one event per content block, each with its message's usage; the
+ * last one seen counts), with a null cost and the model that wrote the most output; and whether any `tool_use`
+ * block named a write-capable tool (`writeTools`).
+ */
+function streamFacts(stdout: string, writeTools: ReadonlySet<string>): { usage: Required<AgentRunResult["usage"]>; did_work: boolean } {
+  const messages = new Map<string, { usage: ClaudeJsonResult["usage"]; model: string | null }>();
+  let did_work = false;
+  for (const line of stdout.split("\n")) {
+    // Cheap skip: only assistant events carry message usage and tool calls.
+    if (!line.includes('"assistant"')) continue;
+    const event = parseObject(line.trim());
+    if (event?.type !== "assistant") continue;
+    const message = event.message as { id?: unknown; model?: unknown; usage?: ClaudeJsonResult["usage"]; content?: unknown } | undefined;
+    if (typeof message?.id === "string" && message.usage) {
+      messages.set(message.id, { usage: message.usage, model: typeof message.model === "string" ? message.model : null });
+    }
+    if (!Array.isArray(message?.content)) continue;
+    for (const block of message.content as { type?: unknown; name?: unknown }[]) {
+      if (block?.type === "tool_use" && typeof block.name === "string" && writeTools.has(block.name)) did_work = true;
+    }
+  }
+  const usage = { ...NO_USAGE, cache_read_tokens: 0, cache_write_tokens: 0, model: null as string | null };
+  const output = new Map<string, number>();
+  for (const { usage: u, model } of messages.values()) {
+    usage.input_tokens += count(u?.input_tokens);
+    usage.output_tokens += count(u?.output_tokens);
+    usage.cache_read_tokens += count(u?.cache_read_input_tokens);
+    usage.cache_write_tokens += count(u?.cache_creation_input_tokens);
+    if (model) output.set(model, (output.get(model) ?? 0) + count(u?.output_tokens));
+  }
+  usage.model = [...output].sort(([, a], [, b]) => b - a)[0]?.[0] ?? null;
+  return { usage, did_work };
 }
 
 /**

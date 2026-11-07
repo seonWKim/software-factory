@@ -9,11 +9,12 @@ import {
   tierBudget,
 } from "./budget.js";
 import {
-  COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
+  COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
+  type DependencyLink,
   type DependencyVerdict,
   dependencyReason,
   dependencyVerdict,
@@ -60,6 +61,8 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { commandEvent } from "./command-inbox.js";
+import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -80,7 +83,11 @@ import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
+import type {
+  AppCommandRequest, CliCommand, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, ThreadDelivery, ThreadLinkField, TransitionInput,
+} from "../interfaces/factory-store.js";
+import { labelTarget } from "../interfaces/factory-store.js";
+import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
@@ -237,11 +244,17 @@ const CLOSE_BATCH = 50;
 const PHASE_BATCH = 50;
 /** Queued implement runs and dependency-held items looked at per coordination tick (design §5, 2026-11-03). */
 const COORDINATION_BATCH = 50;
-/** blocked_reason prefixes (with `blocked_on: human`) of a dependency closed unmerged, and of a dependency cycle. */
-const DEPENDENCY_CLOSED = "dependency_closed";
+/** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
-/** Pending app command requests read per tick (design §4, app requests). */
-const APP_COMMAND_BATCH = 20;
+/** Commands read from the command inbox per tick (issue #282). */
+const COMMAND_BATCH = 100;
+/** The command inbox's cursor, and the `local` source's cursor it starts from (issue #282). */
+const COMMANDS_CURSOR = "commands";
+const LEGACY_LOCAL_CURSOR = "intake:local";
+/** Outbox rows delivered per tick at most (issue #282). */
+const OUTBOX_BATCH = 50;
+/** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
+const LOCAL_TYPE: SourceType = "local";
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 /** A command name safe to quote in a reply: anything else is called "the command". */
@@ -260,8 +273,8 @@ const PR_SOURCE_TYPE: SourceType = "github_issue";
  */
 function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
   if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
+  // None is allowed (issue #282): items and commands live in the store, and messages wait in the outbox.
   const sources = d.sources ?? (d.source ? [d.source] : []);
-  if (sources.length === 0) throw new Error("plugins.source selects no SourceAdapter: list at least one source");
   const seen = new Set<SourceType>();
   for (const s of sources) {
     if (seen.has(s.type)) {
@@ -306,11 +319,14 @@ export class Controller {
   private readonly merges: MergeChecker | null;
   /**
    * The forge's answers for dependencies the store does not track, by source id, each reused for
-   * DEPENDENCY_STATE_TTL_MS (issue #254). Per process, only a cache: a replica without it asks the forge once.
+   * DEPENDENCY_STATE_TTL_MS (issue #254); `null` for a read that failed, so it is not retried before then. Per
+   * process, only a cache: a replica without it asks the forge once.
    */
-  private readonly dependencyStates = new Map<string, { state: DependencyState; at: number }>();
+  private readonly dependencyStates = new Map<string, { state: DependencyState | null; at: number }>();
   /** True until the start-up status catch-up ran in full; a low request budget defers it (issue #254). */
   private catchUpPending = true;
+  /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
+  private improveDay: string | null = null;
 
   constructor(private readonly d: ControllerDeps) {
     this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
@@ -347,11 +363,15 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
-      // App requests are a store read, so every tick, like an inbox.
-      await this.guard("app commands", () => this.appCommandsStep());
+      // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
+      await this.guard("commands", () => this.commandsStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
+      // A store read until the day changes: the day's improve run is queued once (design §7).
+      await this.guard("improve", () => this.improveStep());
+      // Last, so the messages this tick wrote go out in it.
+      await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
     await listening;
@@ -375,6 +395,24 @@ export class Controller {
   async tickIntake(): Promise<void> {
     await this.live.refresh();
     await this.intake(true);
+    await this.commandsStep();
+    await this.outboxStep();
+  }
+
+  /**
+   * One outbox step (issue #282): every pending thread entry of a configured source type is delivered to its
+   * target source once. The only caller of a source's postComment.
+   */
+  async tickOutbox(): Promise<void> {
+    await this.live.refresh();
+    await this.outboxStep();
+  }
+
+  /** One command inbox step: the CLI and app commands after the cursor (issue #282). */
+  async tickCommands(): Promise<void> {
+    await this.live.refresh();
+    await this.commandsStep();
+    await this.outboxStep();
   }
 
   /**
@@ -401,7 +439,7 @@ export class Controller {
     const name = `intake:${source.type}`;
     const cursor = await this.d.store.getCursor(name);
     const { events, next_cursor } = await source.poll(cursor);
-    for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
+    for (const e of events) await this.guard(`event:${e.kind}`, () => this.handle(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
   }
 
@@ -429,7 +467,7 @@ export class Controller {
     const cursor = await this.d.store.getCursor(name);
     const rows = await this.d.store.listInboxAfter(source.type, inboxSeq(cursor), INBOX_BATCH);
     if (rows.length === 0) return;
-    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handleEvent(row.event));
+    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handle(row.event));
     await this.d.store.advanceCursor(name, cursor, String(rows.at(-1)!.seq));
   }
 
@@ -453,18 +491,54 @@ export class Controller {
   async tickRuns(): Promise<void> {
     await this.live.refresh();
     await this.runsStep();
+    await this.outboxStep();
   }
 
-  /** One app command step: the pending requests, oldest first (design §4, app requests). */
-  async tickAppCommands(): Promise<void> {
-    await this.live.refresh();
-    await this.appCommandsStep();
-  }
-
-  private async appCommandsStep(): Promise<void> {
-    for (const r of await this.d.store.listPendingAppCommandRequests(APP_COMMAND_BATCH)) {
-      await this.guard("app command", () => this.applyAppRequest(r));
+  /**
+   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
+   * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
+   * applyAppRequest. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
+   * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
+   */
+  private async commandsStep(): Promise<void> {
+    const cursor = await this.d.store.getCursor(COMMANDS_CURSOR);
+    const start = cursor ?? (await this.d.store.getCursor(LEGACY_LOCAL_CURSOR));
+    const after = start ? Number(start) : 0;
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(start)}`);
+    const commands = await this.d.store.listCliCommandsAfter(after, COMMAND_BATCH);
+    let last: number | null = null;
+    for (const c of commands) {
+      try {
+        await this.handleInboxCommand(c);
+      } catch (err) {
+        // Held, not skipped: the cursor stops before it, so the next tick tries it again (and the ones after it).
+        this.d.log.error("command failed; retried next tick", {
+          command_seq: c.seq,
+          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        });
+        break;
+      }
+      last = c.seq;
     }
+    if (last !== null) await this.d.store.advanceCursor(COMMANDS_CURSOR, cursor, String(last));
+  }
+
+  private async handleInboxCommand(c: CliCommand): Promise<void> {
+    const app = c.args.app_request;
+    if (typeof app === "number") {
+      const r = await this.d.store.getAppCommandRequest(app);
+      if (r && r.handled_at === null) await this.applyAppRequest(r);
+      return;
+    }
+    const id = c.args.item;
+    if (typeof id !== "string" || id === "") return;
+    const item = await this.d.store.getWorkItem(id as WorkItemId);
+    // CLI commands act on local items only; the CLI refuses any other when it writes one.
+    if (!item || item.source.type !== "local") return;
+    const e = commandEvent(c, item.source);
+    if (e) await this.handle(e);
   }
 
   /**
@@ -510,14 +584,14 @@ export class Controller {
   private async finishAppRequest(r: AppCommandRequest, item: WorkItem | null, text: string | null): Promise<void> {
     if (text !== null) {
       this.d.log.info("app command refused", { request_seq: r.seq, work_item_id: item?.id ?? null, command: r.command.slice(0, 64) });
-      if (item) await this.post(item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
+      if (item) await this.post(item, item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
     }
     await this.d.store.markAppCommandRequest(r.seq, text);
   }
 
   private async runsStep(): Promise<void> {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
-      await this.guard(`run:${run.kind}`, () => this.applyRun(run));
+      await this.guard(`run:${run.kind}`, () => this.apply(run));
     }
   }
 
@@ -532,9 +606,13 @@ export class Controller {
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
-    for (const it of items) {
+    const open = items.filter((it) => it.stage !== "CLOSED");
+    // One batched read of the stored label states: a target already showing its status costs no call at all.
+    const stored = await this.d.store.listLabelStates(open.map((it) => it.source.id));
+    const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
+    for (const it of open) {
       if (this.lowBudget()) return false;
-      if (it.stage !== "CLOSED") await this.showStatus(it);
+      await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
     }
     this.catchUpPending = false;
     return true;
@@ -548,6 +626,7 @@ export class Controller {
   async tickModelProbe(): Promise<void> {
     await this.live.refresh();
     await this.probeStep();
+    await this.outboxStep();
   }
 
   /**
@@ -587,9 +666,29 @@ export class Controller {
     }
   }
 
+  /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
+  async tickImprove(): Promise<void> {
+    await this.live.refresh();
+    await this.improveStep();
+  }
+
+  /**
+   * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
+   * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
+   * process the store write once the day's run is there.
+   */
+  private async improveStep(): Promise<void> {
+    const day = utcDay(this.d.clock.now());
+    if (this.improveDay === day) return;
+    const { run, created } = await enqueueImprove(this.d, this.project(), "daily");
+    if (created) this.d.log.info("improve run queued", { run_id: run.id, day });
+    this.improveDay = day;
+  }
+
   async tickReaper(): Promise<void> {
     await this.live.refresh();
     await this.reaperStep();
+    await this.outboxStep();
   }
 
   private async reaperStep(): Promise<void> {
@@ -629,13 +728,26 @@ export class Controller {
 
   // Source events
 
+  /** One source event, then the outbox step, so its replies go out (issue #282). */
   async handleEvent(e: SourceEvent): Promise<void> {
+    await this.handle(e);
+    await this.outboxStep();
+  }
+
+  private async handle(e: SourceEvent): Promise<void> {
     switch (e.kind) {
       case "item_requested": {
         // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
         if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
-        if ("refuse" in principal) return;
+        if ("refuse" in principal) {
+          // On GitHub the intake label is the gate and a refusal stays silent. A chat source has no label: the
+          // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
+          if (e.source.type !== PR_SOURCE_TYPE) {
+            await this.postWithoutItem(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
+          }
+          return;
+        }
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: e.source,
@@ -653,7 +765,7 @@ export class Controller {
           await this.setStatus(item.source, "triaging", null);
           // Edges first, so a claim holds the implement run even before the next coordination tick.
           await this.guard("dependencies", async () => void (await this.refreshEdges(item, this.issueTime(e.updated_at))));
-        } else if (item.stage !== "CLOSED") {
+        } else if (item.stage !== "CLOSED" && item.pr_number === null) {
           // An edited issue (issue #254): its links are read again only when it changed since they were read.
           await this.guard("dependencies", () => this.relinkIfChanged(item, e.updated_at));
         }
@@ -719,6 +831,7 @@ export class Controller {
   async tickMergeCheck(): Promise<void> {
     await this.live.refresh();
     await this.mergeCheckStep();
+    await this.outboxStep();
   }
 
   private async mergeCheckStep(): Promise<void> {
@@ -926,6 +1039,7 @@ export class Controller {
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
     await this.post(
+      item,
       onPr ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -963,7 +1077,7 @@ export class Controller {
       this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, pr_number: e.pr_number, key: { review_id: e.review_id } }));
     if (refusal === null) return;
     this.d.log.info("review refused", { work_item_id: item.id, pr_number: e.pr_number, reason: refusal });
-    await this.post(e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
+    await this.post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
   }
 
   /**
@@ -1052,6 +1166,7 @@ export class Controller {
         if (r === RETRY) continue;
         return r;
       }
+      if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
       return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
@@ -1241,6 +1356,7 @@ export class Controller {
     const state = await this.stateOf(item);
     const help = e.kind === "help_requested";
     await this.post(
+      item,
       item.source,
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
@@ -1288,7 +1404,7 @@ export class Controller {
       }
     }
     this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
-    await this.post(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await this.post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
   }
 
   /**
@@ -1304,7 +1420,17 @@ export class Controller {
     const body = r.ok
       ? `This account is now linked to factory user \`${r.user_id}\`. Commands from it act as that user.`
       : `This account was not linked: ${LINK_REFUSALS[r.reason]}. Ask for a new code with \`factory link-code <user_id>\`.`;
-    await this.post(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (item) await this.post(item, e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+    else await this.postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+  }
+
+  /**
+   * A reply on a source that is no work item (a `/link` on a plain issue, a refused chat intake) has no thread to
+   * hold it: the only posts that skip the outbox and go to the source directly.
+   */
+  private async postWithoutItem(source: SourceRef, body: string, marker: string): Promise<void> {
+    await this.adapterFor(source, "postComment")?.postComment(source, body, marker);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -1336,6 +1462,7 @@ export class Controller {
     if ((await this.d.store.listVerdicts(item.id)).some((v) => v.comment_id === e.comment_id)) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     await this.post(
+      item,
       item.source,
       `\`/verdict\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -1734,6 +1861,8 @@ export class Controller {
           }
         : null,
     );
+    // Its dependents count it merged now that its phases are (design §5).
+    await this.guard("dependents", () => this.releaseDependents(it.source.id));
   }
 
   /**
@@ -1896,14 +2025,15 @@ export class Controller {
   // Coordination (design §5, decided 2026-11-03)
 
   /**
-   * Once per poll: for each item with a queued implement run and each item held by a dependency, refresh its
-   * dependency edges and their states from the store and the forge, then hold, release or block it; and post one
-   * comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
+   * Once per poll: for each item with a queued implement run and each item held by a dependency, apply its stored
+   * dependency edges and their states (links re-read from the forge only when never read with a time, outside
+   * states at most once per DEPENDENCY_STATE_TTL_MS), then hold, release or block it; and post one comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
    * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
    */
   async tickCoordination(): Promise<void> {
     await this.live.refresh();
     await this.coordinationStep();
+    await this.outboxStep();
   }
 
   private async coordinationStep(): Promise<void> {
@@ -1921,54 +2051,101 @@ export class Controller {
   }
 
   /**
-   * Re-reads the item's edges (from its source when `network`), records each edge's state, and applies what they
-   * mean: hold on `blocked_on: dependency`, release, or block on a human for a dependency closed unmerged or a
-   * cycle (queued runs cancelled, one comment). Only an implementing item without a PR is changed.
+   * Reads the item's edges (from its source when `network` and they were never read with a time, else the stored
+   * ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
+   * release, or block on a human for a dependency closed unmerged or a cycle (queued runs cancelled, one comment).
+   * Only an implementing item without a PR is changed. A forge that fails changes nothing: stored edges apply.
    */
   private async coordinateItem(id: WorkItemId, network: boolean): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || it.stage !== "RUNNING" || it.pr_number !== null) return;
     if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
-    // The links come from the store; they are read from the source only when never read with a time (an item from
-    // before issue #254, or a read that failed at intake), and that read is optional under a low request budget.
-    const unread = network && (await this.d.store.dependencyLinksReadAt(id)) === null && !this.lowBudget();
-    const edges = unread ? await this.refreshEdges(it, iso(this.d.clock.now().getTime())) : await this.d.store.listDependencyEdges({ work_item_id: id });
+    await this.applyDependencies(it.id, await this.readDependencies(it, network ? "due" : "stored"));
+  }
+
+  /**
+   * The item's dependency verdict after its edges and their states are read and stored: `stored` reads only the
+   * store; `due` also reads the forge for links never read with a time and for outside states past
+   * DEPENDENCY_STATE_TTL_MS, both skipped under a low request budget (issue #254); `now` reads the forge whatever
+   * the cache (a human `/retry`, one read per edge).
+   */
+  private async readDependencies(it: WorkItem, read: "stored" | "due" | "now"): Promise<DependencyVerdict> {
+    const relink = read === "now"
+      || (read === "due" && (await this.d.store.dependencyLinksReadAt(it.id)) === null && !this.lowBudget());
+    const edges = relink
+      ? await this.refreshEdges(it, iso(this.d.clock.now().getTime()))
+      : await this.d.store.listDependencyEdges({ work_item_id: it.id });
     for (const e of edges) {
-      const state = await this.dependencyStateOf(e.depends_on, network);
-      if (state !== null && state !== e.state) await this.d.store.setDependencyState(id, e.depends_on, state);
+      if (read === "now") this.dependencyStates.delete(e.depends_on);
+      const state = await this.dependencyStateOf(e.depends_on, read !== "stored");
+      if (state !== null && state !== e.state) await this.d.store.setDependencyState(it.id, e.depends_on, state);
     }
-    const fresh = await this.d.store.listDependencyEdges({ work_item_id: id });
-    await this.applyDependencies(it.id, dependencyVerdict(it.source.id, fresh, await this.dependencyGraph()));
+    const fresh = await this.d.store.listDependencyEdges({ work_item_id: it.id });
+    return dependencyVerdict(it.source.id, fresh, await this.dependencyGraph());
+  }
+
+  /**
+   * `/retry` at `dependency_closed` (design §5, 2026-11-07): the dependencies are read again now. None closed
+   * unmerged and no cycle: the block is lifted with a new implement run (the block cancelled the old one), the
+   * human as actor, then a dependency still open holds it as usual. Else refused, naming what still blocks.
+   */
+  private async retryDependencies(
+    it: WorkItem, actor: Extract<Actor, { kind: "user" }>, note: string | null, paths: readonly string[],
+  ): Promise<string | null> {
+    if (paths.length > 0) return "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`";
+    const v = await this.readDependencies(it, "now");
+    const short = (d: string) => shortRef(d, it.source.id);
+    if (v.kind === "closed") {
+      return `${short(v.dependency)} is still closed without a merge; reply \`/retry\` once it is merged or the link to it is removed`;
+    }
+    if (v.kind === "cycle") return `the dependencies form a cycle: ${v.cycle.map(short).join(" → ")}; remove one of the links, then reply \`/retry\``;
+    const blockedReason = it.blocked_reason;
+    const refusal = await this.decide(it.id, (cur) => {
+      if (cur.stage !== "RUNNING" || cur.pr_number !== null || cur.blocked_on !== "human" || cur.blocked_reason !== blockedReason) return null;
+      const next = { ...cur, restart_count: cur.restart_count + 1 };
+      return {
+        patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+        actor,
+        reason: "retry_requested",
+        detail: { released: blockedReason ?? DEPENDENCY_CLOSED, ...(note ? { note } : {}) },
+        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      };
+    });
+    if (refusal === null && v.kind === "wait") await this.applyDependencies(it.id, v);
+    return refusal;
   }
 
   /**
    * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored with `read_at`, the
-   * issue's updated_at they were read at; else the stored ones.
+   * issue's updated_at they were read at; else (no such source, or the source failed: logged, and the links
+   * marked stale so the next coordination pass reads them again) the stored ones.
    */
   private async refreshEdges(it: WorkItem, read_at: Timestamp): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
     const adapter = this.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return this.d.store.listDependencyEdges({ work_item_id: it.id });
-    const links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
+    let links: DependencyLink[];
+    try {
+      links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
+    } catch (err) {
+      this.d.log.warn("dependency links not read: stored edges apply", { work_item_id: it.id, error: (err as Error).message });
+      await this.d.store.markDependencyLinksStale(it.id);
+      return this.d.store.listDependencyEdges({ work_item_id: it.id });
+    }
     return this.d.store.replaceDependencyEdges(it.id, links, read_at);
   }
 
   /**
    * One fresh read of an existing item's links when the issue's `updated_at` moved past the time they were read at
-   * (or they never were with a time); nothing when it did not. A failed read marks them stale, so the next
-   * coordination pass reads them again instead of waiting for another edit.
+   * (or they never were with a time, whatever the delivery's `updated_at`); nothing when it did not. A failed read marks them stale (refreshEdges), so
+   * the next coordination pass reads them again instead of waiting for another edit.
    */
   private async relinkIfChanged(it: WorkItem, updated_at: string | undefined): Promise<void> {
-    if (updated_at === undefined || !Number.isFinite(Date.parse(updated_at))) return;
     const adapter = this.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return;
     const readAt = await this.d.store.dependencyLinksReadAt(it.id);
-    if (readAt !== null && Date.parse(updated_at) <= Date.parse(readAt)) return;
-    try {
-      await this.refreshEdges(it, this.issueTime(updated_at));
-    } catch (err) {
-      await this.d.store.markDependencyLinksStale(it.id);
-      throw err;
-    }
+    // NaN (no or a bad updated_at) is never newer: only links never read with a time are read then.
+    if (readAt !== null && !(Date.parse(updated_at ?? "") > Date.parse(readAt))) return;
+    await this.refreshEdges(it, this.issueTime(updated_at));
   }
 
   /** A source's `updated_at` as a store timestamp; the store clock when the source gave none. */
@@ -1978,30 +2155,48 @@ export class Controller {
   }
 
   /**
-   * What a dependency's state is now: a work item's from the store (merged = closed `completed` with a merge
-   * sha), else, with `network`, the source's answer. Null when unknown (no item, no network or no capability).
+   * What a dependency's state is now: a work item's from the store (see `itemMerged`), else, with `network`, the
+   * source's answer, reused for DEPENDENCY_STATE_TTL_MS. Null when unknown or not read now (no item, no network, no
+   * capability, a low request budget, or the source failed: logged).
    */
   private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
     const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
     if (dep) {
       if (dep.stage !== "CLOSED") return "open";
-      return dep.close_reason === "completed" && dep.merge_sha !== null ? "merged" : "closed_unmerged";
+      return (await this.itemMerged(dep)) ? "merged" : "closed_unmerged";
     }
-    if (!network) return null;
     const adapter = this.byType.get(PR_SOURCE_TYPE);
-    if (!adapter || !isDependencySource(adapter)) return null;
+    if (!network || !adapter || !isDependencySource(adapter)) return null;
     // At most one forge read per dependency per DEPENDENCY_STATE_TTL_MS, and none while the budget is low (issue #254).
     const now = this.d.clock.now().getTime();
     const cached = this.dependencyStates.get(dependsOn);
     if (cached && now - cached.at < DEPENDENCY_STATE_TTL_MS) return cached.state;
     if (this.lowBudget()) return null;
-    const state = await adapter.dependencyState(dependsOn);
+    let state: DependencyState | null;
+    try {
+      state = await adapter.dependencyState(dependsOn);
+    } catch (err) {
+      this.d.log.warn("dependency state not read: stored state applies", { depends_on: dependsOn, error: (err as Error).message });
+      state = null;
+    }
     this.dependencyStates.set(dependsOn, { state, at: now });
     // Keep the cache bounded: drop answers past their time.
     if (this.dependencyStates.size > COORDINATION_BATCH * 8) {
       for (const [k, v] of this.dependencyStates) if (now - v.at >= DEPENDENCY_STATE_TTL_MS) this.dependencyStates.delete(k);
     }
     return state;
+  }
+
+  /**
+   * Whether a work item counts as merged for its dependents: closed `completed` with a merge sha, or a split
+   * parent (never implemented itself, so no sha) closed `completed` whose recorded phases all closed `completed`,
+   * the rule that closes a split (closeSplitIfDone).
+   */
+  private async itemMerged(it: WorkItem): Promise<boolean> {
+    if (!completed(it)) return false;
+    if (it.merge_sha !== null) return true;
+    const phases = await this.recordedPhases(it.id);
+    return phases.length > 0 && phases.every(completed);
   }
 
   /** Source id → the source ids it waits for, over every edge not yet merged, for the cycle check. */
@@ -2088,20 +2283,30 @@ export class Controller {
 
   // Run outcomes
 
+  /** One finished run, then the outbox step, so its messages go out (issue #282). */
   async applyRun(run: Run): Promise<void> {
+    await this.apply(run);
+    await this.outboxStep();
+  }
+
+  private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
-    await this.decide(run.work_item_id, async (it) => {
+    // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
+    // adds them to each decision that does not set token_cost itself.
+    const decision = async (it: WorkItem): Promise<Decision> => {
+      // An improve run changes nothing else on its system item (design §7): its report is already stored.
+      if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
       if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
         const ask = parseNeedsHuman(data.needs_human);
         if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
-        if (run.kind === "resolve") return withSpent(await this.resolveFailed(it, run, "invalid_output"), run, it);
-        return withSpent(await this.retryOrBlock(it, run, "task", "invalid_output"), run, it);
+        if (run.kind === "resolve") return this.resolveFailed(it, run, "invalid_output");
+        return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
       switch (run.kind) {
@@ -2138,7 +2343,7 @@ export class Controller {
                 "The owner approved the split on the parent issue (`phases_auto_approve`), so this phase is implemented without its own `/approve`.",
                 "",
                 footerAfter(it, patch),
-              ].join("\n")));
+              ].join("\n")), "spec_comment_url");
             return {
               patch: { ...patch, spec_comment_url: url },
               actor: SYSTEM,
@@ -2160,7 +2365,7 @@ export class Controller {
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const url = await this.comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)));
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
@@ -2294,10 +2499,11 @@ export class Controller {
           }
         }
       }
-    });
+    };
+    await this.decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
   private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
@@ -2311,6 +2517,8 @@ export class Controller {
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
+    // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
+    if (code === PROVIDER_SETUP) return this.providerSetup(it, run);
     // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
     if (run.kind === "implement" && code === SPEC_CONFLICT) {
       const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
@@ -2323,7 +2531,7 @@ export class Controller {
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
-      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
+      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2400,7 +2608,7 @@ export class Controller {
       `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
       "",
       footerAfter(it, patch),
-    ].join("\n"));
+    ].join("\n"), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2515,6 +2723,7 @@ export class Controller {
   async tickChecks(): Promise<void> {
     await this.live.refresh();
     await this.checksStep();
+    await this.outboxStep();
   }
 
   private async checksStep(): Promise<void> {
@@ -2577,7 +2786,9 @@ export class Controller {
       : cls === "stalled"
         ? iso(failedAt)
         : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
-    // A failed push or PR kept the commits on a wip branch: the retry pushes them with no agent run.
+    // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
+    // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
+    // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
     return {
       patch: restart,
@@ -2631,7 +2842,8 @@ export class Controller {
    */
   private async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
     const auto = parseAutoResolveKey(run.idempotency_key);
-    const next = auto ? nextAutoResolveAttempt(auto.attempt) : null;
+    // provider_setup is never retried (design §5 Restarts): the item waits on a person, as after the last attempt.
+    const next = auto && code !== PROVIDER_SETUP ? nextAutoResolveAttempt(auto.attempt) : null;
     if (auto && next !== null) {
       const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
       const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
@@ -2693,7 +2905,7 @@ export class Controller {
       return;
     }
     const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
-    await this.post({ type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+    await this.post(it, { type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
   }
 
   /**
@@ -2714,7 +2926,7 @@ export class Controller {
       footerAfter(it, patch),
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2751,7 +2963,7 @@ export class Controller {
     let text0 = body(true, true);
     if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, true);
     if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, false);
-    const url = await this.comment(it, `run-failed:${run.id}`, text0);
+    const url = await this.comment(it, `run-failed:${run.id}`, text0, "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2792,7 +3004,7 @@ export class Controller {
       footer,
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `needs-human:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `needs-human:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, token_cost: tokens, failure_comment_url: url },
       actor: SYSTEM,
@@ -2860,12 +3072,41 @@ export class Controller {
       ].join("\n");
     };
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
       detail: { run_id: run.id, error_code: code },
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * A run the model provider refused for its account or config (`provider_setup`, design §5 Restarts): the quota,
+   * the API key or the model name. Any run kind; never retried, since waiting does not fix it, and no claim pause.
+   * Blocks on a human with `run_failed:<kind>:provider_setup`, so `/retry` runs it again once fixed. One comment,
+   * keyed on the run, says what to fix and quotes the provider's message, dropped if the egress scan flags it.
+   */
+  private async providerSetup(it: WorkItem, run: Run): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${PROVIDER_SETUP}` };
+    const body = (withDetail: boolean) => [
+      "## Factory check: the model provider needs setup",
+      "",
+      `The ${run.kind} run failed (\`${PROVIDER_SETUP}\`): ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      "",
+      "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: PROVIDER_SETUP },
       ack_run: run.id,
     };
   }
@@ -2968,7 +3209,7 @@ export class Controller {
       });
       return null;
     }
-    return this.comment(it, `run-failed:${run.id}`, body);
+    return this.comment(it, `run-failed:${run.id}`, body, "failure_comment_url");
   }
 
   // Internals
@@ -3000,7 +3241,7 @@ export class Controller {
       // No adapter for the item's source type here (a source left out of this process's `plugins.source`, e.g.
       // an older version still draining): the item keeps its state for a process that has one, so its replies
       // are not dropped (2026-11-07).
-      if (!this.byType.has(item.source.type)) {
+      if (!this.serves(item.source.type)) {
         this.d.log.warn("no source adapter for the item's source type; transition left to another process", {
           work_item_id: id,
           source_type: item.source.type,
@@ -3138,12 +3379,12 @@ export class Controller {
 
   /**
    * The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. An
-   * adopted item's source is its PR, so it is labelled once.
+   * adopted item's source is its PR, so it is labelled once. `current` says a target already shows the status.
    */
-  private async showStatus(it: WorkItem): Promise<void> {
+  private async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
-    await this.setStatus(it.source, status, null);
-    if (it.pr_number !== null && it.origin !== "adopted") await this.setStatus(it.source, status, it.pr_number);
+    if (!current(null)) await this.setStatus(it.source, status, null);
+    if (it.pr_number !== null && it.origin !== "adopted" && !current(it.pr_number)) await this.setStatus(it.source, status, it.pr_number);
   }
 
   /**
@@ -3167,15 +3408,71 @@ export class Controller {
     }
   }
 
-  /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
-  private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
-    return (await this.post(it.source, body, `<!-- factory:${key} -->`))?.url ?? null;
+  /**
+   * Writes one message to the item's thread, once per key (issue #282); the outbox step delivers it. Returns the
+   * delivered comment's URL when an earlier write of the same key was already delivered, else null: `link` names
+   * the item field the outbox fills with the URL once it delivers.
+   */
+  private async comment(it: WorkItem, key: string, body: string, link: ThreadLinkField | null = null): Promise<string | null> {
+    return this.post(it, it.source, body, `<!-- factory:${key} -->`, link);
   }
 
-  /** postComment through the adapter of `source`'s type; null (and a warning) when none is configured. */
-  private async post(source: SourceRef, body: string, marker: string): Promise<{ url: string | null } | null> {
-    const adapter = this.adapterFor(source, "postComment");
-    return adapter ? adapter.postComment(source, body, marker) : null;
+  /**
+   * The thread write behind every factory message: the entry, and in the same transaction its outbox row unless
+   * the thread is the item's own surface (a local item). An entry goes only to its item's own source: `target`
+   * (e.g. the item's PR) is used when it is of that source's type, else the item's source.
+   */
+  private async post(it: WorkItem, target: SourceRef, body: string, marker: string, link: ThreadLinkField | null = null): Promise<string | null> {
+    const type = it.source.type;
+    const delivery = type === LOCAL_TYPE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+    const { created, message } = await this.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery });
+    if (created || delivery === null) return null;
+    const row = (await this.d.store.listDeliveries(it.id)).find((d) => d.thread_seq === message.seq);
+    return row?.url ?? null;
+  }
+
+  /**
+   * The outbox (issue #282): each pending thread entry of a source type this process has an adapter for, claimed
+   * so one replica posts it, delivered through that adapter, then marked delivered. A failure is retried with
+   * backoff (retry_base_ms doubling up to retry_max_ms); it never touches the item's state. Entries of a source
+   * type with no adapter here stay pending for a process that has one.
+   */
+  private async outboxStep(): Promise<void> {
+    const types = [...this.byType.keys()];
+    for (const row of await this.d.store.listPendingDeliveries(types, OUTBOX_BATCH)) {
+      await this.guard("outbox delivery", () => this.deliver(row));
+    }
+  }
+
+  private async deliver(row: ThreadDelivery): Promise<void> {
+    const adapter = this.byType.get(row.source_type);
+    if (!adapter) return;
+    const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms);
+    if (token === null) return;
+    // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
+    // edited, only logged.
+    const stored = await this.d.store.getPostedComment(row.target.id, row.marker, row.body);
+    if (stored?.comment_id) {
+      if (!stored.same_body) this.d.log.warn("comment already posted with another body; not edited", { source_id: row.target.id, marker: row.marker });
+      await this.d.store.finishDelivery(row.seq, token, stored.url);
+      return;
+    }
+    let url: string | null;
+    try {
+      url = (await adapter.postComment(row.target, row.body, row.marker)).url;
+    } catch (err) {
+      const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
+      const delay = retryDelayMs(row.attempts + 1, this.cfg.retry_base_ms, this.cfg.retry_max_ms);
+      this.d.log.warn("outbox delivery failed; retried later", { work_item_id: row.work_item_id, outbox_seq: row.seq, attempts: row.attempts + 1, retry_in_ms: delay, error });
+      await this.d.store.failDelivery(row.seq, token, error, delay);
+      return;
+    }
+    await this.d.store.finishDelivery(row.seq, token, url);
+  }
+
+  /** Whether this process can apply an item's transitions: it has the item's source adapter, or the item is local. */
+  private serves(type: SourceType): boolean {
+    return type === LOCAL_TYPE || this.byType.has(type);
   }
 
   /**
@@ -3185,6 +3482,8 @@ export class Controller {
   private adapterFor(source: SourceRef, call: string): SourceAdapter | null {
     const adapter = this.byType.get(source.type);
     if (adapter) return adapter;
+    // A local item's surface is the store itself: nothing to call, nothing to warn about.
+    if (source.type === LOCAL_TYPE) return null;
     this.d.log.warn("no source adapter for the item's source type; skipped", { source_type: source.type, source_id: source.id, call });
     return null;
   }
@@ -3440,6 +3739,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",

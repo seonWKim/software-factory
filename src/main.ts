@@ -7,13 +7,14 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { cliUserConfig } from "./core/config.js";
 import { CLI_COMMANDS, CLI_TOP_WORDS, type CliEnvironment, cliIdentity, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
+import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -23,16 +24,18 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
-import { selectedSources } from "./plugins.js";
+import { createPlugin, selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
+import { LastChecks, serverRevision } from "./ui/system-actions.js";
+import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
@@ -41,7 +44,10 @@ import { DRAIN_MARGIN_MS } from "./impl/updater/git-worktree.js";
 import { withDrain } from "./migrate-drain.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
-const USAGE = `factory <command>
+const USAGE = `factory [--config <path>] <command>
+
+  --config <path>  load this factory.config.json instead of the checked-in one (also FACTORY_CONFIG; the flag
+               wins); state_dir and worktrees_dir then resolve from its folder
 
   setup        one-time setup: secret file, tokens (hidden prompt), label, checks, canary
                --rotate-github / --rotate-claude / --rotate-mysql to replace a stored credential
@@ -56,6 +62,9 @@ const USAGE = `factory <command>
                pause n workers (those whose runs started most recently) or every loop: their implement and
                review runs go back to the queue within one tick with their WIP committed locally, nothing
                pushed; other runs finish first. resume clears every pause. Stored, so it survives a restart
+  resume [name | --all]
+               end a claim pause now: rate_limit (no name), forge_auth, preflight_access or model_stall, or
+               --all for every one; prints what it ended or "no pause in effect". Logged with your local:<login>
   link-code <user_id>
                prints a one-time code that links another account (e.g. Slack) to a factory user such as
                github:12345: post /link <code> from that account. Works once, for 10 minutes
@@ -65,7 +74,8 @@ const USAGE = `factory <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
-  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
+               git-worktree updater, dev runs it too and restarts it on each new revision
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
@@ -77,13 +87,16 @@ const USAGE = `factory <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  improve      queue one improve run now: groups the failed runs of the last 24 hours into one stored report
+               (design §7); no model, nothing filed. The controller also queues one each UTC day
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
 ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
-               local work items (plugins.source includes "local"), acting as the CLI identity (cli_user, else
-               local:<git user.email>, else local:<OS user>, else local:anonymous), authorized by the local auth
-               plugin (auth.local, default "local"); no GitHub call
-  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
+               local work items, read by the controller from the store whatever plugins.source lists, acting
+               as the CLI identity (cli_user, else local:<git user.email>, else local:<OS user>, else
+               local:anonymous), authorized by the local auth plugin (auth.local, default "local"); no GitHub call
+  issue        create / comment / edit <number> --body-file <path> / title / sub-issue through the factory's
+               GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
@@ -94,7 +107,7 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
-  const app = await build(loaded);
+  const app = await build(loaded, { signal });
   const loops = [];
   if (cmd !== "worker") loops.push(app.controller.run(signal));
   if (cmd !== "controller") loops.push(app.worker.run(signal));
@@ -108,9 +121,11 @@ function stopOnSignals(): AbortSignal {
   return stop.signal;
 }
 
-async function main(cmd: string | undefined, args: string[]): Promise<number> {
-  // The supervisor sets the code root (its runtime copy) for its child; state stays in the cwd (main checkout).
-  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+async function main(argv: readonly string[]): Promise<number> {
+  // The config path is made absolute once, here; the supervisor passes that value to its children.
+  const { args: [cmd, ...args], configFile } = cliConfig(argv, process.env, process.cwd());
+  // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
+  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   if (cmd === "doctor") {
     // A config that does not load is a doctor finding: one FAIL line per problem, no stack, exit 1.
     let loaded: Loaded;
@@ -131,7 +146,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
-        const app = await build(loaded);
+        const app = await build(loaded, { signal: stop.signal });
         await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
@@ -185,6 +200,25 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
       return 0;
     }
+    case "resume": {
+      // The pauses live in the store (design §5 Restarts); an unknown name is refused before the store opens.
+      const action = parseResumeArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${RESUME_USAGE}`);
+        return 1;
+      }
+      const store = await buildStatsStore(loaded);
+      try {
+        await store.migrate();
+        const clock = await new Plugins(loaded).clock();
+        // An ID, never a display name: the OS login of the local owner.
+        const r = await runResume({ store, actor: `local:${userInfo().username}`, log: new ConsoleLogger(clock, "resume") }, action);
+        for (const line of r.lines) console.log(line);
+        return r.code;
+      } finally {
+        await store.close();
+      }
+    }
     case "link-code": {
       // Only the code's hash is stored; the code is printed here once and nowhere else (design 2026-11-01).
       const store = await buildStatsStore(loaded);
@@ -213,8 +247,10 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
             store,
             base: settingsBase(loaded),
             repo: { owner, name },
-            // Only for --project: the configured repo's key, from the forge (design 2026-11-01).
+            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07).
             resolveProject: async () => {
+              const stored = await storeProjectResolver(store, { owner, name })();
+              if (stored) return stored;
               const p = new Plugins(loaded);
               const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
               return resolveProject(github, { owner, name });
@@ -234,6 +270,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
       // sees one user for the UI and the terminal.
       const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
+      // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
+      const lastChecks = new LastChecks();
       const ui = await startUi(
         {
           store: parts.store,
@@ -247,18 +285,32 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
-          health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
+          // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
+          health: new HealthMonitor(
+            lastChecks.wrap(async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))]),
+            parts.clock,
+          ),
+          lastChecks,
+          // The revision this server runs (its code root's HEAD): the app shows a banner when its own differs.
+          revision: await serverRevision(loaded.codeRoot),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // The configured shared storage, read only by the transcript view (byte ranges, design §9).
+          storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
           // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
           commands: parts.commands,
+          // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
+          pauses: parts.pauses,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
-      const signal = stopOnSignals();
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
+      // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
+      const orphan = new AbortController();
+      if (process.env[SUPERVISED_ENV] === "1" && process.send) process.once("disconnect", () => orphan.abort());
+      const signal = AbortSignal.any([stopOnSignals(), orphan.signal]);
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();
       await parts.close();
@@ -384,6 +436,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     case "reject":
     case "users":
       return localCli(loaded, cmd, args);
+    case "improve": {
+      // The same enqueue as the controller's daily step, with a key of its own (design §7); a worker runs it.
+      const app = await build(loaded);
+      try {
+        const { run } = await enqueueImprove(app, app.project.key, "manual");
+        console.log(`improve run ${run.id} queued (window ${run.input?.improve?.window_start} to ${run.input?.improve?.window_end})`);
+      } finally {
+        await app.close();
+      }
+      return 0;
+    }
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));
@@ -448,10 +511,6 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
       action,
     );
     for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
-    const writes = action.action === "create" || action.action === "command";
-    if (r.code === 0 && writes && !selectedSources(loaded.plugins).includes("local")) {
-      console.error('note: plugins.source does not include "local", so the controller does not read local items yet');
-    }
     return r.code;
   } finally {
     await store.close();
@@ -473,7 +532,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
       const r = await addCase(
         {
           store,
-          project: await resolveProject(github, { owner, name }),
+          project: (await storeProjectResolver(store, { owner, name })()) ?? (await resolveProject(github, { owner, name })),
           github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
           scanner: await p.scanner(secrets),
           casesDir: join(loaded.root, "golden", "cases"),
@@ -524,7 +583,7 @@ async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
   return schema.length > 0 ? schema : legacy(new MysqlDriver(options));
 }
 
-main(process.argv[2], process.argv.slice(3)).then(
+main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);

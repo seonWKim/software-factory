@@ -18,7 +18,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import type { OpenAICompatibleConfig } from "../src/impl/openai/config.js";
 import { AGENT_FAILED, BASH_REFUSAL, INVALID_OUTPUT, MAX_TOOL_ROUNDS, OpenAICompatibleRunner } from "../src/impl/runner/openai-compatible-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
-import { type AgentRunSpec, toolsNotExposedMessage } from "../src/interfaces/agent-runner.js";
+import { type AgentRunSpec, PROVIDER_SETUP, toolsNotExposedMessage } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { REGISTRY } from "../src/plugins.js";
@@ -397,6 +397,36 @@ describe("errors and usage", () => {
     const res = await runner(s).run(spec());
     expect(res.status).toBe("rate_limited");
     expect(res.reset_at).toBeUndefined();
+  });
+
+  it("a 429 insufficient_quota is failed with code provider_setup and the provider's message, not rate_limited", async () => {
+    const s = await serve({
+      status: 429,
+      headers: { "retry-after": "30" },
+      body: { error: { message: "You exceeded your current quota", code: "insufficient_quota" } },
+    }, final({ answer: "x" }));
+    const res = await runner(s).run(spec());
+    expect(res).toMatchObject({ status: "failed", code: PROVIDER_SETUP });
+    expect(res.error).toContain("You exceeded your current quota");
+    expect(res.reset_at).toBeUndefined();
+    expect(s.requests).toHaveLength(1);
+  });
+
+  it("the fallback chain moves on from a provider_setup member, which made no output", async () => {
+    const s = await serve({ status: 401, body: { error: { message: "Incorrect API key provided", code: "invalid_api_key" } } });
+    const next = { run: async () => ({ status: "completed" as const, output: { answer: "y" }, transcript: "", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } }) };
+    const res = await new FallbackRunner([{ name: "openai-compatible", impl: runner(s) }, { name: "next", impl: next }]).run(spec());
+    expect(res).toMatchObject({ status: "completed", served_by: "next" });
+    expect(res.code).toBeUndefined();
+    expect(res.fallbacks?.[0]?.reason).toContain("provider_setup");
+  });
+
+  it("a chain whose last member also fails with provider_setup keeps the code", async () => {
+    const setup = { status: 404, body: { error: { message: "The model does not exist", code: "model_not_found" } } };
+    const s = await serve(setup, setup);
+    const res = await new FallbackRunner([{ name: "a", impl: runner(s) }, { name: "b", impl: runner(s) }]).run(spec());
+    expect(res).toMatchObject({ status: "failed", code: PROVIDER_SETUP, served_by: "b" });
+    expect(res.error).toContain("The model does not exist");
   });
 
   it("any other error gives failed, with no retry", async () => {

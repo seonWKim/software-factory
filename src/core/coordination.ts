@@ -9,7 +9,9 @@ import type { DependencyKind, DependencyState, SharedPath, SourceRef } from "./t
  *   cost against any holder is at or above `max_cost` is held. Holders: items with an implement run in progress,
  *   items with an open PR, and other queued implement runs.
  * - Deadlock rule: a run held only by other queued runs (no running item, no open PR) is claimed when its turn
- *   comes, so the oldest of a group that holds each other goes first.
+ *   comes, so the oldest of a group that holds each other goes first. A queued run never holds on its own: it
+ *   cannot make progress before it is claimed, so only a running item or an open PR keeps a run queued.
+ * - Hold policy (issue #314): a `held` run then waits, starts after `minutes`, or starts at once (`holdOutcome`).
  * - Dependencies: an item waits for every item it depends on to merge. A cycle is refused.
  */
 
@@ -35,6 +37,51 @@ export const DEFAULT_HOTSPOTS: readonly string[] = [
   "SET_UP.md",
 ];
 
+/**
+ * Default `mechanical_paths` (design §5, issue #297): files two items usually change only by adding lines or new
+ * files (the MySQL migration runner and its step folder, the design and plugin indexes and topic files). Their
+ * conflicts are merged in code (src/core/mechanical.ts), so they weigh `mechanical_weight` and are never hotspots.
+ */
+export const DEFAULT_MECHANICAL: readonly string[] = [
+  "src/impl/store/mysql/migrations.ts",
+  "migrations/mysql/",
+  "docs/design/",
+  "docs/design.md",
+  "docs/plugins.md",
+  "docs/plugins/",
+];
+/** Default `mechanical_weight`: well below BASE_WEIGHT, so a few index and History lines never hold a run. */
+export const DEFAULT_MECHANICAL_WEIGHT = 0.25;
+
+/**
+ * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve` (the
+ * default); `run_after_minutes` claims it once it has been held `minutes`; `run` claims it at once. Settable live.
+ */
+export type HoldPolicy = { mode: "hold" } | { mode: "run_after_minutes"; minutes: number } | { mode: "run" };
+export const HOLD_POLICY_MODES = ["hold", "run_after_minutes", "run"] as const;
+/** `minutes` of `run_after_minutes` when the value gives none. */
+export const DEFAULT_HOLD_MINUTES = 20;
+export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "hold" };
+/** `hotspot_mode`: `policy` (default) lets a hotspot hold follow `hold_policy`; `hold` always keeps it held. */
+export const HOTSPOT_MODES = ["policy", "hold"] as const;
+export type HotspotMode = (typeof HOTSPOT_MODES)[number];
+
+/** A checked `hold_policy`; throws the config loader's message. `minutes` absent: DEFAULT_HOLD_MINUTES. */
+export function parseHoldPolicy(value: unknown): HoldPolicy {
+  const v = value as { mode?: unknown; minutes?: unknown } | null;
+  if (typeof v !== "object" || v === null || Array.isArray(v) || !(HOLD_POLICY_MODES as readonly unknown[]).includes(v.mode)) {
+    throw new Error(`hold_policy must be { "mode": ${HOLD_POLICY_MODES.map((m) => `"${m}"`).join(" | ")} } (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  const extra = Object.keys(v).filter((k) => k !== "mode" && !(k === "minutes" && v.mode === "run_after_minutes"));
+  if (extra.length > 0) throw new Error(`hold_policy with mode "${String(v.mode)}" takes no ${extra.join(", ")}`);
+  if (v.mode !== "run_after_minutes") return { mode: v.mode as "hold" | "run" };
+  const minutes = v.minutes ?? DEFAULT_HOLD_MINUTES;
+  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 1) {
+    throw new Error(`hold_policy.minutes must be a positive integer (got ${JSON.stringify(v.minutes) ?? String(v.minutes)})`);
+  }
+  return { mode: "run_after_minutes", minutes };
+}
+
 export interface CoordinationSettings {
   /** `max_coordination_cost`: a cost at or above it holds the run. */
   max_cost: number;
@@ -42,12 +89,24 @@ export interface CoordinationSettings {
   hotspots: readonly string[];
   /** `hotspot_weight`: the fixed weight of a hotspot. */
   hotspot_weight: number;
+  /** `mechanical_paths`: files (or folders ending in `/`) weighed `mechanical_weight`, never hotspots. */
+  mechanical: readonly string[];
+  /** `mechanical_weight`: above 0, below 1.0. */
+  mechanical_weight: number;
+  /** `hold_policy`: what a cost hold does (issue #314). */
+  hold_policy: HoldPolicy;
+  /** `hotspot_mode`: whether a hold on a hotspot follows `hold_policy` or always stays held. */
+  hotspot_mode: HotspotMode;
 }
 
 export const DEFAULT_COORDINATION: CoordinationSettings = {
   max_cost: DEFAULT_MAX_COORDINATION_COST,
   hotspots: DEFAULT_HOTSPOTS,
   hotspot_weight: DEFAULT_HOTSPOT_WEIGHT,
+  mechanical: DEFAULT_MECHANICAL,
+  mechanical_weight: DEFAULT_MECHANICAL_WEIGHT,
+  hold_policy: DEFAULT_HOLD_POLICY,
+  hotspot_mode: "policy",
 };
 
 /** A file's weight from its recorded conflicts: 1.0 below two, then 1.0 + 0.5 per conflict, at most 4.0. */
@@ -77,6 +136,14 @@ function isHotspot(path: string, hotspots: readonly string[]): boolean {
   return hotspots.some((h) => h === path || isCovered(h, [path]) || isCovered(path, [h]));
 }
 
+/**
+ * Whether `path` is a mechanical path: equal to one, or under a mechanical folder. A folder that only holds one
+ * (e.g. `docs/`) is not: it covers other files too.
+ */
+export function isMechanical(path: string, mechanical: readonly string[]): boolean {
+  return mechanical.some((m) => m === path || isCovered(path, [m]));
+}
+
 /** Recorded conflicts on `path`; for a folder, the most on any file under it. */
 function conflictsOn(path: string, conflicts: ReadonlyMap<string, number>): number {
   if (!path.endsWith("/")) return conflicts.get(path) ?? 0;
@@ -85,9 +152,17 @@ function conflictsOn(path: string, conflicts: ReadonlyMap<string, number>): numb
   return most;
 }
 
-/** One shared path's weight: the highest of BASE_WEIGHT, its learned weight and, for a hotspot, the hotspot weight. */
+/**
+ * One shared path's weight: the highest of BASE_WEIGHT, its learned weight and, for a hotspot, the hotspot weight.
+ * A mechanical path is never a hotspot: it weighs `mechanical_weight`, or its learned weight when that is higher
+ * (from LEARNED_FROM recorded conflicts, which only real resolve runs add).
+ */
 export function pathWeight(path: string, conflicts: ReadonlyMap<string, number>, s: CoordinationSettings): SharedPath {
   const n = conflictsOn(path, conflicts);
+  if (isMechanical(path, s.mechanical)) {
+    const weight = n >= LEARNED_FROM ? Math.max(s.mechanical_weight, learnedWeight(n)) : s.mechanical_weight;
+    return { path, weight, conflicts: n, hotspot: false, mechanical: true };
+  }
   const hotspot = isHotspot(path, s.hotspots);
   return { path, weight: Math.max(BASE_WEIGHT, learnedWeight(n), hotspot ? s.hotspot_weight : 0), conflicts: n, hotspot };
 }
@@ -100,7 +175,7 @@ export function coordinationCost(
   s: CoordinationSettings,
 ): { shared: SharedPath[]; cost: number } {
   const shared = sharedPaths(a, b).map((p) => pathWeight(p, conflicts, s));
-  // Weights are multiples of 0.5 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
+  // Weights are multiples of 0.25 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
   const cost = Math.round(shared.reduce((sum, p) => sum + p.weight, 0) * 1000) / 1000;
   return { shared, cost };
 }
@@ -125,8 +200,10 @@ export interface Hold {
 }
 
 /**
- * Every holder whose cost against the candidate is at or above `max_cost`, highest cost first (running and PR
- * holders before waiting ones at the same cost). Only holders of the same project and another item count.
+ * Every holder whose cost against the candidate is at or above `max_cost`: running and PR holders first, then
+ * waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
+ * one the stored decision names: a run held by an open PR names the PR, even when a queued run shares more files.
+ * Only holders of the same project and another item count.
  */
 export function holdsOn(
   candidate: { work_item_id: string; project: string; files: readonly string[] },
@@ -141,7 +218,7 @@ export function holdsOn(
     if (shared.length > 0 && cost >= s.max_cost) holds.push({ holder: h, shared, cost });
   }
   const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
-  return holds.sort((x, y) => y.cost - x.cost || rank(x) - rank(y));
+  return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
 }
 
 /**
@@ -153,21 +230,44 @@ export function claimDecision(holds: readonly Hold[]): "free" | "deadlock" | "he
   return holds.every((h) => h.holder.kind === "waiting") ? "deadlock" : "held";
 }
 
-const fmt = (n: number) => n.toFixed(1);
+/**
+ * What `hold_policy` makes of a `held` claim decision (issue #314), `heldMs` after the hold started (`held_since`):
+ * `held` (stays queued), `timed_out` (claimed: held `minutes` under `run_after_minutes`) or `overlap_allowed`
+ * (claimed at once under `run`). With `hotspot_mode: hold`, a running item or open PR that shares a hotspot keeps
+ * the run held whatever the policy.
+ */
+export function holdOutcome(holds: readonly Hold[], s: CoordinationSettings, heldMs: number): "held" | "timed_out" | "overlap_allowed" {
+  const p = s.hold_policy;
+  if (p.mode === "hold") return "held";
+  if (s.hotspot_mode === "hold" && holds.some((h) => h.holder.kind !== "waiting" && h.shared.some((x) => x.hotspot))) return "held";
+  if (p.mode === "run") return "overlap_allowed";
+  return heldMs >= p.minutes * 60_000 ? "timed_out" : "held";
+}
+
+/** A cost: one decimal (4.0, 2.5), two when a mechanical weight needs them (2.75). */
+const fmt = (n: number) => n.toFixed(Number.isInteger(Math.round(n * 1000) / 100) ? 1 : 2);
 
 function list(parts: readonly string[]): string {
   if (parts.length <= 1) return parts.join("");
   return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
+/** A weight as written in a hold reason: 0.25, 1, 2.5. */
+const weightText = (n: number) => String(Number(n.toFixed(2)));
+
 function describePath(p: SharedPath): string {
+  if (p.mechanical) {
+    const times = p.conflicts === 0 ? "" : `, conflicted ${p.conflicts === 1 ? "once" : `${p.conflicts} times`}`;
+    return `${p.path} (mechanical, ${weightText(p.weight)}${times})`;
+  }
   if (p.conflicts > 0) return `${p.path} (conflicted ${p.conflicts === 1 ? "once" : `${p.conflicts} times`})`;
   return p.hotspot ? `${p.path} (hotspot)` : p.path;
 }
 
 /**
  * The hold reason the item's comment and the dashboard show, e.g.
- * `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5`.
+ * `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5`. A mechanical
+ * path names its weight: `docs/design.md (mechanical, 0.25)`.
  */
 export function holdReason(h: {
   holder_ref: string;

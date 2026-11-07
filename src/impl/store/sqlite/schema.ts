@@ -471,12 +471,116 @@ export const MIGRATIONS: readonly string[] = [
     created_at  TEXT NOT NULL
   );
   `,
-  // 27: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
+  // 27: GitHub sync records (design §5, GitHub call budget). `posted_comments`: one row per (source id, marker): the
+  // comment's ID, URL and body hash once posted, and the failed posts (`attempts`, `next_attempt_at`) of the
+  // controller's backoff. `label_states`: the status label last written per (source id, target), `target` being
+  // `issue` or `pr:<n>`, with the claim (`claim_*`) of the write in progress. IF NOT EXISTS: safe to run again below 27.
+  `
+  CREATE TABLE IF NOT EXISTS posted_comments (
+    source_id        TEXT NOT NULL,
+    marker           TEXT NOT NULL,
+    comment_id       TEXT,
+    url              TEXT,
+    body_hash        TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (source_id, marker)
+  );
+  CREATE TABLE IF NOT EXISTS label_states (
+    source_id     TEXT NOT NULL,
+    target        TEXT NOT NULL,
+    status        TEXT,
+    claim_token   TEXT,
+    claim_status  TEXT,
+    claim_until   TEXT,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (source_id, target)
+  );
+  `,
+  // 28: host sleeps (design §5 Host sleep, issue #218). One row per sleep a worker saw: one of its waits ended more
+  // than 60 s late. Keyed by (worker_id, woke_at), so recording one again keeps one row. `run_id`: the run the
+  // worker held, null for an idle tick. Ids, a timestamp and a number only. IF NOT EXISTS: safe to run again below 28.
+  `
+  CREATE TABLE IF NOT EXISTS host_sleeps (
+    worker_id  TEXT NOT NULL,
+    woke_at    TEXT NOT NULL,
+    gap_ms     INTEGER NOT NULL,
+    run_id     TEXT,
+    PRIMARY KEY (worker_id, woke_at)
+  );
+  CREATE INDEX IF NOT EXISTS host_sleeps_woke ON host_sleeps (woke_at);
+  CREATE INDEX IF NOT EXISTS host_sleeps_run ON host_sleeps (run_id);
+  `,
+  // 29: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
+  // must get: its source type, the target (JSON SourceRef), the item field its URL fills, the attempts, the next
+  // try, a claim (token and expiry) so one replica posts it, and the delivery. Pending app command requests are
+  // copied into `command_inbox` (key `app:<seq>`, args {"app_request": seq}), where the controller now
+  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 29.
+  `
+  CREATE TABLE IF NOT EXISTS thread_outbox (
+    seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_seq       INTEGER NOT NULL UNIQUE REFERENCES item_thread(seq),
+    work_item_id     TEXT NOT NULL REFERENCES work_items(id),
+    source_type      TEXT NOT NULL,
+    target           TEXT NOT NULL,
+    link_field       TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL,
+    claim_token      INTEGER NOT NULL DEFAULT 0,
+    claimed_until    TEXT,
+    delivered_at     TEXT,
+    url              TEXT,
+    last_error       TEXT,
+    created_at       TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS thread_outbox_pending ON thread_outbox (delivered_at, source_type, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS thread_outbox_item ON thread_outbox (work_item_id, seq);
+  INSERT INTO command_inbox (command_key, actor, command, args, created_at)
+  SELECT 'app:' || r.seq, r.actor, r.command, json_object('app_request', r.seq), r.created_at FROM app_command_requests r
+  WHERE r.handled_at IS NULL AND NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.command_key = 'app:' || r.seq)
+  ORDER BY r.seq;
+  `,
+  // 30: when a cost hold started (issue #314, design §5 Hold policy): kept while the run stays held, whichever
+  // holder the decision names, so a `run_after_minutes` timer does not restart. NULL on older rows.
+  `
+  ALTER TABLE claim_decisions ADD COLUMN held_since TEXT;
+  `,
+  // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
+  // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
+  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  `
+  CREATE TABLE IF NOT EXISTS improve_reports (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    project_key     TEXT NOT NULL,
+    window_start    TEXT NOT NULL,
+    window_end      TEXT NOT NULL,
+    failure_groups  TEXT NOT NULL,
+    patterns        TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project_key, created_at);
+  CREATE TABLE IF NOT EXISTS filed_patterns (
+    id           TEXT PRIMARY KEY,
+    project_key  TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    report_id    TEXT NOT NULL REFERENCES improve_reports(id),
+    filed_ref    TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE (project_key, pattern_key)
+  );
+  `,
+  // 32: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
   // the source issue's updated_at it was read at; NULL on edges from before (the controller reads them once more).
   `
   ALTER TABLE dependency_edges ADD COLUMN source_updated_at TEXT;
   `,
-  // 28: the same read time on the item (issue #254), so an item whose issue has no links also records when its
+  // 33: the same read time on the item (issue #254), so an item whose issue has no links also records when its
   // links were read. NULL: never read with a time, or marked stale; the controller reads its links on the next poll.
   `
   ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;

@@ -95,7 +95,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check |
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
 | `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice; on its PR: waiting for a human merge, blocked by a failed review run |
-| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
+| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
@@ -258,6 +258,13 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
    ```
 
    Those are the only grants: the user may create, use and drop databases whose names start with `sf_test_`, and nothing else. It has no access to `software_factory` or any other database, no `GRANT OPTION`, and no global privileges. The pattern needs the backslashes: an unescaped `_` matches any character.
+   What the MySQL suite needs, by test:
+
+   | Grant | Needed by | Without it |
+   |---|---|---|
+   | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
+   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file; CI's `test-mysql` job (root) still runs it |
+
 2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
 
    ```sh
@@ -271,6 +278,17 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
 What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
 
 For `npm run test:mysql` on your own machine, the same URL can go in `.factory/test-mysql.url` (ignored by git).
+
+## Run the factory on your project
+
+The checked-in `factory.config.json` is this repository's own config. To point the factory at another repository, keep your config outside the factory checkout, so `dev`'s updater (which runs `origin/<base_branch>`) never replaces it:
+
+1. Make a folder for it, e.g. `~/factory/my-app/`, and copy `factory.config.json` into it.
+2. Edit at least `repo.owner`, `repo.name`, `repo.path` (your project's checkout; relative paths resolve from the folder you start the factory in), `repo.base_branch`, `repo.test_command` / `repo.check_commands`, `floors` and `store`. For one machine, `"store": { "type": "sqlite" }` needs no database.
+3. Check it: `npm run factory -- doctor --config ~/factory/my-app/factory.config.json`. The first line names the config file in use.
+4. Start: `npm run factory -- dev --config ~/factory/my-app/factory.config.json` (or `export FACTORY_CONFIG=…`; `--config` wins when both are set). Every command takes the flag.
+
+With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. Solo use (SQLite) may set any key; on a shared MySQL store, `dials`, `floors`, `plugins`, `permissions` and `auth` always come from the checked-in file. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
 
 ## Routine
 
@@ -286,7 +304,7 @@ For `npm run test:mysql` on your own machine, the same URL can go in `.factory/t
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
-| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
+| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
@@ -322,6 +340,26 @@ Filters (in the URL, so a filtered view can be bookmarked; each option shows how
 - `closed=1`: show closed items too
 - `q`: search the issue number (`#12` or `12`) and the title as shown
 
-Slack (optional, for real-time threads): [`docs/slack-setup.md`](docs/slack-setup.md), mostly `scripts/slack-app.sh create|tokens|check`.
+### Slack (optional: real-time threads)
+
+Off by default; nothing changes until you turn it on. Once on, mentioning the bot in a listed channel starts a work item from that thread, and the factory answers in the thread with the spec, status and buttons. PRs and code stay on GitHub.
+
+One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md) (mostly `scripts/slack-app.sh create|tokens|check`):
+
+1. **The app, from the manifest** ([`slack/manifest.json`](slack/manifest.json)): Socket Mode on (no public URL or open port), interactivity on (for the buttons), bot scopes `app_mentions:read`, `channels:history`, `chat:write`, events `app_mention` and `message.channels`.
+2. **The tokens go in the secret file** (`~/.config/software-factory/.env`, never in the repository), through `scripts/slack-app.sh tokens`:
+   - `SLACK_BOT_TOKEN` (`xoxb-…`, OAuth & Permissions page): reads threads and posts in them.
+   - `SLACK_APP_TOKEN` (`xapp-…`, Basic Information → App-Level Tokens, scope `connections:write`): opens the Socket Mode connection.
+3. **The channel:** `/invite @software-factory` in the channel, then copy its ID (channel details, bottom of the **About** tab, `C…`). Use the ID, not the name.
+4. **Turn it on** in `factory.config.json`, then restart the factory:
+
+   ```json
+   "slack": { "channels": ["C0123456789"] },
+   "plugins": { "source": ["github-issues", "local", "slack"] }
+   ```
+
+5. **Link your Slack account** to your factory user (with `auth: github`, a Slack account has no rights until it is linked): run `factory link-code github:<your GitHub user ID>`, then post `@software-factory /link <code>` in the channel.
+
+In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons. To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

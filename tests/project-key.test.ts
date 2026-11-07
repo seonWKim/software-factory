@@ -2,20 +2,22 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig, resolveProject, resolvedConfig } from "../src/compose.js";
+import { PROJECT_RETRY_MS, build, loadConfig, resolveProject, resolvedConfig, startupProject } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
 import {
-  UNKNOWN_PROJECT_LABEL, assertProjectKey, githubProjectKey, isLegacyProject, isProjectKey, projectLabel, projectLabelCursor,
+  UNKNOWN_PROJECT_LABEL, assertProjectKey, githubProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
 } from "../src/core/project.js";
-import { readProjectLabel, saveProjectLabel } from "../src/core/project-labels.js";
+import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import type { FactoryConfig } from "../src/core/config.js";
+import type { UserId } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { GitHubClient, webHost } from "../src/impl/github/github-client.js";
+import { GitHubClient, GitHubError, webHost } from "../src/impl/github/github-client.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import { projectKeyChecks } from "../src/ui/factory-status.js";
 import { NO_FILTERS } from "../src/ui/filters.js";
 import { type UiDeps, renderIndex, renderItem } from "../src/ui/pages.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
@@ -109,13 +111,99 @@ describe("startup resolution", () => {
     return dir;
   }
 
-  it("build() (the controller's startup) stops with the configured repo and the reason when GitHub fails", async () => {
+  it("build() on a first start stops with the configured repo and the reason when GitHub says 401 (bad credentials)", async () => {
     const loaded = await loadConfig(root());
     const { owner, name } = loaded.config.repo;
-    const failing = { repoIdentity: async () => Promise.reject(new Error("Bad credentials (401)")) };
+    const failing = { repoIdentity: async () => Promise.reject(new GitHubError(401, "GitHub GET /repos/o/r → 401 Bad credentials")) };
     const err = await build(loaded, { clock: new FakeClock(), repoLookup: failing }).then(() => null, (e: Error) => e);
     expect(err?.message).toContain(`${owner}/${name}`);
-    expect(err?.message).toContain("Bad credentials (401)");
+    expect(err?.message).toContain("Bad credentials");
+  });
+
+  /** What GitHub answers an installation whose hourly calls are used up (the 2026-11-07 startup crash). */
+  const rateLimited = () => new GitHubError(403, "GitHub GET /repos/o/r → 403 API rate limit exceeded for installation ID 1");
+
+  it("build() with the key stored starts while GitHub is rate limited, and the controller processes local commands", async () => {
+    const dir = root();
+    const file = JSON.parse(readFileSync(join(dir, "factory.config.json"), "utf8")) as { plugins: Record<string, unknown> };
+    writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...file, plugins: { ...file.plugins, source: "local" } }));
+    const loaded = await loadConfig(dir);
+    // An earlier start resolved the key through GitHub and stored it.
+    const first = await build(loaded, { clock: new FakeClock(), repoLookup: { repoIdentity: async (r) => ({ node_id: NODE_ID, ...r, host: "github.com" }) } });
+    const { item } = await first.store.createWorkItem(
+      { source: { type: "local", id: "local-1", link: "local:local-1" }, requester_id: "local:owner" as UserId, project: first.project.key, problem: "p", resources: [] },
+      system,
+    );
+    await first.close();
+
+    const lookups: string[] = [];
+    const limited = { repoIdentity: async (r: { owner: string; name: string }) => (lookups.push(`${r.owner}/${r.name}`), Promise.reject(rateLimited())) };
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup: limited });
+    try {
+      expect(built.project).toEqual({ key: KEY, label: `github.com/${loaded.config.repo.owner}/${loaded.config.repo.name}` });
+      await built.store.appendCliCommand({ key: "k1", actor: "local:alice", command: "help", args: { item: item.id } });
+      await built.controller.tickIntake();
+      expect((await built.store.listItemMessages(item.id)).length).toBe(1);
+    } finally {
+      await built.close();
+    }
+    // One background read, its failure logged: the start did not wait on it.
+    expect(lookups).toHaveLength(1);
+  });
+
+  it("build() on a first start waits and retries while GitHub is rate limited, then stores the key", async () => {
+    const loaded = await loadConfig(root());
+    const clock = new FakeClock();
+    let calls = 0;
+    const lookup = {
+      repoIdentity: async (r: { owner: string; name: string }) => (++calls <= 2 ? Promise.reject(rateLimited()) : { node_id: NODE_ID, ...r, host: "github.com" }),
+    };
+    let built: Awaited<ReturnType<typeof build>> | null = null;
+    const starting = build(loaded, { clock, repoLookup: lookup }).then((b) => (built = b));
+    for (let i = 0; i < 100 && built === null; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      clock.advance(PROJECT_RETRY_MS * 20);
+    }
+    await starting;
+    try {
+      expect(calls).toBe(3);
+      expect(built!.project.key).toBe(KEY);
+      expect(await built!.store.getCursor(projectKeyCursor(loaded.config.repo))).toBe(KEY);
+    } finally {
+      await built!.close();
+    }
+  });
+
+  it("build() on a first start stops when its signal aborts while GitHub is down", async () => {
+    const loaded = await loadConfig(root());
+    const stop = new AbortController();
+    const failing = { repoIdentity: async () => Promise.reject(new GitHubError(503, "GitHub GET /repos/o/r → 503 Service Unavailable")) };
+    const starting = build(loaded, { clock: new FakeClock(), repoLookup: failing, signal: stop.signal }).then(() => null, (e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 20));
+    stop.abort(new Error("stopped"));
+    expect(await starting).toMatchObject({ message: "stopped" });
+  });
+
+  it("a store from before the key cursor finds the key by its label, with no GitHub answer, and stores the key", async () => {
+    const f = await rawStore();
+    await saveProjectLabel(f.store, { key: KEY, label: "github.com/o/r" });
+    await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
+    const log = recordingLog();
+    const { project, refreshed } = await startupProject({
+      store: f.store, lookup: { repoIdentity: async () => Promise.reject(rateLimited()) }, repo: { owner: "o", name: "r" }, clock: f.clock, log,
+    });
+    await refreshed;
+    expect(project).toEqual({ key: KEY, label: "github.com/o/r" });
+    expect(await f.store.getCursor(projectKeyCursor({ owner: "o", name: "r" }))).toBe(KEY);
+    expect(log.lines.filter((l) => l.level === "warn").map((l) => l.msg)).toEqual(["GitHub unreachable at startup; using the stored project key"]);
+  });
+
+  it("health warns while the configured repo's key is not stored, and not once it is", async () => {
+    const f = await rawStore();
+    const repo = { owner: "o", name: "r" };
+    expect(await projectKeyChecks(f.store, repo)).toEqual([{ ok: false, warn: true, msg: expect.stringContaining("o/r not stored yet") }]);
+    await saveProject(f.store, repo, { key: KEY, label: "github.com/o/r" });
+    expect(await projectKeyChecks(f.store, repo)).toEqual([]);
   });
 
   it("build() uses the key for writes and stores the label refreshed from GitHub", async () => {

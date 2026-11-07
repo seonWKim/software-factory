@@ -3,10 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Plugins, loadConfig } from "../src/compose.js";
+import { FallbackLLM } from "../src/core/fallback-llm.js";
 import { OpenAICompatibleLLMProvider } from "../src/impl/llm/openai-compatible-llm-provider.js";
 import openaiCompatible from "../src/impl/llm/openai-compatible.plugin.js";
 import type { OpenAICompatibleConfig } from "../src/impl/openai/config.js";
-import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { llmCheckFromPlugins } from "../src/llm-check.js";
 import { REGISTRY } from "../src/plugins.js";
@@ -149,6 +150,25 @@ describe("OpenAICompatibleLLMProvider", () => {
       expect(r.text).toMatch(pattern);
       noKey(r);
     }
+  });
+
+  it("a 429 insufficient_quota is a provider_setup error with the provider's message, never the key", async () => {
+    const s = await serve({ status: 429, body: { error: { message: `You exceeded your current quota (key ${KEY})`, code: "insufficient_quota" } } });
+    const r = await provider({ base_url: s.baseUrl, models: MODELS }).complete(REQ);
+    expect(r.stop_reason).toBe("error");
+    expect(r.text).toContain("provider_setup");
+    expect(r.text).toContain("You exceeded your current quota");
+    expect(r.usage.output_tokens).toBe(0);
+    noKey(r);
+  });
+
+  it("the fallback chain moves to the next provider on provider_setup", async () => {
+    const s = await serve({ status: 401, body: { error: { message: "Incorrect API key provided", code: "invalid_api_key" } } });
+    const next: LLMProvider = { complete: async () => ({ text: "ok", stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } }) };
+    const chain = new FallbackLLM([{ name: "openai-compatible", impl: provider({ base_url: s.baseUrl, models: MODELS }) }, { name: "next", impl: next }]);
+    const r = await chain.complete(REQ);
+    expect(r).toMatchObject({ text: "ok", stop_reason: "end", served_by: "next" });
+    expect(s.requests).toHaveLength(1);
   });
 
   it("a missing key is an error without an HTTP request", async () => {

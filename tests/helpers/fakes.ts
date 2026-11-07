@@ -20,6 +20,8 @@ import type { IssueLookup, SessionFile, SessionFiles, SessionIssue } from "../..
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
+import { GitHubClient, GitHubError } from "../../src/impl/github/github-client.js";
+import type { GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { newStore } from "./store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -736,4 +738,65 @@ export class FakeIssues implements IssueLookup {
   asked: number[] = [];
   constructor(readonly issues: Record<number, SessionIssue> = {}) {}
   issue = async (n: number) => (this.asked.push(n), this.issues[n] ?? null);
+}
+
+/**
+ * A GitHubClient over in-memory issues of repo o/r: the label and comment routes the GitHub source's
+ * setStatus and postComment use. Every request is recorded in `calls` as `METHOD path` (query dropped).
+ */
+export class FakeGitHubClient extends GitHubClient {
+  calls: string[] = [];
+  /** Labels per issue or PR number. */
+  labels = new Map<number, string[]>();
+  /** Comments per issue or PR number. */
+  comments = new Map<number, { id: number; body: string; html_url: string }[]>();
+  /** When set, a comment POST throws this. */
+  commentError: Error | null = null;
+  private nextId = 1;
+
+  constructor() {
+    super({} as GitHubCredentials, "http://unused");
+  }
+
+  /** The calls to one issue's or PR's label routes. */
+  labelCalls(n?: number): string[] {
+    return this.calls.filter((c) => (n === undefined ? /\/issues\/\d+\/labels/ : new RegExp(`/issues/${n}/labels`)).test(c));
+  }
+
+  override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const [bare, query = ""] = path.split("?") as [string, string?];
+    this.calls.push(`${method} ${bare}`);
+    const firstPage = !/(^|&)page=([2-9]|\d\d)/.test(query);
+    if (method === "POST" && bare === "/repos/o/r/labels") return {} as T;
+    let m = /^\/repos\/o\/r\/issues\/(\d+)\/labels$/.exec(bare);
+    if (m) {
+      const n = Number(m[1]);
+      const have = this.labels.get(n) ?? [];
+      if (method === "GET") return (firstPage ? have.map((name) => ({ name })) : []) as T;
+      for (const l of (body as { labels: string[] }).labels) if (!have.includes(l)) have.push(l);
+      this.labels.set(n, have);
+      return [] as T;
+    }
+    m = /^\/repos\/o\/r\/issues\/(\d+)\/labels\/(.+)$/.exec(bare);
+    if (m && method === "DELETE") {
+      const n = Number(m[1]);
+      const name = decodeURIComponent(m[2]!);
+      const have = this.labels.get(n) ?? [];
+      if (!have.includes(name)) throw new GitHubError(404, `GitHub DELETE ${bare} → 404`);
+      this.labels.set(n, have.filter((l) => l !== name));
+      return undefined as T;
+    }
+    m = /^\/repos\/o\/r\/issues\/(\d+)\/comments$/.exec(bare);
+    if (m) {
+      const n = Number(m[1]);
+      const thread = this.comments.get(n) ?? [];
+      if (method === "GET") return (firstPage ? thread : []) as T;
+      if (this.commentError) throw this.commentError;
+      const id = this.nextId++;
+      const c = { id, body: (body as { body: string }).body, html_url: `https://github.com/o/r/issues/${n}#issuecomment-${id}` };
+      this.comments.set(n, [...thread, c]);
+      return c as T;
+    }
+    throw new Error(`unexpected ${method} ${path}`);
+  }
 }

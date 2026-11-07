@@ -8,6 +8,7 @@ import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemI
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { SharedStorage } from "../interfaces/shared-storage.js";
 import {
   type FacetCounts, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts, isFiltered,
 } from "./filters.js";
@@ -15,6 +16,7 @@ import { between, duration, esc, facts as factsTable, link, page, table } from "
 import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
+import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiSettings } from "./settings-api.js";
 import type { UiCommands } from "./commands.js";
@@ -49,6 +51,12 @@ export interface UiDeps {
    * actor, a store-only project resolver and the per-process CSRF token. Absent: GET is a 404 and POST a 405.
    */
   settings?: UiSettings;
+  /**
+   * Where the worker stores run transcripts (`transcripts/<item>/<run>.json`), read back one byte range at a
+   * time for the app's transcript view (design §9, issue #303). Absent: no run has a transcript link and the
+   * transcript route is a 404.
+   */
+  storage?: SharedStorage;
   /**
    * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): ui.user_id
    * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
@@ -262,8 +270,8 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     const it = r.item;
     let next = "";
     if (NEEDS_YOU.includes(r.level)) {
-      const need = await needOf(c, it);
-      next = `${need.reason} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
+      const need = await needOf({ store: c.d.store, prUrl: (i) => c.prUrl(i), text: async (v, o) => (await c.w.plain(v, o)).text }, it);
+      next = `${esc(need.reason)} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
     }
     const title = `<a class="title" href="/items/${esc(encodeURIComponent(it.id))}"${r.titlePlain === null ? "" : ` title="${esc(r.titlePlain)}"`}>${r.titleHtml}</a>`;
     out.push({
@@ -294,49 +302,6 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
 /** The conflicts cell: both counts, or empty when the item never had a merge conflict. */
 function conflictsCell(n: ConflictCounts): string {
   return n.automatic === 0 && n.person === 0 ? "" : esc(`${n.automatic} automatic · ${n.person} needed a person`);
-}
-
-/** What a waiting item's row says: the reason in plain words, where to act, and the command to type. */
-interface Need {
-  /** Escaped HTML. */
-  reason: string;
-  url: string;
-  label: string;
-  command: string | null;
-}
-
-/** blocked_reason values with no command, in plain words. Anything else unknown is shown with spaces for `_`. */
-const PLAIN_REASONS: Record<string, string> = {
-  max_loops: "review found bugs too many times",
-  merge_conflict_pending: "merge conflict",
-};
-
-async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
-  const issue = { url: it.source.link, label: "issue" };
-  const reason = it.blocked_reason ?? "";
-  const stored = (url: string | null, label: string) => (url === null ? issue : { url, label });
-  if (reason === "spec_pending") {
-    return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
-  }
-  if (reason === "merge_pending") {
-    const url = await c.prUrl(it);
-    const pr = url === null ? issue : { url, label: `PR #${it.pr_number}` };
-    return { reason: "ready to merge", ...pr, command: "merge the PR" };
-  }
-  const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" || reason === "repeated_failure" ? await latestErrorCode(c, it) : null);
-  if (failed !== null) {
-    const code = await c.w.text(failed, { channel: "run_outcome", max: 80 });
-    return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
-  }
-  const plain = PLAIN_REASONS[reason] ?? reason.replace(/[_:]+/g, " ");
-  return { reason: await c.w.text(plain, { fallback: "no reason" }), ...issue, command: null };
-}
-
-/** The error code of the item's latest failed run ("unknown" when it has none). */
-async function latestErrorCode(c: Ctx, it: WorkItem): Promise<string> {
-  const failed = (await c.d.store.listRuns(it.id)).filter((r) => r.outcome?.status === "failed");
-  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
-  return last?.outcome?.status === "failed" ? last.outcome.error_code : "unknown";
 }
 
 /** "#12" from a source id like "owner/repo#12"; the whole id when it has no number. */
@@ -508,6 +473,12 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   ];
   const title = item.title ? await c.w.text(item.title) : esc(item.source.id);
 
+  // A split's sub-tasks (design 04), in phase order, each linked to its own page.
+  const subRows = [];
+  for (const p of await d.store.listPhases(id)) {
+    subRows.push({ cells: [esc(p.phase ?? ""), await c.itemLink(p, p.id), esc(p.stage), p.blocked_reason ? await c.w.text(p.blocked_reason) : ""] });
+  }
+
   const timeline = [];
   for (const sc of changes) {
     timeline.push({
@@ -549,6 +520,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   const body =
     `<p>${link("/", "← all items")}</p><h1>${title}</h1>` +
     `<section id="facts">${factsTable(facts)}</section>` +
+    `<section id="subtasks"><h2>Sub-tasks</h2>${table(["phase", "task", "stage", "blocked reason"], subRows, "(none)")}</section>` +
     `<section id="timeline"><h2>Timeline</h2>${table(["version", "at", "actor", "reason", "changes", "detail"], timeline)}</section>` +
     `<section id="runs"><h2>Runs</h2>${table(
       ["kind", "status", "attempt", "started", "finished", "duration", "tokens", "error"],

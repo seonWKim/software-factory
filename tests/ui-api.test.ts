@@ -10,8 +10,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
+import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
+import { serverRevision } from "../src/ui/system-actions.js";
+import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -216,10 +218,34 @@ describe("ui api: items", () => {
     const { d } = await seeded();
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
     expect(api.facets.state.needs).toBe(3);
-    expect(api.facets.stage.CLOSED).toBe(0);
+    // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
+    expect(api.facets.stage.CLOSED).toBe(1);
+    expect(api.facets.state.closed).toBe(1);
     const page = (await get(d, "/classic")).body;
     expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
     expect(page).toContain(`>All (${api.facets.allStates})</option>`);
+  });
+
+  it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
+    const { store } = await newStore(new FakeClock());
+    for (let n = 1; n <= 148; n++) {
+      const it = await make(store, 1000 + n, n % 4 === 0 ? `Old cleanup ${n}` : `Closed work ${n}`);
+      await patch(store, it, { stage: "CLOSED", close_reason: "completed", tier: n % 2 === 0 ? 2 : 3 });
+    }
+    await make(store, 1, "Open work");
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock: new FakeClock(), lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => [], new FakeClock()) };
+    const all = await json<{ items: { id: string }[]; facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
+    expect(all.items).toHaveLength(1);
+    expect(all.facets.state.closed).toBe(148);
+    expect(all.facets.stage.CLOSED).toBe(148);
+    expect(all.facets.allStates).toBe(1);
+    // Every other filter still applies to the Closed count.
+    expect((await json<{ facets: { state: Record<string, number> } }>(d, "/api/v1/items?tier=2")).facets.state.closed).toBe(74);
+    expect((await json<{ facets: { state: Record<string, number> } }>(d, "/api/v1/items?q=cleanup")).facets.state.closed).toBe(37);
+    // Choosing Closed shows that many rows, and its own count stays the same.
+    const closed = await json<{ items: unknown[]; facets: { state: Record<string, number> } }>(d, "/api/v1/items?state=closed");
+    expect(closed.items).toHaveLength(148);
+    expect(closed.facets.state.closed).toBe(148);
   });
 
   it("an unknown filter value is a 400 JSON, for each filter", async () => {
@@ -247,6 +273,24 @@ describe("ui api: items", () => {
     expect(body.runs.map((r) => [r.kind, r.status, r.tokens])).toEqual([["triage", "succeeded", 1234], ["implement", "failed", null]]);
     expect(body.runs[1]!.error).toEqual({ code: "agent_error", detail: "[withheld: github_token]" });
     expect(JSON.stringify(body)).not.toMatch(/token"?\s*:\s*\d|"lease"/);
+  });
+
+  it("item detail has spec_comment_url, parent_id, phase and the parent's phases (id, phase, title, stage, source) in phase order", async () => {
+    const { d, store } = await seeded();
+    const parent = await make(store, 50, "Split parent");
+    await patch(store, parent, { spec_comment_url: "https://github.com/o/r/issues/50#issuecomment-1" });
+    // Filed out of order: the list follows phase order.
+    const p2 = (await store.createWorkItem({ ...issue(52), title: `Phase two ${SECRET}`, parent: { id: parent.id, phase: 2 } }, system)).item;
+    const p1 = (await store.createWorkItem({ ...issue(51), title: "Phase one", parent: { id: parent.id, phase: 1 } }, system)).item;
+    type Detail = { item: { spec_comment_url: string | null; parent_id: string | null; phase: number | null; phases: unknown[] } };
+    const top = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(parent.id)}`);
+    expect(top.item).toMatchObject({ spec_comment_url: "https://github.com/o/r/issues/50#issuecomment-1", parent_id: null, phase: null });
+    expect(top.item.phases).toEqual([
+      { id: p1.id, phase: 1, title: "Phase one", stage: "NEW", source: { type: p1.source.type, id: p1.source.id, link: p1.source.link } },
+      { id: p2.id, phase: 2, title: "[withheld: github_token]", stage: "NEW", source: { type: p2.source.type, id: p2.source.id, link: p2.source.link } },
+    ]);
+    const phase = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(p2.id)}`);
+    expect(phase.item).toMatchObject({ spec_comment_url: null, parent_id: parent.id, phase: 2, phases: [] });
   });
 
   it("each run has its attempts in attempt order, with worker, status, times, error code, failure class and tokens", async () => {
@@ -420,13 +464,65 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     const { d, healthRuns } = await seeded();
     const v1 = await get(d, "/api/v1/health");
     const old = await get(d, "/api/health");
-    expect(v1.body).toBe(old.body);
+    // /api/v1/health is /api/health plus the host sleeps (issue #218); none are seeded here.
+    expect(JSON.parse(v1.body)).toEqual({ ...JSON.parse(old.body), sleeps: [] });
     expect(healthRuns()).toBe(1);
     expect(JSON.parse(old.body)).toEqual({
       checked_at: d.clock.now().toISOString(),
       checks: [{ status: "ok", msg: "secret file is outside the repository" }, { status: "fail", msg: "[withheld: github_token]" }],
     });
     expect(old.headers["content-type"]).toBe("application/json; charset=utf-8");
+  });
+});
+
+describe("ui api: host sleeps (issue #218)", () => {
+  const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
+
+  it("/health lists the 10 newest host sleeps, newest first, as ids, times and numbers only; /api/health keeps its shape", async () => {
+    const { d, store, claimed } = await seeded();
+    for (let i = 0; i < 12; i++) {
+      await store.recordHostSleep({ worker_id: w1, woke_at: at(i * 1000), gap_ms: 60_001 + i, run_id: i === 11 ? claimed.id : null });
+    }
+    const v1 = await json<{ sleeps: Record<string, unknown>[] }>(d, "/api/v1/health");
+    expect(v1.sleeps.map((s) => s.woke_at)).toEqual(Array.from({ length: 10 }, (_, i) => at((11 - i) * 1000)));
+    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id });
+    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null });
+    for (const s of v1.sleeps) {
+      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
+      expect(typeof s.gap_ms).toBe("number");
+    }
+    const old = JSON.parse((await get(d, "/api/health")).body) as Record<string, unknown>;
+    expect(Object.keys(old).sort()).toEqual(["checked_at", "checks"]);
+  });
+
+  it("/health answers with an empty sleeps list when the sleeps read fails", async () => {
+    const { d } = await seeded({
+      store: (s) => new Proxy(s, {
+        get(target, prop, receiver) {
+          if (prop === "listHostSleeps") return async () => { throw new Error("no such table: host_sleeps"); };
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      }),
+    });
+    const v1 = await json<{ sleeps: unknown[]; checks: unknown[] }>(d, "/api/v1/health");
+    expect(v1.sleeps).toEqual([]);
+    expect(v1.checks).toHaveLength(2);
+    expect(JSON.stringify(v1)).not.toContain("no such table");
+  });
+
+  it("item detail lists the sleeps recorded during that item's runs only, newest first", async () => {
+    const { d, store, items, claimed, claimed2 } = await seeded();
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(2000), gap_ms: 180_000, run_id: claimed.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(3000), gap_ms: 240_000, run_id: claimed2.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(4000), gap_ms: 300_000, run_id: null });
+    const body = await json<{ sleeps: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.running.id)}`);
+    expect(body.sleeps).toEqual([
+      { worker_id: w1, woke_at: at(2000), gap_ms: 180_000, run_id: claimed.id },
+      { worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id },
+    ]);
+    expect((await json<{ sleeps: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).sleeps).toEqual([]);
   });
 });
 
@@ -566,8 +662,12 @@ describe("ui api: item commands POST (issue #227)", () => {
     });
   }
 
+  async function appRequestRows(store: FactoryStore): Promise<number | undefined> {
+    return (await store.listTables()).find((t) => t.name === "app_command_requests")?.rows;
+  }
+
   async function nothingWritten(store: FactoryStore) {
-    expect(await store.listPendingAppCommandRequests(1000)).toEqual([]);
+    expect(await appRequestRows(store)).toBe(0);
   }
 
   async function refused(r: UiResponse, status: number, what: string) {
@@ -583,9 +683,8 @@ describe("ui api: item commands POST (issue #227)", () => {
     const got = JSON.parse(r.body) as { request_id: string; seq: number };
     expect(typeof got.request_id).toBe("string");
     expect(got.request_id).not.toBe("");
-    const rows = await store.listPendingAppCommandRequests(1000);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
+    expect(await appRequestRows(store)).toBe(1);
+    expect(await store.getAppCommandRequest(got.seq)).toMatchObject({
       key: got.request_id, seq: got.seq, actor: ACTOR, command: "approve", args: { work_item_id: items.approve.id, note: "keep it small" },
     });
     // localhost with its own origin is accepted too; a note is optional on approve.
@@ -879,5 +978,201 @@ describe("ui api: unreviewed merges", () => {
     clock.advance(8 * 24 * 3600_000);
     await rec(store, 2);
     expect(await count()).toBe(1);
+  });
+});
+
+describe("ui api: why an item waits (issue #310)", () => {
+  type WhyBody = { code: string; text: string; next_actor: string; refs: number[]; ref_url: string | null };
+  type Decision = Awaited<ReturnType<FactoryStore["listClaimDecisions"]>>[number];
+  /** The seeded store, with the claim decisions the test sets (only the claim writes real ones). */
+  async function withDecisions() {
+    const decisions = new Map<string, Decision[]>();
+    const s = await seeded({
+      store: (store) =>
+        new Proxy(store, {
+          get(target, prop, receiver) {
+            if (prop === "listClaimDecisions") return async (id: WorkItemId) => decisions.get(id) ?? [];
+            const v = Reflect.get(target, prop, receiver) as unknown;
+            return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+          },
+        }),
+    });
+    const decide = (item: WorkItem, run_id: string, decision: Decision["decision"], holder_kind: Decision["holder_kind"] = "pr") =>
+      decisions.set(item.id, [{
+        run_id, work_item_id: item.id, decision, holder_work_item_id: null, holder_ref: "#92", holder_kind,
+        shared: [], cost: 4, threshold: 2.5, fallback: false, approved_by: null, at: s.clock.now().toISOString(),
+      } as unknown as Decision]);
+    return { ...s, decide };
+  }
+  const whyOn = async (d: UiDeps, id: string) => {
+    const list = await json<{ items: { id: string; level: string; why: WhyBody }[] }>(d, "/api/v1/items");
+    const queue = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
+    const item = await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`);
+    return { row: list.items.find((i) => i.id === id)!, queued: queue.queue.find((q) => q.work_item_id === id) ?? null, item: item.item.why };
+  };
+
+  it("a held run reads 'Held behind #N' with its holder on Items, the item page and the Queue's why", async () => {
+    const { d, store, decide } = await withDecisions();
+    const held = await make(store, 20, "Held item");
+    await enqueue(store, held, "implement", "held:i", { stage: "RUNNING" });
+    const run = (await store.listRuns(held.id)).find((r) => r.kind === "implement")!;
+    decide(held, run.id, "held", "pr");
+    const w = await whyOn(d, held.id);
+    const expected = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: "https://github.com/o/r/issues/" };
+    expect(w.row.why).toEqual(expected);
+    expect(w.queued!.why).toEqual(expected);
+    expect(w.item).toEqual(expected);
+  });
+
+  it("a dependency blocker waits (not queued) and reads the same sentence on Items, Queue and the item page", async () => {
+    const { d, store } = await withDecisions();
+    const dep = await make(store, 21, "Dependent item");
+    await enqueue(store, dep, "implement", "dep:i", { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" });
+    const w = await whyOn(d, dep.id);
+    expect(w.row.level).toBe("waiting_on_issue");
+    for (const why of [w.row.why, w.queued!.why!, w.item]) {
+      expect(why).toMatchObject({ code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13] });
+    }
+  });
+
+  it("an ordinary queued run reads its queue position, the same on Items and the Queue", async () => {
+    const { d, items } = await withDecisions();
+    const w = await whyOn(d, items.queued2.id);
+    expect(w.queued!.why).toMatchObject({ code: "queued", text: "Queued at position 2" });
+    expect(w.row.why.text).toBe(w.queued!.why!.text);
+    expect(w.item.text).toBe(w.queued!.why!.text);
+  });
+
+  it("a claim pause names itself on a run its kind stops, by the claim rule", async () => {
+    const { d, store, clock, items } = await withDecisions();
+    await store.pauseClaims(new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp, "forge_auth");
+    const dep = await make(store, 22, "Implement waits");
+    await enqueue(store, dep, "implement", "p:i", { stage: "RUNNING" });
+    expect((await whyOn(d, dep.id)).queued!.why).toMatchObject({ code: "paused", next_actor: "human" });
+    // A triage run is not stopped by a forge pause.
+    expect((await whyOn(d, items.queued.id)).queued!.why).toMatchObject({ code: "queued" });
+  });
+
+  it("a deadlock claim decision puts its item in Needs you and in the overview's needs_you", async () => {
+    const { d, items, claimed, decide } = await withDecisions();
+    const before = (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
+    decide(items.running, claimed.id, "deadlock", "waiting");
+    expect((await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you).toBe(before + 1);
+    const w = await whyOn(d, items.running.id);
+    expect(w.row.level).toBe("needs_human");
+    expect(w.row.why).toMatchObject({ code: "deadlock", next_actor: "human", refs: [92] });
+    const needs = await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs");
+    expect(needs.items.map((i) => i.id)).toContain(items.running.id);
+  });
+
+  it("free text in why passes the Withholder", async () => {
+    const { d, items } = await withDecisions();
+    const w = await whyOn(d, items.secretive.id);
+    expect(w.row.why.text).toBe("[withheld: github_token]");
+    expect(w.item.text).toBe("[withheld: github_token]");
+  });
+});
+
+describe("ui api: the server's revision and the app's (issue #311)", () => {
+  it("the overview returns the server's git revision, the same one the web build has built in through Vite define", async () => {
+    const root = new URL("..", import.meta.url).pathname;
+    const server = await serverRevision(root);
+    expect(server).toMatch(/^[0-9a-f]{40}$/);
+    const define = (viteConfig as { define?: Record<string, string> }).define ?? {};
+    expect(JSON.parse(define.__FACTORY_REV__ ?? "null")).toBe(server);
+
+    const { d } = await seeded();
+    const withRev: ApiDeps = { ...d, revision: server };
+    expect((await json<{ server_rev: string | null }>(withRev, "/api/v1/overview")).server_rev).toBe(server);
+    // Without a revision (a test, a checkout without git) it is null, never the supervisor's.
+    expect((await json<{ server_rev: string | null }>(d, "/api/v1/overview")).server_rev).toBeNull();
+  });
+});
+
+describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
+  type Pause = { name: string; ends_at: string; since?: string | null };
+  const pausesOf = async (d: UiDeps) => (await json<{ pauses: Pause[] }>(d, "/api/v1/pauses")).pauses;
+  const at = (clock: FakeClock, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+
+  it("returns each active pause with its end time and a model stall's start; an ended pause is not returned", async () => {
+    const { d, store, clock } = await seeded();
+    expect(await pausesOf(d)).toEqual([]);
+    const began = clock.now().toISOString();
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    await store.pauseClaims(at(clock, 120_000), "rate_limit");
+    await store.pauseClaims(at(clock, 30_000), "forge_auth");
+    const list = await pausesOf(d);
+    expect(list.map((p) => p.name).sort()).toEqual(["forge_auth", "model_stall", "rate_limit"]);
+    expect(list.find((p) => p.name === "model_stall")).toMatchObject({ ends_at: at(clock, 60_000), since: began });
+    expect(list.find((p) => p.name === "rate_limit")).toEqual({ name: "rate_limit", ends_at: at(clock, 120_000) });
+    clock.advance(45_000);
+    expect((await pausesOf(d)).map((p) => p.name).sort()).toEqual(["model_stall", "rate_limit"]);
+    // A model stall whose probe is due stays until a probe answers.
+    clock.advance(200_000);
+    const due = await pausesOf(d);
+    expect(due.map((p) => p.name)).toEqual(["model_stall"]);
+    expect(due[0]!.ends_at < clock.now().toISOString()).toBe(true);
+  });
+
+  type NeedRow = { id: string; level: string; need?: { reason: string; command: string | null } };
+  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_human: "Needs a human" };
+
+  it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
+    const { d, store, items } = await seeded();
+    const more: Record<string, WorkItem> = {};
+    for (const [n, reason] of [[20, "run_failed:implement:diff_too_large"], [21, "max_loops"], [22, "merge_conflict_pending"], [23, "something_new"]] as const) {
+      more[reason] = await make(store, n, `Item ${n}`);
+      await patch(store, more[reason]!, { blocked_on: "human", blocked_reason: reason });
+    }
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const need = (id: string) => rows.find((r) => r.id === id)!.need!;
+    expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("failed: diff_too_large");
+    expect(need(items.approve.id).command).toBe("/approve or /reject <reason>");
+    expect(need(items.merge.id).reason).toBe("merge check running");
+    for (const r of rows) {
+      expect(r.need, r.id).toBeDefined();
+      expect(r.need!.reason.toLowerCase(), r.id).not.toBe(LABELS[r.level]!.toLowerCase());
+    }
+    expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
+  });
+
+  it("a ready-to-merge row shows the merge check: mergeable, or the conflict count", async () => {
+    const { d, store, items } = await seeded();
+    const row = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!.need!;
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("mergeable");
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: false, conflicts: ["a.ts", "b.ts"], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("2 conflicting files");
+  });
+
+  it("a row that does not wait for you has no need", async () => {
+    const { d, items } = await seeded();
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items;
+    expect(rows.find((r) => r.id === items.running.id)!.need).toBeUndefined();
+  });
+
+  it("the overview, items and pauses reads make no forge or other remote call: store reads only", async () => {
+    const calls: string[] = [];
+    const spy = (s: FactoryStore): FactoryStore =>
+      new Proxy(s, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) => {
+            calls.push(String(prop));
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    const forge = { calls: 0 };
+    const { d, store, clock } = await seeded({ store: spy });
+    // A forge stub in the deps: nothing in the UI may reach it.
+    const withForge = { ...d, forge: new Proxy({}, { get: () => { forge.calls++; } }) } as UiDeps;
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    calls.length = 0;
+    for (const path of ["/api/v1/overview", "/api/v1/items?state=needs", "/api/v1/pauses"]) await json(withForge, path);
+    expect(forge.calls).toBe(0);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.filter((n) => !/^(get|list|count|schemaVersion)/.test(n))).toEqual([]);
   });
 });

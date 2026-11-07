@@ -76,6 +76,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
   test_database: { none: NoTestDatabase },
+  // Optional with no default (issue #172): the default selection builds no forge.
+  forge: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -177,8 +179,14 @@ describe("plugin registry: defaults", () => {
       test_database: "none",
     });
     const ctx = await context(loaded);
+    expect(loaded.plugins).not.toHaveProperty("forge");
     for (const kind of PLUGIN_KINDS) {
       const name = loaded.plugins[kind];
+      if (REGISTRY[kind].optional) {
+        expect(name, kind).toBeUndefined();
+        continue;
+      }
+      if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
       expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
       if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
@@ -187,17 +195,18 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot and local intake, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local intake and the bm25 doc index, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, github_auth, sources, ...rest } = loaded.plugins;
+      const { store: _s, auth: _a, github_auth, sources, capability, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
       expect(sources).toEqual(["github-issues", "local"]);
-      const { github_auth: _g, ...defaults } = defaultPlugins(platform);
+      expect(capability).toBe("bm25");
+      const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local"] });
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local"], capability: "bm25" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
@@ -239,7 +248,8 @@ describe("plugin registry: every discovered plugin", () => {
 
       it("builds an object from a full context without running anything", async () => {
         vi.stubEnv("PATH", pathWithFakeCaffeinate());
-        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
+        // A `slack` block too: the slack source needs its channels to build (it is off in the checked-in config).
+        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0TEST0001"] } }));
         const ctx = await context(loaded);
         const isMysql = d.kind === "store" && d.name === "mysql";
         const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
@@ -553,8 +563,13 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
     expect(s.source).toBe("github-issues");
   });
 
-  it("an empty list fails, naming plugins.source", () => {
-    expect(failure([])).toMatch(/plugins\.source/);
+  it("an empty list selects no source (issue #282); an empty runner or llm list still fails, naming its key", () => {
+    expect(failure([])).toBeNull();
+    expect(selectedSources(select([]))).toEqual([]);
+    const other = (key: "runner" | "llm") => () =>
+      selectPlugins(registry, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), [key]: [] } }, { platform: "linux" });
+    expect(other("runner")).toThrow(/plugins\.runner is an empty list/);
+    expect(other("llm")).toThrow(/plugins\.llm is an empty list/);
   });
 
   it("an unknown name in the list fails, naming plugins.source and the name", () => {
@@ -576,7 +591,11 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
 
   it("loadConfig reports the same failures at startup", async () => {
     const cfg = (source: unknown) => root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), source } });
-    await expect(loadConfig(cfg([]), { registry })).rejects.toThrow(/plugins\.source/);
+    // No source at all starts (issue #282); an empty runner or llm chain does not.
+    expect(selectedSources((await loadConfig(cfg([]), { registry })).plugins)).toEqual([]);
+    const chain = (key: "runner" | "llm") => root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), [key]: [] } });
+    await expect(loadConfig(chain("runner"), { registry })).rejects.toThrow(/plugins\.runner/);
+    await expect(loadConfig(chain("llm"), { registry })).rejects.toThrow(/plugins\.llm/);
     await expect(loadConfig(cfg(["github-issues", "github-issues"]), { registry })).rejects.toThrow(/plugins\.source/);
     await expect(loadConfig(cfg(["github-issues", "nope"]), { registry })).rejects.toThrow(/plugins\.source/);
   });
@@ -682,11 +701,11 @@ describe("plugin registry: CapabilitySearch wiring", () => {
     }
   };
 
-  it("the checked-in config still selects list-all, and build() passes it to the worker", async () => {
-    expect((REAL.plugins as Record<string, unknown>).capability).toBe("list-all");
+  it("the checked-in config selects bm25, and build() passes it to the worker", async () => {
+    expect((REAL.plugins as Record<string, unknown>).capability).toBe("bm25");
     const c = await capabilityOf();
-    expect(c).toBeInstanceOf(ListAllCapabilitySearch);
-    expect(await c!.search("zebra", 8)).toEqual([]);
+    expect(c).toBeInstanceOf(Bm25CapabilitySearch);
+    expect((await c!.search("zebra", 8)).map((x) => x.id)).toEqual(["docs/guide.md"]);
   });
 
   it('"capability": "bm25" gives Bm25CapabilitySearch over the code root\'s docs; switching back gives list-all', async () => {
@@ -764,7 +783,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 16 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(16);
+  it("covers 17 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(17);
   });
 });

@@ -5,24 +5,36 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The two write routes, POST
-// /api/v1/settings (settings-api.ts) and POST /api/v1/items/:id/commands (commands.ts), are handled behind
-// server.ts's write guards; GET /api/v1/settings and GET /api/v1/session are here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The three write routes, POST
+// /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts) and POST
+// /api/v1/pauses/resume (pause-api.ts), are handled behind server.ts's write guards; GET /api/v1/settings,
+// GET /api/v1/session and GET /api/v1/pauses are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
-import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, listRows } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
-import { readSettings } from "./settings-api.js";
+import { needOf } from "./need.js";
+import { NEEDS_YOU } from "./priority.js";
+import { type PauseDeps, readPauses } from "./pause-api.js";
+import { failures } from "./failures.js";
+import { effectiveWorkers, readSettings } from "./settings-api.js";
+import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import type { Why } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Host sleeps on /health (design §9): the newest ten. */
+export const HEALTH_SLEEPS = 10;
+/** Host sleeps on an item's detail: those of its runs, newest first, at most this many. */
+const ITEM_SLEEPS = 100;
 
 /** Status and JSON value; server.ts adds the headers. */
 export interface ApiResult {
@@ -38,13 +50,16 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
 }
 
+/** The API's dependencies: the pause routes' and the overview's system actions'. */
+export type ApiDeps = PauseDeps & SystemDeps;
+
 /** Answers one GET (or HEAD) under /api/v1. */
-export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
+export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   const path = url.pathname.slice("/api/v1".length);
   const c = new ApiCtx(d);
   switch (path) {
     case "/overview":
-      return ok(await overview(c));
+      return ok(await overview(c, url.searchParams));
     case "/items":
       return items(c, url.searchParams);
     case "/runs":
@@ -56,7 +71,9 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
     case "/unreviewed-merges":
       return unreviewedMerges(c, url.searchParams);
     case "/health":
-      return ok(await d.health.report(d.scanner));
+      return ok(await health(c));
+    case "/failures":
+      return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
@@ -65,6 +82,8 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
     }
     case "/data/tables":
       return data(await dataTables(c.data()));
+    case "/pauses":
+      return pauses(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -75,6 +94,19 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return apiError(404, "No such table.");
     }
     return data(await dataTable(c.data(), name, url.searchParams));
+  }
+  const tr = /^\/items\/([^/]+)\/runs\/([^/]+)\/transcript$/.exec(path);
+  if (tr) {
+    let id: string;
+    let run: string;
+    try {
+      id = decodeURIComponent(tr[1]!);
+      run = decodeURIComponent(tr[2]!);
+    } catch {
+      return apiError(404, "No such run for this work item.");
+    }
+    const r = await transcript(d, id as WorkItemId, run, url.searchParams);
+    return { status: r.status, value: r.value };
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
@@ -90,6 +122,14 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
   return apiError(404, "Not found.");
 }
 
+/** GET /api/v1/pauses with, for a model stall, when it began (`since`): one more store read, no forge call. */
+async function pauses(d: ApiDeps): Promise<ApiResult> {
+  const r = await readPauses(d);
+  const body = r.value as { pauses: { name: string }[] };
+  const since = await d.store.getClaimPause("model_stall_since");
+  return { status: r.status, value: { ...body, pauses: body.pauses.map((p) => (p.name === "model_stall" ? { ...p, since } : p)) } };
+}
+
 function data(r: DataResult): ApiResult {
   return "error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value };
 }
@@ -98,7 +138,7 @@ class ApiCtx {
   readonly w: Withholder;
   readonly now: Date;
 
-  constructor(readonly d: UiDeps) {
+  constructor(readonly d: UiDeps & SystemDeps) {
     this.w = new Withholder(d.scanner);
     this.now = d.clock.now();
   }
@@ -136,34 +176,104 @@ class ApiCtx {
     const n = /#(\d+)$/.exec(it.source.id)?.[1];
     return n ? { number: Number(n), url: it.source.link } : null;
   }
+
+  /**
+   * `why` as the API returns it: the sentence through the Withholder, the refs as numbers, and `ref_url`, the
+   * item's repository issue URL to append a ref to (null when the source link is not an issue or PR URL).
+   */
+  async why(w: Why, it: WorkItem) {
+    const repo = /^(https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+)\/(?:issues|pull)\/\d+$/.exec(it.source.link)?.[1];
+    return {
+      code: w.code,
+      text: (await this.text(w.text))!,
+      next_actor: w.next_actor,
+      refs: w.refs.filter((n) => Number.isSafeInteger(n)),
+      ref_url: repo ? await this.text(`${repo}/issues/`) : null,
+    };
+  }
+
+  /** What a Needs-you row says (need.ts): the reason through the Withholder and the command to type. */
+  async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
+    const n = await needOf(
+      { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
+      it,
+      check && { state: check.state, conflicts: check.conflicts.length },
+    );
+    return { reason: n.reason, command: n.command };
+  }
+
+  /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
+  async whyOfItem(it: WorkItem) {
+    const s = this.d.store;
+    const { active, position } = await activeRuns(s);
+    const run = active.get(it.id) ?? null;
+    const decision = await latestDecision(s, it.id, run);
+    const waiting = waitingOn(it, await readPhases(s, [it]));
+    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now), it);
+  }
 }
 
-async function overview(c: ApiCtx) {
+/**
+ * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
+ * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a MySQL
+ * database without step 0025) the list is empty and the checks still answer.
+ */
+async function health(c: ApiCtx) {
+  const report = await c.d.health.report(c.d.scanner);
+  let rows: HostSleep[] = [];
+  try {
+    rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS });
+  } catch {
+    rows = [];
+  }
+  return { ...report, sleeps: await sleepRows(c, rows) };
+}
+
+/** Host sleeps as the API returns them: ids, a timestamp and a number, never free text. */
+async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
+  const out = [];
+  for (const h of rows) out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id });
+  return out;
+}
+
+async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
-  const needs_you = await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const running = await s.listRunsByStatus(["running"], LIST_LIMIT);
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
   const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
+  // The effective `workers` setting (file, override or default, capped at max_workers), not the file value the status holds.
+  const workers = status && c.d.settings ? await effectiveWorkers(c.d, c.d.settings) : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
     rev: status.rev,
     target_rev: status.target_rev,
     child_pid: status.child_pid,
     since: status.since,
-    workers: status.workers,
+    workers: workers!.value,
+    workers_source: workers!.source,
     error: await c.text(status.error ?? null),
     pending: status.pending ?? [],
   };
+  // System actions (design §9 Status page): store reads and in-process values only, no forge call.
+  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, dashboardRev: parseRevision(params.get("rev")) });
+  const system_actions = [];
+  for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
+  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
+    /** The git revision this UI server runs; the app compares it with the one built into it. */
+    server_rev: c.d.revision ?? null,
     plugins: c.d.plugins ?? { issues: null, prs: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you,
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
+    system_actions,
+    /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
+    github_token_days: token,
     running: running.length,
     queued: queued.length,
     last_24h: {
@@ -207,13 +317,15 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const parsed = parseFilters(params);
   if (!parsed.ok) return apiError(400, parsed.error);
   const f = parsed.filters;
-  const rows = await listRows({ store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, f);
+  const ctx = { store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms };
+  const rows = await listRows(ctx, f);
   const shown = applyFilters(rows, f);
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
   for (const r of shown) {
     const it = r.item;
+    const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
@@ -235,10 +347,14 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       version: it.version,
       dependents: r.dependents,
       conflicts: r.conflicts,
-      merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
+      merge_check,
+      need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
+      why: await c.why(r.why, it),
     });
   }
-  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets: facetCounts(rows, f) });
+  // The closed items count in the facets even when the list leaves them out (the Closed option's count).
+  const facets = facetCounts([...rows, ...(await closedFacetRows(ctx, f))], f);
+  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets });
 }
 
 async function item(c: ApiCtx, id: WorkItemId) {
@@ -250,6 +366,15 @@ async function item(c: ApiCtx, id: WorkItemId) {
   // One record per claim (design §6), listed under its run in attempt order.
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
+  // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
+  let stored: string[] = [];
+  if (c.d.storage) {
+    try {
+      stored = await c.d.storage.list(itemPrefix(id));
+    } catch {
+      stored = [];
+    }
+  }
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -288,17 +413,39 @@ async function item(c: ApiCtx, id: WorkItemId) {
       token_cost: it.token_cost,
       pr_number: it.pr_number,
       pr_url: await c.prUrl(it),
+      spec_comment_url: await c.text(it.spec_comment_url),
+      // A phase of a split spec links to its parent; a split parent lists its phases (the store's listPhases).
+      parent_id: it.parent_id,
+      phase: it.phase,
+      phases: await phaseRows(c, it),
       version: it.version,
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
       merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
+      why: await c.whyOfItem(it),
     },
     timeline,
     runs: runRows,
+    // Host sleeps recorded during one of this item's runs (design §5 Host sleep), newest first.
+    sleeps: await sleepRows(c, await s.listHostSleeps({ limit: ITEM_SLEEPS, work_item_id: id }).catch(() => [])),
+    /** Run id → its stored transcript parts ("" is the main step), for runs with a stored transcript only. */
+    transcripts: Object.fromEntries(runs.flatMap((r) => {
+      const parts = runParts(stored, id, r.id);
+      return parts.length > 0 ? [[r.id, parts] as const] : [];
+    })),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
+}
+
+/** A split parent's phases in phase order, each with its title through the Withholder; empty for any other item. */
+async function phaseRows(c: ApiCtx, it: WorkItem) {
+  const out = [];
+  for (const p of await c.d.store.listPhases(it.id)) {
+    out.push({ id: p.id, phase: p.phase, title: await c.text(p.title || null), stage: p.stage, source: { type: p.source.type, id: p.source.id, link: p.source.link } });
+  }
+  return out;
 }
 
 /** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */
@@ -378,11 +525,26 @@ async function runs(c: ApiCtx) {
   return { as_of: c.now.toISOString(), runs: out };
 }
 
+/** Queued runs, oldest first, each with why its item waits (what the Starts column shows). */
 async function queue(c: ApiCtx) {
-  const runs = await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT);
-  return {
-    as_of: c.now.toISOString(),
-    queue: runs.map((r, i) => ({
+  const s = c.d.store;
+  const runs = await s.listRunsByStatus(["queued"], LIST_LIMIT);
+  const { active, position } = await activeRuns(s);
+  const items = new Map<WorkItemId, WorkItem | null>();
+  for (const r of runs) if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));
+  const phases = await readPhases(s, [...items.values()].filter((it): it is WorkItem => it !== null));
+  const pauses = await readClaimPauses(s);
+  const out = [];
+  for (const [i, r] of runs.entries()) {
+    const it = items.get(r.work_item_id) ?? null;
+    let why = null;
+    if (it) {
+      // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
+      const run = active.get(it.id) ?? r;
+      const decision = await latestDecision(s, it.id, run);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, decision, pauses, waitingOn(it, phases), c.now), it);
+    }
+    out.push({
       position: i + 1,
       id: r.id,
       kind: r.kind,
@@ -390,8 +552,10 @@ async function queue(c: ApiCtx) {
       attempt: r.attempt,
       created_at: r.created_at,
       not_before: r.not_before,
-    })),
-  };
+      why,
+    });
+  }
+  return { as_of: c.now.toISOString(), queue: out };
 }
 
 /**

@@ -159,8 +159,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
+ * `improve` runs no agent and calls no model (design §7): it groups the failed runs of a time window into one
+ * stored report. It belongs to its project's system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -171,6 +173,40 @@ export interface RunInput {
   wip?: WipRef;
   /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
   session?: SessionRecord;
+  /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
+  improve?: ImproveWindow;
+}
+
+/** The finished runs an improve report covers: finished_at in [window_start, window_end). */
+export interface ImproveWindow {
+  window_start: Timestamp;
+  window_end: Timestamp;
+}
+
+/**
+ * Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text,
+ * never the raw detail. Run IDs in finish order; item IDs distinct, in the order their first run finished.
+ */
+export interface FailureGroup {
+  error_code: string;
+  detail: string;
+  run_ids: RunId[];
+  work_item_ids: WorkItemId[];
+}
+
+export type ImproveReportId = Brand<string, "ImproveReportId">;
+
+/**
+ * One improve run's report (design §7): `groups` hold two or more runs, `patterns` exactly one. Both sorted the
+ * same way every time, so the same failed runs give the same report. One row per run.
+ */
+export interface ImproveReport extends ImproveWindow {
+  id: ImproveReportId;
+  run_id: RunId;
+  project: string;
+  groups: FailureGroup[];
+  patterns: FailureGroup[];
+  created_at: Timestamp;
 }
 
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
@@ -269,6 +305,20 @@ export interface RunAttempt {
   failure_class: "task" | "infra" | "rate_limited" | "stalled" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
+}
+
+/**
+ * One host sleep a worker saw (design §5 Host sleep): one of its waits ended more than HOST_SLEEP_MS late.
+ * Ids, a timestamp and a number only. Keyed by (worker_id, woke_at), so recording it again keeps one row.
+ */
+export interface HostSleep {
+  worker_id: WorkerId;
+  /** When the worker's late wait ended (the worker's clock). */
+  woke_at: Timestamp;
+  /** How late the wait ended: the time since the wait started minus the time it asked for. */
+  gap_ms: number;
+  /** The run the worker held when it woke; null for an idle tick. */
+  run_id: RunId | null;
 }
 
 export interface Lease {
@@ -516,17 +566,20 @@ export interface SharedPath {
   /** Conflicts recorded on the path (the most among the files under it, for a folder). */
   conflicts: number;
   hotspot: boolean;
+  /** A mechanical path (`mechanical_paths`): weighed `mechanical_weight` unless learned higher. Absent: not one. */
+  mechanical?: boolean;
 }
 
 /**
  * The latest claim decision on a held implement run (design 2026-11-03): one row per run, rewritten when the
  * decision changes. `held`: the run stays queued; `deadlock`: claimed by the deadlock rule although held by
- * waiting items; `approved`: claimed past the hold after a human's `/approve`.
+ * waiting items; `approved`: claimed past the hold after a human's `/approve`; `timed_out`: claimed after
+ * `hold_policy` `run_after_minutes` ran out; `overlap_allowed`: claimed at once under `hold_policy` `run` (issue #314).
  */
 export interface ClaimDecision {
   run_id: RunId;
   work_item_id: WorkItemId;
-  decision: "held" | "deadlock" | "approved";
+  decision: "held" | "deadlock" | "approved" | "timed_out" | "overlap_allowed";
   /** The holding item, or null for a PR with no work item. */
   holder_work_item_id: WorkItemId | null;
   /** How the holder is named: "#92" (its issue or PR number). */
@@ -540,5 +593,7 @@ export interface ClaimDecision {
   fallback: boolean;
   /** The user whose `/approve` lifted the hold; null until then. */
   approved_by: UserId | null;
+  /** When the hold started; kept while the run stays held, whichever holder names it. Null on rows from before it. */
+  held_since: Timestamp | null;
   at: Timestamp;
 }
