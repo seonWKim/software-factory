@@ -53,6 +53,7 @@ export const TOP_LEVEL_KEYS = [
   "stall_ms",
   "first_output_ms",
   "probe_interval_ms",
+  "agent_stop_checks",
   "workers",
   "max_workers",
   "state_dir",
@@ -99,7 +100,7 @@ export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies re
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port", "user_id"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
-export const GITHUB_KEYS = ["min_remaining", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
+export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 
 /** A suggestion is offered only within this edit distance. */

@@ -575,10 +575,44 @@ export const MIGRATIONS: readonly string[] = [
     UNIQUE (project_key, pattern_key)
   );
   `,
-  // 32: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
+  // 32: standing approvals (design 05-standing-approvals, issue #298). `standing_rules`: one row per (gate, tier),
+  // `enabled` 0 or 1, `set_by` a user ID. `standing_proposals`: one row per (gate, tier, run_length), the run of
+  // unchanged approvals that reached `threshold`. Stored only: nothing acts on either yet. IF NOT EXISTS: safe to run
+  // again on a database whose recorded version was set back below 32.
+  `
+  CREATE TABLE IF NOT EXISTS standing_rules (
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL,
+    set_by      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (gate, tier)
+  );
+  CREATE TABLE IF NOT EXISTS standing_proposals (
+    id          TEXT PRIMARY KEY,
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    run_length  INTEGER NOT NULL,
+    threshold   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (gate, tier, run_length)
+  );
+  `,
+  // 33: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
+  // the source issue's updated_at it was read at; NULL on edges from before (the controller reads them once more).
+  `
+  ALTER TABLE dependency_edges ADD COLUMN source_updated_at TEXT;
+  `,
+  // 34: the same read time on the item (issue #254), so an item whose issue has no links also records when its
+  // links were read. NULL: never read with a time, or marked stale; the controller reads its links on the next poll.
+  `
+  ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;
+  `,
+  // 35: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
   // `change_url`: https://<label>/pull/<n> for a GitHub project key whose label cursor exists, else NULL (the same
   // string as prUrl in src/main.ts). Backfilled from pr_number; the store writes them with pr_number from now on.
-  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 32.
+  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 35.
   `
   ALTER TABLE work_items ADD COLUMN change_ref TEXT;
   ALTER TABLE work_items ADD COLUMN change_url TEXT;

@@ -4,9 +4,10 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -34,7 +35,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
+import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
@@ -113,6 +114,8 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The gate hooks' Stop hook (design §4): the most times it sends an implement run's agent back. Absent: 3. */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -136,9 +139,9 @@ export interface FileConfig {
   updater?: { auto_migrate?: unknown };
   /**
    * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
-   * reset. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
+   * reset; `budget_share` (default 1), the part of the hourly core limit this process may count. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
    */
-  github?: { min_remaining?: unknown; history_since?: unknown };
+  github?: { min_remaining?: unknown; budget_share?: unknown; history_since?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -276,6 +279,40 @@ export interface Loaded {
   model_by: ModelTable;
 }
 
+/** The placeholder in prompts/*.md that names the project's pre-push checks. */
+export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+
+/**
+ * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
+ * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ */
+export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+  const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+}
+
+/** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
+const GITHUB_SOURCE = "github-issues";
+const GITHUB_FORGE = "github";
+
+/**
+ * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
+ * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
+ * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
+ */
+export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
+  if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
+  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
+  if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
+  if (selection.forge !== undefined) return selection;
+  const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
+  throw new Error(
+    `plugins.forge is ${value} but plugins.source lists "${GITHUB_SOURCE}": its pull requests (merges, closes, reviews) are read ` +
+      `only through a forge, so its factory PRs would never close their items; leave plugins.forge out (it then follows ` +
+      `plugins.source) or set it to "${GITHUB_FORGE}"`,
+  );
+}
+
 /**
  * `codeRoot` is where prompts are read (the updater's runtime copy); `root` is the cwd. `configFile` (from
  * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
@@ -306,6 +343,7 @@ export async function loadConfig(
   uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
+  githubBudgetShare(file.github);
   githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
@@ -319,7 +357,9 @@ export async function loadConfig(
   const model_by = parseModelBy(file.model_by);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
-  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
+  const plugins = withForgeDefault(
+    registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
+  );
   const grants = selectGrants(GRANTS, file.permissions);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
@@ -353,6 +393,7 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     workers,
     max_workers,
@@ -378,16 +419,23 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
   const prompts: Prompts = {
-    triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
-    implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
-    review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
+    triage: await readPrompt("triage"),
+    implement: await readPrompt("implement"),
+    review: await readPrompt("review"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return undefined;
-    throw err;
-  });
+  // Optional prompt files: a missing one is not an error.
+  const optional = (name: string) =>
+    readPrompt(name).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+  const resolvePrompt = await optional("resolve");
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
+  const ownerDefaults = await optional("owner-defaults");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
@@ -550,12 +598,15 @@ export class Plugins {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
   }
   /**
-   * The selected forge (`plugins.forge`, issue #172), or null when config selects none: then nothing is built.
-   * Optional and not yet used by build(): the controller still reads PR facts from its sources.
+   * The selected forge (`plugins.forge`, or the one `plugins.source` implies; issue #273), or null when config
+   * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
+   * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubClient): Promise<Forge | null> {
+  async forge(github: GitHubClient, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
-    return name === undefined ? null : createPlugin(this.loaded.registry, "forge", name, { ...this.base, github });
+    if (name === undefined) return null;
+    const ctx = { ...this.base, github, ...sync };
+    return createPlugin(this.loaded.registry, "forge", name, ctx);
   }
 }
 
@@ -583,6 +634,8 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
+  // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
+  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -626,6 +679,7 @@ export async function build(
   const controller = new Controller({
     store,
     sources,
+    forge,
     auth,
     local_auth,
     clock,
@@ -638,6 +692,8 @@ export async function build(
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
+    github_budget: () => github.status(),
   });
 
   const worker = new WorkerPool({
@@ -790,7 +846,7 @@ export interface SessionParts {
 
 /** The GitHub client's settings from factory.config.json (`github`), with its log lines under "github". */
 function githubClientOptions(loaded: Loaded, clock: Clock): GitHubClientOptions {
-  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github) };
+  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github), budget_share: githubBudgetShare(loaded.file.github) };
 }
 
 /** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */
@@ -931,6 +987,14 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/** `agent_stop_checks` (design §4 Pre-push gates): absent means 3, otherwise a positive integer or startup fails. */
+export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): number {
+  const v = file.agent_stop_checks;
+  if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
 }
 
 export const DEFAULT_INBOX_RETENTION_DAYS = 14;

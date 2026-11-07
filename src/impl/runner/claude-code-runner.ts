@@ -6,6 +6,7 @@ import {
 } from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
 import { type GrantedToolDeps, type RunningBridge, ToolGate, bridgeMcpConfig, harnessToolName, startBridgeHost } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
@@ -171,8 +172,8 @@ function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
   return s.resume ? ["--resume", s.id] : ["--session-id", s.id];
 }
 
-/** Builds the `claude -p` argument list. Exported for tests. */
-export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs): string[] {
+/** Builds the `claude -p` argument list. `hooks`: the gate hooks' settings block, for the steps that get them. Exported for tests. */
+export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs, hooks?: Record<string, unknown>): string[] {
   // Exactly the spec's tools, in its order: the runner adds none. Granted broker tools come only through the bridge.
   const tools = spec.tools.map((t) => t.name).join(",");
   const allowed = [...spec.tools.map((t) => t.name), ...(bridge?.tools ?? []).map(harnessToolName)].join(",");
@@ -184,7 +185,7 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
     // the same object `--output-format json` prints.
     "--output-format", "stream-json",
     "--verbose",
-    "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
+    "--settings", JSON.stringify({ ...buildHarnessSettings(spec, spec.sandbox?.workdir), ...(hooks ? { hooks } : {}) }),
     "--setting-sources", "project",
     "--strict-mcp-config",
     // The run's only MCP server, when it has granted tools: the bridge to the worker side (tool-bridge.ts).
@@ -230,10 +231,34 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
+  /**
+   * The gate hooks (design §4, issue #302), for an implement step the worker gave them to: the hook folder in the
+   * harness config dir for the call, then the blocks it recorded on the result. Every other step runs as before.
+   */
   private async runWith(spec: AgentRunSpec, bridge?: RunningBridge): Promise<AgentRunResult> {
+    await mkdir(this.opts.claudeConfigDir, { recursive: true });
+    const g = spec.gate_hooks;
+    if (!g || !GATE_HOOK_ROLES.includes(spec.role)) return this.runClaude(spec, bridge);
+    // Advisory: a host that cannot start (no folder, no socket) runs the step without hooks; the worker's gates decide.
+    const hooks = await startGateHooks({
+      dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
+      spec: { ...spec, gate_hooks: g },
+      sandbox: this.opts.sandbox,
+      ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
+    }).catch(() => null);
+    if (!hooks) return this.runClaude(spec, bridge);
+    try {
+      const result = await this.runClaude(spec, bridge, hooks);
+      const blocks = await hooks.blocks();
+      return blocks.length > 0 ? { ...result, gate_blocks: blocks } : result;
+    } finally {
+      await hooks.close();
+    }
+  }
+
+  private async runClaude(spec: AgentRunSpec, bridge?: RunningBridge, hooks?: RunningGateHooks): Promise<AgentRunResult> {
     const home = join(this.opts.homesDir, spec.run_id);
     await mkdir(join(home, "tmp"), { recursive: true });
-    await mkdir(this.opts.claudeConfigDir, { recursive: true });
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
       home,
@@ -247,7 +272,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
       const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs), {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs, hooks?.settings), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
@@ -327,6 +352,9 @@ export class ClaudeCodeRunner implements AgentRunner {
     return dirs.filter((d) => d.isDirectory()).map((d) => join(projects, d.name, `${id}.jsonl`));
   }
 }
+
+/** The roles that get gate hooks when the spec has them: the worker gives them to the implement main and fix steps only. */
+const GATE_HOOK_ROLES: readonly AgentRunSpec["role"][] = ["implement"];
 
 const NO_USAGE: AgentRunResult["usage"] = { input_tokens: 0, output_tokens: 0, cost_usd: null };
 

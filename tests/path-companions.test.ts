@@ -168,12 +168,35 @@ describe("path_companions load check", () => {
 
     it("the repo's own entries load", async () => {
       const loaded = await loadConfig(root(SQLITE));
-      expect(loaded.config.path_companions).toEqual([
+      expect(loaded.config.path_companions).toEqual(expect.arrayContaining([
         { when: "src/impl/store/sqlite/schema.ts", also: ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
         { when: "src/impl/store/mysql/schema.ts", also: ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
         { when: "docs/design.md", also: ["docs/design/"] },
         { when: "docs/plugins.md", also: ["docs/plugins/"] },
-      ]);
+      ]));
+    });
+
+    // Issue #315: the checked-in pairs for the store interface, the config keys and a design topic file.
+    const allowedFor = async (file: string): Promise<string[]> => {
+      const loaded = await loadConfig(root(SQLITE));
+      const out = applyCompanions(answer({ allowed_paths: [file], files_to_change: [file] }), loaded.config.path_companions ?? []);
+      return (out.answer as { allowed_paths: string[] }).allowed_paths;
+    };
+
+    it("naming the store interface adds the SQL store, both schemas, the contract test and the MySQL migrations", async () => {
+      expect(await allowedFor("src/interfaces/factory-store.ts")).toEqual(expect.arrayContaining([
+        "src/impl/store/sql/sql-factory-store.ts",
+        "src/impl/store/sqlite/schema.ts",
+        "src/impl/store/mysql/schema.ts",
+        "tests/store-contract.test.ts",
+        "migrations/mysql/",
+        "src/impl/store/mysql/migrations.ts",
+      ]));
+    });
+
+    it("naming the config keys adds their test; naming a design topic file adds the design index", async () => {
+      expect(await allowedFor("src/config-keys.ts")).toContain("tests/config-keys.test.ts");
+      expect(await allowedFor("docs/design/04-triage.md")).toContain("docs/design.md");
     });
 
     it("an absent key loads with no companions", async () => {

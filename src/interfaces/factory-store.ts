@@ -26,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -132,6 +135,17 @@ export interface NewImproveReport extends ImproveWindow {
   project: string;
   groups: ImproveReport["groups"];
   patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -388,7 +402,8 @@ export interface FactoryStore {
    * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
    * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
-   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
+   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued; while the
+   * `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and resolve claim).
    * Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
    * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not
    * satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an
@@ -426,8 +441,9 @@ export interface FactoryStore {
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
-   * refused the credentials). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
-   * when this call moved it, so exactly one caller logs it. For `forge_auth` only, `started` is true when this
+   * refused the credentials), `github_rate_limit` stops implement-type and review claims (GitHub's rate limit, until
+   * its reset). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
+   * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
    * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
    * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
    * The `rate_limit` result has no `started`.
@@ -438,11 +454,18 @@ export interface FactoryStore {
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
    * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
-   * `model_answered` row moves to the probe time, as an answered probe would, so `model_stall_since` reads null too.
+   * `model_answered` row and its probe time move to the earlier of the probe time and now, as an answered probe
+   * would, so `model_stall_since` reads null too and a stall right after starts a new pause.
    * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
    * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Takes the probe of a due `model_stall` pause (design §5 Restarts): while the pause is in effect with probe
+   * time `due`, moves it to `next` and returns `taken`. Conditional, so among replicas that read the same due
+   * time exactly one probes it; a moved, ended or missing pause changes no row and is never started again.
+   */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
@@ -510,13 +533,35 @@ export interface FactoryStore {
   recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
   getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
 
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
+
   // Coordination (design §5, 2026-11-03)
 
   /**
    * Makes `links` the item's edges: new ones are inserted `open`, kept ones keep their state, others are deleted.
-   * Idempotent. Returns the item's edges.
+   * Idempotent. Returns the item's edges. With `read_at` (the issue's updated_at the links were read at, issue #254)
+   * every edge and the item record it, in the same transaction; without it both keep what they had.
    */
-  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]>;
+  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]>;
+  /**
+   * The issue updated_at the item's links were last read at (`replaceDependencyEdges` with `read_at`), kept on the
+   * item so an issue with no links has one too. Null: never read with a time, or marked stale. Read-only.
+   */
+  dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null>;
+  /** Clears the item's read time, so the controller reads its links on the next poll. Idempotent. */
+  markDependencyLinksStale(id: WorkItemId): Promise<void>;
   /** Edges of one item, or every edge pointing to one source id, or every edge. Read-only. */
   listDependencyEdges(filter?: { work_item_id?: WorkItemId; depends_on?: string }): Promise<DependencyEdge[]>;
   /** Sets one edge's state. False when there is no such edge. */

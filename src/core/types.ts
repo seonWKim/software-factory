@@ -23,8 +23,8 @@ export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "depen
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
-/** `local`: an item filed on this machine (issue #198); its id is local to the factory. */
-export type SourceType = "github_issue" | "slack_thread" | "local";
+/** The source adapter's type, e.g. `local`: an item filed on this machine (issue #198). Core names no other source. */
+export type SourceType = string;
 
 /**
  * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the
@@ -209,6 +209,35 @@ export interface ImproveReport extends ImproveWindow {
   created_at: Timestamp;
 }
 
+/** Standing approvals (design 05-standing-approvals): the gate a human decision is made at. Only the spec gate so far. */
+export type StandingGate = "spec";
+/** What the spec at the gate is: a phase of a split, a split into phases, or a single spec. */
+export type SpecKind = "phase" | "split" | "single";
+/** A human's decision at a gate. */
+export type GateOutcome = "approved" | "rejected" | "revised";
+
+/** A standing-approval rule, one per (gate, tier). Stored only: nothing acts on it yet. `set_by`: a user ID. */
+export interface StandingRule {
+  gate: StandingGate;
+  tier: Tier;
+  enabled: boolean;
+  set_by: UserId;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export type StandingProposalId = Brand<string, "StandingProposalId">;
+
+/** A proposal to turn a rule on, one per (gate, tier, run_length): the run that reached `threshold`. */
+export interface StandingProposal {
+  id: StandingProposalId;
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
+  created_at: Timestamp;
+}
+
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
 export interface SessionRecord { notes: SessionNote[]; last_finish: SessionFinish | null }
 export interface SessionNote { at: Timestamp; text: string }
@@ -268,6 +297,8 @@ export interface WorkerPause {
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update). `preflight_access`:
 the push_access or pr_api preflight check failed another way (issue #216), so no implement-type claim either.
+ * `github_rate_limit`: GitHub's REST rate limit was hit (2026-11-07), so no implement, update or review claim and no
+ * GitHub poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
  * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
@@ -275,7 +306,8 @@ the push_access or pr_api preflight check failed another way (issue #216), so no
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
  */
-export type ClaimPauseName = "rate_limit" | "forge_auth" | "preflight_access" | "model_stall" | "model_stall_since" | "model_answered";
+export type ClaimPauseName =
+  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit" | "model_stall" | "model_stall_since" | "model_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
@@ -302,7 +334,7 @@ export interface RunAttempt {
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
   /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
-  failure_class: "task" | "infra" | "rate_limited" | "stalled" | null;
+  failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
 }
@@ -443,7 +475,10 @@ export type RunOutcome =
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
       infra: boolean;
-      /** For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth` and `preflight_access`: when the pause ends. */
+      /**
+       * For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth`, `preflight_access` and
+       * `github_rate_limited`: when the pause ends.
+       */
       reset_at?: Timestamp | null;
       /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
       output_tail?: string;
@@ -550,6 +585,11 @@ export interface DependencyEdge {
   depends_on: string;
   kind: DependencyKind;
   state: DependencyState;
+  /**
+   * The source issue's `updated_at` when this edge was read from it (issue #254), or the store time of a read made
+   * without one. Null on edges stored before it was kept.
+   */
+  source_updated_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }

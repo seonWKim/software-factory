@@ -122,7 +122,7 @@ const WORK_ITEM_COLUMNS =
 /**
  * The columns and values of INSERT INTO work_items; `change` is changeFields of the item's pr_number (the adopted
  * PR's, else none). The change columns are listed only with a PR number: without one they are NULL by default,
- * and intake inserts exactly as before migration 32, also on a schema without them (tests of older steps do).
+ * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
  */
 export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: string; values: SqlValue[] } {
   const values: SqlValue[] = [
@@ -350,6 +350,7 @@ export function rowToDependencyEdge(r: Row): DependencyEdge {
     depends_on: r.depends_on as string,
     kind: r.kind as DependencyEdge["kind"],
     state: r.state as DependencyEdge["state"],
+    source_updated_at: (r.source_updated_at as Timestamp | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
