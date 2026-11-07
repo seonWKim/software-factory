@@ -1392,14 +1392,19 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
 
     it("no limit gives 50 rows; a limit above 200 is capped at 200", async () => {
       const { store } = await make();
-      for (let n = 0; n < 205; n++) await store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v");
+      // 205 one-row transactions, sent together: one after another they outlast the default timeout on MySQL
+      // (each commits on its own). The MySQL pool runs them side by side; SQLite queues them.
+      const created = await Promise.all(
+        Array.from({ length: 205 }, (_, n) => store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v")),
+      );
+      expect(created.every(Boolean)).toBe(true);
       const def = (await store.listTableRows({ table: "cursors" }))!;
       expect(def.rows).toHaveLength(50);
       expect(def).toMatchObject({ limit: 50, total: 205 });
       const big = (await store.listTableRows({ table: "cursors", limit: 1000 }))!;
       expect(big.rows).toHaveLength(200);
       expect(big.limit).toBe(200);
-    });
+    }, 30_000);
 
     it("an exact-value filter returns only equal rows; a quote in the value is bound, not spliced", async () => {
       const { store } = await make();
