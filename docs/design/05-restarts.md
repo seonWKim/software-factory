@@ -21,7 +21,6 @@
 ## History
 
 - **Agent asks a human; same failure twice** (2026-11-07, issue #167). Before: an agent that could not go on had to fail, and identical task failures used every attempt up to `max_attempts`.
-
 - **Restarts** (decision changed 2026-11-01). Before: any failed run set `blocked_on: human` / `run_failed:<kind>:<code>` at once and waited for `/retry`, and the reaper requeued an expired lease with no wait.
 - **No automatic retry for deterministic implement failures** (decision changed 2026-11-02, issue #135). Before: only `diff_too_large` blocked at once, and `no_commits`, `scope_violation` and `egress_blocked` were retried up to `max_attempts`, each retry a full agent run that failed the same way.
 - **Implement preflight** (new decision, 2026-11-02, issue #135). Before: the agent ran first and a missing push permission showed only at the push, after a full agent run, repeated on every retry.
