@@ -138,6 +138,37 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
   };
 }
 
+/** The `updater` key of factory.config.json (design §8 Self-update). */
+export interface UpdaterConfig {
+  /** Drain, run the target's `npm run migrate`, then start it, with no owner command. Default false. */
+  auto_migrate: boolean;
+}
+
+export const UPDATER_KEYS = ["auto_migrate"] as const;
+
+/**
+ * Problems with the `updater` key: absent is fine; otherwise an object whose only key is `auto_migrate`, a
+ * boolean. A typo or a non-boolean fails at startup, like the other keys.
+ */
+export function updaterProblems(raw: unknown): string[] {
+  if (raw === undefined) return [];
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return ["updater must be an object, e.g. {\"auto_migrate\": false}"];
+  const problems: string[] = [];
+  for (const key of Object.keys(raw)) {
+    if (!(UPDATER_KEYS as readonly string[]).includes(key)) problems.push(`unknown config key "${key}" at updater.${key}; valid updater keys: ${UPDATER_KEYS.join(", ")}`);
+  }
+  const v = (raw as Record<string, unknown>).auto_migrate;
+  if (v !== undefined && typeof v !== "boolean") problems.push(`updater.auto_migrate must be true or false (got ${JSON.stringify(v) ?? String(v)})`);
+  return problems;
+}
+
+/** The checked `updater` settings; throws the first problem `updaterProblems` finds. Absent: auto_migrate off. */
+export function updaterConfig(raw: unknown): UpdaterConfig {
+  const problems = updaterProblems(raw);
+  if (problems.length > 0) throw new Error(problems[0]);
+  return { auto_migrate: (raw as { auto_migrate?: boolean } | undefined)?.auto_migrate === true };
+}
+
 export interface Prompts {
   triage: string;
   implement: string;
