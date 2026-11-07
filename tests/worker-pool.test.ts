@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WORKER_INDEX_BASE_ENV, build, loadConfig, workerCount, workerIndexBase } from "../src/compose.js";
+import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
 import type { RunKind } from "../src/core/types.js";
@@ -82,19 +82,40 @@ describe("workers config", () => {
     }
   });
 
-  /** A config dir like the checked-in one, on SQLite, with `over` merged in. */
+  /** A config dir like the checked-in one, on SQLite, without its max_workers (so slots = workers), with `over` merged in. */
   function root(over: Record<string, unknown>): string {
     const real = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.config.json"), "utf8")) as Record<string, unknown>;
     const dir = mkdtempSync(join(tmpdir(), "sf-pool-"));
     mkdirSync(join(dir, "prompts"));
     for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
     const plugins = { ...(real.plugins as object), awake: "none" };
-    const file = { ...real, store: { type: "sqlite" }, plugins, state_dir: "state", worktrees_dir: "wt", ...over };
+    const file = { ...real, max_workers: undefined, store: { type: "sqlite" }, plugins, state_dir: "state", worktrees_dir: "wt", ...over };
     writeFileSync(join(dir, "factory.config.json"), JSON.stringify(file));
     writeFileSync(join(dir, "secrets.env"), "GITHUB_TOKEN=gh\n");
     vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets.env"));
     return dir;
   }
+
+  it("max_workers: absent means workers; an integer of at least workers is kept; anything else stops startup", () => {
+    expect(maxWorkers(3, undefined)).toBe(3);
+    expect(maxWorkers(3, 3)).toBe(3);
+    expect(maxWorkers(1, 8)).toBe(8);
+    for (const bad of [2, 0, 1.5, "8", null, [8]]) {
+      expect(() => maxWorkers(3, bad)).toThrow("max_workers must be an integer of at least workers (3)");
+    }
+  });
+
+  it("loadConfig carries max_workers (absent: workers); build() makes that many slots, `workers` of them claiming", async () => {
+    expect((await loadConfig(root({ workers: 2, max_workers: undefined }))).config.max_workers).toBe(2);
+    await expect(loadConfig(root({ workers: 3, max_workers: 2 }))).rejects.toThrow("max_workers must be an integer of at least workers (3)");
+    const built = await build(await loadConfig(root({ workers: 1, max_workers: 4 })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+    try {
+      expect(built.worker.workers).toHaveLength(4);
+      expect(built.worker.size()).toBe(1);
+    } finally {
+      await built.close();
+    }
+  });
 
   it("loadConfig carries workers into FactoryConfig (absent: 1) and refuses a bad value", async () => {
     // undefined drops the key, whatever the real config sets.

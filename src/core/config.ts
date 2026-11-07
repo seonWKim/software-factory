@@ -84,6 +84,11 @@ export interface LoadedConfig {
   inbox_retention_days: number;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
+  /**
+   * Worker slots in one process, the most `workers` can be raised to live (`factory settings set workers`).
+   * Sizes the supervisor's worker index block. An integer of at least `workers`; absent: `workers`.
+   */
+  max_workers?: number;
   /** Paths agent runs may never read (G3/G4). Absolute. */
   deny_paths: string[];
   agent_git_identity: { name: string; email: string };

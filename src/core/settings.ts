@@ -369,6 +369,19 @@ export function workerCount(value: unknown): number {
   return value;
 }
 
+/**
+ * `max_workers` from factory.config.json: the worker slots a process has, which sizes the supervisor's worker
+ * index block. Absent means `workers`; otherwise an integer of at least `workers` or startup fails. The live
+ * `workers` setting may go anywhere from 1 to this without a restart.
+ */
+export function maxWorkers(workers: number, value: unknown): number {
+  if (value === undefined) return workers;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < workers) {
+    throw new Error(`max_workers must be an integer of at least workers (${workers}) (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  return value;
+}
+
 /** A positive integer, or the config loader's message for `key`. */
 export function positiveInteger(key: string, value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
@@ -411,6 +424,8 @@ export interface SettingsBase {
   file: Partial<Record<GlobalSettableKey, unknown>>;
   /** The file's per-project layers: `defaults` holds the file's global value of each per-project key. */
   layers: SettingsLayers;
+  /** The file's `max_workers` (absent: the file's `workers`): no `workers` override goes above it. */
+  max_workers?: number;
 }
 
 export interface ResolvedSetting<K extends SettableKey = SettableKey> {
@@ -430,7 +445,7 @@ export interface IgnoredOverride {
 export interface ResolvedSettings {
   /** Each key's global effective value and its source. `workers` is not capped here. */
   global: { [K in SettableKey]: ResolvedSetting<K> };
-  /** The values the factory acts on: `global` with `workers` capped at the file's value. */
+  /** The values the factory acts on: `global` with `workers` capped at `workers_cap`. */
   values: SettableValues;
   /** The per-project layers with the overrides applied, for settingsFor. */
   layers: SettingsLayers;
@@ -438,7 +453,7 @@ export interface ResolvedSettings {
   projects: Record<string, Partial<Record<ProjectSettableKey, { value: number; source: "override" | "file" }>>>;
   /** Stored overrides that failed a check, with the reason. Their key keeps the file value. */
   ignored: IgnoredOverride[];
-  /** The file's `workers` (else 1): sizes the supervisor's index block, so no override goes above it. */
+  /** The file's `max_workers` (else its `workers`, else 1): sizes the supervisor's index block, so no override goes above it. */
   workers_cap: number;
 }
 
@@ -554,7 +569,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
     (sources[po.o.project] ??= {})[po.key] = { value: po.value, source: "override" };
   }
 
-  const workers_cap = parseSettable("workers", base.file.workers ?? SETTABLE_DEFAULTS.workers);
+  const workers_cap = workersCap(base);
   const values = { ...valuesOf(global), workers: Math.min(global.workers.value, workers_cap) };
   return { global, values, layers: { defaults, projects }, projects: sources, ignored, workers_cap };
 }
@@ -567,6 +582,11 @@ export function effectiveSetting<K extends SettableKey>(r: ResolvedSettings, key
   }
   if (key === "workers") return { ...r.global.workers, value: r.values.workers } as ResolvedSetting<K>;
   return r.global[key];
+}
+
+/** The most worker slots a process has: the file's `max_workers`, else its `workers`, else 1. */
+export function workersCap(base: SettingsBase): number {
+  return base.max_workers ?? parseSettable("workers", base.file.workers ?? SETTABLE_DEFAULTS.workers);
 }
 
 /** The base a FactoryConfig alone gives: every key from the config, as if the file set it. For tests and lone loops. */
@@ -585,7 +605,7 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
   };
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
-  return { file, layers: config.settings };
+  return { file, layers: config.settings, ...(config.max_workers !== undefined ? { max_workers: config.max_workers } : {}) };
 }
 
 /** Reads the stored overrides; the store's FactoryStore.listSettingOverrides. */
@@ -651,7 +671,7 @@ export class LiveSettings {
     return this.current;
   }
 
-  /** Worker slots that may claim: the effective `workers`, capped at the file's value. */
+  /** Worker slots that may claim: the effective `workers`, capped at the file's `max_workers`. */
   workers(): number {
     return this.current.values.workers;
   }
