@@ -303,16 +303,9 @@ export function phaseLabel(p: CommandPhase): string {
   return PHASE_LABELS[p];
 }
 
-/**
- * Phases SET_UP.md's command table does not list yet: SET_UP.md was outside the allowed paths of the change that
- * added them (2026-11-07). Remove this, and regenerate the table there, in a change that may edit SET_UP.md.
- */
-const NOT_YET_IN_SETUP: readonly CommandPhase[] = ["agent_needs_human", "repeated_failure"];
-
 function whenText(c: CommandSpec): string {
   const all = (ps: readonly CommandPhase[]) => ps.length === c.phases.length && ps.every((p) => c.phases.includes(p));
-  const listed = c.phases.filter((p) => !NOT_YET_IN_SETUP.includes(p));
-  const where = all(COMMAND_PHASES) ? "any time" : all(OPEN_PHASES) ? "any open item" : listed.map((p) => PHASE_LABELS[p]).join(", ");
+  const where = all(COMMAND_PHASES) ? "any time" : all(OPEN_PHASES) ? "any open item" : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
   return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
 }

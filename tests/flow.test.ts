@@ -32,7 +32,7 @@ async function factory(
   const broker = new FakeBroker();
   const storage = new MemoryStorage();
   const scanner = new PatternEgressScanner(async () => knownSecrets);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: opts.workerConfig ?? config, prompts, log: silent,
     scanner,
@@ -1677,7 +1677,7 @@ describe("/resolve with real git (NoOpSandbox)", () => {
       review: review("pass"),
     });
     const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker,
       storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),

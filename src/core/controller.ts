@@ -108,11 +108,9 @@ export interface ControllerDeps {
    */
   settings?: LiveSettings;
   /**
-   * The repeated-failure rule (issue #167, decided 2026-11-07): two task failures in a row in one step
-   * with the same code and detail line block the item with `repeated_failure`. Absent or false: off, and the
-   * step retries up to max_attempts as before. Off by default until the tests that pin "identical failures use
-   * every attempt" (outside the change that added it) are updated and src/compose.ts turns it on. The decision
-   * is not yet in docs/design/05-restarts.md; that follow-up records it there.
+   * The repeated-failure rule (issue #167, design 05-restarts): two task failures in a row in one step with the
+   * same code and detail line block the item with `repeated_failure`. Absent or true: on. False: off, and the step
+   * retries up to max_attempts.
    */
   repeated_failure_rule?: boolean;
 }
@@ -2124,7 +2122,7 @@ export class Controller {
       };
     }
     // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
-    if (cls === "task" && this.d.repeated_failure_rule === true && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
+    if (cls === "task" && this.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
     const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
     const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
     // A forge 401/403: the retry also waits for the forge-auth pause to end (design §5 Restarts).
