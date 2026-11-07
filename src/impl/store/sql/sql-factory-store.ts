@@ -90,6 +90,7 @@ import type {
   WorkItemFilter,
 } from "../../../interfaces/factory-store.js";
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../../../interfaces/factory-store.js";
+import { migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
@@ -129,7 +130,7 @@ export class SqlFactoryStore implements FactoryStore {
   async migrate(): Promise<void> {
     await this.db.migrate();
     const legacy = await countLegacyProjectRows(this.db);
-    if (legacy > 0) throw new Error(legacyRowsMessage(legacy));
+    if (legacy > 0) throw migrationPendingError(legacyRowsMessage(legacy));
   }
 
   schemaVersion(): Promise<SchemaVersion> {

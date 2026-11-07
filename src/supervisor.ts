@@ -160,6 +160,7 @@ export class ForkLauncher implements ChildLauncher {
 class ForkedChild implements ChildHandle {
   drainAcknowledged = false;
   lastError: string | null = null;
+  lastErrorCode: string | null = null;
   readonly exited: Promise<number | null>;
 
   constructor(private readonly c: ChildProcess) {
@@ -171,7 +172,11 @@ class ForkedChild implements ChildHandle {
     });
     c.on("message", (m: unknown) => {
       if (isMessage(m, DRAINED_MESSAGE)) this.drainAcknowledged = true;
-      if (isMessage(m, CHILD_ERROR_MESSAGE)) this.lastError = String((m as { error?: unknown }).error ?? "").slice(0, 500);
+      if (isMessage(m, CHILD_ERROR_MESSAGE)) {
+        const e = m as { error?: unknown; code?: unknown };
+        this.lastError = String(e.error ?? "").slice(0, 500);
+        this.lastErrorCode = typeof e.code === "string" ? e.code.slice(0, 100) : null;
+      }
     });
   }
 

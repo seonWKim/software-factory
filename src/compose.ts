@@ -13,7 +13,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -27,6 +27,7 @@ import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -78,6 +79,8 @@ export interface FileConfig {
    */
   model_by?: unknown;
   max_loops: number;
+  /** A split phase's spec counts as approved by the parent's `/approve`. Absent: false. */
+  phases_auto_approve?: boolean;
   /** Task failures of one step before it blocks on a human. Per-project setting; absent everywhere: 3. */
   max_attempts?: number;
   /** Infra failures of one step before it blocks on a human. Absent: 3. */
@@ -110,6 +113,8 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
   ui?: { port?: number };
+  /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
+  updater?: { auto_migrate?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -178,6 +183,7 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
+  autoMigrate(file.updater);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
@@ -212,6 +218,7 @@ export async function loadConfig(
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
     settings,
     max_loops: file.max_loops,
+    phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),
     max_restart: retry.max_restart,
     retry_base_ms: retry.retry_base_ms,
     retry_max_ms: retry.retry_max_ms,

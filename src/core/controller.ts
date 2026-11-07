@@ -1258,6 +1258,16 @@ export class Controller {
     }
   }
 
+  /**
+   * phases_auto_approve: a phase of a split whose parent the owner approved (its phases are open) needs no
+   * `/approve` of its own. Off, not a phase, or a parent that is gone or no longer waiting on its phases: false.
+   */
+  private async approvedByParent(it: WorkItem): Promise<boolean> {
+    if (this.cfg.phases_auto_approve !== true || it.parent_id === null) return false;
+    const parent = await this.d.store.getWorkItem(it.parent_id);
+    return parent !== null && splitOpen(parent);
+  }
+
   /** The phases of the spec waiting at the gate: those of the latest succeeded triage run, or null for no split. */
   private async specPhases(it: WorkItem): Promise<TriagePhase[] | null> {
     const run = (await this.d.store.listRuns(it.id))
@@ -1332,7 +1342,9 @@ export class Controller {
       "",
       ...refs.map((r, i) => `${i + 1}. ${r.link}${i === 0 ? " (starts now)" : " (waits for the phase before it)"}`),
       "",
-      "Each phase gets its own spec and its own `/approve`. This issue closes as completed when the last phase does.",
+      this.cfg.phases_auto_approve === true
+        ? "Each phase gets its own spec, approved by this `/approve` (`phases_auto_approve`), so it is implemented without asking again. This issue closes as completed when the last phase does."
+        : "Each phase gets its own spec and its own `/approve`. This issue closes as completed when the last phase does.",
       "",
       footerAfter(it, patch),
     ].join("\n"));
@@ -1352,10 +1364,34 @@ export class Controller {
    * comment is keyed, closing a closed issue changes nothing, and each transition is conditional.
    */
   async tickPhases(): Promise<void> {
+    await this.live.refresh();
     const held = await this.d.store.listWorkItemsWhere({ stage: "NEW", blocked_on: "upstream", limit: PHASE_BATCH });
     for (const h of held) if (phaseHeld(h)) await this.guard("phase release", () => this.releasePhase(h.id));
     const parents = await this.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "upstream", limit: PHASE_BATCH });
     for (const p of parents) if (splitOpen(p)) await this.guard("split close", () => this.closeSplitIfDone(p.id));
+    if (this.cfg.phases_auto_approve !== true) return;
+    // A phase spec that waited at the gate before phases_auto_approve was turned on.
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "human", limit: PHASE_BATCH });
+    for (const w of waiting) if (phaseSpecPending(w)) await this.guard("phase approve", () => this.approvePhaseSpec(w.id));
+  }
+
+  /** phases_auto_approve on a phase spec already waiting at the gate: approved as the parent's /approve covers it. */
+  private async approvePhaseSpec(id: WorkItemId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || !phaseSpecPending(it) || !(await this.approvedByParent(it))) return;
+    // A phase whose own triage proposed phases still waits for a human: that /approve files issues.
+    if (await this.specPhases(it)) return;
+    await this.decide(id, (cur) =>
+      phaseSpecPending(cur)
+        ? {
+            patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+            actor: SYSTEM,
+            reason: "phase_spec_auto_approved",
+            detail: { parent_work_item_id: cur.parent_id! },
+            enqueue: { kind: "implement", idempotency_key: runKey(cur, "implement") },
+          }
+        : null,
+    );
   }
 
   /** Releases held phase `id` once the phase before it (by the store's parent link and phase number) closed as completed. */
@@ -1744,6 +1780,26 @@ export class Controller {
             token_cost: tokens,
           };
           // A split spec always waits for a human: its /approve files issues on the source.
+          const byParent = !spec.phases && (await this.approvedByParent(it));
+          if (byParent) {
+            // phases_auto_approve: the owner's /approve of the split covers this phase's spec (design 2026-11-01).
+            const next = { ...it, ...fields };
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const url = await this.comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier }, [
+                "The owner approved the split on the parent issue (`phases_auto_approve`), so this phase is implemented without its own `/approve`.",
+                "",
+                footerAfter(it, patch),
+              ].join("\n")));
+            return {
+              patch: { ...patch, spec_comment_url: url },
+              actor: SYSTEM,
+              reason: "triaged_phase_approved",
+              detail: { parent_work_item_id: it.parent_id! },
+              ack_run: run.id,
+              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+            };
+          }
           if (!spec.phases && !needsSpecApproval(tier, this.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
@@ -2546,6 +2602,11 @@ function phaseHeld(it: WorkItem): boolean {
 /** Closed as completed: the only close that releases the next phase or counts toward closing the parent. */
 function completed(it: WorkItem | null | undefined): boolean {
   return it?.stage === "CLOSED" && it.close_reason === "completed";
+}
+
+/** A phase whose spec waits at the gate for `/approve`. */
+function phaseSpecPending(it: WorkItem): boolean {
+  return it.parent_id !== null && it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === "spec_pending";
 }
 
 /** A split parent whose phases are filed and not all closed as completed. */
