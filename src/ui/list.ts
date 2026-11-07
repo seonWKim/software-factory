@@ -3,13 +3,14 @@
 // the same order for the same store and query. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
+import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
 import { type PriorityInput, rank } from "./priority.js";
-import { type ClaimPauses, type Why, deadlocked, refsOf, whyWaiting } from "./why.js";
+import { type ClaimPauses, type Why, deadlocked, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
 
 /** Most rows any list or section reads from the store. */
@@ -40,8 +41,10 @@ export interface ListRow extends FilterRow {
   decision: ClaimDecision | null;
   /** Merge conflicts resolved automatically and those that needed a person, from the item's history. */
   conflicts: ConflictCounts;
-  /** Why the item waits (why.ts); its text is not withheld yet. */
+  /** Why the item waits (why.ts), with the open alarms that affect it named; its text is not withheld yet. */
   why: Why;
+  /** The open alarms that affect the item (alarms.ts). */
+  alarms: Alert[];
 }
 
 /** True when the filters may show closed items, so listRows reads them. */
@@ -52,10 +55,11 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), limit: LIST_LIMIT });
   const { active, position } = await activeRuns(c.store);
   const pauses = await readClaimPauses(c.store);
+  const open = await openAlarms(c.store, c.now);
   // One read for every row's latest claim decision; only an active implement run gets one.
   const decisions = await c.store.listLatestClaimDecisions(items.filter((it) => active.get(it.id)?.kind === "implement").map((it) => it.id));
 
-  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why; decision: ClaimDecision | null })[] = [];
+  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why; decision: ClaimDecision | null; alarms: Alert[] })[] = [];
   const phases = items.filter((it) => it.parent_id !== null);
   for (const it of items) {
     const run = active.get(it.id) ?? null;
@@ -63,6 +67,8 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
     const changes = await c.store.listStateChanges(it.id);
     const decision = run?.kind === "implement" ? (decisions.get(it.id) ?? null) : null;
     const waiting = waitingOn(it, phases);
+    const runs = await c.store.listRuns(it.id);
+    const alarms = alarmsFor(open, it, runs);
     inputs.push({
       item: it,
       stage: it.stage,
@@ -75,9 +81,10 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       dependents: 0,
       ...waiting,
       deadlock: deadlocked(decision, run),
-      conflicts: conflictCounts(await c.store.listRuns(it.id), changes),
+      conflicts: conflictCounts(runs, changes),
       decision,
-      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, pauses, waiting, c.now),
+      alarms,
+      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, pauses, waiting, c.now, alarms),
     });
   }
 
@@ -103,6 +110,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       decision: r.input.decision && r.input.decision.run_id === active.get(it.id)?.id ? r.input.decision : null,
       conflicts: r.input.conflicts,
       why: r.input.why,
+      alarms: r.input.alarms,
     });
   }
   return out;
@@ -186,7 +194,10 @@ export async function latestDecision(store: FactoryStore, id: WorkItemId, run: R
   return run?.kind === "implement" ? ((await store.listClaimDecisions(id)).at(-1) ?? null) : null;
 }
 
-/** whyWaiting's input from the stored item and run; `not_before` counts only while it is after `now`. */
+/**
+ * whyWaiting's input from the stored item and run; `not_before` counts only while it is after `now`. The open
+ * alarms that affect the item are named after the sentence.
+ */
 export function whyOf(
   it: WorkItem,
   run: Run | null,
@@ -195,17 +206,18 @@ export function whyOf(
   pauses: ClaimPauses,
   phases: { waiting_on: number; waiting_on_number: number | null },
   now: Date,
+  alarms: readonly Alert[],
 ): Why {
   const active = run && (run.status === "queued" || run.status === "running") ? run : null;
   const notBefore = active?.status === "queued" && active.not_before && Date.parse(active.not_before) > now.getTime() ? active.not_before : null;
-  return whyWaiting({
+  return withAlarms(whyWaiting({
     item: it,
     run: active ? { id: active.id, kind: active.kind, status: active.status as "queued" | "running", position: active.status === "queued" ? position : null } : null,
     decision,
     pauses,
     not_before: notBefore,
     phases,
-  });
+  }), alarms.map(alarmText));
 }
 
 /** The phases waitingOn reads: the open split items, read only when one of `items` waits on a phase. */

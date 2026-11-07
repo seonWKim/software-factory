@@ -1,5 +1,5 @@
 -- One sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget): the
--- same tables and column as SQLite migration 38. `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a
+-- same tables and column as SQLite migration 39. `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a
 -- sync source and delivers its outbox, like `listener_leases` but keyed by name. `forge_budget`: the forge's rate
 -- limit per (project_key, plugin); a write with a newer `updated_at` wins. `item_thread.actor`: the account ID of a
 -- message that came from a source, NULL otherwise.

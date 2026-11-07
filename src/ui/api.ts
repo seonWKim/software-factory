@@ -14,6 +14,7 @@ import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+import { itemAlarms, openAlarms } from "./alarms.js";
 import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
@@ -214,7 +215,8 @@ class ApiCtx {
     const run = active.get(it.id) ?? null;
     const decision = await latestDecision(s, it.id, run);
     const waiting = waitingOn(it, await readPhases(s, [it]));
-    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now), it);
+    const alarms = await itemAlarms(s, await openAlarms(s, this.now), it);
+    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now, alarms), it);
   }
 }
 
@@ -264,7 +266,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     pending: status.pending ?? [],
   };
   // System actions (design §9 Status page): store reads and in-process values only, no forge call.
-  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, dashboardRev: parseRevision(params.get("rev")) });
+  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
   const token = c.d.lastChecks?.tokenDays() ?? null;
@@ -563,6 +565,7 @@ async function queue(c: ApiCtx) {
   for (const r of runs) if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));
   const phases = await readPhases(s, [...items.values()].filter((it): it is WorkItem => it !== null));
   const pauses = await readClaimPauses(s);
+  const open = await openAlarms(s, c.now);
   const out = [];
   for (const [i, r] of runs.entries()) {
     const it = items.get(r.work_item_id) ?? null;
@@ -571,7 +574,7 @@ async function queue(c: ApiCtx) {
       // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
       const run = active.get(it.id) ?? r;
       const decision = await latestDecision(s, it.id, run);
-      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, decision, pauses, waitingOn(it, phases), c.now), it);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, decision, pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it)), it);
     }
     out.push({
       position: i + 1,

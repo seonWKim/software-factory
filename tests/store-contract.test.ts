@@ -1769,7 +1769,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("sync leases (migration 38): one sync per project, keyed by name", () => {
+  describe("sync leases (migration 39): one sync per project, keyed by name", () => {
     const NAME = `sync:github_issue:${PROJECT_KEY}`;
 
     it("one owner at a time; the holder's own take keeps its token; another name is its own lease", async () => {
@@ -1841,7 +1841,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("forge budget (migration 38): a newer reading wins", () => {
+  describe("forge budget (migration 39): a newer reading wins", () => {
     const at = (s: number) => new Date(Date.UTC(2026, 10, 8, 9, 0, s)).toISOString() as Timestamp;
     const reading = (remaining: number, updated_at: Timestamp, project = PROJECT_KEY): ForgeBudget => ({
       project, plugin: "github", remaining, limit: 5000, reset_at: at(59), updated_at,
@@ -1863,7 +1863,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("item thread actor (migration 38)", () => {
+  describe("item thread actor (migration 39)", () => {
     it("keeps the account ID of an entry from a source; the factory's own entries have none", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);
@@ -2033,6 +2033,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const results = await Promise.all([store.recordAlert(alert(), 6 * HOUR), store.recordAlert(alert(), 6 * HOUR)]);
       expect(results.filter((r) => r.created)).toHaveLength(1);
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
+    });
+  });
+  describe("restart history (design 05-restarts)", () => {
+    const MIN = 60_000;
+    const at = (clock: FakeClock, ago_ms: number) => new Date(clock.now().getTime() - ago_ms).toISOString();
+
+    it("applying the same restart twice leaves one record; another reason at the same time is its own", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      expect(await store.recordChildRestart(r)).toEqual({ created: true });
+      expect(await store.recordChildRestart({ ...r })).toEqual({ created: false });
+      expect(await store.recordChildRestart({ at: r.at, reason: "boom" })).toEqual({ created: true });
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual(expect.arrayContaining([r, { at: r.at, reason: "boom" }]));
+      expect((await store.listChildRestartsWithin(30 * MIN)).filter((x) => x.reason === r.reason)).toEqual([r]);
+    });
+
+    it("concurrent writes of one restart leave one record", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      const results = await Promise.all([store.recordChildRestart(r), store.recordChildRestart(r)]);
+      expect(results.filter((x) => x.created)).toHaveLength(1);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([r]);
+    });
+
+    it("lists the restarts inside the window on the store's clock, oldest first", async () => {
+      const { store, clock } = await make();
+      const old = { at: at(clock, 31 * MIN), reason: "r1" };
+      const mid = { at: at(clock, 10 * MIN), reason: "r2" };
+      const last = { at: at(clock, 0), reason: "r3" };
+      for (const r of [last, old, mid]) await store.recordChildRestart(r);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([mid, last]);
+      expect(await store.listChildRestartsWithin(60 * MIN)).toEqual([old, mid, last]);
     });
   });
   describe("host sleeps (migration 28)", () => {
@@ -2608,10 +2640,10 @@ describe("MySQL step 35 (change-fields)", () => {
   });
 });
 
-describe("migration 38 (sync leases, forge budget, thread actor)", () => {
+describe("migration 39 (sync leases, forge budget, thread actor)", () => {
   /** Found by what it creates, so a renumber at merge needs no edit. */
   const STEP = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE IF NOT EXISTS sync_leases")) + 1;
-  const file = "0038-sync-lease.sql";
+  const file = "0039-sync-lease.sql";
   const columns = (text: string, table: string) => {
     const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\s*\\)`).exec(text)![1]!;
     return [...body.matchAll(/^\s+`?([a-z_]+)`?\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();

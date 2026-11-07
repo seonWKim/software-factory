@@ -1,5 +1,5 @@
 import type { WorkStatus } from "../core/status-label.js";
-import type { SourceRef, SourceType } from "../core/types.js";
+import type { SourceRef, SourceType, UserId } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
 // Intake surface. Two kinds of source: polled (e.g. forge issues) and streamed (pushed events, e.g. Slack).
@@ -96,15 +96,23 @@ export type SourceEvent =
 /** How a person closed a source item: done, or not going to be done. */
 export type SourceCloseReason = "completed" | "not_planned";
 
+/** What `fileIssue` needs: one standalone item (design §7, a failure pattern of an improve report). */
+export interface IssueInput {
+  /** The project key the item belongs to; a source with one repository ignores it. */
+  project: string;
+  /** Who files it, a system actor's ID; a source that stores the item records it as the requester. */
+  requester_id: UserId;
+  title: string;
+  /** The item text; the source appends `marker`. Control-plane text, egress-scanned by the caller. */
+  body: string;
+  /** Unique per filing. Filing again finds the item that carries it instead of filing another. */
+  marker: string;
+}
+
 /** What `fileSubIssue` needs: one phase of a split spec (design 2026-11-01). */
-export interface SubIssueInput {
+export interface SubIssueInput extends Omit<IssueInput, "project" | "requester_id"> {
   /** The split parent's source item. */
   parent: SourceRef;
-  title: string;
-  /** The issue text; the source appends `marker`. Control-plane text built from the approved spec. */
-  body: string;
-  /** Unique per (parent, phase). Filing again finds the issue that carries it instead of filing another. */
-  marker: string;
 }
 
 export type VerdictEventTarget =
@@ -171,6 +179,12 @@ interface SourceAdapterBase {
    * the caller retries. Agents never call this. Absent on sources that cannot file items.
    */
   fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
+  /**
+   * Files one standalone item, without the intake label (a person starts it), and returns its ref. Idempotent:
+   * the marker is looked up first, so an item already carrying `input.marker` is returned, never filed twice.
+   * Throws on a source failure; the caller retries. Agents never call this. Absent on sources that cannot file.
+   */
+  fileIssue?(input: IssueInput): Promise<SourceRef>;
   /**
    * True while the source's request budget is low (e.g. under 10% or `min_remaining` of the hourly limit left,
    * until the reset): the controller skips its optional reads (dependency state refreshes, status catch-up) until

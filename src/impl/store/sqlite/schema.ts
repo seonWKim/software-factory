@@ -549,8 +549,8 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
   // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
-  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
-  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); written by the
+  // improve filing (issue #308). IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
   `
   CREATE TABLE IF NOT EXISTS improve_reports (
     id              TEXT PRIMARY KEY,
@@ -653,7 +653,19 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
   CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
   `,
-  // 38: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
+  // 38: restart history (design 05-restarts). One row per unexpected child exit the supervisor recorded: its time,
+  // its reason and when the store saw it. `restart_key` (the time and a hash of the reason) makes a second write of
+  // the same restart a no-op. No backfill: older restarts were never stored. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS child_restarts (
+    restart_key  TEXT PRIMARY KEY,
+    at           TEXT NOT NULL,
+    reason       TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS child_restarts_at ON child_restarts (at);
+  `,
+  // 39: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
   // `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a sync source and delivers its outbox, like
   // `listener_leases` but keyed by name. `forge_budget`: the forge's rate limit per (project_key, plugin), a newer
   // `updated_at` wins. `item_thread.actor`: the account ID of a message that came from a source, NULL otherwise.

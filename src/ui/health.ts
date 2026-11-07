@@ -1,11 +1,13 @@
 // The status page's Health panel and GET /api/health: the same checks as `factory doctor`, from the one
 // implementation (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync
 // line (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent
-// requests, and egress-scans every message before it leaves (design §9).
+// requests, and egress-scans every message before it leaves (design §9). Below it, the latest improve report
+// (design §7): its group counts, drafts and filings, every text through the Withholder.
 
 import { syncLeaseName } from "../core/lease.js";
 import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
+import type { FailureGroup, ImproveReport } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
@@ -119,5 +121,64 @@ export class HealthMonitor {
       `<p class="muted">Last run ${esc(r.checked_at.toISOString())}. <a href="/classic?health=refresh#health">refresh</a>${limited}</p>` +
       `${table}</section>`
     );
+  }
+}
+
+/**
+ * The latest improve report as a `<section id="improve">`: its window and counts, then one row per group of two
+ * or more runs with its draft and filing; skipped and withheld drafts and filings name their reason or rules.
+ * Every text (code, detail, cause, fix, reason) passes the Withholder first.
+ */
+export async function improveSection(report: ImproveReport | null, scanner: EgressScanner): Promise<string> {
+  const head = `<section id="improve"><h2>Improve report</h2>`;
+  if (!report) return `${head}<p class="muted">no improve run has reported yet</p></section>`;
+  const w = new Withholder(scanner);
+  const runs = report.groups.reduce((n, g) => n + g.run_ids.length, 0);
+  const rows = [];
+  for (const g of report.groups) {
+    rows.push(
+      `<tr><td>${await w.text(g.error_code)}</td><td>${await w.text(g.detail, { fallback: "none" })}</td><td>${esc(g.run_ids.length)}</td>` +
+      `<td>${await draftCell(w, g)}</td><td>${await w.text(filingText(g), { fallback: "not filed yet" })}</td></tr>`,
+    );
+  }
+  const table = rows.length === 0
+    ? `<p class="muted">no failure group of two or more runs</p>`
+    : `<table><tr><th>error</th><th>detail</th><th>runs</th><th>draft</th><th>filing</th></tr>${rows.join("")}</table>`;
+  return (
+    head +
+    `<p class="muted">Window ${esc(report.window_start)} to ${esc(report.window_end)}, reported ${esc(report.created_at)}. ` +
+    `${esc(report.groups.length)} groups (${esc(runs)} runs), ${esc(report.patterns.length)} single-run patterns.</p>` +
+    `${table}</section>`
+  );
+}
+
+async function draftCell(w: Withholder, g: FailureGroup): Promise<string> {
+  const d = g.draft;
+  if (!d) return `<span class="muted">no draft</span>`;
+  switch (d.status) {
+    case "drafted":
+      return `<strong>cause:</strong> ${await w.text(d.cause)}<br><strong>fix:</strong> ${await w.text(d.fix)}`;
+    case "withheld":
+      return await w.text(`withheld (${d.rules.join(", ")})`);
+    case "failed":
+    case "skipped":
+      return await w.text(`${d.status} (${d.reason})`);
+  }
+}
+
+function filingText(g: FailureGroup): string | null {
+  const f = g.filing;
+  if (!f) return null;
+  switch (f.status) {
+    case "filed":
+    case "linked":
+      return `${f.status}: ${f.ref.link || f.ref.id}`;
+    case "commented":
+      return `commented on ${f.ref.link || f.ref.id}: ${f.run_ids.length} new runs`;
+    case "withheld":
+      return `withheld (${f.rules.join(", ")})`;
+    case "skipped":
+    case "failed":
+      return `${f.status} (${f.reason})`;
   }
 }

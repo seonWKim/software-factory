@@ -16,7 +16,8 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
-import { HEALTH_MIN_INTERVAL_MS, HealthMonitor } from "../src/ui/health.js";
+import type { ImproveReport, RunId, Timestamp, UserId } from "../src/core/types.js";
+import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, improveSection } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
 import { BACKENDS } from "./helpers/store.js";
 
@@ -340,5 +341,70 @@ describe("health: at most one run per 60 seconds per UI process", () => {
     expect(report.checks).toEqual([{ status: "fail", msg: "health checks could not finish: GitHub GET /labels → 500" }]);
     await get(port, "/classic");
     expect(n).toBe(1);
+  });
+});
+
+describe("health: the latest improve report (design §7, issue #308)", () => {
+  /** A GitHub-token-shaped string the pattern scanner flags as `github_token`. */
+  const TOKEN = `ghp_${"b".repeat(36)}`;
+  const P = "local:local:0123456789abcdef";
+
+  async function withReports() {
+    const clock = new FakeClock("2026-03-05T06:00:00.000Z");
+    const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
+    await store.migrate();
+    const { item } = await store.createWorkItem(
+      { source: { type: "local", id: "system:improve:p", link: "" }, requester_id: "system:improver" as UserId, project: P, problem: "", resources: [] },
+      { kind: "system", id: "system:test" },
+    );
+    const record = async (key: string, groups: ImproveReport["groups"]) => {
+      const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key: key });
+      clock.advance(1_000);
+      return (await store.recordImproveReport({
+        run_id: run.id, project: P, window_start: "2026-03-04T00:00:00.000Z" as Timestamp, window_end: "2026-03-05T00:00:00.000Z" as Timestamp,
+        groups, patterns: [{ error_code: "lonely", detail: "once", run_ids: ["r9" as RunId], work_item_ids: [item.id] }],
+      })).report;
+    };
+    const g = (error_code: string, extra: Partial<ImproveReport["groups"][number]>) => ({
+      error_code, detail: "npm test exited #", run_ids: ["r1", "r2"] as RunId[], work_item_ids: [item.id], ...extra,
+    });
+    await record("old", [g("old_code", {})]);
+    await record("new", [
+      g("checks_failed", {
+        draft: { status: "drafted", cause: "a flaky port", fix: "pin the port", touches: ["tests/x.test.ts"], touches_prompts_or_gate: false },
+        filing: { status: "filed", ref: { type: "local", id: "local-filed-1", link: "local:local-filed-1" } },
+      }),
+      g("agent_timed_out", { draft: { status: "drafted", cause: `the log holds ${TOKEN}`, fix: "rotate it", touches: [], touches_prompts_or_gate: false }, filing: { status: "skipped", reason: "issue_cap" } }),
+      g("no_commits", { draft: { status: "withheld", rules: ["github_token"], touches_prompts_or_gate: false }, filing: { status: "withheld", rules: ["github_token"] } }),
+    ]);
+    return store;
+  }
+
+  it("shows the latest report: counts, drafted causes and fixes, skipped and withheld groups; flagged text is withheld", async () => {
+    const store = await withReports();
+    const html = await improveSection(await store.getLatestImproveReport(), new PatternEgressScanner(async () => []));
+    expect(html).toContain("3 groups (6 runs), 1 single-run patterns");
+    expect(html).not.toContain("old_code");
+    expect(html).toContain("a flaky port");
+    expect(html).toContain("pin the port");
+    expect(html).toContain("filed: local:local-filed-1");
+    expect(html).toContain("skipped (issue_cap)");
+    expect(html).toContain("withheld (github_token)");
+    expect(html).not.toContain(TOKEN);
+    expect(html).toContain("[withheld: github_token]");
+  });
+
+  it("the status page carries the section; with no report it says so", async () => {
+    const clock = new FakeClock();
+    const empty = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
+    await empty.migrate();
+    const scanner = new PatternEgressScanner(async () => []);
+    const health = new HealthMonitor(async () => [], clock);
+    const page = async (store: FactoryStore) =>
+      section((await get({ store, scanner, clock, lease_ms: 60_000, prUrl: () => "https://x/1", health }, "/classic")).body, "improve");
+    expect(await page(empty)).toContain("no improve run has reported yet");
+    const shown = await page(await withReports());
+    expect(shown).toContain("a flaky port");
+    expect(shown).not.toContain(TOKEN);
   });
 });
