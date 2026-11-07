@@ -64,6 +64,13 @@ export interface WorkItem {
   restart_count: number;
   token_cost: number;
   pr_number: number | null;
+  /**
+   * The change columns the store writes with pr_number (migration 35): `change_ref` is the PR number as text,
+   * `change_url` the PR link when the project is a GitHub key with a stored label. Both null without a PR number,
+   * and on rows written before migration 35. Store-derived: never patched directly.
+   */
+  change_ref: string | null;
+  change_url: string | null;
   merge_sha: string | null;
   fixes_pr: number | null;
   /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
@@ -122,7 +129,7 @@ export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "parent_id" | "phase" | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "change_ref" | "change_url" | "created_at" | "updated_at"
   >
 >;
 

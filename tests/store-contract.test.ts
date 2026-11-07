@@ -1062,6 +1062,40 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 35))!.id).toBe(b.id);
     });
 
+    it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
+      const { store } = await make();
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      const labelled = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
+      const unlabelled = await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human);
+      const plain = await store.createWorkItem(issue(7), system);
+      const factory = (await store.createWorkItem(issue(8), system)).item;
+      const patched = await store.transition({ id: factory.id, expected_version: 1, patch: { pr_number: 40 }, actor: system, reason: "x" });
+      const want = new Map([
+        [labelled.item.id, { change_ref: "5", change_url: prUrl(LABEL, 5) }],
+        [unlabelled.item.id, { change_ref: "6", change_url: null }],
+        [plain.item.id, { change_ref: null, change_url: null }],
+        [factory.id, { change_ref: "40", change_url: prUrl(LABEL, 40) }],
+      ]);
+      // Intake (created or adopted) returns the same change fields as its stored row; so does a transition.
+      for (const r of [labelled, unlabelled, plain]) {
+        expect(r.created).toBe(true);
+        expect(r.item).toEqual(await store.getWorkItem(r.item.id));
+        expect(r.item).toMatchObject(want.get(r.item.id)!);
+      }
+      expect(patched.ok && patched.item).toMatchObject(want.get(factory.id)!);
+      // An intake that finds the item already there returns the stored row too.
+      const again = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
+      expect(again).toMatchObject({ created: false, item: want.get(labelled.item.id) });
+      for (const [id, fields] of want) {
+        expect(await store.getWorkItem(id)).toMatchObject(fields);
+        const it = (await store.getWorkItem(id))!;
+        expect(await store.getWorkItemBySource(it.source.type, it.source.id)).toMatchObject(fields);
+      }
+      expect(await store.getWorkItemByPr(PROJECT_KEY, 5)).toMatchObject(want.get(labelled.item.id)!);
+      const listed = await store.listWorkItems(50);
+      for (const [id, fields] of want) expect(listed.find((i) => i.id === id)).toMatchObject(fields);
+    });
+
     it("an unreviewed merge insert writes change_ref", async () => {
       const { store } = await make();
       const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: null });

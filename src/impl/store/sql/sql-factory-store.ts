@@ -198,8 +198,8 @@ export class SqlFactoryStore implements FactoryStore {
       const existing = await this.selectItemBySource(tx, input.source.type, input.source.id);
       if (existing) return { item: existing, created: false };
 
-      const item = newWorkItem(input, this.now());
-      const { columns, values } = workItemInsert(item, await changeFields(tx, item.project, item.pr_number));
+      const item = newWorkItem(input, await changeFields(tx, input.project, input.adopted?.pr_number ?? null), this.now());
+      const { columns, values } = workItemInsert(item);
       const inserted = await this.insertOnce(
         tx,
         `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
