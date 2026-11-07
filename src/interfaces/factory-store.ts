@@ -623,6 +623,18 @@ export interface FactoryStore {
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
 
+  // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
+
+  /**
+   * Stores `check` as the item's one latest result, replacing any earlier one; `checked_at` is the store clock's
+   * now. Returns the stored row.
+   */
+  recordMergeCheck(check: NewMergeCheck): Promise<MergeCheck>;
+  /** The item's latest result; null when it was never checked. Read-only. */
+  getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null>;
+  /** The latest results of the given items (those with one), in no set order. Read-only. */
+  listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
+
   // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
   // of commands the CLI sends. Store only: nothing calls these yet.
 
@@ -642,7 +654,7 @@ export interface FactoryStore {
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
-  // through the same path as a comment command. Nothing creates them yet but tests.
+  // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
 
   /**
    * Records one request, pending (handled_at and refusal null). Its `seq` is greater than every request recorded
@@ -658,6 +670,11 @@ export interface FactoryStore {
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
   /** The request with `seq`, or null. Read-only. */
   getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /**
+   * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
+   * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
+   */
+  listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]>;
 
   // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
   // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
@@ -762,6 +779,20 @@ export interface AppCommandRequest extends NewAppCommandRequest {
   handled_at: Timestamp | null;
   /** The refusal text posted for it; null when applied or pending. */
   refusal: string | null;
+}
+
+/** One local merge check: whether the PR's head merged cleanly into the base, as git computed it. */
+export interface NewMergeCheck {
+  work_item_id: WorkItemId;
+  mergeable: boolean;
+  /** Conflicting file paths, sorted; empty when mergeable. Free text from the repository. */
+  conflicts: string[];
+  head_sha: string;
+  base_sha: string;
+}
+
+export interface MergeCheck extends NewMergeCheck {
+  checked_at: Timestamp;
 }
 
 /** What a WorkerPool reports each tick. */

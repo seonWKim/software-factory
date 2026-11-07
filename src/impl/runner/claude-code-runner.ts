@@ -122,6 +122,11 @@ export const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) 
 /**
  * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
  * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
+ *
+ * Network: `allowLocalBinding` lets sandboxed commands bind and connect on localhost only, so tests that start a
+ * local server (`listen 127.0.0.1:0`) run. No `allowedDomains` entry is added, so every other host stays denied
+ * (in `-p` mode nobody can approve one). `npm_config_update_notifier=false` stops npm's own update check, which
+ * otherwise asks registry.npmjs.org on every npm and npx call and is denied (docs/plugins/agent-runner.md).
  */
 export function buildHarnessSettings(
   spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths">,
@@ -129,7 +134,7 @@ export function buildHarnessSettings(
 ): Record<string, unknown> {
   const policy = guardPolicy({ workdir, deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, env_allowlist: {} });
   return {
-    env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
+    env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
     permissions: {
       deny: [
         ...policy.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
@@ -142,6 +147,7 @@ export function buildHarnessSettings(
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
       filesystem: { denyRead: [...policy.deny_paths], allowWrite: [...policy.writable_paths] },
+      network: { allowLocalBinding: true },
       credentials: {
         envVars: [
           { name: "GITHUB_TOKEN", mode: "deny" },

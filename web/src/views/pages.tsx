@@ -6,7 +6,7 @@ import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
-import { ItemsTable, QueueTable, RunningTable, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, useNow } from "./common.js";
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
@@ -203,6 +203,23 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
+      {item.merge_check && (
+        <Section title="Merge check">
+          <p className="text-sm" data-merge-check-detail>
+            <MergeCheckNote check={item.merge_check} />
+            {item.merge_check.base_sha && item.merge_check.checked_at && (
+              <span className="ml-2 text-zinc-600 dark:text-zinc-400">
+                against base <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, checked {ago(item.merge_check.checked_at, now)} ago
+              </span>
+            )}
+          </p>
+          {item.merge_check.conflicts.length > 0 && (
+            <ul aria-label="Conflicting files" className="mt-1 list-disc pl-6 font-mono text-xs">
+              {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
+            </ul>
+          )}
+        </Section>
+      )}
       <Section title="Runs" count={runs.length}>
         {runs.length === 0 ? <Empty>No run yet.</Empty> : (
           <Table label="Runs" head={["Run", "Status", "Attempt", "Started", "Took", "Tokens", "Error"]}>

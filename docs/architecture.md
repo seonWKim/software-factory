@@ -297,7 +297,8 @@ The runner writes a per-run Claude Code settings file into the agent's run direc
 
 ```jsonc
 {
-  "env": { "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1" },          // G1: strip credentials from Bash, hooks, stdio MCP children
+  "env": { "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",            // G1: strip credentials from Bash, hooks, stdio MCP children
+           "npm_config_update_notifier": "false" },           // npm's update check would ask the (denied) registry
   "permissions": {
     "deny": [                                                    // G4: file tools + recognized Bash file commands
       "Read(~/.config/software-factory/**)",
@@ -314,6 +315,7 @@ The runner writes a per-run Claude Code settings file into the agent's run direc
   "sandbox": {                                                   // G3 at OS level, even under NoOpSandbox
     "enabled": true,
     "filesystem": { "denyRead": ["~/.config/software-factory", "~/.ssh", "~/.aws"] },
+    "network": { "allowLocalBinding": true },                    // localhost only, for tests that start a server; no allowedDomains
     "credentials": { "envVars": [{ "name": "GITHUB_TOKEN", "mode": "deny" }, { "name": "GH_TOKEN", "mode": "deny" }] }
   }
 }
@@ -323,4 +325,5 @@ What the docs say, and the gaps the canary test (G6) must cover:
 - `Read(...)` deny rules cover the file tools and Bash commands Claude Code recognizes (`cat`, `head`, `tail`, `sed`, `tee`, redirections), **not** `grep -r` or scripts that open files themselves. OS-level `sandbox.filesystem.denyRead` covers Bash and its children but **not** the Read tool, so both are needed.
 - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` keeps the harness's own credential for model calls and strips credentials from subprocesses. `GITHUB_TOKEN` / `GH_TOKEN` are **not** stripped by it (hence the `credentials.envVars` deny, and G1 never passes them in). Whether `CLAUDE_CODE_OAUTH_TOKEN` is stripped is not stated explicitly: G6 checks it with `env` inside a run.
 - `.env.example` cannot be opened with an allow rule on top of `Read(**/.env.*)`: deny beats allow. So the `.env` deny globs leave it out. Claude Code (2.1.316) matches these globs with the `ignore` package, case-insensitively. It has no negated character class (`[!x]` and `[^x]` match `!` or `^` literally), but it passes `[a-z]` ranges through to the regex. So a suffix of 0–6 characters or of 8 or more is denied by length, and a 7-character suffix (the length of `example`) is denied when it differs from `example` at any position: one glob per position, whose class holds every character but that letter (both cases), `/` and control characters (`allCharsBut` in `claude-code-runner.ts`). Checked against the matcher in the installed binary: `.env`, `.env.local`, `.env.foobarx`, `.env.examplf`, `.env.examples` are denied, `.env.example` is not. What these rules leave out: `.env.example` in other cases (`.env.EXAMPLE`, the same name to this matcher and on a case-insensitive disk) and 7-character suffixes holding a control character. Runners that use the shared tools refuse both.
+- `network.allowLocalBinding` (2026-11-07, `docs/design/05-sandbox.md`): on macOS it lets sandboxed commands bind and accept on any local port and connect to localhost on any port. No host is allowed, so every other destination stays denied. A run can therefore reach local services: MySQL needs a login, and the files holding the factory's logins are in `deny_paths`; the local UI pages are read-only and egress-scanned, and its settings API refuses writes without its CSRF token; any other local service on the host is reachable as it is to the host user.
 - Exact keys and semantics: verify against the installed Claude Code version when implementing (the subprocess scrub list changed in v2.1.251).

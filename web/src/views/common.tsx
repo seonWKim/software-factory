@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ItemRow, Overview, QueueRow, RunRow } from "../api.js";
+import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, mergeCheckLabel } from "../api.js";
 import { Badge, Empty, Table, Td } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -27,6 +27,16 @@ export function ItemTitle({ id, title, source }: { id: string; title: string | n
       <Link href={itemPath(id)} className={cn("truncate font-medium", LINK_CLASS)}>
         {title ?? source.id}
       </Link>
+    </span>
+  );
+}
+
+/** A ready-to-merge item's merge check label; the conflicting file names show on hover. */
+export function MergeCheckNote({ check }: { check: MergeCheckView }) {
+  const tone = check.state === "conflicts" ? "text-red-700 dark:text-red-400" : check.state === "mergeable" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-600 dark:text-zinc-400";
+  return (
+    <span data-merge-check={check.state} className={cn("ml-2 text-xs whitespace-nowrap", tone)} {...(check.conflicts.length > 0 ? { title: check.conflicts.join("\n") } : {})}>
+      {mergeCheckLabel(check)}
     </span>
   );
 }
@@ -60,6 +70,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
           </Td>
           <Td>
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
+            {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
           <Td className="text-zinc-600 dark:text-zinc-400">{it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
