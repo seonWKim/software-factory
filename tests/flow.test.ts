@@ -2284,6 +2284,25 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     expect((await current(f)).allowed_paths).toEqual([".github/workflows/", ...ten]);
   });
 
+  it("/approve +paths with a bad path or more than 10 is refused with one reply each, and the waiting spec is unchanged", async () => {
+    const f = await atSpecGate(101);
+    const before = await current(f);
+    expect(before.stage).toBe("READY");
+    const bad = ["+paths /etc/passwd", "+paths src/../x.ts", "+paths src/*.ts"];
+    const many = `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`;
+    [...bad, many].forEach((note, i) => f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: `101b${i}`, approver: alice, note }));
+    await f.step();
+    expect(await current(f)).toEqual(before);
+    expect(implementPrompts(f)).toEqual([]);
+    const paths = ["/etc/passwd", "src/../x.ts", "src/*.ts"];
+    paths.forEach((p, i) => {
+      expect(refusals(f, `101b${i}`)).toHaveLength(1);
+      expect(refusals(f, `101b${i}`)[0]!.body).toContain(p);
+    });
+    expect(refusals(f, "101b3")).toHaveLength(1);
+    expect(refusals(f, "101b3")[0]!.body).toContain("at most 10");
+  });
+
   it("needs_human paths give the exact /retry +paths reply in the comment and never change allowed_paths", async () => {
     let asks = 0;
     const f = await atSpecGate(100, {
