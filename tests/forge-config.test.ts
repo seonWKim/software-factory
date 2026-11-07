@@ -8,6 +8,10 @@ import { GitHubClient } from "../src/impl/github/github-client.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { silent } from "./helpers/fakes.js";
+import { RecordingGitHubClient } from "./helpers/github.js";
+import { newStore } from "./helpers/store.js";
 import { REGISTRY, declaredSecrets, defaultPlugins, loadRegistry, selectPlugins, withPlugin } from "../src/plugins.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -29,6 +33,11 @@ function root(config: Record<string, unknown>): string {
 }
 
 const withForge = (forge: unknown): Record<string, unknown> => ({ ...REAL, plugins: { ...(REAL.plugins as object), forge } });
+/** The checked-in config with `source` instead of its sources, and `forge` when given (absent: left out). */
+const withSources = (source: unknown, ...forge: unknown[]): Record<string, unknown> => {
+  const { forge: _, ...plugins } = { ...(REAL.plugins as Record<string, unknown>), source };
+  return { ...REAL, plugins: forge.length ? { ...plugins, forge: forge[0] } : plugins };
+};
 
 class MapSecrets implements SecretStore {
   async get(name: SecretName): Promise<Secret | null> {
@@ -74,18 +83,33 @@ describe("forge: an optional kind with no default", () => {
 });
 
 describe("forge: selection at startup", () => {
-  it("absent: config loads and the selection has no forge, with or without a plugins object", async () => {
-    for (const cfg of [REAL, (({ plugins: _, ...rest }) => rest)(REAL)]) {
+  it("absent with github-issues in plugins.source: the forge is github, with or without a plugins object (issue #273)", async () => {
+    for (const cfg of [REAL, withSources("github-issues"), (({ plugins: _, ...rest }) => rest)(REAL)]) {
       const loaded = await loadConfig(root(cfg));
-      expect(loaded.plugins.forge).toBeUndefined();
-      expect(loaded.plugins).not.toHaveProperty("forge");
+      expect(loaded.plugins.forge).toBe("github");
     }
   });
 
-  it('"none" and other off values: config loads, no forge selected, and no guard error', async () => {
+  it("absent without github-issues: no forge, so a local-only setup selects nothing that calls GitHub", async () => {
+    for (const source of ["local", ["local"], []]) {
+      const loaded = await loadConfig(root(withSources(source)));
+      expect(loaded.plugins, JSON.stringify(source)).not.toHaveProperty("forge");
+    }
+  });
+
+  it('"none" and other off values without github-issues: config loads, no forge selected, and no guard error', async () => {
     for (const off of ["none", null, false, ""]) {
-      const loaded = await loadConfig(root(withForge(off)));
+      const loaded = await loadConfig(root(withSources(["local"], off)));
       expect(loaded.plugins, JSON.stringify(off)).not.toHaveProperty("forge");
+    }
+  });
+
+  it("an off value next to github-issues fails at startup, naming plugins.forge and github-issues", async () => {
+    for (const off of ["none", null, false, ""]) {
+      const err = await loadConfig(root(withForge(off))).then(() => null, (e: Error) => e.message);
+      expect(err, JSON.stringify(off)).toContain("plugins.forge");
+      expect(err).toContain("github-issues");
+      expect(err).not.toMatch(/guard/);
     }
   });
 
@@ -132,9 +156,9 @@ describe("forge: building", () => {
     return { registry, made };
   };
 
-  it("absent or none: Plugins.forge builds nothing and returns null", async () => {
+  it("absent or none without github-issues: Plugins.forge builds nothing and returns null", async () => {
     const { registry, made } = spyRegistry();
-    for (const cfg of [REAL, withForge("none")]) {
+    for (const cfg of [withSources(["local"]), withSources(["local"], "none")]) {
       const loaded = await loadConfig(root(cfg), { registry });
       expect(await new Plugins(loaded).forge(github)).toBeNull();
     }
@@ -148,32 +172,27 @@ describe("forge: building", () => {
     expect(made).toEqual(["spy"]);
   });
 
-  it('"github" builds a GitHubForge offering the PR facts', async () => {
+  it('"github" builds a GitHubForge offering the PR events, facts and writes', async () => {
     const loaded = await loadConfig(root(withForge("github")));
     const forge = (await new Plugins(loaded).forge(github)) as Forge;
     expect(forge).toBeInstanceOf(GitHubForge);
-    for (const m of ["prChecks", "prFiles", "commitAuthor", "closePr"] as const) expect(forge[m]).toBeTypeOf("function");
+    for (const m of ["poll", "prRef", "prNumberOf", "postPrComment", "setPrStatus", "prChecks", "prFiles", "labelAddedBy", "commitAuthor", "closePr"] as const) {
+      expect(forge[m]).toBeTypeOf("function");
+    }
+    expect(forge.handover_cursor).toBe("intake:github_issue");
   });
 
-  it("GitHubForge passes each PR fact through to the GitHub source", async () => {
-    const calls: unknown[][] = [];
-    const rec =
-      <T>(name: string, out: T) =>
-      async (...args: unknown[]) => {
-        calls.push([name, ...args]);
-        return out;
-      };
-    const forge = new GitHubForge({
-      prChecks: rec("prChecks", { state: "passed" as const }),
-      prFiles: rec("prFiles", ["a.ts"]),
-      commitAuthor: rec("commitAuthor", null),
-      closePr: rec("closePr", "closed" as const),
-    });
-    const input = { pr_number: 4, closed: { type: "github", id: "1" } as never, marker: "m", body: () => "b" };
-    expect(await forge.prChecks(1)).toEqual({ state: "passed" });
-    expect(await forge.prFiles(2)).toEqual(["a.ts"]);
-    expect(await forge.commitAuthor("abc")).toBeNull();
-    expect(await forge.closePr(input)).toBe("closed");
-    expect(calls).toEqual([["prChecks", 1], ["prFiles", 2], ["commitAuthor", "abc"], ["closePr", input]]);
+  it("built without the store, Clock and log, the github forge cannot poll; with them it can", async () => {
+    const loaded = await loadConfig(root(withForge("github")));
+    const bare = (await new Plugins(loaded).forge(github))!;
+    await expect(bare.poll(null)).rejects.toThrow(/PollContext/);
+    const client = new RecordingGitHubClient();
+    const { store } = await newStore();
+    const clock = new FakeClock("2026-11-07T00:00:00Z");
+    const full = (await new Plugins(loaded).forge(client, { store, clock, log: silent }))!;
+    const { events } = await full.poll(null);
+    expect(events).toEqual([]);
+    // The closed and the open PR list of the configured repository.
+    expect(client.calls.map((c) => c.path.split("?")[0]!.replace(/^\/repos\/[^/]+\/[^/]+/, ""))).toEqual(["/pulls", "/pulls"]);
   });
 });
