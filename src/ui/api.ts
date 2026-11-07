@@ -27,6 +27,7 @@ import { readGitHubBudget } from "./github-budget.js";
 import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
@@ -193,14 +194,17 @@ class ApiCtx {
     };
   }
 
-  /** What a Needs-you row says (need.ts): the reason through the Withholder and the command to type. */
+  /**
+   * What a Needs-you row says (need.ts): the reason through the Withholder, the command to type, and `anchor`, the
+   * item page's anchor of the newest factory thread entry (null when the item has none).
+   */
   async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
     const n = await needOf(
       { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
-    return { reason: n.reason, command: n.command };
+    return { reason: n.reason, command: n.command, anchor: await latestWhyAnchor(this.d.store, it.id) };
   }
 
   /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
@@ -328,6 +332,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const out = [];
   for (const r of shown) {
     const it = r.item;
+    const decision = r.decision; // the current run's only: an earlier run's hold is stale
     const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
@@ -354,6 +359,25 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       merge: await mergeView(c, it),
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
+      parent_id: it.parent_id,
+      phase: it.phase,
+      waiting_on_number: r.input.waiting_on_number ?? null,
+      run: r.run && {
+        kind: r.run.kind,
+        status: r.run.status,
+        attempt: r.run.attempt,
+        worker_id: r.run.lease ? await c.text(r.run.lease.owner) : null,
+        started_at: r.run.started_at,
+        position: r.run.status === "queued" ? r.position : null,
+      },
+      claim: decision && {
+        decision: decision.decision,
+        holder: await c.text(decision.holder_ref),
+        holder_id: decision.holder_work_item_id,
+        approved: decision.approved_by !== null,
+        cost: decision.cost,
+        threshold: decision.threshold,
+      },
     });
   }
   // The closed items count in the facets even when the list leaves them out (the Closed option's count).
@@ -438,6 +462,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       const parts = runParts(stored, id, r.id);
       return parts.length > 0 ? [[r.id, parts] as const] : [];
     })),
+    /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
+    thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
     merge: await mergeView(c, it, changes),

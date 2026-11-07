@@ -9,7 +9,7 @@ import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js"
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -21,13 +21,14 @@ import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
+import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -79,6 +80,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   test_database: { none: NoTestDatabase },
   // Optional with no default plugin (issue #172); github-issues among the sources implies github (issue #273).
   forge: { github: GitHubForge },
+  network_probe: { http: HttpNetworkProbe },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -178,6 +180,7 @@ describe("plugin registry: defaults", () => {
       awake: "caffeinate",
       github_auth: "token",
       test_database: "none",
+      network_probe: "http",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -782,7 +785,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 17 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(17);
+  it("covers 18 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(18);
   });
 });

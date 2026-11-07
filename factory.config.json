@@ -15,6 +15,8 @@
     { "prefix": "src/core/", "tier": 3 },
     { "prefix": "src/impl/runner/", "tier": 4 },
     { "prefix": "src/impl/broker/", "tier": 4 },
+    { "prefix": "src/impl/github/github-tool-broker.ts", "tier": 4 },
+    { "prefix": "src/impl/github/broker.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/egress/", "tier": 4 },
     { "prefix": "src/impl/secrets/", "tier": 4 },
     { "prefix": "src/impl/auth/", "tier": 4 },
@@ -39,7 +41,8 @@
     "clock": "system",
     "updater": "git-worktree",
     "github_auth": "app",
-    "test_database": "none"
+    "test_database": "none",
+    "network_probe": "http"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {
@@ -64,6 +67,7 @@
   "run_timeout_ms": 5400000,
   "stall_ms": 300000,
   "probe_interval_ms": 600000,
+  "agent_stop_checks": 3,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
   "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
@@ -73,7 +77,16 @@
     { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "docs/design.md", "also": ["docs/design/"] },
-    { "when": "docs/plugins.md", "also": ["docs/plugins/"] }
+    { "when": "docs/plugins.md", "also": ["docs/plugins/"] },
+    {
+      "when": "src/interfaces/factory-store.ts",
+      "also": [
+        "src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts",
+        "tests/store-contract.test.ts", "migrations/mysql/", "src/impl/store/mysql/migrations.ts"
+      ]
+    },
+    { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"] },
+    { "when": "docs/design/", "also": ["docs/design.md"] }
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",

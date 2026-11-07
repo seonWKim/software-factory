@@ -8,6 +8,7 @@ import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interf
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
+import type { NetworkProbe, NetworkProbeResult } from "../../src/interfaces/network-probe.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
@@ -517,6 +518,8 @@ export class FakeSandbox implements Sandbox {
   refs: Record<string, string> = {};
   /** Git argv prefixes (joined by spaces) that exit 1 with a `fatal:` stderr, e.g. "fetch" for a failed base fetch. */
   failGit: string[] = [];
+  /** The stderr of a `failGit` command, when set (e.g. git's "Could not resolve host" line); else `fatal: <verb> failed`. */
+  failGitStderr: string | null = null;
   /** What `git status --porcelain` prints: non-empty means the worktree has changes (a pause commits them). */
   status = "";
   /** When set, a `git commit` moves HEAD here (the WIP commit a pause makes). */
@@ -552,7 +555,7 @@ export class FakeSandbox implements Sandbox {
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
     this.gitEnvs.push({ ...o.env });
-    if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: `fatal: ${args.split(" ")[0]} failed` };
+    if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: this.failGitStderr ?? `fatal: ${args.split(" ")[0]} failed` };
     if (args === "rev-parse HEAD") return out(this.head);
     const ref = args.match(/^rev-parse --verify --end-of-options (.+)\^\{commit\}$/)?.[1];
     if (ref !== undefined && ref in this.refs) return out(`${this.refs[ref]}\n`);
@@ -761,10 +764,22 @@ export const triageSpec = {
  * The whole loop on fakes: a controller and two workers sharing one store, sandbox, broker and runner. Specs are
  * auto-approved (spec_gate_min_tier 3, triageSpec is tier 2), so implement and review follow triage at once.
  */
+/** A NetworkProbe whose answers are scripted, in order; with none left it passes. Counts its probes. */
+export class FakeNetworkProbe implements NetworkProbe {
+  probes = 0;
+  constructor(public answers: NetworkProbeResult[] = []) {}
+  async probe(): Promise<NetworkProbeResult> {
+    this.probes++;
+    return this.answers.shift() ?? { ok: true };
+  }
+}
+
 export async function pipeline(opts: {
   implement?: (spec: AgentRunSpec) => Partial<AgentRunResult> | Promise<Partial<AgentRunResult>>;
   config?: Partial<FactoryConfig>;
   scanner?: EgressScanner;
+  /** The controller's network probe (design §5 Restarts); absent: none, so a network pause ends at its probe time. */
+  network_probe?: NetworkProbe;
 } = {}) {
   const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
   const clock = new FakeClock();
@@ -780,7 +795,10 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner , repeated_failure_rule: false });
+  const controller = new Controller({
+    store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner, repeated_failure_rule: false,
+    ...(opts.network_probe ? { network_probe: opts.network_probe } : {}),
+  });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),

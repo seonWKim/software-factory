@@ -2,7 +2,7 @@
 // rows as the HTML page, that store text leaves only through the Withholder, and that it never writes.
 // Everything goes through respond(), the server's whole request handling without a socket.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -348,6 +348,44 @@ describe("ui api: items", () => {
     expect(new Set(attempts.map((a) => a.started_at)).size).toBe(3);
     expect(new Set(attempts.map((a) => a.finished_at)).size).toBe(3);
     for (const a of attempts) expect(a.finished_at > a.started_at).toBe(true);
+  });
+});
+
+describe("ui api: item thread (issue #286)", () => {
+  it("item detail returns the thread from the store, oldest first: seq, time, kind, author ID or unknown, channel, anchor, withheld body", async () => {
+    const { d, store, clock, items } = await seeded();
+    const it = items.secretive;
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:spec:1 -->", body: "## Spec\n\nthe spec" });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "github:77", body: `a comment with ${SECRET}` });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:refused:app-3 -->", body: "`/approve` was not applied" });
+    await store.recordItemMessage({ work_item_id: items.approve.id, marker: "<!-- factory:spec:2 -->", body: "another item's" });
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    const listed = await store.listItemMessages(it.id);
+    expect(body.thread).toEqual(listed.map((m, i) => ({
+      seq: m.seq,
+      at: m.created_at,
+      kind: ["spec", "comment", "refused"][i],
+      author: i === 1 ? "unknown" : "factory",
+      channel: "github_issue",
+      anchor: `msg-${m.seq}`,
+      body: i === 1 ? "[withheld: github_token]" : m.body,
+    })));
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    // An item with no entries has an empty thread.
+    expect((await json<{ thread: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).thread).toEqual([]);
+  });
+
+  it("each Needs-you row's need has the anchor of the item's newest factory entry; null when it has none", async () => {
+    const { d, store, items } = await seeded();
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:needs-human:1 -->", body: "first why" });
+    const why = (await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:failed:2 -->", body: "second why" })).message;
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "github:5", body: "a later comment" });
+    const needs = await json<{ items: { id: string; need: { anchor: string | null } }[] }>(d, "/api/v1/items?state=needs");
+    const anchors = Object.fromEntries(needs.items.map((i) => [i.id, i.need.anchor]));
+    expect(anchors[items.secretive.id]).toBe(`msg-${why.seq}`);
+    expect(anchors[items.approve.id]).toBeNull();
   });
 });
 
@@ -992,6 +1030,9 @@ describe("ui api: why an item waits (issue #310)", () => {
         new Proxy(store, {
           get(target, prop, receiver) {
             if (prop === "listClaimDecisions") return async (id: WorkItemId) => decisions.get(id) ?? [];
+            if (prop === "listLatestClaimDecisions") {
+              return async (ids: readonly WorkItemId[]) => new Map(ids.flatMap((id) => decisions.get(id)?.slice(-1).map((x) => [id, x] as const) ?? []));
+            }
             const v = Reflect.get(target, prop, receiver) as unknown;
             return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
           },
@@ -1206,5 +1247,76 @@ describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () =>
     clock.advance(600_000);
     const o = await json<{ github_budget: Record<string, unknown> }>(d, "/api/v1/overview");
     expect(o.github_budget).toMatchObject({ state: "ok", counted: 0, wait_reason: null });
+  });
+});
+
+describe("ui api: items for the tree (issue #295)", () => {
+  type Row = {
+    id: string; parent_id: string | null; phase: number | null; title: string | null; pr_url: string | null;
+    run: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
+    claim: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
+  };
+  const rowsOf = async (d: UiDeps) => new Map((await json<{ items: Row[] }>(d, "/api/v1/items")).items.map((r) => [r.id, r]));
+
+  it("each row has parent_id and phase, and its run with the worker (through the Withholder), start and queue position", async () => {
+    const { d, store, items, claimed, claimed2 } = await seeded();
+    const parent = await make(store, 50, "Split parent");
+    const phase = (await store.createWorkItem({ ...issue(51), title: "Phase", parent: { id: parent.id, phase: 2 } }, system)).item;
+    const rows = await rowsOf(d);
+    expect(rows.get(parent.id)).toMatchObject({ parent_id: null, phase: null, run: null, claim: null });
+    expect(rows.get(phase.id)).toMatchObject({ parent_id: parent.id, phase: 2 });
+    expect(rows.get(items.running.id)!.run).toEqual({
+      kind: "implement", status: "running", attempt: claimed.attempt, worker_id: "host:11:1", started_at: claimed.started_at, position: null,
+    });
+    expect(rows.get(items.running2.id)!.run!.worker_id).toBe("[withheld: github_token]");
+    expect(rows.get(items.queued.id)!.run).toMatchObject({ kind: "triage", status: "queued", worker_id: null, started_at: null, position: 1 });
+    expect(rows.get(items.queued2.id)!.run!.position).toBe(2);
+    expect(rows.get(items.approve.id)!.run).toBeNull();
+    void claimed2;
+  });
+
+  it("a held run carries the latest claim decision: holder, cost and threshold, from one batched read", async () => {
+    const { d, store, clock } = await seeded();
+    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const a = await make(store, 60, "Holder");
+    await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
+    clock.advance(1_000);
+    const b = await make(store, 61, "Held");
+    await enqueue(store, b, "implement", "h:b", { stage: "RUNNING", ...PATHS });
+    const first = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(first.work_item_id).toBe(a.id);
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+    expect(await store.listLatestClaimDecisions([])).toEqual(new Map());
+    const batched = vi.spyOn(store, "listLatestClaimDecisions");
+    const rows = await rowsOf(d);
+    expect(rows.get(b.id)!.claim).toEqual({ decision: "held", holder: "#60", holder_id: a.id, approved: false, cost: 3, threshold: 2.5 });
+    expect([...rows.values()].filter((r) => r.claim === null).length).toBeGreaterThan(0);
+    expect(batched).toHaveBeenCalledTimes(1);
+  });
+
+  it("claim reads one batch and no per-item decisions, and a stale hold from an earlier run is left out", async () => {
+    const { d, store, clock } = await seeded();
+    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const a = await make(store, 70, "Holder");
+    await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
+    clock.advance(1_000);
+    const b = await make(store, 71, "Held");
+    await enqueue(store, b, "implement", "h:b", { stage: "RUNNING", ...PATHS });
+    const first = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+    // The held run ends after the holder finishes; a new implement run (a fix) is queued for b.
+    await store.completeRun(first.id, first.lease!.token, { status: "succeeded", summary: "ok", data: {} });
+    const held = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(held.work_item_id).toBe(b.id);
+    await store.completeRun(held.id, held.lease!.token, { status: "failed", error_code: "agent_error", detail: "x", infra: false });
+    await enqueue(store, b, "implement", "h:b2");
+    expect((await store.listLatestClaimDecisions([b.id])).get(b.id)).toBeDefined();
+    const perItem = vi.spyOn(store, "listClaimDecisions");
+    const batched = vi.spyOn(store, "listLatestClaimDecisions");
+    const rows = await rowsOf(d);
+    expect(rows.get(b.id)!.run).toMatchObject({ kind: "implement", status: "queued" });
+    expect(rows.get(b.id)!.claim).toBeNull();
+    expect(perItem).not.toHaveBeenCalled();
+    expect(batched).toHaveBeenCalledTimes(1);
   });
 });

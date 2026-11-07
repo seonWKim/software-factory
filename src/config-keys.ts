@@ -3,7 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
-import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
+import { COORDINATION_KEYS, TOOLCHAIN_KEYS, coordinationProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
@@ -53,6 +53,10 @@ export const TOP_LEVEL_KEYS = [
   "stall_ms",
   "first_output_ms",
   "probe_interval_ms",
+  "alarm_repeat_count",
+  "alarm_window_minutes",
+  "alarm_restart_count",
+  "agent_stop_checks",
   "workers",
   "max_workers",
   "state_dir",
@@ -79,6 +83,7 @@ export const TOP_LEVEL_KEYS = [
   "slack",
   "path_companions",
   "cli_user",
+  "toolchain",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -190,6 +195,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
     check(raw.openai_compatible.models, "openai_compatible.models", "openai_compatible.models", OPENAI_COMPATIBLE_MODELS_KEYS);
   }
   check(raw.slack, "slack", "slack", SLACK_KEYS);
+  check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.

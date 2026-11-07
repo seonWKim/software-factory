@@ -68,7 +68,10 @@ async function expectCopied(q: Exec, store: SqlFactoryStore, before: Record<stri
   for (const [from, to] of PAIRS) {
     expect(await count(q, to), to).toBe(await count(q, from));
     expect(await count(q, to), to).toBe(before[from]!.length);
-    expect(await allRows(q, to), to).toEqual(before[from]);
+    // The old table's columns only: a later migration may add columns to the new table (e.g. the mirror mark).
+    const cols = Object.keys(before[from]![0]!);
+    const copied = (await allRows(q, to)).map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
+    expect(copied, to).toEqual(before[from]);
   }
   expect((await store.listItemMessages(items[0]!)).map((m) => [m.seq, m.marker, m.body, m.created_at])).toEqual([
     [3, "m1", "first", "2026-01-01T00:00:01.000Z"],
@@ -243,6 +246,11 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0024 on MySQL", () => {
     await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
     await expectCopied(q, store, before, items);
     await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [latest]);
+    // The rebuilt table lacks what later steps added to it (e.g. the mirror mark): run their ALTERs again.
+    for (const s of readSteps(STEPS_DIR, INLINE_STEPS).filter((s) => s.number > STEP)) {
+      const text = s.sql ?? readFileSync(join(STEPS_DIR, s.file), "utf8");
+      for (const line of text.split("\n")) if (line.startsWith("ALTER TABLE command_inbox ")) await c.query(line);
+    }
     const { command } = await store.appendCliCommand({ key: "k4", actor: "local:owner", command: "approve", args: {} });
     expect(command.seq).toBeGreaterThan(6);
     expect(await count(q, "cli_commands")).toBe(before.cli_commands.length);

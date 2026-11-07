@@ -1,7 +1,8 @@
-import { readFileSync, readlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt } from "../src/compose.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -78,8 +79,68 @@ describe("prompts/triage.md", () => {
   });
 });
 
+describe("owner defaults (issue #315)", () => {
+  const text = prompt("triage");
+  const defaults = prompt("owner-defaults");
+  const CLAUDE = readFileSync(join(import.meta.dirname, "..", "CLAUDE.md"), "utf8");
+
+  it("the triage prompt applies owner defaults, lists them, and asks only what no default covers", () => {
+    expect(text).toMatch(/CLAUDE\.md already decides is not a decision/);
+    expect(text).toMatch(/owner defaults/i);
+    const b = bullet(text.slice(text.indexOf("Produce:")), "applied_defaults");
+    expect(b).toMatch(/each owner default you applied/i);
+    expect(b).toMatch(/rule/);
+    expect(bullet(text.slice(text.indexOf("Produce:")), "decisions")).toMatch(/changes? behaviou?r and no owner default covers/);
+  });
+
+  it("the defaults file has one rule per line, each with its source issue, none repeating CLAUDE.md", () => {
+    const rules = defaults.split("\n").filter((l) => l.startsWith("- "));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) {
+      expect(r).toMatch(/\(issue #\d+\)$/);
+      expect(CLAUDE).not.toContain(r.slice(2).replace(/\s*\(issue #\d+\)$/, ""));
+    }
+    expect(defaults).toMatch(/in-process state is fine only when no other replica needs it/i);
+  });
+
+  describe("loading at startup", () => {
+    afterEach(() => vi.unstubAllEnvs());
+    const REAL = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.config.json"), "utf8")) as Record<string, unknown>;
+    const root = (ownerDefaults?: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-defaults-"));
+      mkdirSync(join(dir, "prompts"));
+      for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+      if (ownerDefaults !== undefined) writeFileSync(join(dir, "prompts", "owner-defaults.md"), ownerDefaults);
+      writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, store: { type: "sqlite" } }));
+      mkdirSync(join(dir, "secrets"));
+      writeFileSync(join(dir, "secrets", ".env"), "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n");
+      vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets", ".env"));
+      return dir;
+    };
+
+    it("appends the file to the triage prompt when it exists", async () => {
+      const loaded = await loadConfig(root("- a rule (issue #1)\n"));
+      expect(loaded.prompts.triage.startsWith("triage")).toBe(true);
+      expect(loaded.prompts.triage).toContain("- a rule (issue #1)");
+      expect(loaded.prompts.implement).toBe("implement");
+    });
+
+    it("a missing file means no defaults and no error", async () => {
+      const loaded = await loadConfig(root());
+      expect(loaded.prompts.triage).toBe("triage");
+    });
+
+    it("fills the forge placeholder with plugins.forge, else local", async () => {
+      const dir = root();
+      writeFileSync(join(dir, "prompts", "implement.md"), "on {{forge}}");
+      const loaded = await loadConfig(dir);
+      expect(loaded.prompts.implement).toBe(`on ${loaded.plugins.forge ?? "local"}`);
+    });
+  });
+});
+
 describe.each([
-  ["implement", "PR description"],
+  ["implement", "change description"],
   ["resolve", "resolution summary"],
 ])("prompts/%s.md", (name, what) => {
   const text = prompt(name);
@@ -100,6 +161,28 @@ describe.each([
   });
 });
 
+describe("prompts/improve.md (issue #307)", () => {
+  const text = prompt("improve");
+  const produce = text.slice(text.indexOf("Produce:"));
+
+  it("asks for cause, fix and touches", () => {
+    const fields = [...produce.matchAll(/^- (\w+):/gm)].map((m) => m[1]);
+    expect(fields).toEqual(expect.arrayContaining(["cause", "fix", "touches"]));
+    expect(bullet(produce, "touches")).toMatch(/paths/);
+  });
+
+  it("grants no tools and names none", () => {
+    expect(text).toMatch(/You have no tools/);
+    expect(text).not.toMatch(/\b(Bash|Edit|Write|Read|Grep|Glob|WebFetch|tool_grants)\b/);
+  });
+
+  it("is loaded by compose as the improve prompt", async () => {
+    const { loadConfig } = await import("../src/compose.js");
+    const { prompts } = await loadConfig(join(import.meta.dirname, ".."));
+    expect(prompts.improve).toBe(text);
+  });
+});
+
 // The core prompts serve every project the factory works on (issue #335): no npm or repo-specific paths, and the
 // configured checks filled in at load.
 const CORE = ["triage", "implement", "review", "resolve"] as const;
@@ -114,10 +197,27 @@ describe.each(CORE)("prompts/%s.md is project-neutral", (name) => {
   });
 
   it("renders for non-npm checks with no npm, no docs/design.md and no unfilled placeholder", () => {
-    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }), "local");
     expect(out).not.toContain("npm");
     expect(out).not.toContain("docs/design.md");
     expect(out).not.toContain("{{");
+  });
+});
+
+// Where the change lives (issue: prompts say "change", not "pull request"): the forge name, filled at load.
+describe.each(CORE)("prompts/%s.md names the forge", (name) => {
+  const text = prompt(name);
+
+  it("has the forge placeholder", () => {
+    expect(text).toContain(FORGE_PLACEHOLDER);
+  });
+
+  it.each(["github", "local"])("renders with forge %s: the name, no placeholder, no pull request or PR", (forge) => {
+    const out = fillPrompt(text, repo({}), forge);
+    expect(out).toContain(`the ${forge} forge`);
+    expect(out).not.toContain("{{");
+    expect(out).not.toMatch(/pull request/i);
+    expect(out).not.toMatch(/\bPR\b/);
   });
 });
 
@@ -129,7 +229,7 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 
   it("puts each check_commands entry in the text, in order", () => {
-    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }), "local");
     expect(out).toContain("`make check`");
     expect(out).toContain("`make test`");
     expect(out.indexOf("`make check`")).toBeLessThan(out.indexOf("`make test`"));
@@ -137,7 +237,7 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 
   it("falls back to test_command when check_commands is absent", () => {
-    const out = fillPrompt(text, repo({}));
+    const out = fillPrompt(text, repo({}), "local");
     expect(out).toContain("`make unit`");
     expect(out).not.toContain("{{");
   });
@@ -148,7 +248,7 @@ describe("on this repo", () => {
   const config = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as FactoryConfig;
 
   it.each(["implement", "review"])("prompts/%s.md renders with npm run typecheck and npm test", (name) => {
-    const out = fillPrompt(prompt(name), config.repo);
+    const out = fillPrompt(prompt(name), config.repo, "github");
     expect(out).toContain("`npm run typecheck`");
     expect(out).toContain("`npm test`");
   });

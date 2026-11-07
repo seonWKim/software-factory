@@ -4,7 +4,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import {
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
+} from "./core/config.js";
+import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
@@ -16,7 +20,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
@@ -33,7 +37,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -114,6 +118,12 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The alarm step's thresholds (design 05-alarms). Settable live. Absent: 3, 60 and 5 (ALARM_DEFAULTS). */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
+  /** The gate hooks' Stop hook (design §4): the most times it sends an implement run's agent back. Absent: 3. */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -178,6 +188,12 @@ export interface FileConfig {
    * `when`, each `also` path is added to `allowed_paths`. Absent: none. Checked by pathCompanionsConfig.
    */
   path_companions?: unknown;
+  /**
+   * The project's toolchain (design 05-sandbox.md, issue #334): `caches` (folders the agent may read, never
+   * write), `env` (non-secret agent env entries) and `warm_command` (argv the worker runs before the agent, with
+   * the network; absent: `repo.install_command`). Absent: none of it. A PR-only key. Checked by toolchainConfig.
+   */
+  toolchain?: unknown;
 }
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -210,10 +226,11 @@ export function cliConfig(
 }
 
 /**
- * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth). On a shared store (MySQL: the enterprise
- * case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, and `toolchain`: what agents may read and
+ * the env they get). On a shared store (MySQL: the enterprise case) they come only from the checked-in file, so a
+ * user's own config cannot loosen them; solo use may set any key.
  */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth"] as const;
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain"] as const;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -279,14 +296,25 @@ export interface Loaded {
 
 /** The placeholder in prompts/*.md that names the project's pre-push checks. */
 export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+/** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
+export const FORGE_PLACEHOLDER = "{{forge}}";
+
+/** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
+export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
 
 /**
- * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
- * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
+ * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
+ * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
+ * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+  const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
+  const offline = toolchain
+    ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
+    : "";
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -398,6 +426,8 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    ...alarmConfig(file),
+    agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     workers,
     max_workers,
@@ -423,17 +453,28 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
-  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
+  // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
+  const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
+  if (toolchain) config.toolchain = toolchain;
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local", config.toolchain);
   const prompts: Prompts = {
     triage: await readPrompt("triage"),
     implement: await readPrompt("implement"),
     review: await readPrompt("review"),
   };
-  const resolvePrompt = await readPrompt("resolve").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return undefined;
-    throw err;
-  });
-  if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  // Optional prompt files: a missing one is not an error (resolve: `prompt_missing`; improve: no drafts).
+  const optional = (name: string) =>
+    readPrompt(name).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+  for (const name of ["resolve", "improve"] as const) {
+    const text = await optional(name);
+    if (text !== undefined) prompts[name] = text;
+  }
+  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
+  const ownerDefaults = await optional("owner-defaults");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
@@ -622,6 +663,8 @@ export async function build(
   await store.migrate();
 
   const scanner = await p.scanner(secrets);
+  // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
+  await checkToolchainEnv(loaded.config.toolchain, scanner);
   const credentials = await p.githubCredentials(secrets, clock);
   const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
   const sandbox = await p.sandbox();
@@ -639,7 +682,8 @@ export async function build(
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
   const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
-  // Suggests a command for a plain-language comment; never changes state (design §4).
+  // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
+  // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
@@ -656,6 +700,8 @@ export async function build(
   const testDatabase = await p.testDatabase(secrets);
   // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
+  // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
+  const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename).
@@ -685,11 +731,14 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
+    network_probe,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
+    restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
     github_budget: () => github.status(),
   });
@@ -704,6 +753,7 @@ export async function build(
     broker,
     scanner,
     storage,
+    llm,
     clock,
     config,
     prompts: loaded.prompts,
@@ -945,6 +995,64 @@ export function checkCommandsConfig(value: unknown): { check_commands?: string[]
   return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
 }
 
+/**
+ * `toolchain` from factory.config.json (design 05-sandbox.md, issue #334): absent → undefined. Otherwise
+ * `caches` is a list of absolute folders (a leading `~` is the owner's HOME), normalized, none overlapping a
+ * `deny_paths` entry in either direction (so neither the secret file's folder nor the owner's config); `env` maps
+ * env var names to strings, each key passing the G1 key check (`toolchainEnvKeyRefusal`); `warm_command` is argv,
+ * absent: `install_command`. Every problem fails startup at once, one per line, each naming its entry. The values
+ * are scanned for secrets in build(), by the configured scanner (`checkToolchainEnv`).
+ */
+export function toolchainConfig(
+  raw: unknown,
+  ctx: { home: string; install_command: readonly string[]; deny_paths: readonly string[] },
+): ToolchainConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error("toolchain must be an object with caches, env and warm_command");
+  const problems: string[] = [];
+  const caches: string[] = [];
+  if (raw.caches !== undefined && !Array.isArray(raw.caches)) problems.push("toolchain.caches must be a list of absolute folders");
+  (Array.isArray(raw.caches) ? (raw.caches as unknown[]) : []).forEach((c, i) => {
+    const expanded = typeof c === "string" && (c === "~" || c.startsWith("~/")) && ctx.home !== "" ? join(ctx.home, c.slice(1)) : c;
+    if (typeof expanded !== "string" || !expanded.startsWith("/")) {
+      problems.push(`toolchain.caches[${i}] must be an absolute folder (or start with ~/), got ${JSON.stringify(c) ?? String(c)}`);
+    } else caches.push(resolve(expanded));
+  });
+  for (const o of toolchainCacheOverlaps(caches, ctx.deny_paths.map((d) => resolve(d)))) {
+    problems.push(`toolchain.caches[${o.index}] ${o.cache} overlaps the denied path ${o.denied}`);
+  }
+  const env: Record<string, string> = {};
+  if (raw.env !== undefined && !isRecord(raw.env)) problems.push("toolchain.env must be an object of env var names to strings");
+  for (const [key, value] of Object.entries(isRecord(raw.env) ? raw.env : {})) {
+    const refusal = toolchainEnvKeyRefusal(key);
+    if (refusal) problems.push(refusal);
+    else if (typeof value !== "string") problems.push(`toolchain.env.${key} must be a string`);
+    else env[key] = value;
+  }
+  let warm_command: string[] = [...ctx.install_command];
+  try {
+    warm_command = argvConfig("toolchain.warm_command", raw.warm_command, ctx.install_command);
+  } catch (err) {
+    problems.push((err as Error).message);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  return { caches, env, warm_command };
+}
+
+/**
+ * G1 on the toolchain's env values at startup: each value goes through the configured egress scanner (known
+ * secret values and secret patterns), so a token pasted into `toolchain.env` never reaches an agent. Fails naming
+ * the entry and the rule, never the value. No block, or no entry: nothing is scanned.
+ */
+export async function checkToolchainEnv(toolchain: ToolchainConfig | undefined, scanner: EgressScanner): Promise<void> {
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries(toolchain?.env ?? {})) {
+    const scan = await scanner.scan("log", value);
+    if (!scan.clean) problems.push(`toolchain.env.${key} looks like a credential (${scan.findings.map((f) => f.rule).join(", ")}) (G1)`);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+}
+
 /** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */
 export function argvConfig(key: string, value: unknown, fallback: readonly string[]): string[] {
   if (value === undefined) return [...fallback];
@@ -988,6 +1096,38 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/**
+ * The restart list of the supervisor status file (design 05-alarms). No file (not supervised, or the `none`
+ * updater), one that does not parse, or one from before the list existed: none.
+ */
+export async function readRestarts(file: string): Promise<ChildRestart[]> {
+  try {
+    const status = JSON.parse(await readFile(file, "utf8")) as Partial<SupervisorStatus>;
+    return Array.isArray(status.restarts) ? status.restarts : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The alarm keys (design 05-alarms) with their defaults (ALARM_DEFAULTS): positive integers, or startup fails. */
+export function alarmConfig(
+  file: Pick<FileConfig, "alarm_repeat_count" | "alarm_window_minutes" | "alarm_restart_count">,
+): { alarm_repeat_count: number; alarm_window_minutes: number; alarm_restart_count: number } {
+  return {
+    alarm_repeat_count: positiveInteger("alarm_repeat_count", file.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count),
+    alarm_window_minutes: positiveInteger("alarm_window_minutes", file.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes),
+    alarm_restart_count: positiveInteger("alarm_restart_count", file.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count),
+  };
+}
+
+/** `agent_stop_checks` (design §4 Pre-push gates): absent means 3, otherwise a positive integer or startup fails. */
+export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): number {
+  const v = file.agent_stop_checks;
+  if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
 }
 
 export const DEFAULT_INBOX_RETENTION_DAYS = 14;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";

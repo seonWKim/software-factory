@@ -2,6 +2,7 @@ import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
+import { isUnder } from "./tools/paths.js";
 import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 
@@ -143,6 +144,19 @@ export interface LoadedConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
   probe_interval_ms?: number;
+  /**
+   * The alarm step (design 05-alarms): matching runs on distinct items (and zero-token agent runs in a row) that
+   * raise an alert, the minutes they are counted over, and the child restarts within 30 minutes that raise one.
+   * Settable live. Absent: ALARM_DEFAULTS.
+   */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
+  /**
+   * The most times the gate hooks' Stop hook sends an implement run's agent back in one run (design §4, issue
+   * #302); the next stop is allowed. A positive integer. Absent: AGENT_STOP_CHECKS_DEFAULT (3).
+   */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -178,7 +192,47 @@ export interface LoadedConfig {
    * answer's `allowed_paths` when its `files_to_change` names the `when` path. Absent: none.
    */
   path_companions?: PathCompanion[];
+  /**
+   * The project's toolchain (design 05-sandbox.md, issue #334): `toolchain` from factory.config.json, checked at
+   * load by compose.ts (`toolchainConfig`). Absent: no warm step, no readable cache and no extra agent env, so
+   * every run is exactly as before the block existed.
+   */
+  toolchain?: ToolchainConfig;
 }
+
+/**
+ * The checked `toolchain` block. `caches`: absolute, normalized folders (a leading `~` taken against the owner's
+ * HOME) the agent may read and never write; none overlaps a denied path. `env`: non-secret entries added to the
+ * agent's environment (G1 checks on key and value). `warm_command`: argv the worker runs before the agent, with
+ * the network and no credential; absent in the file: `repo.install_command`.
+ */
+export interface ToolchainConfig {
+  caches: readonly string[];
+  env: Readonly<Record<string, string>>;
+  warm_command: readonly string[];
+}
+
+/** The keys of the `toolchain` block. */
+export const TOOLCHAIN_KEYS = ["caches", "env", "warm_command"] as const;
+
+/**
+ * Each declared cache that cannot be read safely, with the denied path it overlaps: the cache is that path, lies
+ * inside it, or holds it (the secret file's folder is a `deny_paths` entry). One entry per pair; `index` is the
+ * cache's place in `caches`. Both lists normalized.
+ */
+export function toolchainCacheOverlaps(
+  caches: readonly string[],
+  denied: readonly string[],
+): { index: number; cache: string; denied: string }[] {
+  return caches.flatMap((cache, index) =>
+    denied.filter((d) => isUnder(cache, d) || isUnder(d, cache)).map((d) => ({ index, cache, denied: d })),
+  );
+}
+
+/** The alarm keys when factory.config.json gives none (design 05-alarms). */
+export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
+/** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
+export const AGENT_STOP_CHECKS_DEFAULT = 3;
 
 /** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
 export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;
@@ -273,4 +327,6 @@ export interface Prompts {
   review: string;
   /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
   resolve?: string;
+  /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
+  improve?: string;
 }

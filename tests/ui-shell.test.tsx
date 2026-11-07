@@ -10,6 +10,7 @@ import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
+import { VIEW_KEY } from "../web/src/views/tree.js";
 
 // The app shell (step 2 of #124, design §9): it fetches only /api/v1/*, polls every 3 s while the document is
 // visible and not while it is hidden, and keeps the light/dark choice in browser storage.
@@ -220,7 +221,8 @@ describe("app pages", () => {
     expect(location.pathname).toBe("/app/items");
   });
 
-  it("the items page filters by state through the API's state parameter", async () => {
+  it("the items page, in the List view, filters by state through the API's state parameter", async () => {
+    localStorage.setItem(VIEW_KEY, "list");
     history.replaceState(null, "", "/app/items");
     mount();
     await screen.findByRole("table", { name: "Work items" });
@@ -483,6 +485,7 @@ describe("Floor item links (issue #228)", () => {
     const needs = await screen.findByRole("table", { name: "Needs you" });
     expect(within(needs).getByRole("link", { name: "Spec waiting" }).getAttribute("href")).toBe("/app/items/wi_1");
     cleanup();
+    localStorage.setItem(VIEW_KEY, "list");
     history.replaceState(null, "", "/app/items");
     mount();
     const all = await screen.findByRole("table", { name: "Work items" });
@@ -525,6 +528,7 @@ describe("why an item waits (issue #310)", () => {
 
   it("Work items and the Queue page show the same sentences, #N linked", () =>
     withWhy(async () => {
+      localStorage.setItem(VIEW_KEY, "list");
       history.replaceState(null, "", "/app/items");
       mount();
       const all = await screen.findByRole("table", { name: "Work items" });

@@ -12,7 +12,8 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { alarmStep } from "./alarms.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
   type DependencyVerdict,
@@ -53,23 +54,34 @@ import {
   parseAutoResolveKey,
   retryDelayMs,
   retryKey,
+  retryNotBefore,
+  GITHUB_RATE_LIMIT,
+  GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
   MODEL_STALL,
+  NETWORK,
+  NETWORK_SINCE,
+  type ProbePause,
+  networkProbeDelayMs,
   NO_AUTO_RETRY,
   CHECKS_ENV,
   CHECKS_ENV_LIMIT,
   SESSION_RELEASED,
 } from "./policy.js";
-import { commandEvent } from "./command-inbox.js";
+import { commandEvent, syncedCommand } from "./command-inbox.js";
+import { isCliCommandKey } from "./local-cli.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
-import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
+import {
+  SPEC_DECISIONS, SPEC_GATE, STANDING_APPROVED, STANDING_TIER, dueProposal, findRule, gateEvents, parseRuleId, parseStanding, protectedCategory,
+  ruleId, specChanged, specDecisionDetail, specKind, standingActor,
+} from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -79,7 +91,7 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -92,7 +104,9 @@ import type {
 import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
+import type { ChildRestart } from "../interfaces/updater.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -160,6 +174,11 @@ export interface ControllerDeps {
    * controller's state decisions never use it.
    */
   llm?: LLMProvider;
+  /**
+   * The network pause's probe (design §5 Restarts). Absent: nothing can be asked, so the pause ends at its first
+   * probe time, as a stall pause does with no LLM provider.
+   */
+  network_probe?: NetworkProbe;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
   /**
@@ -179,6 +198,11 @@ export interface ControllerDeps {
    * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
    */
   sandbox?: Sandbox;
+  /**
+   * The supervisor's restart list on this host (design 05-alarms), read by the alarm step each poll. Absent: no
+   * restart alarm (in-place or none updater, or a test).
+   */
+  restarts?: () => Promise<readonly ChildRestart[]>;
   /**
    * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
@@ -203,6 +227,7 @@ type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
+type StandingEvent = Extract<SourceEvent, { kind: "standing_requested" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
 type PrOpenEvent = Extract<ForgeEvent, { kind: "pr_open" }>;
 type PrFinishedEvent = Extract<ForgeEvent, { kind: "pr_merged" | "pr_closed" }>;
@@ -258,6 +283,8 @@ const FLOOR_TIER = "floor_tier";
  * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
  */
 const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
+/** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
+const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -296,6 +323,8 @@ const COMMAND_BATCH = 100;
 /** The command inbox's cursor, and the `local` source's cursor it starts from (issue #282). */
 const COMMANDS_CURSOR = "commands";
 const LEGACY_LOCAL_CURSOR = "intake:local";
+/** CLI commands mirrored to their issue per tick at most (design 05-sources, CLI intake). */
+const MIRROR_BATCH = 50;
 /** Outbox rows delivered per tick at most (issue #282). */
 const OUTBOX_BATCH = 50;
 /** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
@@ -307,6 +336,13 @@ const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
+/** Newest items whose spec decisions the standing-approval run check reads (design 05-standing-approvals). */
+const STANDING_WINDOW = 200;
+/** The settable key of the run length that proposes a standing rule. */
+const STANDING_THRESHOLD = "standing_approvals.threshold";
+
+/** GitHub's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
+const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
 
 /** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
 function forgeCursorName(forge: Forge): string {
@@ -411,8 +447,11 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
+      // Store reads and the restart list, on the poll interval like the steps it looks across (design 05-alarms).
+      if (due) await this.guard("alarms", () => this.alarmsStep());
       // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
       await this.guard("commands", () => this.commandsStep());
+      await this.guard("cli mirror", () => this.mirrorStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
@@ -456,28 +495,35 @@ export class Controller {
     await this.outboxStep();
   }
 
-  /** One command inbox step: the CLI and app commands after the cursor (issue #282). */
+  /** One command inbox step: the CLI and app commands after the cursor (issue #282), then their mirrors. */
   async tickCommands(): Promise<void> {
     await this.live.refresh();
     await this.commandsStep();
+    await this.mirrorStep();
     await this.outboxStep();
   }
 
   /**
    * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
-   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`. The poll sources
-   * are read first and the forge after them, and the forge's events are handled first (issue #273): a merge that
-   * closed an issue happened before the close, so the forge's read already sees it and the merge is applied
-   * before the source's close. Unfinished rejects are retried once per tick that polled.
+   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the GitHub
+   * source and GitHub forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
+   * no log line, the next due one after the reset polls. The poll sources are read first and the forge after them,
+   * and the forge's events are handled first (issue #273): a merge that closed an issue happened before the close,
+   * so the forge's read already sees it and the merge is applied before the source's close. Unfinished rejects are
+   * retried once per tick that polled.
    */
   private async intake(pollDue: boolean): Promise<void> {
     const polled: Polled[] = [];
+    const usesGithub = this.byType.has(GITHUB_SOURCE_TYPE) || this.forge?.ref_type === GITHUB_SOURCE_TYPE;
+    const githubPaused = pollDue && usesGithub && (await this.d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null;
     for (const s of this.sources) {
       if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue) await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
+      else if (pollDue && !(githubPaused && s.type === GITHUB_SOURCE_TYPE)) {
+        await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
+      }
     }
     const forge = this.forge;
-    if (pollDue && forge) await this.guard("forge", () => this.tickForge(forge));
+    if (pollDue && forge && !(githubPaused && forge.ref_type === GITHUB_SOURCE_TYPE)) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
     if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
@@ -570,10 +616,11 @@ export class Controller {
   }
 
   /**
-   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
-   * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for an
+   * item of any source becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
+   * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
    * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
    * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
    */
@@ -607,13 +654,58 @@ export class Controller {
       if (r && r.handled_at === null) await this.applyAppRequest(r);
       return;
     }
+    const synced = syncedCommand(c);
+    if (synced) {
+      // A source's own command (issue #284): applied only where that source's adapter runs, and a failure is logged
+      // and passed like a polled event's, so a sync plugin's outage never holds the local commands after it.
+      const e = synced.event;
+      if (e && this.byType.has(synced.source.type)) await this.guard(`event:${e.kind}`, () => this.handle(e));
+      return;
+    }
     const id = c.args.item;
     if (typeof id !== "string" || id === "") return;
     const item = await this.d.store.getWorkItem(id as WorkItemId);
-    // CLI commands act on local items only; the CLI refuses any other when it writes one.
-    if (!item || item.source.type !== "local") return;
+    // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
+    // judges it, and a GitHub item's transition never waits on GitHub. Its mirror on the issue is the mirror step's.
+    if (!item) return;
     const e = commandEvent(c, item.source);
     if (e) await this.handle(e);
+  }
+
+  /**
+   * The CLI mirror (design 05-sources, CLI intake): each CLI command on an item of a sync source (appended with
+   * `mirror`) is written once to its item's thread, keyed `cli:<command key>`, so the outbox posts it on the issue
+   * once, with its retries and backoff. The command is marked mirrored only when that post was delivered, so a
+   * failed or rate-limited post leaves it for a later tick. Best effort: it never touches the item's state, and the
+   * transition the command gives never waits on it. Safe on any replica and safe to run twice.
+   */
+  private async mirrorStep(): Promise<void> {
+    for (const c of await this.d.store.listUnmirroredCliCommands(MIRROR_BATCH)) {
+      const id = c.args.item;
+      const item = typeof id === "string" && id !== "" ? await this.d.store.getWorkItem(id as WorkItemId) : null;
+      // No item, or a local one: nothing to post anywhere.
+      if (!item || item.source.type === LOCAL_TYPE) {
+        await this.d.store.markCliCommandMirrored(c.key);
+        continue;
+      }
+      const marker = `<!-- factory:cli:${c.key} -->`;
+      await this.post(item, item.source, await this.mirrorBody(c), marker);
+      const row = (await this.d.store.listDeliveries(item.id)).find((d) => d.marker === marker);
+      if (row?.delivered_at) await this.d.store.markCliCommandMirrored(c.key);
+    }
+  }
+
+  /**
+   * A CLI command as a comment on its issue: who sent which command, and its note quoted, egress-scanned first (a
+   * flagged note is left out). It never starts with `/`, so the GitHub poll reads it as a plain comment.
+   */
+  private async mirrorBody(c: CliCommand): Promise<string> {
+    const name = QUOTABLE_COMMAND.test(c.command) ? `\`/${c.command}\`` : "A command";
+    const head = `${name} was sent from the factory CLI by \`${c.actor}\` (command \`${c.key}\`).`;
+    const text = typeof c.args.text === "string" ? c.args.text.trim() : "";
+    if (text === "") return head;
+    if (!(await this.d.scanner.scan("comment", text)).clean) return `${head}\n\nIts note is not shown: the leak scanner flagged it.`;
+    return `${head}\n\n${text.split(/\r?\n/).map((l) => `> ${l}`).join("\n")}`;
   }
 
   /**
@@ -650,6 +742,7 @@ export class Controller {
         refusal = "refuse" in note
           ? note.refuse
           : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, note.note, { [APP_REQUEST]: r.seq });
+        if (refusal === null) await this.guard("standing", () => this.afterSpecCommand(item.id, e, principal.user_id));
       }
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
@@ -777,26 +870,61 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, any live controller may probe
-   * it, and the store's conditional move of the probe time (`takeStallProbe`) lets one replica ask per due time.
-   * One short prompt on the cheap model class through the LLM provider: an answer ends the pause as
-   * `endClaimPause("model_stall")` does (`model_answered`), so claims resume; no answer (an error, a refusal, a
-   * throw or no reply within stall_ms) keeps it and moves the probe probe_interval_ms after the failed probe.
-   * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
+   * The probe pauses (design §5 Restarts), one schedule for both: once a pause's probe time has passed, the replica
+   * whose conditional write moves it to the next probe time (claimProbe) probes, and no other one. A pass ends the
+   * pause (endClaimPause), so claims resume; a failure keeps the pause and moves the next probe the pause's delay
+   * after the failed probe. Any live controller may take a due probe, not only the one that set the pause.
+   * `model_stall`: one short prompt on the cheap model class; no answer within stall_ms (an error, a refusal, a
+   * throw) is a failure, the next probe probe_interval_ms later. With no LLM provider the pause ends at its probe.
+   * `network`: the NetworkProbe, the next probe 30 s later, backing off to 5 min (networkProbeDelayMs).
    */
   private async probeStep(): Promise<void> {
-    const due = await this.d.store.getClaimPause(MODEL_STALL);
-    const interval = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
-    if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
-    if (!(await this.d.store.takeStallProbe(due, iso(this.d.clock.now().getTime() + interval))).taken) return;
-    const answered = this.d.llm ? await this.probe(this.d.llm) : true;
-    if (answered) {
-      await this.d.store.endClaimPause(MODEL_STALL);
-      this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
+    const llm = this.d.llm;
+    await this.probePause(MODEL_STALL, {
+      delayMs: async () => this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      probe: llm ? async () => ((await this.probe(llm)) ? null : "no answer") : null,
+      passed: llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends",
+      failed: (next) => this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next}`, { resume_at: next }),
+    });
+    const net = this.d.network_probe;
+    await this.probePause(NETWORK, {
+      delayMs: async (now) => {
+        const since = await this.d.store.getClaimPause(NETWORK_SINCE);
+        return networkProbeDelayMs(since === null ? 0 : now - Date.parse(since));
+      },
+      probe: net ? async () => {
+        const r = await net.probe().catch(() => ({ ok: false as const, host: "unknown host" }));
+        return r.ok ? null : r.host;
+      } : null,
+      passed: "network reachable again: claims resume",
+      // Info, not warn: the pause's start was the one warning; the host is the only detail.
+      failed: (next, host) => this.d.log.info(`network still unreachable: runs stay paused, next probe at ${next}`, { host, resume_at: next }),
+    });
+  }
+
+  /** One probe pause's due probe; see probeStep. `probe` resolves null on a pass, else what failed. */
+  private async probePause(
+    name: ProbePause,
+    p: {
+      delayMs: (now: number) => Promise<number>;
+      probe: (() => Promise<string | null>) | null;
+      passed: string;
+      failed: (next: Timestamp, why: string) => void;
+    },
+  ): Promise<void> {
+    const due = await this.d.store.getClaimPause(name);
+    const now = this.d.clock.now().getTime();
+    if (due === null || Date.parse(due) > now) return;
+    const next = iso(now + (await p.delayMs(now)));
+    if (!(await this.d.store.claimProbe(name, due, next))) return;
+    const failure = p.probe ? await p.probe() : null;
+    if (failure === null) {
+      if ((await this.d.store.endClaimPause(name)).ended) this.d.log.info(p.passed, {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(this.d.clock.now().getTime() + interval), MODEL_STALL);
-    this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
+    const after = this.d.clock.now().getTime();
+    const moved = await this.d.store.pauseClaims(iso(after + (await p.delayMs(after))), name);
+    p.failed(moved.resume_at, failure);
   }
 
   /** One short prompt on the cheap model: true when it answered. Carries no work item data. */
@@ -813,6 +941,26 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One alarm step (design 05-alarms) with the settings as of this tick. */
+  async tickAlarms(): Promise<void> {
+    await this.live.refresh();
+    await this.alarmsStep();
+  }
+
+  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  private async alarmsStep(): Promise<void> {
+    const c = this.cfg;
+    await alarmStep(
+      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      {
+        alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
+        alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
+        alarm_restart_count: c.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
+        probe_interval_ms: c.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      },
+    );
   }
 
   /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
@@ -939,6 +1087,8 @@ export class Controller {
       case "help_requested":
       case "unknown_command":
         return this.handleInfo(e);
+      case "standing_requested":
+        return this.handleStanding(e);
       case "plain_comment":
         return this.handlePlainComment(e);
       case "pr_changes_requested":
@@ -1170,6 +1320,7 @@ export class Controller {
       refusal = "refuse" in input
         ? input.refuse
         : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, null, input.paths);
+      if (refusal === null) await this.guard("standing", () => this.afterSpecCommand(item.id, e, principal.user_id));
     }
     await this.markSeen(e.source, e.comment_id);
     if (e.kind === "spec_rejected" && refusal === null) {
@@ -1518,6 +1669,120 @@ export class Controller {
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * `/standing` on a work item (design 05-standing-approvals): the same permission check as `/approve`, 👀, then one
+   * reply keyed on the comment. Without arguments it shows the rule's state; `accept` turns the rule on, `decline`
+   * turns it off (and keeps its proposal quiet until the run resets). A rule already in the asked state is left
+   * alone with no reply, so a second accept or a redelivery posts nothing new. The user ID is recorded as `set_by`.
+   */
+  private async handleStanding(e: StandingEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item) return;
+    const principal = await this.authorize(e.requester, "approve_spec", item.id);
+    await this.markSeen(e.source, e.comment_id);
+    const marker = `<!-- factory:standing:${e.comment_id} -->`;
+    const refuse = async (reason: string) => {
+      this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason });
+      await this.post(item, item.source, `\`/standing\` was not applied: ${reason}.`, `<!-- factory:refused:${e.comment_id} -->`);
+    };
+    if ("refuse" in principal) return refuse(principal.refuse);
+    const asked = parseStanding(e.args);
+    if ("refuse" in asked) return refuse(asked.refuse);
+    const rules = await this.d.store.listStandingRules();
+    const id = ruleId(SPEC_GATE, STANDING_TIER);
+    if (asked.action === "show") {
+      const rule = findRule(rules, SPEC_GATE, STANDING_TIER);
+      const state = rule?.enabled
+        ? `on, turned on by \`${rule.set_by}\`; reply \`/standing decline ${id}\` to turn it off`
+        : `off${rule ? `, turned off by \`${rule.set_by}\`` : ""}; reply \`/standing accept ${id}\` to turn it on`;
+      const threshold = this.live.values()[STANDING_THRESHOLD];
+      await this.post(item, item.source, [
+        "## Standing approvals",
+        "",
+        `- \`${id}\` (tier ${STANDING_TIER} specs that wait at the spec gate): ${state}.`,
+        "",
+        `A rule is proposed after ${threshold} tier ${STANDING_TIER} spec approvals in a row with the spec unchanged (\`${STANDING_THRESHOLD}\`).`,
+      ].join("\n"), marker);
+      return;
+    }
+    const enabled = asked.action === "accept";
+    const rule = findRule(rules, asked.gate, asked.tier);
+    if (rule && rule.enabled === enabled) return;
+    await this.d.store.putStandingRule({ gate: asked.gate, tier: asked.tier, enabled, set_by: principal.user_id });
+    this.d.log.info(enabled ? "standing rule on" : "standing rule off", { rule: id, user_id: principal.user_id });
+    await this.post(item, item.source, enabled
+      ? `The standing rule \`${id}\` is on: the next tier ${asked.tier} specs that wait at the spec gate are approved without a reply, as \`standing:${id}\`. ` +
+        `It never approves a spec whose allowed paths touch the factory's gates, prompts, permissions, tools, guard settings or floor paths. ` +
+        `To turn it off, reply \`/standing decline ${id}\`, or \`/revise\` or \`/reject\` on an item it approved.`
+      : `The standing rule \`${id}\` is off: tier ${asked.tier} specs wait for \`/approve\` again. It is not proposed again until the run of approvals resets and reaches the threshold again.`,
+      marker);
+  }
+
+  /**
+   * After a spec command was applied (design 05-standing-approvals): an `/approve` may bring the tier 1 run to the
+   * threshold, which posts one proposal on this item; a `/revise` or `/reject` on an item a rule approved turns
+   * that rule off, with one reply. Both are keyed, so running this twice posts once.
+   */
+  private async afterSpecCommand(id: WorkItemId, e: CommandEvent, user: UserId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it) return;
+    if (e.kind === "spec_approved") return this.proposeStanding(it);
+    if (e.kind === "spec_rejected" || e.kind === "revise_requested") return this.turnOffStanding(it, e.kind, e.comment_id, user);
+  }
+
+  /** One proposal comment when this item's approval brought the run of tier 1 approvals to the threshold. */
+  private async proposeStanding(it: WorkItem): Promise<void> {
+    const threshold = this.live.values()[STANDING_THRESHOLD];
+    const own = gateEvents(await this.d.store.listStateChanges(it.id));
+    const items = await this.d.store.listWorkItems(Math.max(STANDING_WINDOW, threshold * 4));
+    const events = own.slice();
+    for (const x of items) if (x.id !== it.id) events.push(...gateEvents(await this.d.store.listStateChanges(x.id)));
+    const rule = findRule(await this.d.store.listStandingRules(), SPEC_GATE, STANDING_TIER);
+    const due = dueProposal(events, own, threshold, rule);
+    if (!due) return;
+    await this.d.store.recordStandingProposal({ gate: due.gate, tier: due.tier, run_length: due.run_length, threshold });
+    const id = ruleId(due.gate, due.tier);
+    await this.comment(it, `standing-proposal:${id}:${it.id}:${own.at(-1)!.at}`, [
+      `## Standing approval proposed: \`${id}\``,
+      "",
+      `The last ${due.run_length} tier ${due.tier} specs were approved in a row with the spec unchanged (\`${STANDING_THRESHOLD}\` = ${threshold}).`,
+      "",
+      `- Reply \`/standing accept ${id}\` to approve the next tier ${due.tier} specs that wait at the spec gate without a reply.`,
+      `- Reply \`/standing decline ${id}\` to keep approving each one; this is not proposed again until the run resets and reaches ${threshold} again.`,
+      "",
+      "A rule never approves a spec whose allowed paths touch the factory's gates, prompts, permissions, tools, guard settings or floor paths. " +
+        "A `/revise` or `/reject` on an item it approved turns it off.",
+    ].join("\n"));
+    this.d.log.info("standing proposal", { rule: id, run_length: due.run_length, work_item_id: it.id });
+  }
+
+  /** A `/revise` or `/reject` on an item a rule approved turns that rule off, if it is still on; one reply. */
+  private async turnOffStanding(it: WorkItem, kind: "spec_rejected" | "revise_requested", commentId: string, user: UserId): Promise<void> {
+    const approved = (await this.d.store.listStateChanges(it.id)).filter((c) => c.reason === STANDING_APPROVED).at(-1);
+    const named = typeof approved?.detail?.standing_rule === "string" ? parseRuleId(approved.detail.standing_rule) : null;
+    if (!named) return;
+    const rule = findRule(await this.d.store.listStandingRules(), named.gate, named.tier);
+    if (!rule?.enabled) return;
+    await this.d.store.putStandingRule({ gate: named.gate, tier: named.tier, enabled: false, set_by: user });
+    const id = ruleId(named.gate, named.tier);
+    this.d.log.info("standing rule off", { rule: id, user_id: user, work_item_id: it.id });
+    await this.post(it, it.source, [
+      `The standing rule \`${id}\` is off: \`${COMMAND[kind]}\` on an item it approved turned it off.`,
+      `Tier ${named.tier} specs wait for \`/approve\` again; reply \`/standing accept ${id}\` to turn it back on.`,
+    ].join(" "), `<!-- factory:standing-off:${commentId} -->`);
+  }
+
+  /** The rule that approves this spec at the gate: on, for its tier, and none of its allowed paths protected. */
+  private async standingRule(it: WorkItem, tier: Tier, paths: readonly string[]) {
+    if (tier !== STANDING_TIER) return null;
+    const rule = findRule(await this.d.store.listStandingRules(), SPEC_GATE, tier);
+    if (!rule?.enabled) return null;
+    const category = protectedCategory(paths, this.settings(it.project).floors);
+    if (category === null) return rule;
+    this.d.log.info("standing rule skipped: protected paths", { work_item_id: it.id, rule: ruleId(SPEC_GATE, tier), category });
+    return null;
   }
 
   /**
@@ -2531,6 +2796,28 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
+          // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
+          const rule = spec.phases ? null : await this.standingRule(it, tier, spec.allowed_paths);
+          if (rule) {
+            const next = { ...it, ...fields };
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const id = ruleId(rule.gate, rule.tier);
+            const url = await this.comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [
+                `Approved by the standing rule \`${id}\` (turned on by \`${rule.set_by}\`): a tier ${rule.tier} spec that waits at the spec gate is approved without a reply.`,
+                `To turn the rule off, reply \`/standing decline ${id}\`, or \`/revise <feedback>\` or \`/reject <reason>\` on an item it approved.`,
+                "",
+                footerAfter(it, patch),
+              ].join("\n")), "spec_comment_url");
+            return {
+              patch: { ...patch, spec_comment_url: url },
+              actor: standingActor(rule.gate, rule.tier),
+              reason: STANDING_APPROVED,
+              detail: { standing_rule: id, gate: rule.gate, tier: rule.tier, kind: specKind(it, false), owner_id: rule.set_by },
+              ack_run: run.id,
+              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+            };
+          }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const url = await this.comment(it, `spec:${run.id}`,
             renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)), "spec_comment_url");
@@ -2650,12 +2937,14 @@ export class Controller {
             case "conflict":
               return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
             case "tests_failed":
-              return {
-                patch: { blocked_reason: CONFLICT_PENDING },
-                actor: SYSTEM,
-                reason: "update_tests_failed",
-                ack_run: run.id,
-              };
+              // The worker's PR comment names the failure; this one offers the command that applies now.
+              await this.prComment(it, `update-tests-failed:${run.id}`, [
+                `The base branch merged cleanly into PR #${it.pr_number}, but the tests failed on the updated branch, so nothing was pushed.`,
+                "Comment `/resolve [notes]` to let an agent fix it, or fix it by hand.",
+                "",
+                footerAfter(it, CONFLICT_PATCH),
+              ].join("\n"));
+              return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_tests_failed", ack_run: run.id };
             default:
               return {
                 // No comment is posted for this one, so an older failure link must not stand in for it.
@@ -2696,7 +2985,8 @@ export class Controller {
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-    if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
+    // A GitHub rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
+    if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
       `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
@@ -2974,16 +3264,12 @@ export class Controller {
     if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
-    const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
-    // A forge 401/403 or a failed access check: the retry also waits for its claim pause to end (design §5 Restarts).
-    const authEnd = (code === FORGE_AUTH || code === PREFLIGHT_ACCESS) && reset ? Date.parse(reset) : Number.NaN;
-    // A stall: no backoff, the stall pause holds every claim until a probe answers.
-    const notBefore = cls === "rate_limited"
-      ? (reset ?? iso(failedAt + retry_max_ms))
-      : cls === "stalled"
-        ? iso(failedAt)
-        : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
+    // A forge 401/403, a failed access check or a GitHub rate limit also waits for its claim pause to end; a stall
+    // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
+    const notBefore = retryNotBefore({
+      cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
+      reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
+    });
     // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
@@ -3017,8 +3303,10 @@ export class Controller {
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
+        "",
+        footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: { blocked_reason: CONFLICT_PENDING }, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
@@ -3070,13 +3358,15 @@ export class Controller {
       `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
+      "",
+      footerAfter(it, CONFLICT_PATCH),
     ].join("\n");
     // The detail is run output (G5): post it only if the scan passes, else the comment without it.
     const scan = await this.d.scanner.scan("comment", body(true));
     if (auto) await this.prComment(it, `run-failed:${run.id}`, body(scan.clean));
     else await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
     return {
-      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING },
+      patch: CONFLICT_PATCH,
       actor: SYSTEM,
       reason: "resolve_failed",
       detail: { run_id: run.id, error_code: code, ...(auto ? { base_sha: auto.base_sha, attempt: auto.attempt } : {}) },
@@ -3568,6 +3858,8 @@ export class Controller {
 
   /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
   private async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    // A CLI command has no comment on the source to react to: its mirror is the mirror step's.
+    if (commentId !== null && isCliCommandKey(commentId)) return;
     try {
       await this.adapterFor(source, "markSeen")?.markSeen(source, commentId);
     } catch (err) {
@@ -3955,6 +4247,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  github_rate_limited: "GitHub's API rate limit was hit; implement, update and review runs are paused until it resets",
   provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

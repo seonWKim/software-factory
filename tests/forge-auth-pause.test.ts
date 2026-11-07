@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker, forgeAuthRefused } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker, forgeAuthRefused } from "../src/impl/github/github-tool-broker.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";

@@ -16,7 +16,9 @@ import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow }
 import { ItemCommands } from "./item-commands.js";
 import { MergeButton } from "./merge.js";
 import { SystemActions } from "./system-banner.js";
+import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
+import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, Math.round(gap_ms / 60_000))} min`;
@@ -217,54 +219,122 @@ export function FloorPage() {
 }
 
 const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_human", "stuck", "running", "queued", "waiting_on_issue", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { needs: "Needs you", ...LEVEL_LABELS };
+const FILTER_LABELS: Record<string, string> = { needs: "Needs you", held: "Held", ...LEVEL_LABELS };
 
-/** Every work item, filterable by state (the API's `state` facet). */
+/** The saved view: the tree unless the browser chose the list. */
+function savedView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "tree";
+  } catch {
+    return "tree";
+  }
+}
+
+/** "rate limit: ok", or until when the rate limit pause lasts (the pauses read; "–" before it arrives). */
+function rateLimitText(pauses: PausesView | undefined): string {
+  if (!pauses) return "–";
+  const p = pauses.pauses.find((x) => x.name === "rate_limit");
+  return p ? `paused until ${p.ends_at}` : "ok";
+}
+
+const buttonClass = (on: boolean) =>
+  cn(
+    "rounded-md border px-2 py-1 text-xs tabular-nums",
+    on ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800",
+  );
+
+/** The tree's summary line; each count is a button that sets the matching state filter. */
+function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rateLimit: string; onFilter: (s: string) => void }) {
+  const c = summaryCounts(rows);
+  const parts: [string, number, string][] = [["running", c.running, "running"], ["queued", c.queued, "queued"], ["held", c.held, HELD], ["needs you", c.needs, "needs"]];
+  return (
+    <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+      {parts.map(([label, n, filter]) => (
+        <button key={filter} type="button" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</button>
+      ))}
+      <span>rate limit: {rateLimit}</span>
+    </p>
+  );
+}
+
+/** Every work item as a tree (the default) or, with the List toggle, the flat list; filterable by state and search. */
 export function ItemsPage() {
   const now = useNow();
+  const [view, setViewState] = useState<View>(savedView);
   const [state, setState] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  const [showClosed, setShowClosed] = useState(false);
+  const tree = view === "tree";
+  const setView = (v: View) => {
+    setViewState(v);
+    if (v === "list" && state === HELD) setState(null);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // Storage is blocked: the choice lasts until reload.
+    }
+  };
+  // One request per poll: the tree reads every row once and filters in the page, the list asks the server.
   const params = new URLSearchParams();
-  if (state) params.set("state", state);
-  if (q.trim()) params.set("q", q.trim());
+  if (tree) params.set("closed", "1");
+  else {
+    if (state) params.set("state", state);
+    if (q.trim()) params.set("q", q.trim());
+  }
   const query = params.toString();
   const items = useApi<Items>(query ? `${API.items}?${query}` : API.items);
   const overview = useApi<Overview>(API.overview);
-  const facets = items.data?.facets.state ?? {};
+  const pauses = useApi<PausesView>(API.pauses);
+  const rows = items.data?.items ?? [];
+  const filter: TreeFilter = { state, q, showClosed };
+  const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed]);
+  const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
+  const counted = (s: string) => (tree ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed })).length : (items.data?.facets.state[s] ?? 0));
+  const allCount = tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
-      <input
-        type="search"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder="Search by title or issue number"
-        aria-label="Search work items"
-        className="mb-2 w-full max-w-sm rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-sm dark:border-zinc-700"
-      />
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input
+          type="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search by title or issue number"
+          aria-label="Search work items"
+          className="w-full max-w-sm rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-sm dark:border-zinc-700"
+        />
+        <div role="group" aria-label="View" className="flex gap-1.5">
+          {(["tree", "list"] as const).map((v) => (
+            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={buttonClass(view === v)}>{v === "tree" ? "Tree" : "List"}</button>
+          ))}
+        </div>
+        {tree && (
+          <div className="flex gap-1.5">
+            <button type="button" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)} className={buttonClass(showClosed)}>Show closed</button>
+            <button type="button" onClick={() => setExpanded(parentIds(nodes))} className={buttonClass(false)}>Expand all</button>
+            <button type="button" onClick={() => setExpanded([])} className={buttonClass(false)}>Collapse all</button>
+          </div>
+        )}
+      </div>
+      {tree && items.data && <Summary rows={rows} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
       <div role="group" aria-label="Filter by state" className="mb-3 flex flex-wrap gap-1.5">
-        {[null, ...STATE_FILTERS].map((s) => (
-          <button
-            key={s ?? "all"}
-            type="button"
-            aria-pressed={state === s}
-            onClick={() => setState(s)}
-            className={cn(
-              "rounded-md border px-2 py-1 text-xs tabular-nums",
-              state === s ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800",
-            )}
-          >
-            {s === null ? "All" : FILTER_LABELS[s]} {s === null ? (items.data?.facets.allStates ?? "") : (facets[s] ?? 0)}
+        {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
+          <button key={s ?? "all"} type="button" aria-pressed={state === s} onClick={() => setState(s)} className={buttonClass(state === s)}>
+            {s === null ? "All" : FILTER_LABELS[s]} {s === null ? allCount : counted(s)}
           </button>
         ))}
       </div>
-      {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : (
+      {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
+        nodes.length === 0 ? <Empty>No work item matches this filter.</Empty> : (
+          <ItemsTree nodes={nodes} rows={rows} now={now} plugins={overview.data?.plugins?.prs === "github"} expanded={expanded} onExpanded={setExpanded} />
+        )
+      ) : (
         <ItemsTable items={items.data.items} now={now} label="Work items" plugins={overview.data?.plugins} empty="No work item matches this filter." />
       )}
     </>
   );
 }
 
-/** One work item: its state, command buttons, runs (with errors) and timeline. */
+/** One work item: its state, command buttons, thread, runs (with errors) and timeline. */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
@@ -315,6 +385,7 @@ export function ItemPage({ id }: { id: string }) {
       </dl>
       {q.data.merge && <MergeButton id={item.id} merge={q.data.merge} check={item.merge_check} />}
       <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
+      <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
         <Section title="Merge check">

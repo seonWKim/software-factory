@@ -60,11 +60,14 @@ export function WhyText({ why }: { why: Why }) {
   return <span data-why={why.code}>{parts}</span>;
 }
 
-/** A Needs-you row's reason and the command to type (the same words as the classic page). */
-function NeedText({ need }: { need: NonNullable<ItemRow["need"]> }) {
+/**
+ * A Needs-you row's reason and the command to type (the same words as the classic page). The reason links to the
+ * item page at the factory's newest thread entry, when the item has one.
+ */
+function NeedText({ id, need }: { id: string; need: NonNullable<ItemRow["need"]> }) {
   return (
     <span data-need>
-      {need.reason}
+      {need.anchor ? <Link href={`${itemPath(id)}#${need.anchor}`} className={LINK_CLASS}>{need.reason}</Link> : need.reason}
       {need.command && <> · <code className="font-mono text-xs">{need.command}</code></>}
     </span>
   );
@@ -102,7 +105,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
             {it.merge && <MergeButton id={it.id} merge={it.merge} check={it.merge_check} />}
           </Td>
-          <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
+          <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
           {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
           {showPr && (

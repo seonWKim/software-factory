@@ -4,7 +4,7 @@ import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type {
   ClosePrInput, Forge, ForgeEvent, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrLineComment, PrMergeState,
 } from "../../interfaces/forge.js";
-import { mergePullRequest } from "../broker/github-tool-broker.js";
+import { mergePullRequest } from "./github-tool-broker.js";
 import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "../source/github-issue-source.js";
 

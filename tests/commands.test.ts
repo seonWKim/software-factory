@@ -214,6 +214,38 @@ describe("command table", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(commandTableMarkdown());
   });
+
+  it("/help lists every command in COMMANDS and the SET_UP.md table every comment command, /standing included, in table order", () => {
+    const help = helpReply(s("spec_pending"));
+    const table = commandTableMarkdown();
+    const at = (text: string, usage: string) => text.indexOf(`\`${usage.replace(/\|/g, "\\|")}\``);
+    for (const text of [help, table]) {
+      // App-only commands (`/merge`) are never read from a comment, so the SET_UP.md table leaves them out (design §4).
+      const listed = text === table ? COMMANDS.filter((c) => !c.app_only) : COMMANDS;
+      const positions = listed.map((c) => (text === table ? at(text, c.usage) : text.indexOf(`\`${c.usage}\``)));
+      expect(positions.every((p) => p >= 0)).toBe(true);
+      expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+    }
+    expect(COMMANDS.map((c) => c.name)).toContain("standing");
+    expect(help).toContain("`/standing [accept|decline <rule>]` **(now)**");
+  });
+});
+
+describe("/standing", () => {
+  const s = (phase: CommandPhase) => ({ phase, has_pr: false });
+
+  it("is parsed with its arguments and becomes a standing_requested event", async () => {
+    expect(parseComment("/standing accept spec-t1")).toEqual({ kind: "command", name: "standing", text: "accept spec-t1" });
+    expect(parseComment("/standing")).toEqual({ kind: "command", name: "standing", text: "" });
+    const { commentEvent } = await import("../src/core/comment-event.js");
+    expect(commentEvent(issueRef(1), "9", alice, "/standing decline spec-t1")).toEqual({
+      kind: "standing_requested", source: issueRef(1), comment_id: "9", requester: alice, args: "decline spec-t1",
+    });
+  });
+
+  it("is never in an item's footer: it is about the factory's rules, not the item", () => {
+    for (const phase of COMMAND_PHASES) expect(commandsFor(s(phase)).map((c) => c.name)).not.toContain("standing");
+  });
 });
 
 describe("footers match what the controller accepts", () => {

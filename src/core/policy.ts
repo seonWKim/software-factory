@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import type { Run, RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
+import type { Run, RunKind, RunOutcome, Tier, Timestamp, WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -67,7 +67,7 @@ export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "infra" |
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
-  if (outcome.error_code === RATE_LIMITED) return "rate_limited";
+  if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
   if (outcome.error_code === AGENT_STALLED) return "stalled";
   if (outcome.error_code === CHECKS_ENV) return "checks_env";
   return outcome.infra ? "infra" : "task";
@@ -102,6 +102,29 @@ export const CHECKS_ENV_LIMIT = 2;
 export const RATE_LIMITED = "rate_limited";
 
 /**
+ * The error code of a GitHub REST rate limit (decided 2026-11-07): a 403 or 429 that names the primary or the
+ * secondary limit, or the client's own refusal with no calls left before the reset. Not an attempt and not a
+ * restart (failureClass `rate_limited`); it sets the `github_rate_limit` claim pause until the reset, and its retry
+ * waits for the later of its backoff and the pause end. Never `forge_auth`: the credentials were not refused.
+ */
+export const GITHUB_RATE_LIMITED = "github_rate_limited";
+/** The claim pause of a GitHub rate limit: no implement, update or review claim, and no GitHub poll, until it ends. */
+export const GITHUB_RATE_LIMIT = "github_rate_limit" as const;
+
+const RESETS_AT = "GitHub rate limit, calls resume at ";
+
+/** The broker's message for a GitHub rate limit: the check or tool, then the reset time the worker reads back. */
+export function githubRateLimitMessage(what: string, reset_at: string): string {
+  return `${what}: ${RESETS_AT}${reset_at}`;
+}
+
+/** The reset time a `githubRateLimitMessage` carries; null when the text carries none. */
+export function githubRateLimitReset(detail: string): Timestamp | null {
+  const at = detail.split(RESETS_AT)[1]?.split(/\s/)[0] ?? "";
+  return at !== "" && Number.isFinite(Date.parse(at)) ? (at as Timestamp) : null;
+}
+
+/**
  * The error code of a forge 401 or 403 (preflight, push or PR). A task failure; it also pauses implement-type
  * claims for every worker (the `forge_auth` claim pause, design §5 Restarts), and its retry waits for the pause.
  */
@@ -118,8 +141,120 @@ export const PREFLIGHT_FAILED = "preflight_failed";
  */
 export const PREFLIGHT_ACCESS = "preflight_access";
 
+/**
+ * The error code of a run whose git call, push, forge preflight or model request could not reach its host: a DNS
+ * or connect error (design §5 Restarts, network pause). Not a failure of the run at all: the worker puts the run
+ * back in the queue with its attempt unchanged and starts the `network` claim pause, so it never counts toward
+ * max_restart or max_attempts and never reaches the repeated-failure rule. The detail names the host only.
+ */
+export const NETWORK_UNAVAILABLE = "network_unavailable";
+
+/**
+ * The claim pause of a dead network (design §5 Restarts), a probe pause like `model_stall`: its row holds the next
+ * probe time, claims of every kind stay paused past it until a probe passes. `NETWORK_SINCE` reads when it began.
+ */
+export const NETWORK = "network" as const;
+export const NETWORK_SINCE = "network_since" as const;
+/** When the last network probe passed (or the pause was ended by hand): ends a network pause not after it. */
+export const NETWORK_ANSWERED = "network_answered" as const;
+
+/**
+ * The claim pauses that end when a probe passes, not at a time, with their two helper rows: when the pause began
+ * and when it was last answered. One store code path and one controller probe step serve both.
+ */
+export const PROBE_PAUSES = {
+  [MODEL_STALL]: { since: MODEL_STALL_SINCE, answered: MODEL_ANSWERED },
+  [NETWORK]: { since: NETWORK_SINCE, answered: NETWORK_ANSWERED },
+} as const;
+export type ProbePause = keyof typeof PROBE_PAUSES;
+
+/** The probe pause `name` is, or helps (its since or answered row); null for any other claim pause. */
+export function probePauseOf(name: string): ProbePause | null {
+  for (const [pause, rows] of Object.entries(PROBE_PAUSES)) {
+    if (name === pause || name === rows.since || name === rows.answered) return pause as ProbePause;
+  }
+  return null;
+}
+
+/** The network probe's first wait and its longest one (design §5 Restarts): 30 s, backing off to 5 min. */
+export const NETWORK_PROBE_MS = { first: 30_000, max: 300_000 } as const;
+
+/**
+ * The wait before the next network probe after a failed one, `elapsed_ms` into the pause: retryDelayMs with the
+ * probes made so far as the attempt, so the waits run 30 s, 30 s, 1 min, 2 min, 4 min, then 5 min each.
+ */
+export function networkProbeDelayMs(elapsed_ms: number): number {
+  const probes = Math.floor(Math.log2(Math.max(1, elapsed_ms / NETWORK_PROBE_MS.first))) + 1;
+  return retryDelayMs(probes, NETWORK_PROBE_MS.first, NETWORK_PROBE_MS.max);
+}
+
+/** The error codes a DNS or connect error turns into NETWORK_UNAVAILABLE; any other code keeps its own. */
+const NETWORK_PRONE_CODES: readonly string[] = ["git_failed", "push_failed", PREFLIGHT_FAILED, PREFLIGHT_ACCESS, "exception"];
+
+/** git's, curl's, ssh's and Node's words for a host that cannot be found or connected to; group 1 the host, if named. */
+const UNREACHABLE: readonly RegExp[] = [
+  /Could not resolve hostname\s+([\w.-]+)/i,
+  /Could not resolve host:?\s*'?([\w.-]+)/i,
+  /getaddrinfo\s+(?:ENOTFOUND|EAI_AGAIN)\s+([\w.-]+)/,
+  /Failed to connect to\s+([\w.-]+)/i,
+  /connect\s+(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)\s+([\w.:[\]-]+)/,
+  /unable to access '[a-z]+:\/\/(?:[^@/'\s]*@)?([\w.-]+)[^']*':\s*(?:Could not resolve|Failed to connect|Connection refused|Connection timed out|Network is unreachable|No route to host)/i,
+  /Temporary failure in name resolution|Name or service not known|nodename nor servname provided|Network is unreachable|No route to host/i,
+];
+
+/**
+ * The host a DNS or connect error names, or `unknown host` when it names none; null when `text` is not such an
+ * error. Only the host is returned, never the rest of the text (it may hold a URL with a credential).
+ */
+export function unreachableHost(text: string): string | null {
+  for (const re of UNREACHABLE) {
+    const m = re.exec(text);
+    if (m) return m[1] ?? "unknown host";
+  }
+  return null;
+}
+
+/** The detail of a NETWORK_UNAVAILABLE failure: the host only. */
+export function networkDetail(host: string): string {
+  return `could not reach ${host}`;
+}
+
+/**
+ * A failure's code and detail with a DNS or connect error from git (fetch, push), the sandbox or the forge
+ * preflight turned into NETWORK_UNAVAILABLE with the host as its detail. Every other failure, and every other
+ * code (a rejected push, a git error that is not the network), comes back as it was.
+ */
+export function classifyNetwork(code: string, detail: string): { code: string; detail: string } {
+  if (code === NETWORK_UNAVAILABLE) return { code, detail };
+  const host = NETWORK_PRONE_CODES.includes(code) ? unreachableHost(detail) : null;
+  return host === null ? { code, detail } : { code: NETWORK_UNAVAILABLE, detail: networkDetail(host) };
+}
+
 /** The error codes whose failure pauses implement-type claims, each in the claim pause row of the same name. */
 export const IMPLEMENT_PAUSE_CODES = [FORGE_AUTH, PREFLIGHT_ACCESS] as const;
+
+/**
+ * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
+ * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed
+ * access check or a GitHub rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
+ */
+export function retryNotBefore(o: {
+  cls: FailureClass;
+  code: string;
+  failed_at: number;
+  backoff_at: number;
+  reset: Timestamp | null | undefined;
+  retry_max_ms: number;
+}): Timestamp {
+  const at = (ms: number) => new Date(ms).toISOString() as Timestamp;
+  if (o.cls === "rate_limited" && o.code !== GITHUB_RATE_LIMITED) return o.reset ?? at(o.failed_at + o.retry_max_ms);
+  if (o.cls === "stalled") return at(o.failed_at);
+  const pauseEnd = PAUSE_CODES.includes(o.code) && o.reset ? Date.parse(o.reset) : Number.NaN;
+  return at(Number.isNaN(pauseEnd) ? o.backoff_at : Math.max(o.backoff_at, pauseEnd));
+}
+
+/** The codes whose retry waits for the claim pause the failure set (its end is the outcome's `reset_at`). */
+const PAUSE_CODES: readonly string[] = [FORGE_AUTH, PREFLIGHT_ACCESS, GITHUB_RATE_LIMITED];
 
 /** The implement preflight's checks, in order. Each failure's detail starts with `<check>: `. */
 export const PREFLIGHT_CHECKS = ["push_access", "pr_api", "base_fetch"] as const;

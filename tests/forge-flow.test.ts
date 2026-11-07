@@ -7,7 +7,7 @@ import type { WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import {

@@ -16,7 +16,7 @@ import { cliUserConfig } from "./core/config.js";
 import { CLI_COMMANDS, CLI_TOP_WORDS, type CliEnvironment, cliIdentity, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
 import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
-import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
+import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
@@ -71,7 +71,8 @@ const USAGE = `factory [--config <path>] <command>
   settings list | set <key> <value> | reset <key> | history
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
-               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
+               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
+               alarm_repeat_count, alarm_window_minutes, alarm_restart_count. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
   ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
@@ -103,7 +104,12 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
   golden run --agent reviewer
                replays every golden case through the reviewer (no push, no GitHub writes), prints
                catch_rate and false_alarm_rate, writes <state_dir>/golden/results/<timestamp>.json.
-               With the noop sandbox the agent runs as the host user: test environment only (design §5)`;
+               With the noop sandbox the agent runs as the host user: test environment only (design §5)
+  golden compare --base <file> [--agent reviewer] [--since <ref> | --all]
+               replays the cases tagged with the changed prompt twice (base prompt from <file>, then the
+               repo's prompt) and fails (exit 1) when catch_rate drops or false_alarm_rate rises by more than
+               GOLDEN_MARGIN. Skips (exit 0) when nothing since <ref> (default: the base branch) touches
+               prompts/ or prompt code, with no tagged cases, or with an n/a rate. Local only (design §6)`;
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
@@ -434,6 +440,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "retry":
     case "revise":
     case "reject":
+    case "resolve":
     case "users":
       return localCli(loaded, cmd, args);
     case "improve": {
@@ -477,7 +484,7 @@ async function cliEnvironment(root: string): Promise<CliEnvironment> {
 }
 
 /**
- * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
+ * `factory task …` and `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200): the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
  */
 async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], args: string[]): Promise<number> {
@@ -517,7 +524,7 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
   }
 }
 
-/** `golden add` reads the store and GitHub (read-only); `golden run` opens neither. */
+/** `golden add` reads the store and GitHub (read-only); `golden run` and `golden compare` open neither. */
 async function golden(loaded: Loaded, sub: string | undefined, args: string[]): Promise<number> {
   const p = new Plugins(loaded);
   if (sub === "add") {
@@ -551,8 +558,28 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
     console.log(formatReport(report));
     return 0;
   }
+  if (sub === "compare") {
+    const opts = parseCompareArgs(args);
+    const basePrompt = await readFile(opts.base, "utf8");
+    const changed = opts.all ? null : await changedPaths(loaded.root, opts.since ?? loaded.config.repo.base_branch);
+    const deps = await buildGoldenRunDeps(p, loaded);
+    const report = await compareCases(deps, { agent: opts.agent, basePrompt, changed });
+    console.log(formatCompare(report));
+    return report.outcome === "fail" ? 1 : 0;
+  }
   console.log(USAGE);
   return 1;
+}
+
+/**
+ * Repo-relative paths that differ from where HEAD left `ref` (the merge base), committed or not, plus
+ * untracked files: what `golden compare` checks against the prompt inputs.
+ */
+async function changedPaths(root: string, ref: string): Promise<string[]> {
+  const git = async (args: string[]) => (await promisify(execFile)("git", args, { cwd: root, timeout: 30_000 })).stdout;
+  const mergeBase = (await git(["merge-base", ref, "HEAD"])).trim();
+  const lines = `${await git(["diff", "--name-only", mergeBase])}\n${await git(["ls-files", "--others", "--exclude-standard"])}`;
+  return [...new Set(lines.split("\n").filter((l) => l !== ""))];
 }
 
 /**

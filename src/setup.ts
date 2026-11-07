@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
+import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
 import { describeSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
@@ -63,7 +64,7 @@ export function checksExitCode(checks: readonly Check[]): number {
  * egress-scan them first (the status page does).
  */
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
-  const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded)];
+  const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
@@ -142,6 +143,27 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     add(false, `label "${loaded.config.intake_label}" exists (run: npm run setup)`);
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
+  return checks;
+}
+
+/**
+ * The declared toolchain caches (design 05-sandbox.md, issue #334): one line per cache. A cache that overlaps a
+ * denied path (the secret file's folder is one) is a FAIL, one per overlap; one that does not exist yet is a warn
+ * (the warm step may create it); otherwise ok. No `toolchain` block: no line.
+ */
+export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "deny_paths">): Promise<Check[]> {
+  const checks: Check[] = [];
+  for (const cache of config.toolchain?.caches ?? []) {
+    const overlaps = toolchainCacheOverlaps([cache], config.deny_paths);
+    if (overlaps.length > 0) {
+      checks.push(...overlaps.map((o) => ({ ok: false, msg: `toolchain cache ${cache} overlaps the denied path ${o.denied}` })));
+      continue;
+    }
+    const exists = await stat(cache).then((st) => st.isDirectory(), () => false);
+    checks.push(exists
+      ? { ok: true, msg: `toolchain cache ${cache} exists (read-only for agents)` }
+      : { ok: false, warn: true, msg: `toolchain cache ${cache} does not exist (the warm step may create it)` });
+  }
   return checks;
 }
 

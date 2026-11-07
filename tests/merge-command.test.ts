@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { commandFooter, commandsFor, commandTableMarkdown, helpReply, parseComment } from "../src/core/commands.js";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { Forge } from "../src/interfaces/forge.js";
