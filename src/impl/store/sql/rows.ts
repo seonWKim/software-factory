@@ -205,7 +205,7 @@ export function rowToWorkItem(r: Row): WorkItem {
 
 export function rowToRun(r: Row): Run {
   const input = parseJson<RunInput | null>(r.input ?? null);
-  // An interactive run's record is in its input column (design §5, 2026-11-01): older rows read null.
+  // An interactive run's notes and last finish are in its input column (design §5, 2026-11-01); older rows read none.
   const session = input?.session ?? null;
   return {
     id: r.id as RunId,
@@ -232,9 +232,9 @@ export function rowToRun(r: Row): Run {
     paused_by: (r.paused_by as string | null | undefined) ?? null,
     session_id: (r.session_id as string | null | undefined) ?? null,
     resume: parseJson(r.pause_state ?? null),
-    actor_id: session?.actor_id ?? null,
-    transcript_url: session?.transcript_url ?? null,
-    session_tokens: session?.tokens ?? null,
+    actor_id: (r.actor_id as UserId | null | undefined) ?? null,
+    transcript_url: (r.transcript_url as string | null | undefined) ?? null,
+    session_tokens: r.session_tokens === null || r.session_tokens === undefined ? null : Number(r.session_tokens),
     session_notes: session?.notes ?? [],
     last_finish: session?.last_finish ?? null,
     created_at: r.created_at as Timestamp,

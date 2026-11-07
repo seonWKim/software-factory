@@ -1397,8 +1397,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
-  // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields live in the run's input
-  // column, which both backends already have (SQLite migration 11, the MySQL baseline), so no schema step.
+  // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
+  // 18 on both backends); notes and the last finish live in the run's input.
   describe("interactive sessions", () => {
     const person = { kind: "user" as const, id: "github:5" as UserId };
     const seed = async (store: FactoryStore, n: number, paths: string[]) => {

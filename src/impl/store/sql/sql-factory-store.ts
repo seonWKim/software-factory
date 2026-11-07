@@ -919,12 +919,12 @@ export class SqlFactoryStore implements FactoryStore {
       }
       const runId = newId("run") as RunId;
       const now = this.now();
-      const session: SessionRecord = { actor_id: input.actor.id, transcript_url: input.transcript_url, tokens: null, notes: [], last_finish: null };
+      const session: SessionRecord = { notes: [], last_finish: null };
       await tx.run(
-        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, started_at,
-           created_at, updated_at) VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, actor_id,
+           transcript_url, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
         [runId, input.id, INTERACTIVE, `${input.id}:interactive:${runId}`, input.owner, this.after(input.lease_ms),
-          JSON.stringify({ session } satisfies RunInput), now, now, now],
+          JSON.stringify({ session } satisfies RunInput), input.actor.id, input.transcript_url, now, now, now],
       );
       const { changes, sets, values } = diffPatch(current, input.patch);
       const version = current.version + 1;
@@ -950,11 +950,11 @@ export class SqlFactoryStore implements FactoryStore {
       const next: SessionRecord = {
         ...s,
         ...(update.note !== undefined ? { notes: [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES) } : {}),
-        ...(update.tokens !== undefined ? { tokens: update.tokens } : {}),
-        ...(update.transcript_url !== undefined ? { transcript_url: update.transcript_url } : {}),
         ...(update.last_finish !== undefined ? { last_finish: { ...update.last_finish, at: now } } : {}),
       };
-      await tx.run("UPDATE runs SET input = ?, updated_at = ? WHERE id = ?", [JSON.stringify({ ...run.input, session: next }), now, runId]);
+      await tx.run("UPDATE runs SET input = ?, session_tokens = ?, transcript_url = ?, updated_at = ? WHERE id = ?", [
+        JSON.stringify({ ...run.input, session: next }), update.tokens ?? run.session_tokens, update.transcript_url ?? run.transcript_url, now, runId,
+      ]);
       return { ok: true, run: (await this.selectRun(tx, runId))! };
     });
   }

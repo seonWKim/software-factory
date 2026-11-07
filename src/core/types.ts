@@ -172,8 +172,8 @@ export interface RunInput {
   session?: SessionRecord;
 }
 
-/** An interactive run's person (user ID), scanned transcript URL, reported token total, scanned notes and last finish. */
-export interface SessionRecord { actor_id: UserId; transcript_url: string | null; tokens: number | null; notes: SessionNote[]; last_finish: SessionFinish | null }
+/** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
+export interface SessionRecord { notes: SessionNote[]; last_finish: SessionFinish | null }
 export interface SessionNote { at: Timestamp; text: string }
 /** One `session finish` attempt: passed and pushed (`ok`), or the reasons it was refused. */
 export interface SessionFinish { at: Timestamp; ok: boolean; reasons: string[]; pr_number: number | null }
