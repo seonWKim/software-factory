@@ -157,7 +157,51 @@ export interface ItemDetail {
     created_at: string;
     tokens: number | null;
     error: { code: string | null; detail: string | null } | null;
+    /** One record per claim, in attempt order; the last one's worker is the run's worker. */
+    attempts?: { attempt: number; worker_id: string | null }[];
   }[];
+  /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
+  transcripts?: Record<string, string[]>;
+}
+
+/** Which steps the transcript filter keeps (tool calls of that kind). */
+export type StepFilter = "edits" | "commands" | "reads";
+
+/** One step of a stored transcript; withheld text is "[withheld: <rule>]" and its tool is null. */
+export interface TranscriptStep {
+  id: string;
+  kind: "text" | "tool_use" | "tool_result" | "result" | "system" | "error" | "plain" | "other" | "oversize";
+  tool: string | null;
+  text: string;
+  is_error: boolean;
+  withheld: boolean;
+  truncated?: boolean;
+}
+
+/** One page of a run's stored transcript (GET /api/v1/items/<id>/runs/<run>/transcript). */
+export interface TranscriptPage {
+  run: {
+    id: string;
+    kind: string;
+    status: string;
+    attempt: number;
+    started_at: string | null;
+    finished_at: string | null;
+    worker_id: string | null;
+    outcome: { status: string; error_code: string | null; detail: string | null; summary: string | null } | null;
+  };
+  parts: string[];
+  part: string;
+  format: "stream-json" | "plain";
+  size: number;
+  mode: "forward" | "tail";
+  filter: StepFilter | null;
+  start: number;
+  /** The next page's byte offset; null at the end (or for a tail page). */
+  next: number | null;
+  /** Steps before `start` exist (a tail page, or a later forward page). */
+  earlier: boolean;
+  steps: TranscriptStep[];
 }
 
 export interface Health {
@@ -251,6 +295,10 @@ export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
+  transcript: (id: string, run: string, params: URLSearchParams) => {
+    const q = params.toString();
+    return `/api/v1/items/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/transcript${q ? `?${q}` : ""}`;
+  },
   runs: "/api/v1/runs",
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",

@@ -397,10 +397,10 @@ describe("updater: code root and state root", () => {
 
 describe("updater: which changes need a build", () => {
   it("isCodePath counts the web app under web/ as code, like src/ and prompts/; docs stay docs-only", () => {
-    for (const f of ["web/index.html", "web/src/main.tsx", "web/vite.config.ts", "src/ui/app.ts", "prompts/triage.md", "package.json", "tsconfig.json"]) {
+    for (const f of ["web/index.html", "web/src/main.tsx", "web/vite.config.ts", "src/ui/app.ts", "prompts/triage.md", "package.json", "tsconfig.json", "scripts/build.mjs"]) {
       expect(isCodePath(f), f).toBe(true);
     }
-    for (const f of ["docs/design.md", "README.md", "website/index.html", "tests/web/a.test.ts"]) expect(isCodePath(f), f).toBe(false);
+    for (const f of ["docs/design.md", "README.md", "website/index.html", "tests/web/a.test.ts", "scripts/slack-app.sh"]) expect(isCodePath(f), f).toBe(false);
   });
 });
 

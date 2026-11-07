@@ -9,12 +9,13 @@ import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
 export const ISSUE_USAGE = `usage: npm run factory -- issue <action>
   create --title <text> --body-file <path> [--label <name>]...
   comment <number> --body-file <path>
+  edit <number> --body-file <path>
   title <number> <text>
   sub-issue <parent> <child>`;
 
 export type IssueAction =
   | { action: "create"; title: string; bodyFile: string; labels: string[] }
-  | { action: "comment"; number: number; bodyFile: string }
+  | { action: "comment" | "edit"; number: number; bodyFile: string }
   | { action: "title"; number: number; title: string }
   | { action: "sub-issue"; parent: number; child: number };
 
@@ -45,7 +46,8 @@ export function parseIssueArgs(args: readonly string[]): IssueAction | null {
       if (!f || f.free.length > 0 || !title || !bodyFile) return null;
       return { action, title, bodyFile, labels: f.out["--label"] ?? [] };
     }
-    case "comment": {
+    case "comment":
+    case "edit": {
       const f = flags(["--body-file"]);
       const n = num(f?.free[0]);
       const bodyFile = f?.out["--body-file"]?.[0];
@@ -96,6 +98,11 @@ export async function runIssue(d: IssueDeps, a: IssueAction): Promise<string> {
     case "comment": {
       const body = await scanned(await read(a.bodyFile));
       const r = await d.client.request<{ html_url: string }>("POST", `${base}/${a.number}/comments`, { body });
+      return r.html_url;
+    }
+    case "edit": {
+      const body = await scanned(await read(a.bodyFile));
+      const r = await d.client.request<{ html_url: string }>("PATCH", `${base}/${a.number}`, { body });
       return r.html_url;
     }
     case "title": {

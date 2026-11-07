@@ -10,3 +10,5 @@ dist/
 .factory/
 web/dist/
 .vite-cache/
+/dist.*
+/web/dist.*

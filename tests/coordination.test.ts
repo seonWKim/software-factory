@@ -31,7 +31,7 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
   it("a hotspot has the fixed configured weight; a learned weight above it wins", () => {
     expect(pathWeight("src/core/worker.ts", none, S)).toEqual({ path: "src/core/worker.ts", weight: 3, conflicts: 0, hotspot: true });
     expect(pathWeight("src/core/worker.ts", new Map([["src/core/worker.ts", 6]]), S).weight).toBe(4);
-    expect(pathWeight("docs/design.md", none, { ...S, hotspot_weight: 5 }).weight).toBe(5);
+    expect(pathWeight("SET_UP.md", none, { ...S, hotspot_weight: 5 }).weight).toBe(5);
     // A folder that holds a hotspot counts as one; so does a file under a hotspot folder.
     expect(pathWeight("src/core/", none, S).hotspot).toBe(true);
     expect(pathWeight("gen/a.ts", none, { ...S, hotspots: ["gen/"] }).hotspot).toBe(true);
@@ -69,13 +69,57 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
     expect(holdReason({ holder_ref: "#92", shared, cost: 4, threshold: 2.5, fallback: false })).toBe(
       "waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5",
     );
-    const two = [pathWeight("docs/design.md", none, S), pathWeight("lib/a.ts", new Map([["lib/a.ts", 1]]), S), pathWeight("lib/b.ts", none, S)];
+    const two = [pathWeight("SET_UP.md", none, S), pathWeight("lib/a.ts", new Map([["lib/a.ts", 1]]), S), pathWeight("lib/b.ts", none, S)];
     expect(holdReason({ holder_ref: "#7", shared: two, cost: 5, threshold: 2.5, fallback: true })).toBe(
-      "waiting for #7 to merge: both change docs/design.md (hotspot), lib/a.ts (conflicted once) and lib/b.ts, cost 5.0 > 2.5" +
+      "waiting for #7 to merge: both change SET_UP.md (hotspot), lib/a.ts (conflicted once) and lib/b.ts, cost 5.0 > 2.5" +
         " (#7 is a PR opened before PR file lists were stored, so its allowed paths were used)",
     );
     expect(holdReason({ holder_ref: "#7", shared: [pathWeight("lib/x.ts", new Map([["lib/x.ts", 3]]), S)], cost: 2.5, threshold: 2.5, fallback: false }))
       .toBe("waiting for #7 to merge: both change lib/x.ts (conflicted 3 times), cost 2.5 ≥ 2.5");
+  });
+});
+
+describe("mechanical paths (design §5, issue #297)", () => {
+  const holder = (files: string[]): Holder => ({ work_item_id: "wi_b", project: "p", ref: "#2", kind: "running", files, fallback: false });
+
+  it("a mechanical path is never a hotspot, even when hotspot_paths lists it, and weighs mechanical_weight", () => {
+    expect(S.hotspots).toContain("docs/design.md");
+    expect(pathWeight("docs/design.md", none, S)).toEqual({ path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true });
+    // A file under a mechanical folder too; a folder that only holds mechanical files is not one.
+    expect(pathWeight("migrations/mysql/0025-x.sql", none, S)).toMatchObject({ weight: 0.25, mechanical: true });
+    expect(pathWeight("docs/", none, S).mechanical).toBeUndefined();
+    expect(pathWeight("docs/design/05-coordination.md", none, { ...S, mechanical_weight: 0.5 }).weight).toBe(0.5);
+    // Listed in both: still mechanical.
+    expect(pathWeight("lib/gen.ts", none, { ...S, hotspots: ["lib/gen.ts"], mechanical: ["lib/"] })).toMatchObject({ hotspot: false, weight: 0.25 });
+  });
+
+  it("a learned weight above mechanical_weight wins; one recorded conflict does not lift it", () => {
+    const w = (n: number) => pathWeight("docs/design.md", new Map([["docs/design.md", n]]), S).weight;
+    expect([w(1), w(2), w(3), w(10)]).toEqual([0.25, 2, 2.5, 4]);
+  });
+
+  it("a step file, a History line and an index line each: 0.5, so the two run side by side", () => {
+    const a = ["migrations/mysql/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"];
+    const b = ["migrations/mysql/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"];
+    expect(coordinationCost(a, b, none, S).cost).toBe(0.5);
+    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], none, S))).toBe("free");
+  });
+
+  it("two items that both change src/core/controller.ts are still held", () => {
+    const holds = holdsOn({ work_item_id: "wi_a", project: "p", files: ["src/core/controller.ts", "docs/design.md"] }, [holder(["src/core/controller.ts", "docs/design.md"])], none, S);
+    expect(holds.map((h) => h.cost)).toEqual([3.25]);
+    expect(claimDecision(holds)).toBe("held");
+  });
+
+  it("the hold reason names each mechanical path with its weight", () => {
+    const shared = [pathWeight("docs/design.md", none, S), pathWeight("src/core/controller.ts", none, S)];
+    expect(holdReason({ holder_ref: "#92", shared, cost: 3.25, threshold: 2.5, fallback: false })).toBe(
+      "waiting for #92 to merge: both change docs/design.md (mechanical, 0.25) and src/core/controller.ts (hotspot), cost 3.25 > 2.5",
+    );
+    const learned = pathWeight("docs/design.md", new Map([["docs/design.md", 3]]), S);
+    expect(holdReason({ holder_ref: "#9", shared: [learned], cost: 2.5, threshold: 2.5, fallback: false })).toBe(
+      "waiting for #9 to merge: both change docs/design.md (mechanical, 2.5, conflicted 3 times), cost 2.5 ≥ 2.5",
+    );
   });
 });
 

@@ -49,6 +49,29 @@ describe("factory issue", () => {
     ]);
   });
 
+  it("parses edit and rejects it without a number or --body-file", () => {
+    expect(parseIssueArgs(["edit", "305", "--body-file", "body.md"])).toEqual({ action: "edit", number: 305, bodyFile: "body.md" });
+    for (const bad of [["edit", "--body-file", "b.md"], ["edit", "x", "--body-file", "b.md"], ["edit", "305"], ["edit", "305", "--body-file"]]) {
+      expect(parseIssueArgs(bad)).toBeNull();
+    }
+  });
+
+  it("edit replaces the body with one PATCH and returns the issue URL", async () => {
+    const client = new FakeClient();
+    expect(await runIssue({ client, repo, scanner: clean, read }, { action: "edit", number: 305, bodyFile: "body.md" }))
+      .toBe("https://github.com/o/r/issues/95");
+    expect(client.calls).toEqual([{ method: "PATCH", path: "/repos/o/r/issues/305", body: { body: "body of body.md" } }]);
+  });
+
+  it("edit refuses a body the leak scanner flags, naming only the rule, and sends nothing", async () => {
+    const client = new FakeClient();
+    const err = await runIssue({ client, repo, scanner: dirty, read }, { action: "edit", number: 305, bodyFile: "body.md" }).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("github_token");
+    expect((err as Error).message).not.toContain("body of body.md");
+    expect(client.calls).toEqual([]);
+  });
+
   it("refuses a title or body the leak scanner flags, and sends nothing", async () => {
     const client = new FakeClient();
     await expect(runIssue({ client, repo, scanner: dirty, read }, { action: "comment", number: 1, bodyFile: "c.md" })).rejects.toThrow("github_token");
