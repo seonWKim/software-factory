@@ -23,7 +23,8 @@ export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "depen
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
-export type SourceType = "github_issue" | "slack_thread";
+/** `local`: an item filed on this machine (issue #198); its id is local to the factory. */
+export type SourceType = "github_issue" | "slack_thread" | "local";
 
 /**
  * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the

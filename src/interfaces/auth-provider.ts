@@ -11,7 +11,8 @@ export interface Principal {
 }
 
 export interface ExternalIdentity {
-  provider: "github" | "slack" | "oidc";
+  /** `local`: an account on the machine the factory runs on (issue #198). */
+  provider: "github" | "slack" | "oidc" | "local";
   subject: string; // provider's stable id, e.g. GitHub numeric user id
   /** Display handle, used transiently for provider API lookups. Never stored. */
   login?: string;

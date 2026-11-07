@@ -64,12 +64,16 @@ import type {
   ApproveClaimHoldResult,
   BudgetCheckpointResult,
   ClaimInput,
+  CliCommand,
   FactoryStore,
   InboxRow,
+  ItemMessage,
   LeaseResult,
   ListenerLease,
   ListenerLeaseResult,
+  NewCliCommand,
   NewInboxEvent,
+  NewItemMessage,
   NewRun,
   NewUnreviewedMerge,
   NewWorkItem,
@@ -1469,6 +1473,56 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
   }
 
+  // Local work items (issue #198)
+
+  async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectItemMessage(tx, input.work_item_id, input.marker);
+      if (existing) return { created: false, message: existing };
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO item_messages (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
+        [input.work_item_id, input.marker, input.body, this.now()],
+      );
+      return { created, message: (await this.selectItemMessage(tx, input.work_item_id, input.marker))! };
+    });
+  }
+
+  async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
+    const rows = await this.db.all("SELECT * FROM item_messages WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
+    return rows.map(rowToItemMessage);
+  }
+
+  async appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }> {
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectCliCommand(tx, input.key);
+      if (existing) return { created: false, command: existing };
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO cli_commands (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
+        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+      );
+      return { created, command: (await this.selectCliCommand(tx, input.key))! };
+    });
+  }
+
+  async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
+    const rows = await this.db.all(`SELECT * FROM cli_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
+      after_seq,
+    ]);
+    return rows.map(rowToCliCommand);
+  }
+
+  private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
+    const [row] = await q.all("SELECT * FROM item_messages WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
+    return row ? rowToItemMessage(row) : null;
+  }
+
+  private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
+    const [row] = await q.all("SELECT * FROM cli_commands WHERE command_key = ?", [key]);
+    return row ? rowToCliCommand(row) : null;
+  }
+
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
@@ -1687,6 +1741,27 @@ function rowToInbox(row: Row): InboxRow {
     dedupe_key: row.dedupe_key as string,
     event: JSON.parse(row.event as string) as SourceEvent,
     received_at: row.received_at as Timestamp,
+  };
+}
+
+function rowToItemMessage(row: Row): ItemMessage {
+  return {
+    seq: Number(row.seq),
+    work_item_id: row.work_item_id as WorkItemId,
+    marker: row.marker as string,
+    body: row.body as string,
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToCliCommand(row: Row): CliCommand {
+  return {
+    seq: Number(row.seq),
+    key: row.command_key as string,
+    actor: row.actor as string,
+    command: row.command as string,
+    args: JSON.parse(row.args as string) as Record<string, unknown>,
+    created_at: row.created_at as Timestamp,
   };
 }
 

@@ -599,6 +599,54 @@ export interface FactoryStore {
   listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
+
+  // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
+  // of commands the CLI sends. Store only: nothing calls these yet.
+
+  /**
+   * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
+   * for that item is a no-op that reports the existing message with `created: false`.
+   */
+  recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }>;
+  /** The messages of `work_item_id` only, oldest first. Empty for an item with none. Read-only. */
+  listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]>;
+  /**
+   * Appends one CLI command. Its `seq` is greater than every command appended before it. A `key` already
+   * stored is a no-op that reports the existing command with `created: false`.
+   */
+  appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
+  /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
+  listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+}
+
+export interface NewItemMessage {
+  work_item_id: WorkItemId;
+  /** Unique within the item; a repeat with the same marker stores nothing. */
+  marker: string;
+  body: string;
+}
+
+export interface ItemMessage extends NewItemMessage {
+  seq: number;
+  /** Store clock's now when the message was first recorded. */
+  created_at: Timestamp;
+}
+
+export interface NewCliCommand {
+  /** Idempotency key, unique across all commands: a repeat with the same key stores nothing. */
+  key: string;
+  /** The ID of whoever ran the command (e.g. `local:<login>`), never a display name. */
+  actor: string;
+  /** The command's name. */
+  command: string;
+  /** The command's arguments, stored as JSON. */
+  args: Record<string, unknown>;
+}
+
+export interface CliCommand extends NewCliCommand {
+  seq: number;
+  /** Store clock's now when the command was first appended. */
+  created_at: Timestamp;
 }
 
 /** What a WorkerPool reports each tick. */
