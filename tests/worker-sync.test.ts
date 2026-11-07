@@ -222,7 +222,8 @@ const resolveA: AgentStep = (wd) => {
   git(wd, "add", "--", "src/a.txt");
 };
 
-describe("implement run: sync with base before push", () => {
+// Real git clone/merge work per test: 2–5s each alone, more under a full parallel run.
+describe("implement run: sync with base before push", { timeout: 30_000 }, () => {
   it("main moved with no conflict: the pushed branch contains the new base commit and merges cleanly", async () => {
     let mainSha = "";
     const f = await setup({
