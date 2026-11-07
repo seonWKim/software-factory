@@ -2,6 +2,8 @@
 
 What it does: the factory's state (work items, runs, state changes, handoffs, leases). Every transition is a conditional update, so any number of controllers and workers can share it (architecture §4). The logic exists once in `SqlFactoryStore`; a backend is a `SqlDriver`.
 
+Worker processes (2026-11-07, issue #209; design §5 Worker slots reported per process): `reportWorkerProcess(report)` writes one process's snapshot (`process_id` `<host>:<pid>`, `pid`, `host`, `slots`, `max_slots`, `busy`, `index_base`, `started_at`) with `reported_at` = the store clock's now; keyed by `process_id`, so a repeat write replaces the row (update, else insert; a concurrent first insert that loses updates). `listWorkerProcesses(max_age_ms)` returns the rows at most `max_age_ms` old, by host, pid, process_id (read-only). `removeWorkerProcess(process_id)` deletes one row on a clean stop. Table `worker_processes`: SQLite migration 18; MySQL step 18 `worker-processes` (`WORKER_PROCESSES_STEP` in `src/impl/store/mysql/schema.ts`), not yet listed in `INLINE_STEPS`, so `npm run migrate` does not run it until it is (known gap). Both backends share the contract tests in `tests/store-contract.test.ts`.
+
 Plugins:
 
 - `mysql`: `SqlFactoryStore` over `MysqlDriver`. Any number of processes on any hosts. Selected by the checked-in config.
@@ -15,4 +17,4 @@ Switch back / disable: set `store.type` to the other name. A store cannot be dis
 
 ## History
 
-No earlier decision is recorded for this topic.
+- **Worker processes** (store methods added 2026-11-07, issue #209). Before: the store kept no per-process record; the only worker data was the lease owner on each running run.
