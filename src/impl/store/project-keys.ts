@@ -49,7 +49,10 @@ export async function countLegacyProjectRows(db: SqlExecutor): Promise<number> {
   return n;
 }
 
-/** The message a store refuses to open with while legacy rows remain. */
+/**
+ * The message a store refuses to open with while legacy rows remain. A supervised child that fails to start
+ * with it is classified by `migrate --status --json` (the step is pending), never by matching this text.
+ */
 export function legacyRowsMessage(n: number): string {
   return `${n} row${n === 1 ? "" : "s"} still hold an owner/name project value: run \`npm run migrate\` (project keys, design 2026-11-01)`;
 }

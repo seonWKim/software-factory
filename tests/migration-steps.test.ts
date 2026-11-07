@@ -15,6 +15,9 @@ import {
   splitSql,
   stepProblems,
 } from "../src/impl/store/mysql/migrations.js";
+import { migrationCheck, mysqlMigrationCheck } from "../src/impl/store/mysql/migrate-command.js";
+import { MIGRATION_PENDING_CODE } from "../src/interfaces/updater.js";
+import { migrationPendingError } from "../src/impl/store/mysql/mysql-driver.js";
 
 // Runs under plain `npm test`: no MySQL needed.
 
@@ -152,3 +155,67 @@ function stepsDir(files: Record<string, string>): string {
   for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
   return dir;
 }
+
+/** A fake MySQL connection: a recorded state, the tables that exist, and the owner/name rows per table. */
+function fakeDb(o: { state: number | null; tables?: string[]; legacy?: Record<string, number> }) {
+  const sql: string[] = [];
+  const tables = o.tables ?? ["schema_state", "work_items", "unreviewed_merges", "cursors"];
+  return {
+    sql,
+    async query(q: string): Promise<[unknown, unknown]> {
+      sql.push(q);
+      if (q.includes("information_schema.tables")) return [tables.map((name) => ({ name })), null];
+      if (q.startsWith("SELECT state FROM schema_state")) return [o.state === null ? [] : [{ state: o.state }], null];
+      const m = /FROM (\w+) WHERE project NOT LIKE/.exec(q);
+      if (m) return [[{ n: o.legacy?.[m[1]!] ?? 0 }], null];
+      throw new Error(`unexpected query ${q}`);
+    },
+  };
+}
+
+describe("migrate --status --json (the updater's check)", () => {
+  it("lists the schema state and the pending step names; the project-key step is not counted while schema steps are pending", async () => {
+    const dir = stepsDir({ "0012-a.sql": "SELECT 1;", "0013-b.ts": "export default {}" });
+    const db = fakeDb({ state: 11, legacy: { work_items: 3 } });
+    const check = await mysqlMigrationCheck(db, { dir });
+    expect(check).toEqual({
+      store: "mysql",
+      schema_state: 11,
+      latest: 13,
+      schema_pending: ["0012-a.sql", "0013-b.ts"],
+      refusal: null,
+      project_keys: "after schema steps",
+      project_key_rows: null,
+      pending: ["0012-a.sql", "0013-b.ts"],
+    });
+    expect(db.sql.some((q) => q.includes("COUNT(*)"))).toBe(false);
+    expect(JSON.parse(JSON.stringify(check))).toEqual(check); // one JSON line
+  });
+
+  it("with the schema current, owner/name rows left are the pending project-keys step", async () => {
+    const dir = stepsDir({ "0012-a.sql": "SELECT 1;" });
+    expect(await mysqlMigrationCheck(fakeDb({ state: 12, legacy: { work_items: 2, unreviewed_merges: 1 } }), { dir })).toMatchObject({
+      schema_pending: [],
+      project_keys: "pending",
+      project_key_rows: 3,
+      pending: ["project-keys"],
+    });
+    expect(await mysqlMigrationCheck(fakeDb({ state: 12 }), { dir })).toMatchObject({ project_keys: "done", project_key_rows: 0, pending: [] });
+  });
+
+  it("a database ahead of the code has nothing pending (the store opens it)", async () => {
+    const dir = stepsDir({ "0012-a.sql": "SELECT 1;" });
+    expect(await mysqlMigrationCheck(fakeDb({ state: 14 }), { dir })).toMatchObject({ pending: [], refusal: expect.stringContaining("ahead") });
+  });
+
+  it("SQLite has no schema steps: only the project-key rows count", () => {
+    expect(migrationCheck("sqlite", null, 0)).toMatchObject({ schema_state: null, latest: null, schema_pending: [], project_keys: "done", pending: [] });
+    expect(migrationCheck("sqlite", null, 4)).toMatchObject({ project_keys: "pending", project_key_rows: 4, pending: ["project-keys"] });
+  });
+
+  it("the store's pending-steps error carries the stable code, not only the text", () => {
+    const err = migrationPendingError("1 schema step pending (state 11, latest 12): run `npm run migrate`");
+    expect(err.code).toBe(MIGRATION_PENDING_CODE);
+    expect(MIGRATION_PENDING_CODE).toBe("migration_pending");
+  });
+});

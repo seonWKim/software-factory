@@ -213,3 +213,21 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });
 });
+
+describe("config: updater.auto_migrate (design §8 Self-update)", () => {
+  it("defaults to off: absent, or an empty updater block", async () => {
+    const { updaterConfig } = await import("../src/core/config.js");
+    expect(updaterConfig(undefined)).toEqual({ auto_migrate: false });
+    expect(updaterConfig({})).toEqual({ auto_migrate: false });
+    expect(updaterConfig({ auto_migrate: false })).toEqual({ auto_migrate: false });
+    expect(updaterConfig({ auto_migrate: true })).toEqual({ auto_migrate: true });
+  });
+
+  it("is validated like the other keys: a non-boolean, an unknown key or a non-object fails", async () => {
+    const { updaterProblems, updaterConfig } = await import("../src/core/config.js");
+    expect(updaterProblems({ auto_migrate: "yes" })).toEqual([expect.stringContaining("updater.auto_migrate must be true or false")]);
+    expect(updaterProblems({ auto_migrat: true })).toEqual([expect.stringContaining('unknown config key "auto_migrat" at updater.auto_migrat')]);
+    expect(updaterProblems(true)).toEqual([expect.stringContaining("updater must be an object")]);
+    expect(() => updaterConfig({ auto_migrate: 1 })).toThrow(/auto_migrate/);
+  });
+});

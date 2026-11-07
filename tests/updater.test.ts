@@ -1236,3 +1236,38 @@ describe("updater: git-worktree pending migration steps (design §8 Self-update)
     expect(launcher.live).toHaveLength(1);
   });
 });
+
+describe("updater: git-worktree plugin wiring for migrations", () => {
+  it("passes the request file, the status file and updater.auto_migrate (default off) to the updater", async () => {
+    vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", "/nonexistent/.env");
+    const main = checkout({ ...REAL, store: { type: "sqlite" } }, "main");
+    const loaded = await loadConfig(main);
+    const world = new World();
+    const make = async () =>
+      (await createUpdater(loaded, { run: world.run, launcher: new FakeLauncher(world), clock: new FakeClock(), log: recordingLog() })) as unknown as {
+        o: GitWorktreeOptions;
+      };
+    const off = (await make()).o;
+    expect(off).toMatchObject({ autoMigrate: false, requestFile: join(main, ".factory", "supervisor-request.json"), statusFile: join(main, ".factory", "supervisor.json") });
+    expect(off.env.SOFTWARE_FACTORY_SECRETS_FILE).toBe("/nonexistent/.env"); // the secret file's location only
+    (loaded.file as unknown as Record<string, unknown>).updater = { auto_migrate: true };
+    expect((await make()).o.autoMigrate).toBe(true);
+  });
+
+  it("the status page shows the waiting target's banner", async () => {
+    const { migrationPendingBanner, readFactoryStatus } = await import("../src/ui/factory-status.js");
+    const file = join(mkdtempSync(join(tmpdir(), "sf-banner-")), "supervisor.json");
+    const s = {
+      state: "migration_pending", rev: "c1c1c1c1c1c1aaaa", target_rev: "c2c2c2c2c2c2bbbb", child_pid: 5, draining_pids: [],
+      since: "2026-11-07T00:00:00.000Z", supervisor_pid: 777, pending_steps: ["0018-a.sql", "project-keys"], migration_phase: "waiting",
+    };
+    const text = "Update to c2c2c2c waits for `npm run migrate` (pending: 0018-a.sql, project-keys). Still running c1c1c1c with its settings.";
+    expect(migrationPendingBanner(s as never)).toBe(text);
+    writeFileSync(file, JSON.stringify(s));
+    expect(await readFactoryStatus(file, 2, (pid) => pid === 777)).toMatchObject({ banner: text, target_rev: "c2c2c2c2c2c2bbbb", workers: 2 });
+    // While the steps apply no child is live; only a dead supervisor means stopped.
+    writeFileSync(file, JSON.stringify({ ...s, child_pid: null, migration_phase: "drained" }));
+    expect(await readFactoryStatus(file, 2, (pid) => pid === 777)).toMatchObject({ banner: text });
+    expect(await readFactoryStatus(file, 2, () => false)).toMatchObject({ state: "stopped" });
+  });
+});
