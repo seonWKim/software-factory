@@ -30,10 +30,13 @@ const settings: SettingsView = {
 };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+// A write through the real store, then a refetch: on a loaded CI runner this takes longer than the 1 s default wait.
+const SLOW = { timeout: 5_000 };
+
 function show() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
-  return screen.findByRole("list", { name: "Standing rules" });
+  return screen.findByRole("list", { name: "Standing rules" }, SLOW);
 }
 
 const ruleItem = (list: HTMLElement, rule: string) => list.querySelector<HTMLElement>(`li[data-rule="${rule}"]`)!;
@@ -47,6 +50,9 @@ describe("Standing approvals section (stubbed API)", () => {
   let view: StandingView;
   let posts: { url: string; init: RequestInit }[];
   let answer: { status: number; body: unknown };
+  // Set by a test that must see the write in flight: each POST then waits until the test calls the release it left.
+  let hold: boolean;
+  let release: (() => void)[];
 
   beforeEach(() => {
     posts = [];
@@ -57,11 +63,13 @@ describe("Standing approvals section (stubbed API)", () => {
       proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 10, threshold: 10, created_at: AT }],
     };
     answer = { status: 200, body: { changed: true } };
+    hold = false;
+    release = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
         posts.push({ url, init });
-        // A write answers after a while, as on a loaded machine: the item's buttons stay disabled until it does.
-        await new Promise((r) => setTimeout(r, 50));
+        // A held write answers only when the test releases it, never on a timer a loaded runner could pass first.
+        if (hold) await new Promise<void>((r) => release.push(r));
         return json(answer.status, answer.body);
       }
       if (url === "/api/v1/settings") return json(200, settings);
@@ -88,6 +96,7 @@ describe("Standing approvals section (stubbed API)", () => {
   });
 
   it("Accept and Decline post the proposal's answer", async () => {
+    hold = true;
     await show();
     const proposals = screen.getByRole("list", { name: "Pending proposals" });
     const li = proposals.querySelector<HTMLElement>('li[data-proposal="sp_1"]')!;
@@ -96,9 +105,11 @@ describe("Standing approvals section (stubbed API)", () => {
     await waitFor(() => expect(posts).toHaveLength(1));
     // The buttons are disabled while the Accept write is in flight; Decline is clicked once it answers.
     expect(decline.disabled).toBe(true);
+    release.shift()!();
     await waitFor(() => expect(decline.disabled).toBe(false));
     fireEvent.click(decline);
     await waitFor(() => expect(posts).toHaveLength(2));
+    release.shift()!();
     expect(posts.map((p) => JSON.parse(String(p.init.body)))).toEqual([
       { rule: "spec-t1", enabled: true, proposal: "sp_1" },
       { rule: "spec-t1", enabled: false, proposal: "sp_1" },
@@ -155,16 +166,16 @@ describe("Standing approvals section against the real routes", () => {
     let list = await show();
     expect(switchOf(list).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(switchOf(list));
-    await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("false"));
+    await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("false"), SLOW);
     clock.advance(1000);
-    await waitFor(() => expect((switchOf(list) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((switchOf(list) as HTMLButtonElement).disabled).toBe(false), SLOW);
     fireEvent.click(switchOf(list));
-    await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("true"));
+    await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("true"), SLOW);
 
     // Reload: a fresh page and query cache read the store again.
     cleanup();
     list = await show();
     expect(switchOf(list).getAttribute("aria-checked")).toBe("true");
     expect((await store.listStandingRules()).find((r) => r.tier === 1)?.enabled).toBe(true);
-  });
+  }, 30_000);
 });
