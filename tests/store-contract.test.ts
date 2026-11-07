@@ -852,6 +852,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await sorted()).toEqual(before);
     });
 
+    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+      const { store, clock } = await make();
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      const next = later(clock, 60_000);
+      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+      // The same due time again, also with another next time: already taken, nothing moves.
+      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+    });
+
+    it("a stall right after a model_stall pause ended before its probe time starts a new pause", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 60_000), "model_stall");
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.pauseClaims(later(clock, 60_000), "model_stall")).toMatchObject({ started: true });
+      expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
+    });
+
+    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+      const { store, clock } = await make();
+      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      await store.endClaimPause("model_stall");
+      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
     it("endClaimPause refuses model_stall_since and model_answered, which are not pauses of their own", async () => {
       const { store } = await make();
       await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
@@ -2193,5 +2225,51 @@ describe("MySQL step 28 (host-sleeps)", () => {
     const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
     await store.recordHostSleep(s);
     expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+  });
+});
+
+describe("migration 32 on an existing SQLite database", () => {
+  it("adds standing_rules and standing_proposals and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig32-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 31; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect(await store.getCursor("poll")).toBe("c1");
+      const { created } = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+      expect(created).toBe(true);
+      expect((await store.putStandingRule({ gate: "spec", tier: 2, enabled: false, set_by: "github:1" as UserId })).enabled).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 32 (standing-approvals)", () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-31 database: both tables added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect(await store.getCursor("poll")).toBe("c1");
+    const first = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    const again = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    expect([first.created, again.created]).toEqual([true, false]);
+    await store.putStandingRule({ gate: "spec", tier: 2, enabled: true, set_by: "github:1" as UserId });
+    expect((await store.listStandingRules()).map((r) => [r.gate, r.tier, r.enabled])).toEqual([["spec", 2, true]]);
   });
 });
