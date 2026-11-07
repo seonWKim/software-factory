@@ -67,7 +67,8 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
-export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
+/** `change` is changeFields of the adopted PR's number (none otherwise), so the item matches its stored row. */
+export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Timestamp): WorkItem {
   const a = input.adopted;
   return {
     id: newId("wi") as WorkItemId,
@@ -91,6 +92,8 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
     restart_count: 0,
     token_cost: 0,
     pr_number: a ? a.pr_number : null,
+    change_ref: change.change_ref,
+    change_url: change.change_url,
     merge_sha: null,
     fixes_pr: null,
     spec_comment_url: null,
@@ -120,11 +123,10 @@ const WORK_ITEM_COLUMNS =
   "files_to_change, pr_files";
 
 /**
- * The columns and values of INSERT INTO work_items; `change` is changeFields of the item's pr_number (the adopted
- * PR's, else none). The change columns are listed only with a PR number: without one they are NULL by default,
+ * The columns and values of INSERT INTO work_items, the change columns taken from the item (newWorkItem). The change columns are listed only with a PR number: without one they are NULL by default,
  * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
  */
-export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: string; values: SqlValue[] } {
+export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue[] } {
   const values: SqlValue[] = [
     i.id, i.version, i.source.type, i.source.id, i.source.link, i.requester_id, i.project, i.problem,
     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
@@ -135,8 +137,8 @@ export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: st
     i.parent_id, i.phase,
     i.files_to_change && JSON.stringify(i.files_to_change), i.pr_files && JSON.stringify(i.pr_files),
   ];
-  if (change.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
-  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, change.change_ref, change.change_url] };
+  if (i.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
+  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, i.change_ref, i.change_url] };
 }
 
 /** Only the fields that actually change, as state_changes entries and `column = ?` assignments. */
@@ -193,6 +195,8 @@ export function rowToWorkItem(r: Row): WorkItem {
     restart_count: Number(r.restart_count),
     token_cost: Number(r.token_cost),
     pr_number: r.pr_number === null ? null : Number(r.pr_number),
+    change_ref: (r.change_ref as string | null | undefined) ?? null,
+    change_url: (r.change_url as string | null | undefined) ?? null,
     merge_sha: r.merge_sha as string | null,
     fixes_pr: r.fixes_pr === null ? null : Number(r.fixes_pr),
     spec_comment_url: (r.spec_comment_url as string | null | undefined) ?? null,
@@ -310,6 +314,8 @@ export function rowToVerdict(r: Row): Verdict {
     reason: (r.reason as string | null) ?? null,
     comment_id: r.comment_id as string,
     target: r.target as VerdictTarget,
+    implicit: Number(r.implicit) === 1,
+    pr_head: (r.pr_head as string | null) ?? null,
     at: r.at as Timestamp,
   };
 }

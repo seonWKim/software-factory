@@ -14,8 +14,8 @@ import type {
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 /**
- * Permissions in the factory (design 2026-11-01, issue #107; before: GitHub write access, checked inside the
- * GitHub auth provider, was the only permission). A factory user ID has linked provider accounts; grant
+ * Permissions in the factory (design 2026-11-01, issue #107; before: forge write access, checked inside the
+ * forge's auth provider, was the only permission). A factory user ID has linked provider accounts; grant
  * sources give it roles per project; a role grants actions. Every command path reaches `authorize` below
  * through `AuthProvider.authorize`, with the factory user ID, never a provider account.
  */
@@ -27,7 +27,7 @@ export const ROLE_ACTIONS: Readonly<Record<Role, readonly AuthAction[]>> = {
 };
 
 /**
- * Actions any resolved user may take unless denied. Intake keeps its own gate: on GitHub only a user with
+ * Actions any resolved user may take unless denied. Intake keeps its own gate: on a labelled source only a user with
  * triage access can add the intake label, so this keeps today's behaviour for `submit_work`.
  */
 const OPEN_ACTIONS: readonly AuthAction[] = ["submit_work"];
@@ -65,8 +65,8 @@ async function projectOf(d: AuthorizeDeps, resource: AuthResource): Promise<stri
 const IMPLIED = /^(github|slack|oidc):(.+)$/;
 
 /**
- * The accounts of a user: its linked ones, plus the account its ID names. GitHub user IDs stay `github:<id>`
- * (design 2026-11-01), so `github:1` is GitHub account 1 with no link row.
+ * The accounts of a user: its linked ones, plus the account its ID names. Forge user IDs stay `github:<id>`
+ * (design 2026-11-01), so `github:1` is account 1 of that provider with no link row.
  */
 async function accountsOf(d: AuthorizeDeps, user_id: UserId): Promise<LinkedAccount[]> {
   const out = await d.store.listLinks(user_id);
@@ -79,7 +79,7 @@ async function accountsOf(d: AuthorizeDeps, user_id: UserId): Promise<LinkedAcco
 
 /**
  * An AuthProvider over the store's links and the grant sources. `resolve`: a linked account maps to its
- * user; otherwise `fallback` decides (GitHub: `github:<id>`), and null refuses the account as not linked.
+ * user; otherwise `fallback` decides (e.g. `github:<id>`), and null refuses the account as not linked.
  * Links are looked up by provider and subject only; a display name never changes the user.
  */
 export class FactoryAuth implements AuthProvider {

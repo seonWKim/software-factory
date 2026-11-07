@@ -16,8 +16,10 @@ export interface StatsRecord {
   token_cost: number;
   /** One entry per state change whose reason is one of the requested reasons. */
   reasons: string[];
-  /** One entry per `/verdict` on the item. */
+  /** One entry per explicit verdict (`/verdict`) on the item. */
   severities: VerdictSeverity[];
+  /** How many implicit verdicts (from PR events) the item has. Absent means 0. */
+  implicit?: number;
   /** Absent means `factory`. Adopted items count only in the `adopted` row, never in a tier row. */
   origin?: WorkItemOrigin;
 }
@@ -27,7 +29,11 @@ export interface StatsRow {
   tier: Tier | null;
   /** CLOSED items in this tier (merged, rejected or otherwise closed). */
   items: number;
-  /** Sum of the configured weights of every verdict on those items. */
+  /** Explicit verdicts (`/verdict` comments) on those items. */
+  explicit: number;
+  /** Implicit verdicts (from a merge, a person's push or a revert) on those items. Not in feedback_weight. */
+  implicit: number;
+  /** Sum of the configured weights of every explicit verdict on those items. */
   feedback_weight: number;
   /** feedback_weight ÷ items; null when `sufficient` is false. */
   rate: number | null;
@@ -45,7 +51,7 @@ export interface StatsReport {
   /** Factory items only, one row per tier 1–5 plus untiered. */
   tiers: StatsRow[];
   /**
-   * CLOSED adopted items (pull requests a person opened, design 2026-11-01), whatever their tier; `tier` is
+   * CLOSED adopted items (changes a person opened, design 2026-11-01), whatever their tier; `tier` is
    * null. Absent in reports built before it existed.
    */
   adopted?: StatsRow;
@@ -74,6 +80,8 @@ function row(tier: Tier | null, records: readonly StatsRecord[], config: StatsCo
   return {
     tier,
     items,
+    explicit: sum(closed.map((r) => r.severities.length)),
+    implicit: sum(closed.map((r) => r.implicit ?? 0)),
     feedback_weight,
     rate: sufficient ? feedback_weight / items : null,
     sufficient,
@@ -97,7 +105,7 @@ export function tierLabel(tier: Tier | null): string {
 
 /** The text table for `factory stats`. */
 export function formatStatsText(report: StatsReport): string {
-  const header = ["tier", "items", "feedback", "rate", "/reject", "/retry", "token_cost"];
+  const header = ["tier", "items", "explicit", "implicit", "feedback", "rate", "/reject", "/retry", "token_cost"];
   const labelled = [
     ...report.tiers.map((r) => ({ label: tierLabel(r.tier), r })),
     ...(report.adopted ? [{ label: "adopted", r: report.adopted }] : []),
@@ -105,6 +113,8 @@ export function formatStatsText(report: StatsReport): string {
   const rows = labelled.map(({ label, r }) => [
     label,
     String(r.items),
+    String(r.explicit),
+    String(r.implicit),
     String(r.feedback_weight),
     r.rate === null ? "not enough data" : r.rate.toFixed(2),
     String(r.reject),
@@ -119,7 +129,8 @@ export function formatStatsText(report: StatsReport): string {
     ...rows.map(line),
     "",
     `items: CLOSED work items per tier. rate: feedback ÷ items, shown from min_sample ${report.config.min_sample} items.`,
-    ...(report.adopted ? ["adopted: CLOSED pull requests a person opened and the factory adopted, any tier; not in the tier rows."] : []),
+    ...(report.adopted ? ["adopted: CLOSED changes a person opened and the factory adopted, any tier; not in the tier rows."] : []),
+    "explicit: /verdict comments; implicit: verdicts read from merges, people's pushes and reverts. feedback weighs explicit verdicts only.",
     `weights: none ${w.none}, minor ${w.minor}, major ${w.major}, critical ${w.critical}.`,
     "/reject and /retry count applied commands only (spec_rejected, retry_requested); refused commands are not counted.",
     ...(report.interactive ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens reported (factory session).`] : []),

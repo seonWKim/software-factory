@@ -179,7 +179,7 @@ describe("merge command: refusals before any merge", () => {
       id: item.id, expected_version: item.version, actor: { kind: "system", id: "t" }, reason: "setup", patch: { ...MERGE_PENDING, pr_number: 77 },
     });
     if (!r.ok) throw new Error("setup failed");
-    await expectRefused(h, r.item, await h.merge(r.item), /the factory merges only the PRs it opened; merge PR #77 on GitHub/);
+    await expectRefused(h, r.item, await h.merge(r.item), /the factory merges only the PRs it opened; merge PR #77 on the forge/);
   });
 });
 
@@ -187,14 +187,14 @@ describe("merge command: off by default", () => {
   it("with no forge setting the request is refused with a pointer to GitHub, and nothing is read or merged", async () => {
     const h = await harness({ merge: false });
     const it1 = await h.itemIn(MERGE_PENDING, 1);
-    await expectRefused(h, it1, await h.merge(it1), /merging from the factory is off for this project .*`plugins\.forge`.*; merge PR #42 on GitHub/);
+    await expectRefused(h, it1, await h.merge(it1), /merging from the factory is off for this project .*`plugins\.forge`.*; merge PR #42 on the forge/);
     expect(h.forge.checkCalls).toEqual([]);
   });
 
   it("with no forge at all it is refused the same way", async () => {
     const h = await harness({ forge: false });
     const it1 = await h.itemIn(MERGE_PENDING, 1);
-    await expectRefused(h, it1, await h.merge(it1), /merge PR #42 on GitHub/);
+    await expectRefused(h, it1, await h.merge(it1), /merge PR #42 on the forge/);
   });
 
   it("is an app command: never read from a comment, never in a footer or the SET_UP.md table", () => {

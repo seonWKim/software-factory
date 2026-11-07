@@ -4,10 +4,10 @@ import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { SourceEvent } from "../interfaces/source-adapter.js";
 
 /**
- * One comment on an item as the event a GitHub issue comment with the same text gives, read by the one comment
+ * One comment on an item as the event a source issue comment with the same text gives, read by the one comment
  * parser (src/core/commands.ts): a command, an unknown command word, or a plain comment (`/link` included).
  * The one copy (issue #282): the command inbox reader (src/core/command-inbox.ts, local CLI and app commands) and
- * the Slack source use it, so their event kinds cannot drift from GitHub's.
+ * the Slack source use it, so their event kinds cannot drift from the issue source's.
  * `resolve` gets `pr: null` and `revise` no `pr`; `verdict` targets the item itself.
  */
 export function commentEvent(source: SourceRef, comment_id: string, who: ExternalIdentity, body: string): SourceEvent | null {

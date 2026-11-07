@@ -1,5 +1,5 @@
 import type { WorkStatus } from "../../core/status-label.js";
-import type { SourceRef } from "../../core/types.js";
+import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import { TRUSTED_GIT_ENV } from "../../core/worker.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { ClosePrInput, Forge, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrMergeState } from "../../interfaces/forge.js";
@@ -57,6 +57,11 @@ export class LocalForge implements Forge {
     return { state: "passed" };
   }
 
+  /** No CI runs on a local branch: no check results. */
+  async prCheckResults(): Promise<PrCheckResult[]> {
+    return [];
+  }
+
   /** Nothing is adopted locally (no PR events), so no PR's files are ever asked for. */
   async prFiles(): Promise<string[]> {
     return [];
@@ -67,6 +72,11 @@ export class LocalForge implements Forge {
   }
 
   async commitAuthor(): Promise<ExternalIdentity | null> {
+    return null;
+  }
+
+  /** Never read: a local forge reports no pushes (no PR events). */
+  async commitsBetween(): Promise<number | null> {
     return null;
   }
 

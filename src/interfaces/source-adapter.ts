@@ -1,8 +1,8 @@
 import type { WorkStatus } from "../core/status-label.js";
-import type { SourceRef, SourceType } from "../core/types.js";
+import type { SourceRef, SourceType, UserId } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
-// Intake surface. Two kinds of source: polled (GitHub issues) and streamed (pushed events, e.g. Slack).
+// Intake surface. Two kinds of source: polled (e.g. forge issues) and streamed (pushed events, e.g. Slack).
 
 /**
  * Command events carry `comment_id`, the id of the comment that held the command, so the controller can
@@ -10,7 +10,7 @@ import type { ExternalIdentity } from "./auth-provider.js";
  */
 export type SourceEvent =
   /**
-   * An open source item, delivered when it is new and again after each edit (GitHub: the open-issue list since the
+   * An open source item, delivered when it is new and again after each edit (e.g. the open-issue list since the
    * cursor). `updated_at`: when the source item last changed, ISO time; the controller re-reads its dependency
    * links only when it moved past the time they were read at (issue #254). Absent when the source gives none.
    */
@@ -57,8 +57,8 @@ export type SourceEvent =
    */
   | { kind: "plain_comment"; source: SourceRef; comment_id: string; author: ExternalIdentity; body: string }
   /**
-   * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
-   * when the source does not say. `state_reason` is how it was closed (GitHub's `state_reason`):
+   * The source item itself was closed (e.g. a factory-labelled issue). `closer` is who closed it, null
+   * when the source does not say. `state_reason` is how it was closed (e.g. the issue's `state_reason`):
    * `completed`, `not_planned`, or null when the source gives none or one the factory does not know. May
    * be delivered again (same close, later poll); handling is idempotent. The controller handles it after the
    * forge's PR events of the same tick, so a merge that closed the issue is seen first.
@@ -96,15 +96,23 @@ export type SourceEvent =
 /** How a person closed a source item: done, or not going to be done. */
 export type SourceCloseReason = "completed" | "not_planned";
 
+/** What `fileIssue` needs: one standalone item (design §7, a failure pattern of an improve report). */
+export interface IssueInput {
+  /** The project key the item belongs to; a source with one repository ignores it. */
+  project: string;
+  /** Who files it, a system actor's ID; a source that stores the item records it as the requester. */
+  requester_id: UserId;
+  title: string;
+  /** The item text; the source appends `marker`. Control-plane text, egress-scanned by the caller. */
+  body: string;
+  /** Unique per filing. Filing again finds the item that carries it instead of filing another. */
+  marker: string;
+}
+
 /** What `fileSubIssue` needs: one phase of a split spec (design 2026-11-01). */
-export interface SubIssueInput {
+export interface SubIssueInput extends Omit<IssueInput, "project" | "requester_id"> {
   /** The split parent's source item. */
   parent: SourceRef;
-  title: string;
-  /** The issue text; the source appends `marker`. Control-plane text built from the approved spec. */
-  body: string;
-  /** Unique per (parent, phase). Filing again finds the issue that carries it instead of filing another. */
-  marker: string;
 }
 
 export type VerdictEventTarget =
@@ -134,7 +142,7 @@ export interface PushedEvent {
 interface SourceAdapterBase {
   readonly type: SourceType;
   /**
-   * True when a refused intake (the requester may not submit work) gets no reply: GitHub, whose intake label is
+   * True when a refused intake (the requester may not submit work) gets no reply: a source whose intake label is
    * the gate. Absent: the source replies once in the thread, so the person who asked knows why (a chat source).
    */
   readonly silent_intake_refusal?: true;
@@ -145,12 +153,12 @@ interface SourceAdapterBase {
    */
   postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }>;
   /**
-   * Marks an event as seen (GitHub: a 👀 reaction). `commentId` null means the item itself (the issue).
+   * Marks an event as seen (e.g. a 👀 reaction). `commentId` null means the item itself (the issue).
    * Idempotent. Failures are the caller's to log; they must not block a transition.
    */
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
   /**
-   * Shows the work item's status on the source (GitHub: one status label). `pr_number` null means the item
+   * Shows the work item's status on the source (e.g. one status label). `pr_number` null means the item
    * itself (the issue); non-null means the item's PR: PR status goes to the forge when one is selected
    * (`Forge.setPrStatus`, which may call this to write the label); the source does not route it. Afterwards the target carries exactly one of the factory's status markers; markers the
    * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
@@ -159,27 +167,33 @@ interface SourceAdapterBase {
    */
   setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void>;
   /**
-   * Closes the item on the source, as "not planned" by default (GitHub: the issue, `state_reason`). Used with
+   * Closes the item on the source, as "not planned" by default (e.g. the issue, `state_reason`). Used with
    * `not_planned` when a human rejects the spec, and with `completed` when every phase of a split closed as
    * completed (design 2026-11-01). Idempotent: closing a closed item changes nothing. Agents never call this.
    */
   closeIssue(source: SourceRef, reason?: SourceCloseReason): Promise<void>;
   /**
    * Files one phase of a split spec as a new item carrying the intake label, linked to `input.parent` as a
-   * sub-issue (GitHub: the sub-issues API), and returns its ref. Idempotent: an item already carrying
+   * sub-issue (e.g. a sub-issues API), and returns its ref. Idempotent: an item already carrying
    * `input.marker` is returned (and linked if it is not yet), never filed twice. Throws on a source failure;
    * the caller retries. Agents never call this. Absent on sources that cannot file items.
    */
   fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
   /**
-   * True while the source's request budget is low (GitHub: under 10% or `min_remaining` of the hourly limit left,
+   * Files one standalone item, without the intake label (a person starts it), and returns its ref. Idempotent:
+   * the marker is looked up first, so an item already carrying `input.marker` is returned, never filed twice.
+   * Throws on a source failure; the caller retries. Agents never call this. Absent on sources that cannot file.
+   */
+  fileIssue?(input: IssueInput): Promise<SourceRef>;
+  /**
+   * True while the source's request budget is low (e.g. under 10% or `min_remaining` of the hourly limit left,
    * until the reset): the controller skips its optional reads (dependency state refreshes, status catch-up) until
    * it is false again. Read-only, no request. Absent on sources without a budget.
    */
   lowBudget?(): boolean;
 }
 
-/** A source the controller polls on a timer (GitHub issues). */
+/** A source the controller polls on a timer (e.g. forge issues). */
 export interface PollSource extends SourceAdapterBase {
   readonly intake: "poll";
   /**

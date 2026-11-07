@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import type { LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
@@ -42,13 +43,23 @@ const fetchChains = new Map<string, Promise<unknown>>();
  * factory repo through an alternates link, not copied. The clone's `core.hooksPath` is an empty, read-only
  * folder beside the run folders, so a hook file the agent plants in the clone's `.git/hooks` never runs.
  * `base_sha` is the factory repo's `origin/<base>`, resolved before any agent runs.
+ *
+ * `local` (no GitHub plugin selected; design 05-sources, Local startup): nothing fetches origin. The trusted base
+ * is the factory repo's local `refs/heads/<base>`, and the clone's `refs/remotes/origin/*` are the factory repo's
+ * local branches, so `origin/<base>` and `origin/<branch>` in a run folder name the local base and factory branches.
  */
 export class NoOpSandbox implements Sandbox {
   constructor(
     private readonly worktreesDir: string,
     private readonly run: ProcessRunner = runProcess,
     private readonly wait: Wait = realWait,
+    private readonly opts: { local?: boolean } = {},
   ) {}
+
+  /** The factory repo's trusted base ref: `origin/<base>`, or the local branch when nothing fetches origin. */
+  private baseRef(base: string): string {
+    return this.opts.local ? `refs/heads/${base}` : `origin/${base}`;
+  }
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const id = `sbx_${randomUUID().slice(0, 8)}`;
@@ -57,13 +68,13 @@ export class NoOpSandbox implements Sandbox {
     const hooks = await this.emptyHooks();
 
     // Trusted: the factory repo's own refs and config, never anything an agent wrote. All of origin/*, so an
-    // existing factory/<id> branch can be resumed.
-    await this.fetch(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
+    // existing factory/<id> branch can be resumed. Local: no fetch; the local branches are what a run resumes.
+    if (!this.opts.local) await this.fetch(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
     const common = (await this.git(spec.repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim();
     const base_sha = (
-      await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])
+      await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `${this.baseRef(spec.base_ref)}^{commit}`])
     ).stdout.trim();
-    const url = await this.git(spec.repo, ["remote", "get-url", "origin"], false);
+    const url = this.opts.local ? null : await this.git(spec.repo, ["remote", "get-url", "origin"], false);
 
     try {
       // --template=: no sample hooks or other files copied from the host's template dir.
@@ -73,12 +84,12 @@ export class NoOpSandbox implements Sandbox {
       await this.git(workdir, ["config", "core.hooksPath", hooks]);
       // The clone's `origin` names the real remote, for the agent's own reading. Nothing trusted pushes to it:
       // the broker pushes to the factory repo's remote (design §5).
-      if (url.exit_code === 0 && url.stdout.trim()) await this.git(workdir, ["remote", "add", "origin", url.stdout.trim()]);
-      // Remote-tracking refs as the factory repo has them. Objects are already reachable via alternates.
-      await this.git(workdir, [
-        "fetch", "--quiet", "--no-tags", spec.repo,
-        "+refs/remotes/origin/*:refs/remotes/origin/*", "^refs/remotes/origin/HEAD",
-      ]);
+      if (url && url.exit_code === 0 && url.stdout.trim()) await this.git(workdir, ["remote", "add", "origin", url.stdout.trim()]);
+      // Remote-tracking refs as the factory repo has them (local: its branches). Objects are already reachable via alternates.
+      const refs = this.opts.local
+        ? ["+refs/heads/*:refs/remotes/origin/*"]
+        : ["+refs/remotes/origin/*:refs/remotes/origin/*", "^refs/remotes/origin/HEAD"];
+      await this.git(workdir, ["fetch", "--quiet", "--no-tags", spec.repo, ...refs]);
 
       if (spec.branch === null) {
         await this.git(workdir, ["checkout", "--quiet", "--detach", base_sha]);
@@ -142,18 +153,20 @@ export class NoOpSandbox implements Sandbox {
     return dir;
   }
 
-  /** Fetches only the base branch, so it touches no other ref in the shared checkout. */
+  /** Fetches only the base branch, so it touches no other ref in the shared checkout. Local: no fetch, the local base. */
   async updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string> {
     const ref = `refs/heads/${spec.base_ref}`;
+    if (this.opts.local) return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim();
     return this.serialized(spec.repo, async () => {
       await this.fetchWithRetry(spec.repo, ["fetch", "--quiet", "--no-tags", "origin", `+${ref}:refs/remotes/origin/${spec.base_ref}`]);
       return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
     });
   }
 
-  /** Fetches only `branch` (a factory PR branch), like updateBase; null when origin has no such branch. */
+  /** Fetches only `branch` (a factory PR branch), like updateBase; null when origin has no such branch. Local: the local branch. */
   async fetchBranch(spec: { repo: string; branch: string }): Promise<string | null> {
     if (!SAFE_BRANCH.test(spec.branch) || spec.branch.includes("..")) throw new Error(`refusing to fetch branch ${JSON.stringify(spec.branch)}`);
+    if (this.opts.local) return this.localCommit(spec.repo, spec.branch);
     return this.serialized(spec.repo, async () => {
       const args = ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${spec.branch}:refs/remotes/origin/${spec.branch}`];
       const first = await this.git(spec.repo, args, false);
@@ -173,11 +186,61 @@ export class NoOpSandbox implements Sandbox {
     for (const sha of [spec.head_sha, spec.base_sha]) {
       if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
     }
-    const r = await this.git(spec.repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", spec.base_sha, spec.head_sha], false);
-    if (r.exit_code === 0) return { mergeable: true, conflicts: [] };
-    if (r.exit_code !== 1) throw gitError(["merge-tree"], r);
-    const files = r.stdout.split("\n").slice(1).filter((l) => l.length > 0);
-    return { mergeable: false, conflicts: [...new Set(files)].sort() };
+    const r = await this.mergeTree(spec.repo, spec.base_sha, spec.head_sha);
+    return { mergeable: r.conflicts.length === 0, conflicts: r.conflicts };
+  }
+
+  /**
+   * The local merge (design 05-sources, Local startup): `branch` into the local `base_ref` of the factory repo,
+   * with no checkout at all. merge-tree writes the merged tree and commit-tree the merge commit, both only objects;
+   * then `refs/heads/<base_ref>` moves conditionally on the base that was merged (another merge in between is
+   * refused, nothing lost). No push, no hook, no worktree, no index: the owner's checkout keeps its HEAD and status.
+   * A base branch checked out in any worktree is refused: moving it would change that checkout's status.
+   */
+  async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
+    for (const b of [spec.base_ref, spec.branch]) {
+      if (!SAFE_BRANCH.test(b) || b.includes("..")) throw new Error(`refusing to merge branch ${JSON.stringify(b)}`);
+    }
+    const base = await this.localCommit(spec.repo, spec.base_ref);
+    if (base === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.base_ref}\`` };
+    const head = await this.localCommit(spec.repo, spec.branch);
+    if (head === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.branch}\`` };
+    const contained = await this.git(spec.repo, ["merge-base", "--is-ancestor", head, base], false);
+    if (contained.exit_code === 0) return { merged: true, sha: base, already: true };
+    const worktrees = (await this.git(spec.repo, ["worktree", "list", "--porcelain"])).stdout.split("\n\n");
+    const holder = worktrees.find((w) => w.split("\n").includes(`branch refs/heads/${spec.base_ref}`));
+    if (holder) {
+      const path = holder.split("\n")[0]!.replace(/^worktree /, "");
+      return {
+        merged: false,
+        refused: `\`${spec.base_ref}\` is checked out in ${path}, and moving it would change that checkout; switch it to another branch (\`git switch --detach\`) and run the merge again`,
+      };
+    }
+    const tree = await this.mergeTree(spec.repo, base, head);
+    if (tree.conflicts.length > 0) return { merged: false, conflicts: tree.conflicts };
+    const who = spec.identity;
+    const identity = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
+    const sha = (await this.git(spec.repo, ["commit-tree", tree.tree, "-p", base, "-p", head, "-m", spec.message], true, identity)).stdout.trim();
+    const moved = await this.git(spec.repo, ["update-ref", "-m", spec.message.split("\n")[0]!, `refs/heads/${spec.base_ref}`, sha, base], false);
+    if (moved.exit_code !== 0) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
+    return { merged: true, sha, already: false };
+  }
+
+  /** The commit of the factory repo's local branch `branch`, or null when there is none. */
+  private async localCommit(repo: string, branch: string): Promise<string | null> {
+    const r = await this.git(repo, ["rev-parse", "--verify", "--quiet", "--end-of-options", `refs/heads/${branch}^{commit}`], false);
+    return r.exit_code === 0 ? r.stdout.trim() : null;
+  }
+
+  /**
+   * `git merge-tree --write-tree` in the factory repo: only objects. Exit 0: clean, `tree` the merged tree. Exit 1:
+   * the conflicting paths (after the tree id), each once, sorted. Anything else throws.
+   */
+  private async mergeTree(repo: string, base: string, head: string): Promise<{ tree: string; conflicts: string[] }> {
+    const r = await this.git(repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", base, head], false);
+    if (r.exit_code !== 0 && r.exit_code !== 1) throw gitError(["merge-tree"], r);
+    const [tree = "", ...files] = r.stdout.split("\n").filter((l) => l.length > 0);
+    return { tree, conflicts: r.exit_code === 0 ? [] : [...new Set(files)].sort() };
   }
 
   /** A fetch in the factory checkout: one at a time per repo path, a lost ref-lock race retried. */
@@ -210,8 +273,8 @@ export class NoOpSandbox implements Sandbox {
     }
   }
 
-  private async git(cwd: string, args: string[], check = true): Promise<ExecResult> {
-    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
+  private async git(cwd: string, args: string[], check = true, env: Record<string, string> = {}): Promise<ExecResult> {
+    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ ...env, GIT_TERMINAL_PROMPT: "0" }) });
     if (check && r.exit_code !== 0) throw gitError(args, r);
     return r;
   }

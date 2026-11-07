@@ -16,6 +16,7 @@ Plugins:
   - Orphan sweep on supervisor start: every folder under `versions/` whose `.factory-pid` is missing or names a dead process is removed, except the newest one when its build matches `origin/<base_branch>` (reused, no rebuild). A folder whose pid is alive is kept. The first start under this layout also removes the legacy `.factory/runtime` and `.factory/runtime-next` worktrees, once the sweep finds no live child.
   - SIGINT/SIGTERM to `dev` stops every live child, old and new (SIGTERM, SIGKILL after the drain timeout), and returns after all have exited. One supervisor per state directory is assumed.
   - Your checkout is fast-forwarded (`git merge --ff-only origin/<base_branch>`, i.e. `git pull --ff-only` after the fetch) only when it is on the base branch and `git status --porcelain` is empty; otherwise the log says why it was skipped (not on base, dirty, or ff failed). The updater never checks out, stashes, resets or switches branches in it.
+  - With no GitHub plugin selected (`local_only`, design `05-sources.md`, Local startup): no `git fetch` and no fast-forward of your checkout. The folders follow the local `refs/heads/<base_branch>` of the main checkout, which `factory merge` moves, so a local merge runs under `dev` on the next poll.
   - Enable: `"plugins": { "updater": "git-worktree", ... }`, or no `plugins` object. Secrets: none (git uses your usual credentials for `fetch`). Settings: `repo.base_branch`, `state_dir`, `poll_interval_ms`, `run_timeout_ms`; `git` and `npm` on `PATH`.
   - Behaviour change: `dev` runs `origin/<base_branch>`, not your working tree. Uncommitted edits, local branches and commits merged locally but not pushed never run under `dev` until they are pushed and merged.
 - `none`: `NoneUpdater`. `dev` runs controller + worker in place, from the checkout it was started in. One `git rev-parse HEAD` at start (for `rev`, null when it fails); no other git or process calls.
@@ -27,7 +28,7 @@ Both updaters write `<state_dir>/supervisor.json` for the status page's banner, 
 
 ## History
 
-No earlier decision is recorded for this topic.
+- 2026-11-07: `git-worktree` always ran `git fetch origin <base_branch>` and followed `origin/<base_branch>`, also with no GitHub plugin selected. Replaced by the local mode above (design `05-sources.md`, Local startup).
 - **Worker index block size source** (changed 2026-11-07, issue #336). Before: always read from the new version folder's `factory.config.json`; with an external config it comes from that file now, the one the child reads.
 - **Worker index block size** (changed 2026-11-07). Before: the block was `workers` wide; it is `max_workers` wide now, since the pool has that many slots and the live `workers` setting can raise the count up to it.
 - **Pending migrations** (changed 2026-11-07, issue #165). Before: a new revision that needed `npm run migrate` started at once, its store refused to open, and the supervisor restarted it every poll.

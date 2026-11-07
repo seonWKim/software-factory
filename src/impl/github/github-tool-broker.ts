@@ -1,33 +1,11 @@
-import { lstat, realpath } from "node:fs/promises";
-import { join } from "node:path";
-import { ENV_EXAMPLE } from "../../core/tools/guard.js";
-import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
-import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
-import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
 import { GitHubError, GitHubRateLimitError, type GitHubClient, type RepoRef } from "./github-client.js";
-import { baseEnv, runProcess } from "../process/run-process.js";
-
-/**
- * The run folder's git folder, as a real path, if it is the clone's own: a directory (not a link or a `gitdir:`
- * file) with no `commondir` or `config.worktree` that would make git read another folder's config.
- */
-async function runFolderGitDir(workdir: string): Promise<string | null> {
-  const dir = join(workdir, ".git");
-  const st = await lstat(dir).catch(() => null);
-  if (!st?.isDirectory()) return null;
-  for (const f of ["commondir", "config.worktree"]) {
-    if (await lstat(join(dir, f)).then(() => true, () => false)) return null;
-  }
-  const cfg = await lstat(join(dir, "config")).catch(() => null);
-  if (!cfg?.isFile()) return null;
-  return realpath(dir);
-}
+import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
@@ -162,7 +140,7 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await this.holdsLease(ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
     switch (name) {
       case "github.push_branch":
         return this.push(args as PushArgs);
@@ -178,70 +156,31 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   /**
-   * Same rule as the store: status and token fence the caller, not the clock. A run whose lease ran out
-   * during a host sleep but was not reaped still holds it; after a requeue or reclaim it does not.
-   */
-  private async holdsLease(ctx: ToolCallContext): Promise<boolean> {
-    const run = await this.deps.store.getRun(ctx.run_id);
-    return (
-      run !== null &&
-      run.work_item_id === ctx.work_item_id &&
-      run.status === "running" &&
-      run.lease?.token === ctx.lease_token
-    );
-  }
-
-  /**
    * Pushes the run folder's HEAD. Everything trusted comes from the factory repo, never from the run folder the
    * agent could write (design §5): the remote URL, and the base commit the scanned diff starts from. Git in the
    * run folder runs with TRUSTED_GIT_ENV and only after its git folder and config pass the checks, so no hook,
    * fsmonitor, textconv or URL rewrite the agent configured runs or redirects the push.
    */
   private async push(a: PushArgs): Promise<ToolResult> {
-    if (!a.branch.startsWith(this.deps.branchPrefix)) {
-      return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
-    }
+    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
+    if (refused) return refused;
     const repo = this.deps.repoPath;
     if (!repo) return { ok: false, error_code: "no_trusted_repo", message: "the broker has no factory repo path" };
-    const trusted = (args: string[]) => runProcess(["git", "-C", repo, ...args], { cwd: repo, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
     const [baseR, urlR] = await Promise.all([
-      trusted(["rev-parse", "--verify", "--end-of-options", `origin/${a.base_ref}^{commit}`]),
-      trusted(["remote", "get-url", "--push", "origin"]),
+      factoryCommit(repo, `origin/${a.base_ref}`),
+      factoryRemoteUrl(repo),
     ]);
-    if (baseR.exit_code !== 0 || urlR.exit_code !== 0) {
-      return { ok: false, error_code: "git_failed", message: (baseR.stderr + urlR.stderr).trim().slice(0, 500) };
+    if (!("sha" in baseR) || !("url" in urlR)) {
+      const why = [baseR, urlR].map((r) => ("message" in r ? r.message : "")).join(" ");
+      return { ok: false, error_code: "git_failed", message: why.trim().slice(0, 500) };
     }
-    const base = baseR.stdout.trim();
-    const url = urlR.stdout.trim();
+    const url = urlR.url;
 
-    const gitDir = await runFolderGitDir(a.workdir);
-    if (!gitDir) return { ok: false, error_code: "untrusted_git_dir", message: "the run folder's .git is not its own git folder" };
-    const git = (args: string[], extra: Record<string, string> = {}) =>
-      runProcess(["git", ...args], {
-        cwd: a.workdir,
-        env: baseEnv({ ...extra, ...TRUSTED_GIT_ENV, GIT_DIR: gitDir, GIT_WORK_TREE: a.workdir }),
-      });
-    const names = await git(["config", "--file", join(gitDir, "config"), "--name-only", "--list", "-z"]);
-    if (names.exit_code !== 0) return { ok: false, error_code: "git_failed", message: names.stderr.trim().slice(0, 500) };
-    const untrusted = untrustedGitConfig(names.stdout);
-    if (untrusted.length > 0) {
-      return { ok: false, error_code: "untrusted_git_config", message: untrusted.join(", ").slice(0, 500) };
-    }
-
-    const range = `${base}...HEAD`;
-    const [log, diff] = await Promise.all([
-      git(["log", "--no-textconv", "--format=%B", range]),
-      git(["diff", "--no-textconv", "--no-ext-diff", range]),
-    ]);
-    if (log.exit_code !== 0 || diff.exit_code !== 0) {
-      return { ok: false, error_code: "git_failed", message: (log.stderr + diff.stderr).trim() };
-    }
-    for (const [channel, content] of [["commit", log.stdout], ["commit", diff.stdout]] as const) {
-      const scan = await this.deps.scanner.scan(channel, content);
-      if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
-    }
-    const envExample = await this.checkEnvExample(git);
-    if (envExample) return envExample;
+    const folder = await trustedRunFolder(a.workdir);
+    if (!("git" in folder)) return folder;
+    const { git } = folder;
+    const blocked = await scanBranch(git, baseR.sha, this.deps.scanner);
+    if (blocked) return blocked;
 
     const token = await this.deps.credentials.token();
     if (!token) return { ok: false, error_code: "no_credential", message: "GitHub credentials missing" };
@@ -262,38 +201,9 @@ export class GitHubToolBroker implements ToolBroker {
     return { ok: true, content: { sha: head.stdout.trim() } };
   }
 
-  /**
-   * The value check for `.env.example` (architecture §5): agents may edit it, so before a push every
-   * `.env.example` in HEAD's tree must hold names only. The egress scan sees text without file names, so this
-   * runs here, where the name is known. It checks HEAD, not the diff: a value in the pushed tree is refused
-   * wherever it came from. A committed symlink is refused too: on checkout it could point anywhere. Findings
-   * name the file and line numbers, never the text.
-   */
-  private async checkEnvExample(git: (args: string[]) => Promise<ExecResult>): Promise<ToolResult | null> {
-    const tree = await git(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
-    if (tree.exit_code !== 0) return { ok: false, error_code: "git_failed", message: tree.stderr.trim().slice(0, 500) };
-    for (const entry of tree.stdout.split("\0")) {
-      const tab = entry.indexOf("\t");
-      if (tab === -1) continue;
-      const path = entry.slice(tab + 1);
-      if (path.slice(path.lastIndexOf("/") + 1) !== ENV_EXAMPLE) continue;
-      const [mode, type, sha] = entry.slice(0, tab).split(" ");
-      if (mode === "120000") return { ok: false, error_code: "egress_blocked", message: `env_example_symlink:${path}` };
-      if (type !== "blob" || !sha) continue;
-      const blob = await git(["cat-file", "blob", sha]);
-      if (blob.exit_code !== 0) return { ok: false, error_code: "git_failed", message: blob.stderr.trim().slice(0, 500) };
-      const lines = envExampleValueLines(blob.stdout);
-      if (lines.length > 0) {
-        return { ok: false, error_code: "egress_blocked", message: `env_example_value:${path}:${lines.join(",")}`.slice(0, 500) };
-      }
-    }
-    return null;
-  }
-
   private async openPr(a: PrArgs): Promise<ToolResult> {
-    if (!a.branch.startsWith(this.deps.branchPrefix)) {
-      return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
-    }
+    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
+    if (refused) return refused;
     const scan = await this.deps.scanner.scan("pr", [a.title, a.body, ...Object.keys(a.labels ?? {})].join("\n"));
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
 
@@ -347,9 +257,8 @@ export class GitHubToolBroker implements ToolBroker {
    * carries the status only: no response body, no header, no credential.
    */
   private async preflight(a: PreflightArgs): Promise<ToolResult> {
-    if (!a.branch.startsWith(this.deps.branchPrefix)) {
-      return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
-    }
+    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
+    if (refused) return refused;
     const { owner, name } = this.deps.repo;
     const check = async <T>(what: "push_access" | "pr_api", path: string): Promise<{ value: T } | ToolResult> => {
       try {

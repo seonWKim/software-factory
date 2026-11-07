@@ -2,7 +2,7 @@ import { PHASES_OPEN, PHASE_HOLD } from "./split.js";
 import type { WorkItem } from "./types.js";
 
 /**
- * Where a work item stands, as one word a reader of the source can act on. Sources show it (GitHub: one
+ * Where a work item stands, as one word a reader of the source can act on. Sources show it (e.g. one
  * status label on the issue and on its PR, see SourceAdapter.setStatus). Exactly one applies at a time.
  */
 export type WorkStatus =

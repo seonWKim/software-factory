@@ -1,8 +1,8 @@
 import type { WorkStatus } from "../core/status-label.js";
-import type { SourceRef, SourceType } from "../core/types.js";
+import type { PrCheckResult, SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
 
-// The forge: where pull requests live (GitHub today). Optional: config may select none (plugins.forge). Since
+// The forge: where changes live (one implementation today). Optional: config may select none (plugins.forge). Since
 // issue #273 the controller reads every PR event and PR fact from it, and posts every PR comment and PR status
 // through it; the sources bring issues and their comments only (docs/plugins/forge.md).
 
@@ -37,7 +37,7 @@ export type ForgeEvent =
       labels: string[];
     }
   /**
-   * An open factory PR the forge reports as not mergeable into its base (GitHub: `mergeable === false`).
+   * An open factory PR the forge reports as not mergeable into its base (e.g. `mergeable === false`).
    * Delivered on every poll while it stays so; the shas let the controller key one update per (head, base).
    */
   | { kind: "pr_unmergeable"; pr_number: number; head_branch: string; head_sha: string; base_sha: string }
@@ -74,7 +74,7 @@ export interface ForgePollResult {
 }
 
 /**
- * The automated checks on a PR's head commit (GitHub: check runs). `pending` while any check has not
+ * The automated checks on a PR's head commit (e.g. check runs). `pending` while any check has not
  * finished and none failed; `failed` as soon as one finished without success, with the names of the failed
  * ones (untrusted text: check names come from files in the repository); `passed` when every check passed,
  * and also when the head commit has no checks at all, so a repository without CI is not held forever.
@@ -125,7 +125,7 @@ export interface Forge {
   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
   readonly ref_type: SourceType;
   /**
-   * The cursor this forge's position was kept under before it had its own (GitHub: the GitHub source's
+   * The cursor this forge's position was kept under before it had its own (e.g. its issue source's
    * `intake:github_issue`), read once while the forge's own cursor is empty. Absent: none.
    */
   readonly handover_cursor?: string;
@@ -144,13 +144,18 @@ export interface Forge {
    */
   postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string | null }>;
   /**
-   * Shows `status` on PR `pr_number` of the item from `source` (GitHub: one status label on the PR). Afterwards the
+   * Shows `status` on PR `pr_number` of the item from `source` (e.g. one status label on the PR). Afterwards the
    * PR carries exactly one of the factory's status markers; others are left alone. Idempotent and best effort:
    * failures are the caller's to log and must not block a transition.
    */
   setPrStatus(source: SourceRef, status: WorkStatus, pr_number: number): Promise<void>;
-  /** The checks on PR `pr_number`'s current head commit (design §5 CI gate). Read-only. */
+  /** The checks on PR `pr_number`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
   prChecks(pr_number: number): Promise<PrChecks>;
+  /**
+   * Each check on PR `pr_number`'s current head commit with its result; empty when none ran. Read when a review is
+   * queued, for the review prompt (design §4, issue #223). Throws when the forge cannot be read. Read-only.
+   */
+  prCheckResults(pr_number: number): Promise<PrCheckResult[]>;
   /** The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only. */
   prFiles(pr_number: number): Promise<string[]>;
   /** Who last added label `label` to PR `pr_number`, or null when nobody did or the forge does not say. Read-only. */
@@ -160,6 +165,12 @@ export interface Forge {
    * pushed a commit; its author is the closest record (design 2026-11-01). Read-only.
    */
   commitAuthor(sha: string): Promise<ExternalIdentity | null>;
+  /**
+   * How many commits `to_sha` has that `from_sha` does not (the commits in a push from `from_sha` to `to_sha`), or
+   * null when the forge cannot say (e.g. `from_sha` is gone after a force-push). Read when a person's push to a
+   * factory PR is recorded as an implicit `changes` verdict (design §4). Read-only.
+   */
+  commitsBetween(from_sha: string, to_sha: string): Promise<number | null>;
   /**
    * Closes factory PR `pr_number` without merging it, after one comment carrying `input.marker`. Used when a person
    * closes the source item (design §4). A PR that is already merged or closed is left alone with no comment:

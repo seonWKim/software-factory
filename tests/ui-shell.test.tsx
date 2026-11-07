@@ -562,6 +562,63 @@ describe("why an item waits (issue #310)", () => {
   });
 });
 
+describe("open alarms in Needs you and the why sentence (design 09-status-page)", () => {
+  const ALARM = "Alarm: checks_failed failed 4 runs on several items";
+  const action = { code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: "2026-11-07T06:00:00.000Z", work_item_id: null };
+  const alarmed = { code: "queued", text: `Queued at position 1. ${ALARM}`, next_actor: "factory" as const, refs: [], ref_url: null };
+  const plain = { ...alarmed, text: "Queued at position 1" };
+
+  /** Runs `run` with the overview's alarm and the why sentences set, then puts the fixtures back. */
+  function withAlarm(run: () => Promise<void>) {
+    const saved = { items: items.items.map((i) => ({ ...i })), item: { ...detail.item } };
+    (overview as Record<string, unknown>).system_actions = [action];
+    for (const i of items.items) (i as Record<string, unknown>).why = alarmed;
+    (detail.item as Record<string, unknown>).why = alarmed;
+    return run().finally(() => {
+      delete (overview as Record<string, unknown>).system_actions;
+      items.items.splice(0, items.items.length, ...saved.items);
+      delete (detail.item as Record<string, unknown>).why;
+    });
+  }
+  /** The next poll answers as if the alarm closed: no system action, sentences without it. */
+  async function resolve() {
+    (overview as Record<string, unknown>).system_actions = [];
+    for (const i of items.items) (i as Record<string, unknown>).why = plain;
+    (detail.item as Record<string, unknown>).why = plain;
+    await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
+  }
+
+  it("the Floor's Needs you lists an open alarm with where to look, and drops it once it is resolved", () =>
+    withAlarm(async () => {
+      mount();
+      const list = await screen.findByRole("list", { name: "System actions" });
+      const li = list.querySelector('[data-action="alarm"]') as HTMLElement;
+      expect(li.textContent).toContain(action.text);
+      expect(li.querySelector("code")!.textContent).toBe(action.command);
+      const needs = screen.getByRole("table", { name: "Needs you" });
+      expect(within(needs).getByText(ALARM, { exact: false }).textContent).toBe(alarmed.text);
+      await resolve();
+      await vi.waitFor(() => expect(screen.queryByRole("list", { name: "System actions" })).toBeNull());
+      expect(within(screen.getByRole("table", { name: "Needs you" })).queryByText(ALARM, { exact: false })).toBeNull();
+    }));
+
+  it("Work items and the item page name the alarm in the item's why, and drop it once it is resolved", () =>
+    withAlarm(async () => {
+      localStorage.setItem(VIEW_KEY, "list");
+      history.replaceState(null, "", "/app/items");
+      mount();
+      const all = await screen.findByRole("table", { name: "Work items" });
+      expect(within(all).getAllByText(ALARM, { exact: false }).length).toBeGreaterThan(0);
+      cleanup();
+      history.replaceState(null, "", "/app/items/wi_1");
+      mount();
+      const why = await screen.findByTestId("why");
+      expect(why.textContent).toBe(alarmed.text);
+      await resolve();
+      await vi.waitFor(() => expect(screen.getByTestId("why").textContent).toBe(plain.text));
+    }));
+});
+
 describe("system actions, revisions and the tab title (issue #311)", () => {
   const BANNER = "Dashboard out of date: reload / restart factory ui";
 

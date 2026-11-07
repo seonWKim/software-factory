@@ -8,6 +8,7 @@ import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/c
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
@@ -1318,5 +1319,77 @@ describe("ui api: items for the tree (issue #295)", () => {
     expect(rows.get(b.id)!.claim).toBeNull();
     expect(perItem).not.toHaveBeenCalled();
     expect(batched).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ui api: open alarms in Needs you and the why sentence (design 09-status-page)", () => {
+  const ALARM = "Alarm: checks_failed failed 4 runs on several items";
+  type WhyBody = { text: string };
+  type Action = { code: string; text: string; command: string; until: string | null; work_item_id: string | null };
+
+  /** An item whose run failed with checks_failed (blocked on a person), one with no runs, and an open alarm. */
+  async function alarmed() {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const hit = await make(store, 1, "Failing item");
+    await enqueue(store, hit, "implement", "hit:i", { stage: "RUNNING" });
+    const r = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    await store.completeRun(r.id, r.lease!.token, { status: "failed", error_code: "checks_failed", detail: "npm test exited 1", infra: false });
+    await patch(store, hit, { blocked_on: "human", blocked_reason: "run_failed:implement:checks_failed" });
+    const other = await make(store, 2, "Other item");
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:x", error_code: "checks_failed", count: 4, detail: "npm test exited #" }, ALERT_DEDUPE_MS);
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`, health: new HealthMonitor(async () => [], clock) };
+    return { d, store, clock, hit, other };
+  }
+  const overview = (d: UiDeps) => json<{ needs_you: number; system_actions: Action[] }>(d, "/api/v1/overview");
+  const whyRow = async (d: UiDeps, id: string) => (await json<{ items: { id: string; why: WhyBody }[] }>(d, "/api/v1/items")).items.find((i) => i.id === id)!.why.text;
+  const whyItem = async (d: UiDeps, id: string) => (await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.why.text;
+
+  it("the overview lists an open alarm in Needs you with where to look and when it closes, and drops it once resolved", async () => {
+    const { d, clock } = await alarmed();
+    const created = clock.now().getTime();
+    const o = await overview(d);
+    expect(o.system_actions).toContainEqual({
+      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: new Date(created + ALERT_DEDUPE_MS).toISOString(), work_item_id: null,
+    });
+    expect(o.needs_you).toBe(1 + o.system_actions.length);
+    clock.advance(ALERT_DEDUPE_MS);
+    const after = await overview(d);
+    expect(after.system_actions.map((a) => a.code)).not.toContain("alarm");
+    expect(after.needs_you).toBe(o.needs_you - 1);
+  });
+
+  it("an alarm whose detail the scanner flagged lists its sentence without a detail", async () => {
+    const { d, store, clock } = await alarmed();
+    clock.advance(1_000);
+    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
+    expect((await overview(d)).system_actions.filter((a) => a.code === "alarm").map((a) => [a.text, a.command])).toEqual([
+      ["Alarm: 3 agent runs in a row used no tokens", "factory llm-check"],
+      [`${ALARM}: npm test exited #`, "Failures page (/app/failures)"],
+    ]);
+  });
+
+  it("the affected item's why names the alarm on Items and the item page; other items' do not; resolved, it is gone", async () => {
+    const { d, clock, hit, other } = await alarmed();
+    expect(await whyRow(d, hit.id)).toBe(`The run failed (run_failed:implement:checks_failed): a person decides what happens next. ${ALARM}`);
+    expect(await whyItem(d, hit.id)).toBe(await whyRow(d, hit.id));
+    expect(await whyRow(d, other.id)).not.toContain("Alarm");
+    expect(await whyItem(d, other.id)).not.toContain("Alarm");
+    clock.advance(ALERT_DEDUPE_MS);
+    expect(await whyRow(d, hit.id)).toBe("The run failed (run_failed:implement:checks_failed): a person decides what happens next");
+    expect(await whyItem(d, hit.id)).not.toContain("Alarm");
+  });
+
+  it("a crash-loop alarm names itself in the why of each item with a queued run, the Queue's why too", async () => {
+    const { d, store, clock, other } = await alarmed();
+    await enqueue(store, other, "triage", "other:t");
+    await store.recordAlert({ pattern: "child_restarts", pattern_key: "child_restarts", error_code: "child_restarts", count: 5, detail: "exit code 1" }, ALERT_DEDUPE_MS);
+    const restart = "Alarm: the factory restarted 5 times in 30 minutes";
+    expect(await whyRow(d, other.id)).toBe(`Queued at position 1. ${restart}`);
+    expect(await whyItem(d, other.id)).toBe(`Queued at position 1. ${restart}`);
+    const q = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
+    expect(q.queue.find((x) => x.work_item_id === other.id)!.why!.text).toBe(`Queued at position 1. ${restart}`);
+    clock.advance(ALERT_DEDUPE_MS);
+    expect(await whyRow(d, other.id)).toBe("Queued at position 1");
   });
 });

@@ -7,7 +7,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, localProject, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
@@ -52,7 +52,8 @@ const USAGE = `factory [--config <path>] <command>
   setup        one-time setup: secret file, tokens (hidden prompt), label, checks, canary
                --rotate-github / --rotate-claude / --rotate-mysql to replace a stored credential
   dev          controller + worker in one process (Phase 1 default); under the git-worktree updater
-               it runs them from a built copy of origin/<base_branch> and restarts on new commits
+               it runs them from a built copy of origin/<base_branch> (with no GitHub plugin: the local
+               <base_branch>) and restarts on new commits
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
@@ -253,10 +254,12 @@ async function main(argv: readonly string[]): Promise<number> {
             store,
             base: settingsBase(loaded),
             repo: { owner, name },
-            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07).
+            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07); with no
+            // GitHub plugin selected, the local key (design 05-sources, Local startup).
             resolveProject: async () => {
               const stored = await storeProjectResolver(store, { owner, name })();
               if (stored) return stored;
+              if (loaded.config.local_only) return localProject({ owner, name });
               const p = new Plugins(loaded);
               const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
               return resolveProject(github, { owner, name });
@@ -441,6 +444,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "revise":
     case "reject":
     case "resolve":
+    case "merge":
     case "users":
       return localCli(loaded, cmd, args);
     case "improve": {
@@ -484,7 +488,7 @@ async function cliEnvironment(root: string): Promise<CliEnvironment> {
 }
 
 /**
- * `factory task …` and `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200): the store only, no
+ * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200) and `factory merge <id>`: the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
  */
 async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], args: string[]): Promise<number> {

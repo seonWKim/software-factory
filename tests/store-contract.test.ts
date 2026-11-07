@@ -650,7 +650,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     const user = { kind: "user" as const, id: "github:1" as UserId };
     const verdict = (id: WorkItemId, expected_version: number, comment_id = "c1") => ({
       id, expected_version, actor: user, verdict: "changes" as const, severity: "minor" as const,
-      reason: "rename it", comment_id, target: "pr" as const,
+      reason: "rename it", comment_id, target: "pr" as const, implicit: false, pr_head: null,
     });
 
     it("records a verdict: version + 1, a human_verdict state change with empty changes, and a linked verdict row", async () => {
@@ -698,6 +698,40 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listStateChanges(item.id)).toHaveLength(2);
     });
 
+    it("an implicit verdict: an implicit_verdict state change, implicit and pr_head stored, no other field changed", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const r = await store.recordVerdict({ ...verdict(item.id, 1, "implicit:pushed:h2"), actor: system, implicit: true, pr_head: "h2" });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item).toMatchObject({ version: 2, stage: item.stage, blocked_on: item.blocked_on, blocked_reason: item.blocked_reason });
+      expect(r.state_change).toMatchObject({ version: 2, actor: system, reason: "implicit_verdict", changes: {} });
+      expect(r.verdict).toMatchObject({ implicit: true, pr_head: "h2", comment_id: "implicit:pushed:h2" });
+      expect(await store.listVerdicts(item.id)).toEqual([r.verdict]);
+    });
+
+    it("one verdict per PR head: a second implicit one is a duplicate; an explicit one replaces the implicit one", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const implicit = { ...verdict(item.id, 1, "implicit:pushed:h2"), actor: system, implicit: true, pr_head: "h2" };
+      const first = await store.recordVerdict(implicit);
+      if (!first.ok) throw new Error(first.reason);
+      const again = await store.recordVerdict({ ...implicit, expected_version: 2, comment_id: "implicit:merged:m1", verdict: "accept" });
+      expect(again).toEqual({ ok: false, reason: "duplicate", verdict: first.verdict });
+      // Another head is its own.
+      const other = await store.recordVerdict({ ...implicit, expected_version: 2, comment_id: "implicit:pushed:h3", pr_head: "h3" });
+      expect(other.ok).toBe(true);
+
+      const explicit = await store.recordVerdict({ ...verdict(item.id, 3, "c9"), verdict: "accept", severity: "none", reason: null, pr_head: "h2" });
+      if (!explicit.ok) throw new Error(explicit.reason);
+      expect((await store.listVerdicts(item.id)).map((v) => [v.comment_id, v.pr_head, v.implicit])).toEqual([
+        ["implicit:pushed:h3", "h3", true],
+        ["c9", "h2", false],
+      ]);
+      // An implicit one after the explicit one on that head stores nothing; the replaced one's state change stays.
+      expect(await store.recordVerdict({ ...implicit, expected_version: 4, comment_id: "implicit:merged:m2" })).toMatchObject({ ok: false, reason: "duplicate" });
+      expect((await store.listStateChanges(item.id)).map((c) => c.reason)).toEqual(["intake", "implicit_verdict", "implicit_verdict", "human_verdict"]);
+    });
+
     it("applies only on the expected version; a conflict stores nothing", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);
@@ -711,7 +745,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
   });
 
   describe("listStatsRecords", () => {
-    it("returns every item with its tier, stage, token_cost, the requested reasons and its verdict severities", async () => {
+    it("returns every item with its tier, stage, token_cost, the requested reasons, its explicit verdict severities and its implicit count", async () => {
       const { store, clock } = await make();
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([]);
 
@@ -723,12 +757,16 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       await store.transition({ id: a.id, expected_version: 2, actor: human, reason: "retry_requested", patch: {} });
       await store.recordVerdict({
         id: a.id, expected_version: 3, actor: { kind: "user", id: "github:1" as UserId }, verdict: "changes",
-        severity: "major", reason: "r", comment_id: "c1", target: "pr",
+        severity: "major", reason: "r", comment_id: "c1", target: "pr", implicit: false, pr_head: null,
       });
       await store.transition({ id: a.id, expected_version: 4, actor: human, reason: "retry_requested", patch: {} });
       await store.recordVerdict({
         id: a.id, expected_version: 5, actor: { kind: "user", id: "github:1" as UserId }, verdict: "accept",
-        severity: "none", reason: null, comment_id: "c2", target: "pr",
+        severity: "none", reason: null, comment_id: "c2", target: "pr", implicit: false, pr_head: "h1",
+      });
+      await store.recordVerdict({
+        id: a.id, expected_version: 6, actor: system, verdict: "reverted", severity: "major", reason: "reverted",
+        comment_id: "implicit:reverted:a", target: "pr", implicit: true, pr_head: null,
       });
       await store.transition({
         id: b.id, expected_version: 1, actor: human, reason: "spec_rejected",
@@ -736,8 +774,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
 
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
-        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], origin: "factory" },
-        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], origin: "factory" },
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], implicit: 1, origin: "factory" },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], implicit: 0, origin: "factory" },
       ]);
       expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
     });
@@ -1060,6 +1098,40 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(set!.changes).toEqual({ pr_number: { from: null, to: 34 } });
       expect((await store.getWorkItemByPr(PROJECT_KEY, 34))!.id).toBe(a.id);
       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 35))!.id).toBe(b.id);
+    });
+
+    it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
+      const { store } = await make();
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      const labelled = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
+      const unlabelled = await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human);
+      const plain = await store.createWorkItem(issue(7), system);
+      const factory = (await store.createWorkItem(issue(8), system)).item;
+      const patched = await store.transition({ id: factory.id, expected_version: 1, patch: { pr_number: 40 }, actor: system, reason: "x" });
+      const want = new Map([
+        [labelled.item.id, { change_ref: "5", change_url: prUrl(LABEL, 5) }],
+        [unlabelled.item.id, { change_ref: "6", change_url: null }],
+        [plain.item.id, { change_ref: null, change_url: null }],
+        [factory.id, { change_ref: "40", change_url: prUrl(LABEL, 40) }],
+      ]);
+      // Intake (created or adopted) returns the same change fields as its stored row; so does a transition.
+      for (const r of [labelled, unlabelled, plain]) {
+        expect(r.created).toBe(true);
+        expect(r.item).toEqual(await store.getWorkItem(r.item.id));
+        expect(r.item).toMatchObject(want.get(r.item.id)!);
+      }
+      expect(patched.ok && patched.item).toMatchObject(want.get(factory.id)!);
+      // An intake that finds the item already there returns the stored row too.
+      const again = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
+      expect(again).toMatchObject({ created: false, item: want.get(labelled.item.id) });
+      for (const [id, fields] of want) {
+        expect(await store.getWorkItem(id)).toMatchObject(fields);
+        const it = (await store.getWorkItem(id))!;
+        expect(await store.getWorkItemBySource(it.source.type, it.source.id)).toMatchObject(fields);
+      }
+      expect(await store.getWorkItemByPr(PROJECT_KEY, 5)).toMatchObject(want.get(labelled.item.id)!);
+      const listed = await store.listWorkItems(50);
+      for (const [id, fields] of want) expect(listed.find((i) => i.id === id)).toMatchObject(fields);
     });
 
     it("an unreviewed merge insert writes change_ref", async () => {
@@ -1893,6 +1965,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const results = await Promise.all([store.recordAlert(alert(), 6 * HOUR), store.recordAlert(alert(), 6 * HOUR)]);
       expect(results.filter((r) => r.created)).toHaveLength(1);
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
+    });
+  });
+  describe("restart history (design 05-restarts)", () => {
+    const MIN = 60_000;
+    const at = (clock: FakeClock, ago_ms: number) => new Date(clock.now().getTime() - ago_ms).toISOString();
+
+    it("applying the same restart twice leaves one record; another reason at the same time is its own", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      expect(await store.recordChildRestart(r)).toEqual({ created: true });
+      expect(await store.recordChildRestart({ ...r })).toEqual({ created: false });
+      expect(await store.recordChildRestart({ at: r.at, reason: "boom" })).toEqual({ created: true });
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual(expect.arrayContaining([r, { at: r.at, reason: "boom" }]));
+      expect((await store.listChildRestartsWithin(30 * MIN)).filter((x) => x.reason === r.reason)).toEqual([r]);
+    });
+
+    it("concurrent writes of one restart leave one record", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      const results = await Promise.all([store.recordChildRestart(r), store.recordChildRestart(r)]);
+      expect(results.filter((x) => x.created)).toHaveLength(1);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([r]);
+    });
+
+    it("lists the restarts inside the window on the store's clock, oldest first", async () => {
+      const { store, clock } = await make();
+      const old = { at: at(clock, 31 * MIN), reason: "r1" };
+      const mid = { at: at(clock, 10 * MIN), reason: "r2" };
+      const last = { at: at(clock, 0), reason: "r3" };
+      for (const r of [last, old, mid]) await store.recordChildRestart(r);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([mid, last]);
+      expect(await store.listChildRestartsWithin(60 * MIN)).toEqual([old, mid, last]);
     });
   });
   describe("host sleeps (migration 28)", () => {
