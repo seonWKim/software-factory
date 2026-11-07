@@ -56,6 +56,7 @@ export const TOP_LEVEL_KEYS = [
   "alarm_repeat_count",
   "alarm_window_minutes",
   "alarm_restart_count",
+  "agent_stop_checks",
   "workers",
   "max_workers",
   "state_dir",

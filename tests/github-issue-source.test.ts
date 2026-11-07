@@ -8,6 +8,8 @@ import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 const user = { id: 1, login: "alice", type: "User" };
+/** A command's identity: the numeric id only, as the command inbox row keeps it (issue #284); no login. */
+const aliceId = { provider: "github", subject: "1" };
 const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
   id,
   issue_url: `https://api.github.com/repos/o/r/issues/${issue}`,
@@ -43,12 +45,12 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" }, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: aliceId, note: "" },
       {
         kind: "spec_rejected", source: issueRef(7), comment_id: "11",
-        approver: { provider: "github", subject: "1", login: "alice" }, reason: "too big\nsplit it",
+        approver: aliceId, reason: "too big\nsplit it",
       },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "12", requester: { provider: "github", subject: "1", login: "alice" } },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "12", requester: aliceId },
       { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: { provider: "github", subject: "1", login: "alice" }, body: "looks good" },
     ]);
   });
@@ -67,14 +69,14 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: alice, feedback: "keep the CLI flag\nand drop the config key" },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: alice, feedback: "" },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
-      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
-      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: aliceId, feedback: "keep the CLI flag\nand drop the config key" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: aliceId, feedback: "" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: aliceId, feedback: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: aliceId, reason: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: aliceId, reason: "duplicate of #3" },
       // A longer word is not the command: it is an unknown one.
-      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: alice, command: "revised" },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: alice, command: "rejectfoo" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: aliceId, command: "revised" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: aliceId, command: "rejectfoo" },
     ]);
   });
 
@@ -97,20 +99,20 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: alice, note: "" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: alice, note: "keep the flag" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: alice, note: "first line\nsecond line" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: alice, note: "note below" },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: alice, command: "aprove" },
-      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: alice },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: aliceId, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: aliceId, note: "keep the flag" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: aliceId, note: "first line\nsecond line" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: aliceId, note: "note below" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: aliceId, command: "aprove" },
+      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: aliceId },
       // Text that is not a command is passed on whole, for a suggestion (design §4).
       { kind: "plain_comment", source: issueRef(7), comment_id: "46", author: alice, body: "thanks!" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "47", author: alice, body: "/" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "48", author: alice, body: "/ approve" },
       // /retry notes and +paths (issue #280) are passed on as typed; the controller splits and checks them.
-      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice, note: "please" },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: alice, note: "+paths src/a.ts docs/b.md\nkeep it small" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: alice, note: "+paths src/a.ts" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: aliceId, note: "please" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: aliceId, note: "+paths src/a.ts docs/b.md\nkeep it small" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: aliceId, note: "+paths src/a.ts" },
     ]);
   });
 
@@ -167,11 +169,11 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver, amount: null },
-      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver, amount: "9000000" },
-      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver, amount: "1.5" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver: aliceId, amount: null },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver: aliceId, amount: "9000000" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver: aliceId, amount: "1.5" },
       // Not /budget: an unknown command word gets a reply (design §4).
-      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: approver, command: "budgetx" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: aliceId, command: "budgetx" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "34", author: approver, body: "please /budget 5" },
     ]);
   });
@@ -182,6 +184,17 @@ describe("GitHubIssueSource", () => {
     const old = JSON.stringify({ issues: null, comments: "2026-11-01T00:00:00Z", pulls: null });
     const { events } = await source.poll(old);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe("GitHubIssueSource: intake events carry the issue's updated_at (issue #254)", () => {
+  it("item_requested has the open issue's updated_at as GitHub gave it", async () => {
+    const { client, source } = setup();
+    client.responses["/repos/o/r/issues"] = [{ number: 7, title: "t", body: "b", user, updated_at: "2026-11-07T09:00:00Z" }];
+    const { events } = await source.poll(null);
+    expect(events.find((e) => e.kind === "item_requested")).toMatchObject({
+      kind: "item_requested", source: issueRef(7), title: "t", body: "b", updated_at: "2026-11-07T09:00:00Z",
+    });
   });
 });
 
@@ -327,10 +340,10 @@ describe("GitHubIssueSource: /verdict", () => {
     const { events } = await source.poll(null);
     expect(events).toEqual([
       {
-        kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "20", approver,
+        kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "20", approver: aliceId,
         args: "changes minor rename it\nand split the test",
       },
-      { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver, args: "" },
+      { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver: aliceId, args: "" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "22", author: approver, body: "/verdict/x accept none" },
     ]);
   });
@@ -349,7 +362,7 @@ describe("GitHubIssueSource: /verdict", () => {
     expect(events).toEqual([
       {
         kind: "verdict_submitted", target: { kind: "pr", pr_number: 42, head_branch: "factory/wi_a" },
-        comment_id: "30", approver, args: "accept none",
+        comment_id: "30", approver: aliceId, args: "accept none",
       },
     ]);
     const gets = client.calls.filter((c) => /^\/repos\/o\/r\/(issues|pulls)\/\d+$/.test(c.path)).map((c) => c.path);
@@ -431,12 +444,12 @@ describe("GitHubIssueSource: /resolve", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "resolve_requested", source: issueRef(7), comment_id: "10", requester: alice, notes: "", pr: null },
+      { kind: "resolve_requested", source: issueRef(7), comment_id: "10", requester: aliceId, notes: "", pr: null },
       {
-        kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: alice,
+        kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: aliceId,
         notes: "keep main's API\n\n  and the new flag", pr: null,
       },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: alice, command: "resolver" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: aliceId, command: "resolver" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: alice, body: "please /resolve" },
     ]);
   });
@@ -455,7 +468,7 @@ describe("GitHubIssueSource: /resolve", () => {
     const { events } = await source.poll(null);
     expect(events).toEqual([
       {
-        kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: alice, notes: "take both",
+        kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: aliceId, notes: "take both",
         pr: { pr_number: 42, head_branch: "factory/wi_a" },
       },
     ]);
@@ -482,11 +495,11 @@ describe("GitHubIssueSource: /resolve", () => {
     const { events } = await source.poll(null);
     expect(events.filter((e) => e.kind === "revise_requested")).toEqual([
       {
-        kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: alice, feedback: "rename the flag\nkeep an alias",
+        kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: aliceId, feedback: "rename the flag\nkeep an alias",
         pr: { pr_number: 14, head_branch: "factory/wi_a" },
       },
-      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: alice, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: alice, feedback: "on the issue" },
+      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: aliceId, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: aliceId, feedback: "on the issue" },
     ]);
   });
 });

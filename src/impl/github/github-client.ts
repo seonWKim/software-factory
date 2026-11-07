@@ -28,11 +28,46 @@ export class GitHubError extends Error {
   constructor(
     readonly status: number,
     message: string,
-    /** Set on a call refused locally with no calls left: the reset time (ISO) the caller waits for. */
+    /** Set on a rate limit (GitHubRateLimitError, also a call refused locally with no calls left): the reset time (ISO) the caller waits for. */
     readonly wait_until: string | null = null,
   ) {
     super(message);
   }
+}
+
+/**
+ * GitHub's REST rate limit (design §5 Restarts): a 403 or 429 that names the primary or the secondary limit, or a
+ * call this client refused with no calls left before the reset. Code that reads a 403 as a refused credential or a
+ * missing permission checks for it first. `reset_at`: when calls may go again, ISO time.
+ */
+export class GitHubRateLimitError extends GitHubError {
+  constructor(
+    status: number,
+    message: string,
+    readonly reset_at: string,
+  ) {
+    super(status, message, reset_at);
+  }
+}
+
+/** GitHub's messages for the primary and the secondary rate limit. */
+const RATE_LIMIT_TEXT = /API rate limit exceeded|secondary rate limit/i;
+/** GitHub's advice for a secondary limit that names no time: wait at least a minute. */
+const SECONDARY_WAIT_MS = 60_000;
+
+/**
+ * The reset of a refused call that is a rate limit, else null: `retry-after` (seconds) first, then
+ * `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, then a minute for a body that names the limit.
+ * Only a 429, or a 403 with one of those signals; a plain 403 stays a refusal.
+ */
+function rateLimitReset(status: number, h: Headers, body: string, now: number): string | null {
+  if (status !== 403 && status !== 429) return null;
+  const retryAfter = Number(h.get("retry-after") ?? Number.NaN);
+  if (Number.isFinite(retryAfter) && retryAfter >= 0) return new Date(now + retryAfter * 1000).toISOString();
+  const reset = Number(h.get("x-ratelimit-reset") ?? Number.NaN);
+  if (h.get("x-ratelimit-remaining") === "0" && Number.isFinite(reset)) return new Date(reset * 1000).toISOString();
+  if (status === 429 || RATE_LIMIT_TEXT.test(body)) return new Date(now + SECONDARY_WAIT_MS).toISOString();
+  return null;
 }
 
 /** Default `github.min_remaining`: below this many core calls left in the hour, optional reads wait for the reset. */
@@ -41,6 +76,8 @@ export const DEFAULT_MIN_REMAINING = 200;
 export const DEFAULT_BUDGET_SHARE = 1;
 /** Default ETag cache size per client (one per process): entries, each one GET's URL, ETag and body. */
 export const DEFAULT_ETAG_ENTRIES = 500;
+/** Below this share of the hourly limit left, optional reads wait for the reset too (issue #254). */
+const LOW_BUDGET_SHARE = 0.1;
 /** A body larger than this is never cached (keeps the per-process cache bounded in bytes too). */
 const MAX_CACHED_BODY = 1_000_000;
 
@@ -108,9 +145,9 @@ export function githubBudgetShare(github: { budget_share?: unknown } | undefined
  * limit) answers with the kept body. The cache is only an optimization: GitHub decides on every call whether the
  * body is still current, and an empty cache (a new process, another replica) just makes full calls.
  *
- * Every response's `x-ratelimit-*` headers are kept (`budget()`). With none left before the reset, a call is
- * refused here with the 403 GitHub would answer, without sending it, carrying the reset as `wait_until`; under
- * `min_remaining`, or once this process has made its `budget_share` of the window's limit in counted calls (every
+ * Every response's `x-ratelimit-*` headers are kept (`budget()`). A 403 or 429 that is a rate limit throws a
+ * GitHubRateLimitError with its reset (`rateLimitReset`), also as `wait_until`. With none left before the reset, a
+ * call is refused here with the same error, without sending it; under `min_remaining`, or once this process has made its `budget_share` of the window's limit in counted calls (every
  * answer but a 304), `lowBudget()` is true and callers skip the reads that can wait. The count is per process
  * (in memory, like the ETag cache): replicas of one factory on one App split its share between them.
  *
@@ -169,14 +206,14 @@ export class GitHubClient {
   }
 
   /**
-   * True while the reset has not passed and fewer than `min_remaining` core calls are left, or this process has
-   * made its `budget_share` of the limit: skip optional reads (refreshes that a later poll makes as well). Logs
-   * one line on entering and one on leaving.
+   * True while the reset has not passed and fewer than `min_remaining` core calls, or under LOW_BUDGET_SHARE (10%)
+   * of the limit, are left, or this process has made its `budget_share` of the limit: skip optional reads
+   * (refreshes that a later poll makes as well). Logs one line on entering and one on leaving.
    */
   lowBudget(): boolean {
     const r = this.rate;
     const before = r !== null && this.now() < Date.parse(r.reset_at);
-    const floor = before && r!.remaining < this.minRemaining;
+    const floor = before && r!.remaining < Math.max(this.minRemaining, r!.limit * LOW_BUDGET_SHARE);
     const cap = this.shareLimit();
     const shared = before && cap !== null && this.counted() >= cap;
     const low = floor || shared;
@@ -247,8 +284,8 @@ export class GitHubClient {
   private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
     const r = this.rate;
     if (r && r.remaining <= 0 && this.now() < Date.parse(r.reset_at)) {
-      // GitHub would answer this 403 too; not sending it keeps a retry loop from hammering the API until the reset.
-      throw new GitHubError(403, `GitHub ${method} ${path} → 403 API rate limit exceeded (not sent: no calls left until ${r.reset_at})`, r.reset_at);
+      // GitHub would answer this rate limit too; not sending it keeps a retry loop from hammering the API until the reset.
+      throw new GitHubRateLimitError(403, `GitHub ${method} ${path} → 403 API rate limit exceeded (not sent: no calls left until ${r.reset_at})`, r.reset_at);
     }
     const token = await this.credentials.token();
     if (!token) throw new Error("GitHub credentials missing from the secret file (SET_UP.md, plugins.github_auth)");
@@ -275,6 +312,8 @@ export class GitHubClient {
     }
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      const reset = rateLimitReset(res.status, res.headers, text, this.now());
+      if (reset) throw new GitHubRateLimitError(res.status, `GitHub ${method} ${path} → ${res.status} rate limited until ${reset}`, reset);
       throw new GitHubError(res.status, `GitHub ${method} ${path} → ${res.status} ${text.slice(0, 200)}`);
     }
     const etag = res.headers.get("etag");

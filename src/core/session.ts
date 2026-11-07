@@ -6,7 +6,7 @@ import { parseTriage } from "./outputs.js";
 import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, branchFor, effectiveTier, floorTier } from "./policy.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
-import type { Run, RunId, SourceRef, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
+import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
 import { TRUSTED_GIT_ENV, prTitle } from "./worker.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -26,8 +26,8 @@ export interface SessionFiles {
 }
 
 export interface SessionIssue { source: SourceRef; title: string; body: string; author: ExternalIdentity }
-/** The configured repo's issue `number`, or null when there is none: `session start` creates its item. */
-export interface IssueLookup { issue(number: number): Promise<SessionIssue | null> }
+/** The configured repo's issue `number`, or null when there is none: `session start` creates its item. `type`: its items' source type. */
+export interface IssueLookup { type: SourceType; issue(number: number): Promise<SessionIssue | null> }
 
 /** `toolEnv`: non-secret env for git and the test command. `owner`: the lease owner, `session:<host>:<pid>`, never a worker id. */
 export interface SessionDeps {
@@ -72,7 +72,7 @@ export class Sessions {
     if (!target) return refused(`refused: ${JSON.stringify(o.target)} is neither an issue number nor a work item id`);
     let item = target.kind === "item"
       ? await this.d.store.getWorkItem(target.id)
-      : await this.d.store.getWorkItemBySource("github_issue", `${cfg.repo.owner}/${cfg.repo.name}#${target.number}`);
+      : await this.d.store.getWorkItemBySource(this.d.issues.type, `${cfg.repo.owner}/${cfg.repo.name}#${target.number}`);
     let created = false;
     if (!item && target.kind === "item") return refused(`refused: no work item ${target.id}`);
     if (!item && target.kind === "issue") {

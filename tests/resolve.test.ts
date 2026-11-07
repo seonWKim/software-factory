@@ -95,10 +95,17 @@ describe("conflict counts", () => {
 describe("resolve prompt fixed rules", () => {
   const prompt = readFileSync("prompts/resolve.md", "utf8");
 
-  it("keeps both sides' sections in docs/design.md and SET_UP.md", () => {
-    expect(prompt).toContain("`docs/design.md`");
-    expect(prompt).toContain("`SET_UP.md`");
+  it("keeps both sides' sections in documents with sections, and defers to the repo's agent instructions", () => {
     expect(prompt).toMatch(/keep both sides' sections/i);
+    expect(prompt).toContain("AGENTS.md");
+  });
+
+  it("AGENTS.md keeps both sides' sections in docs/design.md and SET_UP.md (moved from the prompt, issue #335)", () => {
+    const rule = readFileSync("AGENTS.md", "utf8").split("\n").find((l) => l.startsWith("- Merge conflicts in"));
+    expect(rule, "the merge rule").toBeDefined();
+    expect(rule).toContain("`docs/design.md`");
+    expect(rule).toContain("`SET_UP.md`");
+    expect(rule).toMatch(/keep both sides' sections/i);
   });
 
   it("renumbers a migration when both sides added one", () => {

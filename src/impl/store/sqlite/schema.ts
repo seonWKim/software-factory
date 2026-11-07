@@ -599,7 +599,17 @@ export const MIGRATIONS: readonly string[] = [
     UNIQUE (gate, tier, run_length)
   );
   `,
-  // 33: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
+  // 33: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
+  // the source issue's updated_at it was read at; NULL on edges from before (the controller reads them once more).
+  `
+  ALTER TABLE dependency_edges ADD COLUMN source_updated_at TEXT;
+  `,
+  // 34: the same read time on the item (issue #254), so an item whose issue has no links also records when its
+  // links were read. NULL: never read with a time, or marked stale; the controller reads its links on the next poll.
+  `
+  ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;
+  `,
+  // 35: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
   // detail (NULL when the egress scanner flagged it). `alert_patterns`: one row per pattern, the time it last
   // alerted; the conditional update on it is the 6-hour dedupe. IF NOT EXISTS: safe to run again.
   `

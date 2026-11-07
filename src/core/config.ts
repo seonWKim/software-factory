@@ -145,6 +145,11 @@ export interface LoadedConfig {
   alarm_repeat_count?: number;
   alarm_window_minutes?: number;
   alarm_restart_count?: number;
+  /**
+   * The most times the gate hooks' Stop hook sends an implement run's agent back in one run (design §4, issue
+   * #302); the next stop is allowed. A positive integer. Absent: AGENT_STOP_CHECKS_DEFAULT (3).
+   */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -184,6 +189,8 @@ export interface LoadedConfig {
 
 /** The alarm keys when factory.config.json gives none (design 05-alarms). */
 export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
+/** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
+export const AGENT_STOP_CHECKS_DEFAULT = 3;
 
 /** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
 export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;

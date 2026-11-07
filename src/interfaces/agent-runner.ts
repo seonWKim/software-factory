@@ -57,6 +57,38 @@ export interface AgentRunSpec {
    * keeps no session, so nothing is left behind and nothing can be resumed.
    */
   session?: { id: string; resume: boolean };
+  /**
+   * The gate hooks (design §4 Pre-push gates, issue #302): given only for the implement run's main and fix steps.
+   * A runner that supports them refuses an Edit or Write outside `allowed_paths` and sends a stop back while the
+   * worker's gates would fail it. Advisory: the worker's gates still decide. Absent: no hooks.
+   */
+  gate_hooks?: GateHooks;
+}
+
+/** What the gate hooks check against: the same values the worker's gates use. Holds no secret value. */
+export interface GateHooks {
+  allowed_paths: readonly string[];
+  /** HEAD when the run's agent work started: its own commits are `<start_sha>..HEAD`. */
+  start_sha: string;
+  /** The base the gates diff against (`<base_sha>...HEAD`), and the no-commit fallback (`--no-merges <base_sha>..HEAD`). */
+  base_sha: string;
+  limits: { max_diff_lines: number; max_diff_files: number };
+  /** `repo.check_commands`, in order; the Stop hook stops at the first failure. */
+  check_commands: readonly (readonly string[])[];
+  /** The env the Stop hook's git reads and checks run with: the worker's tool env, never a credential or test database URL. */
+  check_env: Readonly<Record<string, string>>;
+  /** `agent_stop_checks`: the most times the Stop hook blocks in one run. */
+  stop_checks: number;
+  /** Stop blocks earlier steps of this run already used. */
+  stop_blocks_used: number;
+}
+
+/** One time a gate hook sent the agent back: which hook, the check that failed, and its attempt number in the run. */
+export interface GateBlock {
+  hook: "pre_tool_use" | "stop";
+  /** `allowed_paths`, `no_commits`, `diff_too_large`, or the failing check command. */
+  check: string;
+  attempt: number;
 }
 
 /** The roles whose agent sessions a runner keeps (design §5 Pause): triage and update never keep one. */
@@ -114,6 +146,8 @@ export interface AgentRunResult {
   served_by?: string;
   /** Each fall-over in this run, in order: the member that gave up, the next one tried, and why. */
   fallbacks?: { from: string; to: string; reason: string }[];
+  /** Each time a gate hook sent the agent back in this call, in order (`AgentRunSpec.gate_hooks`). */
+  gate_blocks?: GateBlock[];
 }
 
 /** The error code of a run the provider refused for its account or config: quota, API key or model name. */
