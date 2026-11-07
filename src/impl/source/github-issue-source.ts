@@ -279,7 +279,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
           break;
         }
         case "retry":
-          events.push({ kind: "retry_requested", source, comment_id, requester: who });
+          events.push({ kind: "retry_requested", source, comment_id, requester: who, ...(text ? { note: text } : {}) });
           break;
         case "budget": {
           // Only the same line counts: `/budget` or `/budget <tokens>`.
