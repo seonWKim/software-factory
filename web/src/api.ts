@@ -12,7 +12,9 @@ export interface FactoryState {
   target_rev: string | null;
   child_pid: number | null;
   since: string;
+  /** The effective `workers` setting (file, override or default, capped at max_workers), not the status file's value. */
   workers: number;
+  workers_source: "override" | "file" | "default";
   error: string | null;
   pending: string[];
 }
@@ -365,6 +367,56 @@ export interface PausesView {
   csrf_token: string | null;
 }
 
+/** One live worker process of `/api/v1/workers` (`processes`). `slots` 0 is a draining process. */
+export interface WorkerProcess {
+  process_id: string;
+  pid: number;
+  host: string;
+  slots: number;
+  max_slots: number;
+  busy: number;
+  idle: number;
+  started_at: string;
+  reported_at: string;
+  runs: { id: string; kind: string; work_item_id: string; worker_id: string; started_at: string | null }[];
+}
+
+/** `/api/v1/workers`. `processes_error` is set when the processes could not be read. */
+export interface WorkersView {
+  as_of: string;
+  workers: { owner: string; running: number }[];
+  processes?: WorkerProcess[];
+  processes_error?: string;
+}
+
+/** `/api/v1/failures`: failed runs of a window grouped by error code. */
+export interface FailureRun {
+  id: string;
+  work_item_id: string;
+  kind: string;
+  attempt: number;
+  detail: string;
+  worker: string | null;
+  finished_at: string | null;
+}
+export interface FailureGroup {
+  code: string;
+  /** Plain words for a known code; null for an unknown one. */
+  description: string | null;
+  count: number;
+  last_seen: string | null;
+  items: number;
+  runs: FailureRun[];
+}
+export interface Failures {
+  as_of: string;
+  window: "24h" | "7d";
+  cap: number;
+  total: number;
+  capped: boolean;
+  groups: FailureGroup[];
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -379,6 +431,7 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  failures: (window: string) => `/api/v1/failures?window=${window}`,
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   pauses: "/api/v1/pauses",

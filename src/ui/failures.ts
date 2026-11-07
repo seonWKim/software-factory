@@ -114,7 +114,7 @@ export async function failures(c: FailuresCtx, params: URLSearchParams): Promise
 async function workersOf(store: FailuresCtx["store"], runs: readonly Run[]): Promise<Map<RunId, string>> {
   const out = new Map<RunId, string>();
   for (const id of new Set<WorkItemId>(runs.map((r) => r.work_item_id))) {
-    for (const a of await store.listRunAttempts(id)) out.set(a.run_id, a.worker_id);
+    for (const a of await store.listRunAttempts(id)) if (a.worker_id !== null) out.set(a.run_id, a.worker_id);
   }
   return out;
 }
