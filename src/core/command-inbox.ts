@@ -7,7 +7,7 @@ import type { SourceEvent } from "../interfaces/source-adapter.js";
 /**
  * The command inbox's reader (issue #282; design 05-sources "Thread first"). A CLI command (`args.item` the work
  * item ID, `args.text` an optional string) is rebuilt as `/<command> <text>` and mapped by the one comment event
- * mapping (src/core/comment-event.ts) GitHub-free sources share, so the controller handles it as the same comment:
+ * mapping (src/core/comment-event.ts) every source shares, so the controller handles it as the same comment:
  * the same event kinds, the same authorize check, the same replies. `comment_id` is the command's key; the
  * identity is provider `local`, subject the actor after `local:`.
  */
