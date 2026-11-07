@@ -108,6 +108,20 @@ Who may act is decided by the grant plugins in `permissions.grants` (default: wr
 
 If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
 
+### Local tasks from the command line
+
+Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`) and set `cli_user` in `factory.config.json` to your factory user ID (e.g. `"cli_user": "github:12345"`); every command below acts as that user, and with no `cli_user` each one prints an error and exits with code 1. Run them as `npm run --silent factory -- <command>`. None of them calls GitHub.
+
+- `factory task create --title <t> --body-file <f>`: Create a local work item from a title and a body file; prints its work item ID.
+- `factory task list`: List local work items: ID, title, stage and blocked reason.
+- `factory task show <id>`: Print a work item's state, spec, runs and stored messages.
+- `factory approve <id> [notes]`: Store `/approve` for the item; the controller applies it.
+- `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
+- `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
+- `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it as it applies the same comment on GitHub: the same permission check and the same refusal text. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. The controller resolves the CLI user as the local account (provider `local`, subject `<cli_user>`) through `auth`: with `"auth": "github"` that account must be linked to the factory user, and no CLI command links it yet, so until then the controller refuses CLI commands as not linked. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+
 ### Status labels
 
 Each work item's issue carries exactly one status label, and so does its PR once there is one. The factory sets it on every change of state, and again for every open item when it starts. Names are `status_label_prefix` (in `factory.config.json`, default `sf: `) plus the name below. The factory creates a missing one on first use; `doctor` only warns about a missing one.
