@@ -79,7 +79,8 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
-import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import type { PollSource, PrCheck, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import { CHEAP_CHECK, type ReviewRunInput } from "./worker.js";
 
 export interface ControllerDeps {
   store: FactoryStore;
@@ -169,6 +170,8 @@ const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
+/** blocked_reason of a review with nothing to review: no commits ahead of the base, or an empty diff (design §4). */
+const EMPTY_DIFF = "empty_diff";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
@@ -749,6 +752,7 @@ export class Controller {
       this.d.log.warn("factory: skip label ignored: not added by a user with write permission; PR adopted", log);
     }
     const files = forge?.prFiles ? await forge.prFiles(e.pr_number) : [];
+    const reviewInput: ReviewRunInput = { checks: await this.readCheckList(e.pr_number, { source_id: e.source.id }) };
     const { item, created } = await this.d.store.createWorkItem(
       {
         source: e.source,
@@ -766,7 +770,14 @@ export class Controller {
         },
       },
       { kind: "user", id: author.user_id },
-      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review` } },
+      {
+        enqueue: {
+          kind: "review",
+          idempotency_key: `${e.source.type}:${e.source.id}:adopt:review`,
+          // The PR's check results for the review prompt (design §4).
+          input: reviewInput,
+        },
+      },
     );
     if (!created) return;
     this.d.log.info("PR adopted", { ...log, work_item_id: item.id });
@@ -2031,51 +2042,18 @@ export class Controller {
           };
         }
         case "review": {
-          // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
-          if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
-          const parsed = parseReview(data.review);
-          if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
-          const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
-          if (parsed.value.verdict === "bug" && it.origin === "adopted") {
-            // A person's branch: the review comment is on the PR, and the author fixes it. No implement run.
-            return {
-              patch: { tier, token_cost: tokens, blocked_on: "human", blocked_reason: CHANGES_REQUESTED },
-              actor: SYSTEM,
-              reason: CHANGES_REQUESTED,
-              detail: { run_id: run.id },
-              ack_run: run.id,
-            };
+          // Cheap checks (design §4): no agent ran and nothing was posted.
+          if (data[CHEAP_CHECK] === "empty_diff") return this.emptyDiffBlock(it, run, data, tokens);
+          if (data[CHEAP_CHECK] === "unchanged_head") {
+            // The head the last succeeded review saw: its verdict stands and is routed again for this run.
+            const last = (await this.d.store.listRuns(it.id))
+              .filter((r) => r.id !== run.id && r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
+              .at(-1);
+            if (last?.outcome?.status !== "succeeded") return this.retryOrBlock(it, run, "task", "invalid_output");
+            this.d.log.info("review skipped: head unchanged, last verdict stands", { work_item_id: it.id, run_id: run.id, review_run_id: last.id });
+            return this.applyReview(it, run, last.outcome.data, tokens);
           }
-          const spec = specFindings(parsed.value);
-          if (parsed.value.verdict === "bug" || spec.length > 0) {
-            // Finding text becomes the next run's input or the spec feedback: scanned before anything is stored.
-            const scan = await this.d.scanner.scan("comment", parsed.value.findings.map((f) => f.text).join("\n"));
-            if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
-          }
-          // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
-          if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
-          if (parsed.value.verdict === "bug") {
-            if (it.loop_count + 1 >= this.cfg.max_loops) {
-              const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
-              await this.comment(it, `max-loops:${run.id}`,
-                `Review found bugs ${it.loop_count + 1} times (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
-              return {
-                patch,
-                actor: SYSTEM,
-                reason: "max_loops",
-                ack_run: run.id,
-              };
-            }
-            const next = { ...it, loop_count: it.loop_count + 1 };
-            return {
-              patch: { tier, token_cost: tokens, stage: "RUNNING", loop_count: next.loop_count },
-              actor: SYSTEM,
-              reason: "review_bug",
-              ack_run: run.id,
-              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-            };
-          }
-          return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
+          return this.applyReview(it, run, data, tokens);
         }
         case "resolve": {
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
@@ -2324,6 +2302,108 @@ export class Controller {
       : `${ready} A human merge is required.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
+  }
+
+  /**
+   * Routes a review verdict (`data.review`, or the rule names the worker's scan flagged): to the CI gate, back to
+   * implement, to a spec revision or to a human. `data` is this run's outcome data, or the last succeeded review's
+   * when the head is unchanged (design §4); `run` is the run being acknowledged either way.
+   */
+  private async applyReview(it: WorkItem, run: Run, data: Record<string, unknown>, tokens: number): Promise<Decision> {
+    // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
+    if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
+    const parsed = parseReview(data.review);
+
+    if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
+    const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
+    if (parsed.value.verdict === "bug" && it.origin === "adopted") {
+      // A person's branch: the review comment is on the PR, and the author fixes it. No implement run.
+      return {
+        patch: { tier, token_cost: tokens, blocked_on: "human", blocked_reason: CHANGES_REQUESTED },
+        actor: SYSTEM,
+        reason: CHANGES_REQUESTED,
+        detail: { run_id: run.id },
+        ack_run: run.id,
+      };
+    }
+    const spec = specFindings(parsed.value);
+    if (parsed.value.verdict === "bug" || spec.length > 0) {
+      // Finding text becomes the next run's input or the spec feedback: scanned before anything is stored.
+      const scan = await this.d.scanner.scan("comment", parsed.value.findings.map((f) => f.text).join("\n"));
+      if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
+    }
+    // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
+    if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
+    if (parsed.value.verdict === "bug") {
+      if (it.loop_count + 1 >= this.cfg.max_loops) {
+        const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
+        await this.comment(it, `max-loops:${run.id}`,
+          `Review found bugs ${it.loop_count + 1} times (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+        return {
+          patch,
+          actor: SYSTEM,
+          reason: "max_loops",
+          ack_run: run.id,
+        };
+      }
+      const next = { ...it, loop_count: it.loop_count + 1 };
+      return {
+        patch: { tier, token_cost: tokens, stage: "RUNNING", loop_count: next.loop_count },
+        actor: SYSTEM,
+        reason: "review_bug",
+        ack_run: run.id,
+        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      };
+    }
+    return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
+  }
+
+  /**
+   * A review with nothing to review (design §4): no commits ahead of the base, or an empty diff. Blocks on a human
+   * with `empty_diff` and posts one comment, keyed on the head, so a repeated run or a re-apply posts nothing new.
+   */
+  private async emptyDiffBlock(it: WorkItem, run: Run, data: Record<string, unknown>, tokens: number): Promise<Decision> {
+    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
+    const head = typeof data.head_sha === "string" ? data.head_sha : "";
+    const base = this.cfg.repo.base_branch;
+    const why = data.empty_diff === "no_commits_ahead"
+      ? `PR #${it.pr_number}'s branch has no commits ahead of \`${base}\` (it may already be merged)`
+      : `PR #${it.pr_number}'s diff against \`${base}\` is empty`;
+    await this.comment(it, `empty-diff:${head}`, [
+      "## Factory review: nothing to review",
+      "",
+      `${why}, so the factory did not run the reviewer. A human needs to decide what happens next.`,
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return { patch, actor: SYSTEM, reason: EMPTY_DIFF, detail: { run_id: run.id, head_sha: head }, ack_run: run.id };
+  }
+
+  /** `d` with the PR's check list in its review run's input (design §4); any other decision unchanged. */
+  private async withReviewChecks(it: WorkItem, d: NonNullable<Decision>): Promise<NonNullable<Decision>> {
+    if (d.enqueue?.kind !== "review") return d;
+    const pr = typeof d.patch.pr_number === "number" ? d.patch.pr_number : it.pr_number;
+    const input: ReviewRunInput = { ...d.enqueue.input, checks: await this.readCheckList(pr, { work_item_id: it.id }) };
+    return { ...d, enqueue: { ...d.enqueue, input } };
+  }
+
+  /**
+   * Each check on PR `pr` and its result, for a review prompt; null when the forge has no check list or the
+   * read failed (logged), so the prompt says the results were not read. Never blocks the review.
+   */
+  private async readCheckList(pr: number | null, log: Record<string, string>): Promise<PrCheck[] | null> {
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    if (!forge?.prCheckList || pr === null) return null;
+    try {
+      return await forge.prCheckList(pr);
+    } catch (err) {
+      this.d.log.warn("reading PR check list failed", {
+        ...log,
+        pr_number: pr,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return null;
+    }
   }
 
   /** The PR's checks; a source without them counts as passed, a source error as pending (logged). */
@@ -2838,13 +2918,15 @@ export class Controller {
       const wanted = await fn(item);
       if (!wanted) return null;
       if ("refuse" in wanted) return wanted.refuse;
+      // Every review run the factory queues carries the PR's check results for its prompt (design §4).
+      const decided = await this.withReviewChecks(item, wanted);
       // The one budget check: every implement or review run the factory would queue passes here (design §6).
-      const hold = await this.budgetHold(item, wanted);
-      const decision = hold ?? wanted;
+      const hold = await this.budgetHold(item, decided);
+      const decision = hold ?? decided;
       const at = { id, expected_version: item.version };
       const r = hold
         ? await this.d.store.openBudgetCheckpoint({ ...hold, ...at })
-        : await this.d.store.transition({ ...wanted, ...at });
+        : await this.d.store.transition({ ...decided, ...at });
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
         if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.showStatus(r.item);
