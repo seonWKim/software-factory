@@ -12,7 +12,7 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { alarmStep } from "./alarms.js";
+import { RESTART_WINDOW_MS, alarmStep } from "./alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
@@ -74,7 +74,7 @@ import {
 import { commandEvent, syncedCommand } from "./command-inbox.js";
 import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
 import { isCliCommandKey, localIdentity } from "./local-cli.js";
-import { enqueueImprove, utcDay } from "./improver.js";
+import { enqueueImprove, fileReport, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -92,7 +92,8 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunInput, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type VerdictKind, type VerdictSeverity, type WorkItem,
+  type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -270,6 +271,16 @@ const UNCHANGED_HEAD = "unchanged_head";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
+/** What an implicit verdict says (design §4): its kind and severity, its reason and its event key. */
+interface ImplicitVerdict {
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  reason: string;
+  /** Unique per event: kept as the verdict's comment_id, so a redelivered event records nothing. */
+  key: string;
+  actor: Actor;
+  pr_head: string | null;
+}
 /** The refusal of an `/approve +paths` on a split spec (issue #280): the approval files sub-issues, it implements nothing. */
 const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` files one sub-issue per phase; reply `/approve` without `+paths`, then add paths on a phase's issue";
 /** Characters of an approval note kept on the state change (design §4). */
@@ -946,11 +957,23 @@ export class Controller {
     await this.alarmsStep();
   }
 
-  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  /**
+   * Looks across items for the three alarm patterns; reads only the store and the restart list. This host's
+   * restarts are stored first, one conditional insert each (design 05-restarts, restart history), and counted as
+   * the host lists them. A process with no restart list of its own counts the store's restarts of every host.
+   */
   private async alarmsStep(): Promise<void> {
     const c = this.cfg;
+    const store = this.d.store;
+    const own = this.d.restarts;
+    const restarts = async () => {
+      if (!own) return store.listChildRestartsWithin(RESTART_WINDOW_MS);
+      const list = await own();
+      for (const r of list) await store.recordChildRestart(r);
+      return list;
+    };
     await alarmStep(
-      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      { store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, restarts },
       {
         alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
         alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
@@ -1156,6 +1179,7 @@ export class Controller {
     // The human who merged is the approver of record (design §8). The forge already enforced their permission.
     const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
+    if (e.kind === "pr_merged") await this.mergeVerdict(item, e, merger ? actor : null);
     await this.decide(item.id, (it) => {
       if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
       return e.kind === "pr_merged"
@@ -1172,6 +1196,51 @@ export class Controller {
     });
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.guard("dependents", () => this.releaseDependents(item.source.id));
+  }
+
+  /**
+   * The implicit verdict of a merged factory PR (design §4): one `accept`, severity `none`, for the merged head,
+   * when no person pushed to it. Stored before the merge closes the item, so a crash between the two leaves the
+   * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
+   * merger does not resolve to a user.
+   */
+  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
+    if (it.origin !== "factory" || it.stage === "CLOSED" || it.pr_number !== e.pr_number) return;
+    const id = it.id;
+    const log = { work_item_id: id, pr_number: e.pr_number };
+    if (!merger) {
+      this.d.log.warn("no implicit verdict: the merger does not resolve to a user", log);
+      return;
+    }
+    if ((await this.d.store.listRuns(id)).some((r) => r.kind === "manual")) {
+      this.d.log.info("no implicit accept: a person pushed to the PR", log);
+      return;
+    }
+    await this.recordImplicitVerdict(id, {
+      verdict: "accept", severity: "none", reason: "merged with no commits by people", key: `implicit:merged:${id}:${e.merge_sha}`,
+      actor: merger, pr_head: it.last_head_sha,
+    });
+  }
+
+  /**
+   * Stores one implicit verdict (design §4), retrying on version conflicts. Changes no field but the version; a
+   * verdict already stored for the key or the PR head is a no-op.
+   */
+  private async recordImplicitVerdict(id: WorkItemId, v: ImplicitVerdict): Promise<void> {
+    for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
+      const it = await this.d.store.getWorkItem(id);
+      if (!it) return;
+      const r = await this.d.store.recordVerdict({
+        id, expected_version: it.version, actor: v.actor, verdict: v.verdict, severity: v.severity, reason: v.reason,
+        comment_id: v.key, target: "pr", implicit: true, pr_head: v.pr_head,
+      });
+      if (r.ok) {
+        this.d.log.info("implicit verdict recorded", { work_item_id: id, verdict: v.verdict, version: r.item.version });
+        return;
+      }
+      if (r.reason !== "version_conflict") return;
+    }
+    this.d.log.warn("implicit verdict gave up after conflicts", { work_item_id: id });
   }
 
   /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
@@ -1283,7 +1352,25 @@ export class Controller {
     });
     if (r.ok && r.run) {
       this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
+      if (it.origin === "factory") await this.pushVerdict(it.id, it.last_head_sha, e.head_sha, actor);
     }
+  }
+
+  /** A person's push to a factory PR (design §4): one implicit `changes` for the new head, naming its commit count. */
+  private async pushVerdict(id: WorkItemId, from_sha: string, to_sha: string, actor: Actor): Promise<void> {
+    let count: number | null = null;
+    try {
+      count = this.forge ? await this.forge.commitsBetween(from_sha, to_sha) : null;
+    } catch (err) {
+      this.d.log.warn("commit count not read; the verdict says it is unknown", { work_item_id: id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    }
+    const reason =
+      count === null
+        ? "a person pushed to the PR; the commit count is unknown"
+        : `a person pushed ${count} commit${count === 1 ? "" : "s"} to the PR`;
+    await this.recordImplicitVerdict(id, {
+      verdict: "changes", severity: "minor", reason, key: `implicit:pushed:${id}:${to_sha}`, actor, pr_head: to_sha,
+    });
   }
 
   /** The pushed head commit's author as a user: the forge does not name who pushed. Else system:pr-sync. */
@@ -1907,7 +1994,10 @@ export class Controller {
       const it = await this.d.store.getWorkItem(id);
       if (!it) return null;
       if ((await this.d.store.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
-      if (it.stage === "CLOSED") return "the work item is closed";
+      // A merged PR still takes a verdict (design §4); a closed one that was not merged does not.
+      if (it.stage === "CLOSED" && it.merge_sha === null) {
+        return it.pr_number === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
+      }
       if (it.pr_number === null) return "the work item has no PR yet";
       const r = await this.d.store.recordVerdict({
         id,
@@ -1916,6 +2006,9 @@ export class Controller {
         ...v,
         comment_id: e.comment_id,
         target: e.target.kind,
+        implicit: false,
+        // Replaces the implicit verdict on the same head, if any.
+        pr_head: it.last_head_sha,
       });
       if (r.ok) {
         this.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
@@ -1968,7 +2061,9 @@ export class Controller {
       };
     }
     const phase = commandPhase(it);
-    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure";
+    // At the review loop limit too: a human chose to go back through triage or to close (design §4).
+    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
+      phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
       const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
@@ -2291,11 +2386,12 @@ export class Controller {
   }
 
   /**
-   * `/revise <feedback>` at a failed implement run or a `diff_too_large` block (design §4): the item goes back
-   * through triage with the feedback, then to the spec gate. The revision counter and `max_loops` apply as at
-   * the spec gate, but at the limit nothing changes: the item keeps its block, where `/retry` and `/reject`
-   * still apply. restart_count + 1 so the implement run after the next `/approve` gets a new run key; the old
-   * failure comment is unlinked.
+   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block or the review loop limit (design §4):
+   * the item goes back through triage with the feedback, then to the spec gate. The revision counter and
+   * `max_loops` apply as at the spec gate, but at the limit nothing changes: the item keeps its block, where
+   * `/retry` and `/reject` still apply. restart_count + 1 so the implement run after the next `/approve` gets a
+   * new run key; the old failure comment is unlinked. At the loop limit loop_count goes back to 0; the PR and
+   * its branch stay.
    */
   private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
     const feedback = e.feedback.trim();
@@ -2315,6 +2411,7 @@ export class Controller {
         blocked_reason: null,
         revision_count: n,
         restart_count: it.restart_count + 1,
+        ...(it.blocked_reason === "max_loops" ? { loop_count: 0 } : {}),
         spec_feedback: feedback,
         failure_comment_url: null,
       },
@@ -2377,6 +2474,13 @@ export class Controller {
           ? null
           : { patch: {}, actor: LINKS, reason: "reverted", detail },
       );
+      // A merged factory PR also gets one implicit `reverted` verdict per reverting commit (design §4).
+      const it = await this.d.store.getWorkItem(id);
+      if (it?.origin !== "factory" || it.close_reason !== "completed" || it.merge_sha === null) continue;
+      await this.recordImplicitVerdict(id, {
+        verdict: "reverted", severity: "major", reason: `reverted by commit ${e.sha}`, key: `implicit:reverted:${id}:${e.sha}`,
+        actor: LINKS, pr_head: null,
+      });
     }
   }
 
@@ -2686,6 +2790,30 @@ export class Controller {
     });
   }
 
+  /**
+   * Files the groups of an improve run's report (design §7) through the first source that can file, in
+   * `plugins.source` order. A comment on a filed item the store holds goes through its thread (and the outbox);
+   * one on an item nobody started yet goes straight to the item's source, once per marker.
+   */
+  private async fileImprove(run: Run): Promise<void> {
+    const report = await this.d.store.getImproveReport(run.id);
+    if (!report) return;
+    const filer = this.sources.find((s) => typeof s.fileIssue === "function");
+    const done = await fileReport({
+      store: this.d.store,
+      scanner: this.d.scanner,
+      clock: this.d.clock,
+      file: filer?.fileIssue ? (input) => filer.fileIssue!(input) : null,
+      comment: async (ref, body, marker) => {
+        const it = await this.d.store.getWorkItemBySource(ref.type, ref.id);
+        if (it) await this.post(it, it.source, body, marker);
+        else await this.postWithoutItem(ref, body, marker);
+      },
+    }, report);
+    const count = (status: string) => done.groups.filter((g) => g.filing?.status === status).length;
+    this.d.log.info("improve report filed", { report_id: report.id, filed: count("filed"), commented: count("commented"), skipped: count("skipped") });
+  }
+
   /** After `sourceId`'s item closed: every item waiting on it is re-checked from the store (no forge call). */
   private async releaseDependents(sourceId: string): Promise<void> {
     for (const e of await this.d.store.listDependencyEdges({ depends_on: sourceId })) {
@@ -2720,6 +2848,8 @@ export class Controller {
   }
 
   private async apply(run: Run): Promise<void> {
+    // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
+    if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.guard("improve filing", () => this.fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
     // adds them to each decision that does not set token_cost itself.
@@ -3544,8 +3674,9 @@ export class Controller {
     return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
   }
 
-  /** The step a `/retry` restarts: the run behind an agent block, else what the item's fields say. */
+  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block, else what the item's fields say. */
   private async retryKind(it: WorkItem): Promise<RunKind | undefined> {
+    if (it.blocked_on === "human" && it.blocked_reason === "max_loops") return "implement";
     return (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
@@ -4057,7 +4188,8 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
 /**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
- * (and is a resolve run's notes).
+ * (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
+ * the item RUNNING (a human chose to try again).
  */
 function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
@@ -4066,14 +4198,15 @@ function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: stri
   }
   const w = widen ?? NO_WIDENING;
   const detail = { ...(note ? { note } : {}), ...w.detail };
-  const next = { ...it, restart_count: it.restart_count + 1 };
+  const loops = it.blocked_reason === "max_loops" ? { stage: "RUNNING" as const, loop_count: 0 } : {};
+  const next = { ...it, restart_count: it.restart_count + 1, ...loops };
   // A retried update goes back to waiting for the merge, which is the state an update run expects.
   const unblocked = kind === "update"
     ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
     : { blocked_on: "none" as const, blocked_reason: null };
   // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
   return {
-    patch: { ...unblocked, restart_count: next.restart_count, ...w.patch },
+    patch: { ...unblocked, restart_count: next.restart_count, ...loops, ...w.patch },
     actor,
     reason: "retry_requested",
     ...(Object.keys(detail).length > 0 ? { detail } : {}),

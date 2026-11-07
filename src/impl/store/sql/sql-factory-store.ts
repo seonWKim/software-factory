@@ -9,6 +9,8 @@ import type {
   CloseReason,
   DependencyEdge,
   DependencyState,
+  FiledPattern,
+  FiledPatternId,
   Handoff,
   HostSleep,
   ImproveReport,
@@ -94,6 +96,7 @@ import type {
   NewAppCommandRequest,
   NewCliCommand,
   NewAlert,
+  NewFiledPattern,
   NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
@@ -132,7 +135,7 @@ import type {
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
-import { migrationPendingError } from "../../../interfaces/updater.js";
+import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
@@ -359,6 +362,15 @@ export class SqlFactoryStore implements FactoryStore {
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
         if (existing) return { ok: false, reason: "duplicate", verdict: existing };
         if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+        // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
+        if (input.pr_head !== null) {
+          const [onHead] = await tx.all(
+            `SELECT * FROM verdicts WHERE work_item_id = ? AND pr_head = ? ORDER BY at, ${this.db.dialect.seq}`,
+            [input.id, input.pr_head],
+          );
+          if (onHead && input.implicit) return { ok: false, reason: "duplicate", verdict: rowToVerdict(onHead) };
+          if (onHead) await tx.run("DELETE FROM verdicts WHERE work_item_id = ? AND pr_head = ? AND implicit = 1", [input.id, input.pr_head]);
+        }
 
         const now = this.now();
         const version = current.version + 1;
@@ -367,7 +379,8 @@ export class SqlFactoryStore implements FactoryStore {
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, "human_verdict", {});
+        const reason = input.implicit ? "implicit_verdict" : "human_verdict";
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, reason, {});
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -377,15 +390,17 @@ export class SqlFactoryStore implements FactoryStore {
           reason: input.reason,
           comment_id: input.comment_id,
           target: input.target,
+          implicit: input.implicit,
+          pr_head: input.pr_head,
           at: now,
         };
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
-            verdict.reason, verdict.comment_id, verdict.target, verdict.at,
+            verdict.reason, verdict.comment_id, verdict.target, verdict.implicit ? 1 : 0, verdict.pr_head, verdict.at,
           ],
         );
         // A concurrent delivery of the same comment committed first: undo the version bump and state change.
@@ -480,6 +495,7 @@ export class SqlFactoryStore implements FactoryStore {
         token_cost: Number(r.token_cost),
         reasons: [],
         severities: [],
+        implicit: 0,
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
       });
     }
@@ -491,8 +507,13 @@ export class SqlFactoryStore implements FactoryStore {
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
-    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) {
+      const record = records.get(v.work_item_id as string);
+      if (!record) continue;
+      if (Number(v.implicit) === 1) record.implicit = (record.implicit ?? 0) + 1;
+      else record.severities.push(v.severity as VerdictSeverity);
+    }
     return [...records.values()];
   }
 
@@ -1209,6 +1230,54 @@ export class SqlFactoryStore implements FactoryStore {
   async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
     const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
     return row ? rowToImproveReport(row) : null;
+  }
+
+  async getLatestImproveReport(project?: string): Promise<ImproveReport | null> {
+    const where = project === undefined ? "" : "WHERE project_key = ? ";
+    const [row] = await this.db.all(
+      `SELECT * FROM improve_reports ${where}ORDER BY created_at DESC, id DESC LIMIT 1`,
+      project === undefined ? [] : [project],
+    );
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  async listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]> {
+    const rows = await this.db.all(
+      "SELECT * FROM improve_reports WHERE project_key = ? AND created_at >= ? ORDER BY created_at, id",
+      [project, since],
+    );
+    return rows.map(rowToImproveReport);
+  }
+
+  async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void> {
+    await this.db.run("UPDATE improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
+  }
+
+  async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
+    const [row] = await this.db.all("SELECT * FROM filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
+    return row ? rowToFiledPattern(row) : null;
+  }
+
+  async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
+    const now = this.now();
+    await this.insertOnce(
+      this.db,
+      `INSERT INTO filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+      [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now],
+    );
+    if (replace !== undefined && replace !== input.report_id) {
+      await this.db.run(
+        `UPDATE filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
+         WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
+        [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
+      );
+    }
+    return (await this.getFiledPattern(input.project, input.pattern_key))!;
+  }
+
+  async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
+    await this.db.run("UPDATE filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -1997,6 +2066,22 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToAlert);
   }
 
+  // Restart history (design 05-restarts): the key is the restart's time and a hash of its reason, so the same
+  // restart read again from the supervisor's file, on this replica or another, is one row.
+
+  async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
+    const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
+    const created = await this.insertOnce(this.db, "INSERT INTO child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
+      key, restart.at, restart.reason, this.now(),
+    ]);
+    return { created };
+  }
+
+  async listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]> {
+    const rows = await this.db.all("SELECT at, reason FROM child_restarts WHERE at >= ? ORDER BY at, restart_key", [this.after(-window_ms)]);
+    return rows.map((r) => ({ at: r.at as string, reason: r.reason as string }));
+  }
+
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
@@ -2697,6 +2782,19 @@ function rowToImproveReport(row: Row): ImproveReport {
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToFiledPattern(row: Row): FiledPattern {
+  return {
+    id: row.id as FiledPatternId,
+    project: row.project_key as string,
+    pattern_key: row.pattern_key as string,
+    error_code: row.error_code as string,
+    detail: row.detail as string,
+    report_id: row.report_id as ImproveReportId,
+    filed_ref: row.filed_ref === null || row.filed_ref === undefined ? null : (JSON.parse(row.filed_ref as string) as SourceRef),
     created_at: row.created_at as Timestamp,
   };
 }

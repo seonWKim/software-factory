@@ -186,7 +186,8 @@ describe("/revise on a factory PR", () => {
     expect(max).toHaveLength(1);
     expect(max[0]!.body).toContain("limit `max_loops` = 3");
     expect(max[0]!.body).toContain("Commands you can reply with now:");
-    expect(max[0]!.body.trim().split("\n").at(-1)).toBe("No command changes this item's state now.");
+    expect(max[0]!.body.trim().split("\n").at(-1)).toMatch(/^- `\/help`/);
+    expect(max[0]!.body).not.toContain("No command changes this item's state now.");
     expect(f.refusals()).toEqual([]);
 
     // Delivered again: no second comment, no change.

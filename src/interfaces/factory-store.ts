@@ -1,4 +1,5 @@
 import type { TierHistory } from "../core/budget.js";
+import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor,
@@ -12,8 +13,11 @@ import type {
   DependencyState,
   Tier,
   Handoff,
+  FiledPattern,
+  FiledPatternId,
   HostSleep,
   ImproveReport,
+  ImproveReportId,
   ImproveWindow,
   Run,
   RunAttempt,
@@ -157,6 +161,9 @@ export interface NewImproveReport extends ImproveWindow {
   patterns: ImproveReport["patterns"];
 }
 
+/** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref">;
+
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
 
@@ -209,20 +216,26 @@ export interface RecordVerdictInput {
   id: WorkItemId;
   /** Applies only if the item's current version equals this. */
   expected_version: number;
-  /** The human who wrote the verdict. */
-  actor: Extract<Actor, { kind: "user" }>;
+  /** Explicit: the human who wrote it. Implicit: the person the event names, or a system actor when none resolves. */
+  actor: Actor;
   verdict: VerdictKind;
   severity: VerdictSeverity;
   reason: string | null;
+  /** The comment id, or an implicit verdict's event key. */
   comment_id: string;
   target: VerdictTarget;
+  implicit: boolean;
+  pr_head: string | null;
 }
 
 export type RecordVerdictResult =
   | { ok: true; item: WorkItem; state_change: StateChange; verdict: Verdict }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
-  /** A verdict from this comment is already stored (checked before the version). Nothing changed. */
+  /**
+   * A verdict from this comment is already stored (checked before the version), or, for an implicit verdict, one
+   * for its PR head. `verdict` is the stored one. Nothing changed.
+   */
   | { ok: false; reason: "duplicate"; verdict: Verdict };
 
 /** What a budget checkpoint records when it opens (design §6). The held run is kept here, not queued. */
@@ -384,16 +397,19 @@ export interface FactoryStore {
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
   /**
-   * Stores a human verdict: bumps the version and writes a state_changes row (reason `human_verdict`, the
-   * user as actor, `changes` = {}) and a linked verdicts row, in one transaction. No other field changes.
-   * Idempotent on `comment_id`.
+   * Stores a verdict: bumps the version and writes a state_changes row (reason `human_verdict`, or
+   * `implicit_verdict` when `implicit`; `actor` as actor, `changes` = {}) and a linked verdicts row, in one
+   * transaction. No other field changes. Idempotent on `comment_id`. One verdict per PR head: an implicit one is a
+   * `duplicate` when the item already has a verdict for `pr_head`; an explicit one deletes the item's implicit
+   * verdicts for `pr_head` (their state_changes rows stay) before it is stored.
    */
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
   /**
    * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
-   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * `reasons` (in version order), the severities of its explicit verdicts (oldest first) and the count of its
+   * implicit ones. For `factory stats`.
    * Read-only.
    */
   listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
@@ -557,11 +573,26 @@ export interface FactoryStore {
    */
   enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
 
-  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+  // Improve reports (design §7). One report per improve run; one filed pattern per (project, pattern key).
 
   /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
   recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
   getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+  /** The newest report of `project` (any project when absent), by created_at then ID; null when none. */
+  getLatestImproveReport(project?: string): Promise<ImproveReport | null>;
+  /** The reports of `project` created at or after `since`, oldest first. Read-only. */
+  listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]>;
+  /** Replaces the groups of report `id` (their filing written after the report). Unknown ID: no change. */
+  setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void>;
+  getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
+  /**
+   * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
+   * returned unchanged, unless `replace` names its report: then that row is claimed for `input.report_id` with
+   * no item (a refiled pattern), a conditional update, so of two claims one wins. Returns the row as stored.
+   */
+  claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern>;
+  /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
+  setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
 
   // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
 
@@ -771,6 +802,18 @@ export interface FactoryStore {
   recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
   /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
+
+  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
+  // window survive a restart of the factory and every replica on a shared store sees every host's restarts.
+
+  /**
+   * Stores one child restart unless the same restart (its time and reason) is stored already: one conditional
+   * insert, so applying the same restart twice, or from two replicas at once, leaves one row. `created` says
+   * whether this call stored it.
+   */
+  recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }>;
+  /** The child restarts at or after the store clock's now minus `window_ms`, oldest first. Read-only. */
+  listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]>;
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 

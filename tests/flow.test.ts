@@ -180,7 +180,11 @@ describe("one issue to one merged PR", () => {
 
     const trail = (await f.store.listStateChanges(item.id)).map((c) => c.reason);
     expect(trail).toEqual([
-      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "pr_merged",
+      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "implicit_verdict", "pr_merged",
+    ]);
+    // The merge with no commits by people is one implicit accept (design §4).
+    expect(await f.store.listVerdicts(item.id)).toEqual([
+      expect.objectContaining({ verdict: "accept", severity: "none", implicit: true, pr_head: item.last_head_sha }),
     ]);
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -192,6 +196,37 @@ describe("one issue to one merged PR", () => {
     expect(item.token_cost).toBe(15 * 5);
     expect(await f.store.listHandoffs(item.id)).toHaveLength(2);
     expect(f.sandbox.destroyed).toBe(f.sandbox.created.length);
+  });
+
+  it("a person's push to the factory PR, then the merge: the head ends with a changes verdict and no accept", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const src = issueRef(8);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "300", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(item).toMatchObject({ blocked_reason: "merge_pending", pr_number: 42 });
+
+    f.forge.commitAuthors.h9 = alice;
+    f.forge.commitCounts[`${item.last_head_sha}..h9`] = 1;
+    const prSource = { type: "github_issue", id: "o/r#42", link: "https://github.com/o/r/pull/42" };
+    f.forge.queue.push({
+      kind: "pr_open", source: prSource, pr_number: 42, head_branch: `factory/${item.id}`, head_sha: "h9", title: "t", body: "b", author: alice, labels: [],
+    });
+    await f.step();
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    await f.step();
+
+    expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect((await f.store.listVerdicts(item.id)).map((v) => [v.verdict, v.implicit, v.pr_head, v.reason])).toEqual([
+      ["changes", true, "h9", "a person pushed 1 commit to the PR"],
+    ]);
   });
 
   it("records a /verdict on the PR through intake; a refused one gets one reply and stores nothing", async () => {
@@ -2005,13 +2040,14 @@ describe("approval notes, unknown commands, /help and footers", () => {
     expect(lastLines(spec.body, 1)[0]).toMatch(/^- `\/help`/);
   });
 
-  it("the max-loops and merge comments end with /help and a line saying no command changes the state", async () => {
+  it("the max-loops comment lists /retry, /revise, /reject and ends with /help; the merge comment ends with a line saying no command changes the state", async () => {
     const f = await atSpecGate(80, { review: "bug" });
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "8001", approver: alice });
     await f.step();
     const max = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:max-loops:"))!;
-    expect(lastLines(max.body, 2)[0]).toMatch(/^- `\/help`/);
-    expect(lastLines(max.body, 1)[0]).toBe("No command changes this item's state now.");
+    for (const usage of ["/retry", "/revise <feedback>", "/reject <reason>"]) expect(max.body).toContain(`- \`${usage}\``);
+    expect(lastLines(max.body, 1)[0]).toMatch(/^- `\/help`/);
+    expect(max.body).not.toContain("No command changes this item's state now.");
 
     const g = await atSpecGate(81);
     g.source.queue.push({ kind: "spec_approved", source: g.src, comment_id: "8101", approver: alice });
@@ -2046,6 +2082,103 @@ describe("approval notes, unknown commands, /help and footers", () => {
     expect(big.body).toContain("- `/retry`");
     expect(lastLines(big.body, 1)[0]).toMatch(/^- `\/help`/);
   });
+});
+
+describe("/retry, /revise and /reject at the review loop limit (max_loops)", () => {
+  const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
+  /**
+   * An item blocked at max_loops: with a PR (review found bugs until the limit), or without one (put there
+   * from the spec gate).
+   */
+  async function atMaxLoops(n: number, withPr: boolean) {
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: implementOk, review: review("bug") });
+    const f = await factory(runner);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    let item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    if (withPr) {
+      f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
+      await f.step();
+    } else {
+      const r = await f.store.transition({
+        id: item.id, expected_version: item.version, actor: { kind: "system", id: "test" }, reason: "max_loops",
+        patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 },
+      });
+      if (!r.ok) throw new Error("setup failed");
+    }
+    item = (await f.store.getWorkItem(item.id))!;
+    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", pr_number: withPr ? 42 : null });
+    expect(item.loop_count).toBeGreaterThan(0);
+    return { ...f, runner, src, item };
+  }
+  type F = Awaited<ReturnType<typeof atMaxLoops>>;
+  const current = (f: F) => f.store.getWorkItem(f.item.id).then((x) => x!);
+  const runsOf = (f: F, kind: string) => f.store.listRuns(f.item.id).then((rs) => rs.filter((r) => r.kind === kind));
+  const refusals = (f: F, id: string) => f.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
+
+  for (const withPr of [true, false]) {
+    const label = withPr ? "with a PR" : "without a PR";
+
+    it(`${label}: /retry +paths starts one implement run with loop_count 0 and widens the paths; /reject closes the item`, async () => {
+      const f = await atMaxLoops(withPr ? 110 : 111, withPr);
+      const before = await runsOf(f, "implement");
+      f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "11001", requester: alice, note: "+paths src/core/x.ts\ntry again" });
+      await f.controller.tickIntake();
+      const item = await current(f);
+      expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: 0, restart_count: f.item.restart_count + 1 });
+      expect(item.allowed_paths).toContain("src/core/x.ts");
+      const started = (await runsOf(f, "implement")).filter((r) => !before.some((b) => b.id === r.id));
+      expect(started).toHaveLength(1);
+      expect(started[0]!.idempotency_key).toContain(":l0:");
+      expect(refusals(f, "11001")).toEqual([]);
+      const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;
+      expect(row.detail).toMatchObject({ added_paths: JSON.stringify(["src/core/x.ts"]), note: "try again" });
+
+      const g = await atMaxLoops(withPr ? 112 : 113, withPr);
+      g.source.queue.push({ kind: "spec_rejected", source: g.src, comment_id: "11201", approver: alice, reason: "not worth it" });
+      await g.step();
+      expect(await current(g)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+      expect(g.source.closed).toContainEqual(g.src);
+      expect(g.source.closeReasons.at(g.source.closed.findIndex((s) => s.id === g.src.id))).toBe("not_planned");
+      expect(refusals(g, "11201")).toEqual([]);
+    });
+
+    it(`${label}: /retry +paths with a covered path adds nothing, and a bad path is refused`, async () => {
+      const f = await atMaxLoops(withPr ? 114 : 115, withPr);
+      const before = await current(f);
+      const bad = ["+paths src/../x.ts", "+paths src/*.ts", `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
+      bad.forEach((note, i) => f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: `114b${i}`, requester: alice, note }));
+      await f.controller.tickIntake();
+      expect(await current(f)).toEqual(before);
+      bad.forEach((_, i) => expect(refusals(f, `114b${i}`)).toHaveLength(1));
+      f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "114ok", requester: alice, note: "+paths .github/workflows/x.yml" });
+      await f.controller.tickIntake();
+      expect((await current(f)).allowed_paths).toEqual(before.allowed_paths);
+      expect((await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "retry_requested")!.detail?.added_paths).toBeUndefined();
+    });
+
+    it(`${label}: /revise <feedback> goes back through triage with loop_count 0; with no feedback it is refused once`, async () => {
+      const f = await atMaxLoops(withPr ? 116 : 117, withPr);
+      const before = await current(f);
+      const empty = { kind: "revise_requested" as const, source: f.src, comment_id: "11601", requester: alice, feedback: "  " };
+      f.source.queue.push(empty, empty);
+      await f.controller.tickIntake();
+      expect(await current(f)).toEqual(before);
+      expect(refusals(f, "11601")).toHaveLength(1);
+
+      const triage = await runsOf(f, "triage");
+      f.source.queue.push({ kind: "revise_requested", source: f.src, comment_id: "11602", requester: alice, feedback: "split the gate change" });
+      await f.controller.tickIntake();
+      const item = await current(f);
+      expect(item).toMatchObject({
+        stage: "NEW", blocked_on: "none", loop_count: 0, spec_feedback: "split the gate change", revision_count: before.revision_count + 1,
+        pr_number: before.pr_number,
+      });
+      expect((await runsOf(f, "triage")).filter((r) => !triage.some((t) => t.id === r.id))).toHaveLength(1);
+      expect(refusals(f, "11602")).toEqual([]);
+    });
+  }
 });
 
 describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
@@ -2247,6 +2380,25 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "99ok", requester: alice, note: `+paths ${ten.join(" ")}` });
     await f.step();
     expect((await current(f)).allowed_paths).toEqual([".github/workflows/", ...ten]);
+  });
+
+  it("/approve +paths with a bad path or more than 10 is refused with one reply each, and the waiting spec is unchanged", async () => {
+    const f = await atSpecGate(101);
+    const before = await current(f);
+    expect(before.stage).toBe("READY");
+    const bad = ["+paths /etc/passwd", "+paths src/../x.ts", "+paths src/*.ts"];
+    const many = `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`;
+    [...bad, many].forEach((note, i) => f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: `101b${i}`, approver: alice, note }));
+    await f.step();
+    expect(await current(f)).toEqual(before);
+    expect(implementPrompts(f)).toEqual([]);
+    const paths = ["/etc/passwd", "src/../x.ts", "src/*.ts"];
+    paths.forEach((p, i) => {
+      expect(refusals(f, `101b${i}`)).toHaveLength(1);
+      expect(refusals(f, `101b${i}`)[0]!.body).toContain(p);
+    });
+    expect(refusals(f, "101b3")).toHaveLength(1);
+    expect(refusals(f, "101b3")[0]!.body).toContain("at most 10");
   });
 
   it("needs_human paths give the exact /retry +paths reply in the comment and never change allowed_paths", async () => {

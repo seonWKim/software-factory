@@ -1,17 +1,21 @@
+import { createHash } from "node:crypto";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { PollResult, PollSource, SourceCloseReason, SubIssueInput } from "../../interfaces/source-adapter.js";
+import type { IssueInput, PollResult, PollSource, SourceCloseReason, SubIssueInput } from "../../interfaces/source-adapter.js";
 
 /**
  * The `local` poll source (issues #199, #282): a local item's surface is the store itself. The controller reads
  * the command inbox (`command_inbox`) on its own and writes every message to the item thread (`item_thread`), so
- * `poll` gives no events and leaves the cursor where it was. It never writes a command or creates an item, and
- * makes no network call.
+ * `poll` gives no events and leaves the cursor where it was. It never writes a command, creates an item only when
+ * asked to file one (`fileIssue`), and makes no network call.
  *
  * `fileSubIssue` (split specs, design 04) files nothing anywhere: a phase's ref is derived from the parent's
  * source id and the phase number in the marker (`<parent>-phase-<n>`), so the controller's work item, keyed on
  * that source, is the sub-task, and filing again returns the same ref.
+ *
+ * `fileIssue` (design §7, filed failure patterns) creates a local work item, keyed on a source id derived from the
+ * marker, with no triage run queued: a person starts it. Filing again finds the same item.
  */
 export class LocalSource implements PollSource {
   readonly intake = "poll";
@@ -44,6 +48,20 @@ export class LocalSource implements PollSource {
 
   /** The store holds the item's state; there is nothing to close elsewhere. */
   async closeIssue(_source: SourceRef, _reason?: SourceCloseReason): Promise<void> {}
+
+  /** A new local work item for `input`, idempotent on its marker-derived source id; no run is queued. */
+  async fileIssue(input: IssueInput): Promise<SourceRef> {
+    const id = `local-filed-${createHash("sha256").update(input.marker).digest("hex").slice(0, 16)}`;
+    const source = { type: "local", id, link: `local:${id}` };
+    await this.store.createWorkItem(
+      {
+        source, title: input.title, requester_id: input.requester_id, project: input.project,
+        problem: `${input.title}\n\n${input.body}\n\n${input.marker}`, resources: [source.link],
+      },
+      { kind: "system", id: input.requester_id },
+    );
+    return source;
+  }
 
   /** The phase's local ref, derived from `input` alone: no store read, no network call, the same ref every time. */
   async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
