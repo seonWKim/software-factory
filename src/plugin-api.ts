@@ -80,8 +80,12 @@ export interface Contexts {
   egress: BaseContext & { secrets: SecretStore };
   broker: BaseContext & { github: GitHubClient; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
   storage: BaseContext;
-  /** `store`: what a source that keeps its intake in the store reads (the `local` source, issue #199). */
-  source: BaseContext & { github: GitHubClient; store: FactoryStore };
+  /**
+   * `store`: what a source that keeps its intake in the store reads (the `local` source, issue #199). `secrets`,
+   * `scanner` and `log`: what a source with its own credentials and its own posts needs (the `slack` source,
+   * issue #109: its tokens from the SecretStore, G5 on every message before it is posted).
+   */
+  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */

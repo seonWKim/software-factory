@@ -426,6 +426,14 @@ export interface FactoryStore {
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
+   * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
+   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
+   * `model_answered` row moves to the probe time, as an answered probe would, so `model_stall_since` reads null too.
+   * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
+   * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
+   */
+  endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */

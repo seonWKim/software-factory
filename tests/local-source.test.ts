@@ -272,7 +272,7 @@ describe("local source plugin", () => {
     const { store, item } = await setup();
     const { default: desc } = await import("../src/impl/source/local.plugin.js");
     const loaded = await loadConfig(root("local"));
-    const src = await desc.create({ loaded, repo: loaded.config.repo, extraScanValues: [], github: new ThrowingClient(), store });
+    const src = await desc.create({ loaded, repo: loaded.config.repo, extraScanValues: [], github: new ThrowingClient(), store, secrets: {} as never, scanner: {} as never, log: {} as never });
     expect(await src.postComment(item.source, "hi", "m")).toEqual({ url: null });
     await src.markSeen(item.source, null);
     await src.setStatus(item.source, "done", null);

@@ -33,6 +33,7 @@ import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus }
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
@@ -56,6 +57,9 @@ const USAGE = `factory <command>
                pause n workers (those whose runs started most recently) or every loop: their implement and
                review runs go back to the queue within one tick with their WIP committed locally, nothing
                pushed; other runs finish first. resume clears every pause. Stored, so it survives a restart
+  resume [name | --all]
+               end a claim pause now: rate_limit (no name), forge_auth, preflight_access or model_stall, or
+               --all for every one; prints what it ended or "no pause in effect". Logged with your local:<login>
   link-code <user_id>
                prints a one-time code that links another account (e.g. Slack) to a factory user such as
                github:12345: post /link <code> from that account. Works once, for 10 minutes
@@ -186,6 +190,25 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
       return 0;
     }
+    case "resume": {
+      // The pauses live in the store (design §5 Restarts); an unknown name is refused before the store opens.
+      const action = parseResumeArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${RESUME_USAGE}`);
+        return 1;
+      }
+      const store = await buildStatsStore(loaded);
+      try {
+        await store.migrate();
+        const clock = await new Plugins(loaded).clock();
+        // An ID, never a display name: the OS login of the local owner.
+        const r = await runResume({ store, actor: `local:${userInfo().username}`, log: new ConsoleLogger(clock, "resume") }, action);
+        for (const line of r.lines) console.log(line);
+        return r.code;
+      } finally {
+        await store.close();
+      }
+    }
     case "link-code": {
       // Only the code's hash is stored; the code is printed here once and nowhere else (design 2026-11-01).
       const store = await buildStatsStore(loaded);
@@ -263,10 +286,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
           // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
           commands: parts.commands,
+          // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
+          pauses: parts.pauses,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();

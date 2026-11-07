@@ -53,7 +53,7 @@ export interface WorkerDeps {
   id: WorkerId;
   /**
    * The worker's index n in its process's pool. Set: passed as SF_WORKER_INDEX to the agent and to the update
-   * run's test command, so parallel runs on one host can pick their own ports or test DB. Unique only within
+   * and resolve runs' gate commands, so parallel runs on one host can pick their own ports or test DB. Unique only within
    * one process. Absent (a lone Worker): SF_WORKER_INDEX is not set.
    */
   index?: number;
@@ -69,6 +69,11 @@ export interface WorkerDeps {
   log: Logger;
   /** Non-secret env for the worker's own git commands inside the sandbox (PATH etc.). */
   toolEnv: Readonly<Record<string, string>>;
+  /**
+   * The host's CPU count (compose: `os.availableParallelism()`). Set: each run's agent and check commands get
+   * SF_TEST_WORKERS, this run's share of it (testWorkerShare). Absent: SF_TEST_WORKERS is not set.
+   */
+  cpus?: number;
   /** Held while a claimed run executes, released after; never held while idle. */
   awake: KeepAwake;
   /**
@@ -115,6 +120,17 @@ export const HOST_SLEEP_MS = 60_000;
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 
+/** How many test workers (vitest `maxWorkers`) one run's test command may start (design §5 Parallel workers). Not a secret. */
+export const TEST_WORKERS_ENV = "SF_TEST_WORKERS";
+
+/**
+ * One run's share of the host's CPUs: the CPUs split evenly over the claiming slots, at least 1. Ten slots on ten
+ * CPUs give 1 each, so ten test runs at once start ten test workers in all, not a hundred.
+ */
+export function testWorkerShare(cpus: number, slots: number): number {
+  return Math.max(1, Math.floor(cpus / Math.max(1, slots)));
+}
+
 /** Git hooks off for every command the worker runs after an agent step (merge, commit, checkout). */
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
 
@@ -159,6 +175,28 @@ const WIP_TEXT_CHARS = 4000;
 export const DIFF_CHECK_MS = 30_000;
 /** The wip ref's next steps of a run the mid-run diff check stopped. */
 const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
+/**
+ * The agent-step failures that stop an implement run mid-work (design §5 Restarts): its commits and changes go to a
+ * wip branch, and the retry continues the agent from there.
+ */
+const STOPPED_CODES: readonly string[] = [RATE_LIMITED, AGENT_STALLED, "agent_timed_out"];
+/** The wip ref's next steps of a run stopped mid-work. */
+const STOPPED_NEXT_STEPS = "the run stopped mid-way (a usage limit, a stall or a timeout): continue the work item from the wip head";
+
+/**
+ * The wip ref of an implement run stopped mid-work (design §5 Restarts), carried in the retry's input. `continue`:
+ * the retry runs the agent on the wip head (a push retry runs none). `session`: the stopped agent session and its
+ * run folder, both kept on `host` so a retry there resumes it with `--resume`; `start` and `base_sha` are that
+ * folder's start of the run's commits and trusted base. Absent: the retry starts a new session on the wip head.
+ */
+interface ContinueWip extends WipRef {
+  continue: true;
+  session?: { id: string; host: string; folder: string; start: string; base_sha: string | null };
+}
+
+function continues(wip: WipRef | null | undefined): wip is ContinueWip {
+  return (wip as Partial<ContinueWip> | null | undefined)?.continue === true;
+}
 
 /**
  * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
@@ -245,11 +283,16 @@ interface DiffBudget {
   over: DiffStat | null;
 }
 
-/** Scratch for one execute() call: the pause request and every agent session the run started. */
+/**
+ * Scratch for one execute() call: the pause request, every agent session the run started, the session of its
+ * latest agent step, and the folder and session a stopped run keeps for its retry (design §5 Restarts).
+ */
 interface RunScratch {
   pause: AbortController;
   paused_by: string | null;
   sessions: Set<string>;
+  step_session?: string | null;
+  kept?: { folder: string; session: string };
 }
 
 /** The handoff's next steps when the paused agent left no note. */
@@ -527,10 +570,14 @@ export class Worker {
     return false;
   }
 
-  /** Removes every agent session the run started or resumed. Best effort: a failure is only logged. */
+  /**
+   * Removes every agent session the run started or resumed, except the one a stopped run keeps for its retry. Best
+   * effort: a failure is only logged.
+   */
   private async dropSessions(s: RunScratch): Promise<void> {
     if (!this.d.runner.removeSession) return;
     for (const id of s.sessions) {
+      if (id === s.kept?.session) continue;
       await this.d.runner.removeSession(id).catch((err: unknown) =>
         this.d.log.warn("session removal failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }));
     }
@@ -584,12 +631,14 @@ export class Worker {
     const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
     const plan = await this.resumePlan(run);
-    const handle = plan?.folder ?? (await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
-    // The folder lives until the run ends, whatever the outcome; only a pause keeps it (design §5 Pause).
+    const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
+    const handle = plan?.folder ?? kept?.handle ?? (await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
+    // The folder lives until the run ends, whatever the outcome; only a pause, or a stopped run that keeps it for
+    // its retry, keeps it (design §5 Pause, Restarts).
     let keep = false;
     try {
       if (run.kind === "triage") return await this.triage(run, item, handle, signal, model);
-      if (run.kind === "implement") return await this.implement(run, item, handle, ctx, signal, model, plan);
+      if (run.kind === "implement") return await this.implement(run, item, handle, ctx, signal, model, plan, kept?.session ?? null);
       return await this.review(run, item, handle, ctx, signal, model, plan);
     } catch (err) {
       if (err instanceof RunPaused) {
@@ -599,8 +648,31 @@ export class Worker {
       }
       throw err;
     } finally {
-      if (!keep) await this.d.sandbox.destroy(handle);
+      if (!keep && this.scratch.get(run)?.kept?.folder !== handle.id) await this.d.sandbox.destroy(handle);
     }
+  }
+
+  /**
+   * The folder and session a stopped run kept (design §5 Restarts), for its retry on the same host: reattached when
+   * the folder is still there, the runner still stores the session, and the folder's HEAD is the recorded wip head.
+   * Otherwise the kept folder is removed and null returned: the retry starts a new session on the wip head in a
+   * new folder. Either way the kept session is removed when this run ends. Another host: null, nothing to reattach.
+   */
+  private async keptFolder(run: Run): Promise<{ handle: SandboxHandle; session: string } | null> {
+    const wip = run.input?.wip;
+    const kept = continues(wip) && wip.session?.host === this.host ? wip.session : null;
+    if (!kept || !this.d.sandbox.reattach) return null;
+    this.scratch.get(run)?.sessions.add(kept.id);
+    const here = await this.d.sandbox.reattach(kept.folder).catch(() => null);
+    if (!here) return null;
+    const handle = { ...here, ...(kept.base_sha ? { base_sha: kept.base_sha } : {}) };
+    const session = this.d.runner.hasSession ? await this.d.runner.hasSession(kept.id).catch(() => false) : false;
+    const head = session ? await this.gitRaw(handle, ["rev-parse", "HEAD"]) : null;
+    const usable = head !== null && head.exit_code === 0 && head.stdout.trim() === wip!.head;
+    this.d.log.info("stopped run continues", { run_id: run.id, same_host: true, folder: usable, session });
+    if (usable) return { handle, session: kept.id };
+    await this.d.sandbox.destroy(handle).catch(() => undefined);
+    return null;
   }
 
   /**
@@ -646,9 +718,10 @@ export class Worker {
 
   /**
    * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
-   * carries a wip ref (design §5 Restarts) checks that branch out instead of running the agent. Then sync, the
-   * pre-push gates, handoffs for commits not yet recorded, push and PR. A push or PR failure keeps the commits on
-   * a wip branch on the forge before the run fails.
+   * carries a wip ref (design §5 Restarts) checks that branch out: a push retry runs no agent; a run stopped
+   * mid-work (`continue`) runs the agent on it, in its kept folder and session (`kept`, same host) or in a new
+   * session. Then sync, the pre-push gates, handoffs for commits not yet recorded, push and PR. A push or PR
+   * failure, or a stop mid-work, keeps the commits on a wip branch on the forge before the run fails.
    */
   private async implement(
     run: Run,
@@ -658,6 +731,7 @@ export class Worker {
     signal: AbortSignal,
     model: ModelClass,
     plan: ResumePlan | null = null,
+    kept: string | null = null,
   ) {
     const base = this.cfg.repo.base_branch;
     const branch = branchFor(item, this.cfg.branch_prefix);
@@ -669,12 +743,17 @@ export class Worker {
     const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
 
     // A paused run (design §5 Pause): its own commits start where the first claim's did, once its WIP is here
-    // (the reattached folder, or the bundle restored into a new one). A wip ref is only for failed pushes.
+    // (the reattached folder, or the bundle restored into a new one).
     const restored = plan?.state.start_sha
       ? plan.folder !== null || (await this.restoreWip(run, handle, branch, gitDir, plan.state))
       : false;
     if (restored) start = plan!.state.start_sha!;
-    const resumed = plan ? null : await this.resumeWip(run, handle, branch);
+    const fromWip = plan ? null : kept ? (run.input!.wip as ContinueWip) : await this.resumeWip(run, handle, branch);
+    // A push retry runs no agent; a stopped run's retry runs it on the wip head. Its kept folder starts where the
+    // stopped run's commits did.
+    const resumed = fromWip && !continues(fromWip) ? fromWip : null;
+    const continued = continues(fromWip) ? fromWip : null;
+    if (kept && continued?.session) start = continued.session.start;
     let work: { commits: number; summary: string; next_steps: string; conflicts: string[]; missing: string[]; deviations: string[] };
     if (resumed) {
       work = {
@@ -689,12 +768,13 @@ export class Worker {
       const { max_diff_lines, max_diff_files } = settingValues(item.project, this.cfg.settings, this.d.learned);
       const limits = { max_diff_lines, max_diff_files };
       const budget = renderBudget(limits);
-      const prompt = plan?.session
-        ? [renderSessionResume(plan.state.head), budget].join("\n\n")
+      const prompt = plan?.session || kept
+        ? [renderSessionResume(plan ? plan.state.head : continued!.head, plan ? null : "stopped"), budget].join("\n\n")
         : await this.withIndex(
           [
             renderWorkItem(item, { includeSpec: true }), budget, notes, feedback, previous,
             plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
+            continued ? renderContinueNewSession(continued.head) : "",
           ].filter(Boolean).join("\n\n"),
           specQuery(item),
         );
@@ -711,7 +791,7 @@ export class Worker {
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
         writable_paths: [],
         env_allowlist: gitIdentity(this.cfg.agent_git_identity),
-      }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null }).catch(async (err: unknown) => {
+      }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? kept }).catch(async (err: unknown) => {
         stopWatch.abort();
         await watching;
         // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
@@ -719,6 +799,10 @@ export class Worker {
         const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
         if (watch.over && stopped && !signal.aborted) throw await this.overBudget(run, item, handle, ctx, start, dirs, watch);
         if (err instanceof RunPaused) throw await this.pauseImplement(run, item, handle, ctx, start, dirs, err);
+        // A usage limit, a stall or a timeout stopped the agent mid-work: its work goes to a wip branch.
+        if (err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted) {
+          throw await this.keepStopped(run, item, handle, ctx, start, dirs, err);
+        }
         throw err;
       }).finally(() => stopWatch.abort());
       await watching;
@@ -928,6 +1012,55 @@ export class Worker {
   }
 
   /**
+   * An implement run whose agent step stopped mid-work (design §5 Restarts: rate_limited, agent_stalled,
+   * agent_timed_out). After the agent stopped, its git config is distrusted, the worktree's changes become one WIP
+   * commit, and the commits since `start` go to the run's wip branch (no PR branch push, no PR), marked `continue`
+   * so the retry runs the agent on them. When the sandbox can reattach and the runner stores sessions, the folder
+   * and the agent session are kept on this host for a `--resume` there. No commits: nothing is pushed, the retry
+   * starts fresh. A failed wip push keeps the original failure with no wip ref, and nothing is kept.
+   */
+  private async keepStopped(
+    run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, failure: RunFailure,
+  ): Promise<RunFailure> {
+    await this.distrustAgentGit(handle, dirs);
+    await this.commitWorktree(handle, `wip: stopped run ${run.id} (${failure.code})`);
+    const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    const commits = head === start ? 0 : (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
+    if (commits === 0) return failure;
+    const s = this.scratch.get(run);
+    const session = s?.step_session && this.d.sandbox.reattach && this.d.runner.hasSession
+      ? { id: s.step_session, host: this.host, folder: handle.id, start, base_sha: handle.base_sha ?? null }
+      : null;
+    const wip: ContinueWip = {
+      branch: wipBranchFor(item, this.cfg.branch_prefix, run.id),
+      head,
+      commits,
+      summary: "",
+      next_steps: STOPPED_NEXT_STEPS,
+      conflicts: [],
+      missing: [],
+      deviations: [],
+      continue: true,
+      ...(session ? { session } : {}),
+    };
+    const kept = await this.keepWip(run, ctx, handle, failure, wip, false);
+    if (session && kept.extra.wip && s) s.kept = { folder: handle.id, session: session.id };
+    return kept;
+  }
+
+  /**
+   * Commits the worktree's changes (tracked and untracked, not ignored) as one WIP commit, with trusted git calls
+   * after the agent stopped. True when there were any.
+   */
+  private async commitWorktree(handle: SandboxHandle, message: string): Promise<boolean> {
+    const dirty = (await this.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all"])) !== "";
+    if (!dirty) return false;
+    await this.git(handle, [...NO_HOOKS, "add", "-A"]);
+    await this.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", message], gitIdentity(this.cfg.agent_git_identity));
+    return true;
+  }
+
+  /**
    * The PR body and labels for one push (issue #229): In short, Before you merge (missing work, differences from
    * the spec, a human merge), what changed, then the factory's own checks. `incomplete` is on exactly while the
    * implementer reports missing work. Every push sends both, so the PR describes the branch as it is now.
@@ -989,11 +1122,7 @@ export class Worker {
     p: RunPaused,
   ): Promise<RunPaused> {
     await this.distrustAgentGit(handle, dirs);
-    const dirty = (await this.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all"])) !== "";
-    if (dirty) {
-      await this.git(handle, [...NO_HOOKS, "add", "-A"]);
-      await this.gitWith(handle, [...NO_HOOKS, "commit", "--quiet", "--no-verify", "-m", `wip: paused run ${run.id}`], gitIdentity(this.cfg.agent_git_identity));
-    }
+    const dirty = await this.commitWorktree(handle, `wip: paused run ${run.id}`);
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const commits = head === start ? 0 : (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
     const bundle = head === start ? null : await this.saveBundle(run, item, handle, dirs, start);
@@ -1087,10 +1216,11 @@ export class Worker {
   }
 
   /**
-   * A retry of an implement run whose push or PR failed (design §5 Restarts): its input names the wip branch and
-   * head. The head comes from the store, not the forge: if `origin/<wip branch>` is gone or not that commit, the
-   * branch is not trusted and the run goes on as a fresh agent run. Otherwise the run's branch is put on that
-   * commit and no agent runs. Null: run the agent.
+   * A retry of an implement run whose push or PR failed, or that stopped mid-work (design §5 Restarts): its input
+   * names the wip branch and head. The head comes from the store, not the forge: if `origin/<wip branch>` is gone
+   * or not that commit, the branch is not trusted and the run goes on as a fresh agent run. Otherwise the run's
+   * branch is put on that commit: a push retry runs no agent, a `continue` one runs it there. Null: run the agent
+   * from the branch as it is.
    */
   private async resumeWip(run: Run, handle: SandboxHandle, branch: string): Promise<WipRef | null> {
     const wip = run.input?.wip;
@@ -1470,8 +1600,8 @@ export class Worker {
   }
 
   /**
-   * The check list in the run folder with the check env: the tool env, the worker index and the run's test
-   * database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
+   * The check list in the run folder with the check env: the tool env, the slot env (worker index, test workers)
+   * and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
    */
   private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<CheckRound> {
     const db = await this.database(run);
@@ -1479,7 +1609,7 @@ export class Worker {
       sandbox: this.d.sandbox,
       handle,
       commands: checkCommands(this.cfg.repo),
-      env: { ...this.d.toolEnv, ...this.indexEnv(), ...db?.env },
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
@@ -1971,7 +2101,7 @@ export class Worker {
   }
 
   /**
-   * One gate command (install, or a check) in the sandbox with the worker's tool env; a check also gets the
+   * One gate command (install, or a check) in the sandbox with the worker's tool env and slot env; a check also gets the
    * run's test database env, and its output is redacted. Non-zero: `tests_failed`.
    */
   private async gate(run: Run, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal, check: boolean): Promise<void> {
@@ -1980,7 +2110,7 @@ export class Worker {
       sandbox: this.d.sandbox,
       handle,
       commands: [cmd],
-      env: { ...this.d.toolEnv, ...db?.env },
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
@@ -2018,6 +2148,7 @@ export class Worker {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }
     if (session) s?.sessions.add(session.id);
+    if (s) s.step_session = session?.id ?? null;
     const result = await this.d.runner.run({
       run_id: run.id,
       work_item_id: item.id,
@@ -2032,7 +2163,7 @@ export class Worker {
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
-      env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
+      env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
@@ -2089,8 +2220,12 @@ export class Worker {
   }
 
   /** SF_WORKER_INDEX for the agent and the update test command; empty for a Worker outside a pool. */
-  private indexEnv(): Record<string, string> {
-    return this.d.index === undefined ? {} : { [WORKER_INDEX_ENV]: String(this.d.index) };
+  /** SF_WORKER_INDEX and SF_TEST_WORKERS, each when known: for the agent and the check commands. Not secrets. */
+  private slotEnv(): Record<string, string> {
+    return {
+      ...(this.d.index === undefined ? {} : { [WORKER_INDEX_ENV]: String(this.d.index) }),
+      ...(this.d.cpus === undefined ? {} : { [TEST_WORKERS_ENV]: String(testWorkerShare(this.d.cpus, this.live.workers())) }),
+    };
   }
 
   /**
@@ -2341,12 +2476,18 @@ function renderRevision(item: WorkItem): string {
   ].join("\n");
 }
 
-/** The prompt of a paused run that resumes its own stored session (design §5 Pause): the session holds the rest. */
-function renderSessionResume(wip: string | null): string {
+/**
+ * The prompt of a run that resumes its own stored session: after a pause (design §5 Pause), or after it `stopped`
+ * mid-work on a usage limit, a stall or a timeout (design §5 Restarts). The session holds the rest.
+ */
+function renderSessionResume(wip: string | null, why: "paused" | "stopped" | null = null): string {
+  const what = why === "stopped"
+    ? "The factory stopped this run mid-work (a usage limit, a stall or a timeout) and has now continued it"
+    : "The factory paused this run and has now resumed it";
   return [
-    "## Resumed after a pause",
+    why === "stopped" ? "## Continued after a stop" : "## Resumed after a pause",
     "",
-    `The factory paused this run and has now resumed it in the same session and folder.${wip ? ` Your uncommitted changes, if there were any, were committed as one WIP commit; the branch head is \`${wip.slice(0, 8)}\`.` : ""}`,
+    `${what} in the same session and folder.${wip ? ` Your uncommitted changes, if there were any, were committed as one WIP commit; the branch head is \`${wip.slice(0, 8)}\`.` : ""}`,
     "Do not redo steps you already finished. Continue from where you stopped, then give your final answer in the required format.",
   ].join("\n");
 }
@@ -2369,6 +2510,15 @@ function renderNewSessionResume(wip: string | null): string {
     wip
       ? `This run was paused and resumes in a new session from its WIP commit \`${wip.slice(0, 8)}\`, which holds the work done so far. The earlier commits and the last noted next steps are listed above: continue from there and do not redo work those commits already hold.`
       : "This run was paused and resumes in a new session. Its earlier work could not be restored here, so start from the branch as it is, using the earlier commits and next steps listed above.",
+  ].join("\n");
+}
+
+/** The section a run stopped mid-work adds when its retry continues in a new session (design §5 Restarts). */
+function renderContinueNewSession(wip: string): string {
+  return [
+    "## Continued after a stop",
+    "",
+    `An earlier attempt of this run stopped mid-work (a usage limit, a stall or a timeout). This attempt continues in a new session from the wip head \`${wip.slice(0, 8)}\`, which holds that work, uncommitted changes included as one WIP commit. Read the branch's commits and diff against the base first, then continue from there and do not redo work they already hold.`,
   ].join("\n");
 }
 

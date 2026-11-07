@@ -1,5 +1,7 @@
-// The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its one write is
-// POST /api/v1/settings (postSettings), with the per-process CSRF token from GET /api/v1/settings.
+// The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
+// POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand) and POST /api/v1/pauses/resume
+// (postResume), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session or /api/v1/pauses)
+// in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -161,6 +163,10 @@ export interface ItemDetail {
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
+  /** The commands that apply in the item's current state, in the order to show them. */
+  commands?: ItemCommand[];
+  /** The item's app command requests, oldest first; the note is never returned. */
+  replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
@@ -213,6 +219,30 @@ export interface TranscriptPage {
   earlier: boolean;
   steps: TranscriptStep[];
 }
+
+export interface ItemCommand {
+  name: string;
+  usage: string;
+  description: string;
+}
+
+/** One app command request: `handled_at` null while the controller has not applied or refused it. */
+export interface CommandReply {
+  seq: number;
+  command: string | null;
+  created_at: string;
+  handled_at: string | null;
+  refusal: string | null;
+}
+
+/** `/api/v1/session`: the token item commands send, and whether `ui.user_id` is set. */
+export interface Session {
+  as_of: string;
+  csrf_token: string;
+  commands_enabled: boolean;
+}
+
+export type CommandResult = { ok: true; seq: number } | { ok: false; error: string };
 
 export interface Health {
   checked_at: string;
@@ -291,10 +321,24 @@ export interface DataPageBody {
   run_items: Record<string, string>;
 }
 
+/** One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time. */
+export interface PauseRow {
+  name: string;
+  ends_at: string;
+}
+
+/** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
+export interface PausesView {
+  pauses: PauseRow[];
+  csrf_token: string | null;
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
+  itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
+  session: "/api/v1/session",
   transcript: (id: string, run: string, params: URLSearchParams) => {
     const q = params.toString();
     return `/api/v1/items/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/transcript${q ? `?${q}` : ""}`;
@@ -305,6 +349,8 @@ export const API = {
   health: "/api/v1/health",
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
+  pauses: "/api/v1/pauses",
+  resume: "/api/v1/pauses/resume",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
@@ -331,21 +377,42 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
   });
 }
 
-/** POST /api/v1/settings: a set or reset, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
-export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
-  const res = await fetch(API.settings, {
+/** A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). */
+async function postJson<T extends { error?: string }>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }> {
+  const res = await fetch(url, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": token },
     body: JSON.stringify(body),
   });
-  let value: { ok?: boolean; lines?: string[]; error?: string } = {};
+  let value = {} as T;
   try {
-    value = (await res.json()) as typeof value;
+    value = (await res.json()) as T;
   } catch {
-    // An error without a JSON body: say the status.
+    // An error without a JSON body: the caller says the status.
   }
-  if (res.ok && value.ok) return { ok: true, lines: value.lines ?? [] };
-  return { ok: false, error: value.error ?? `HTTP ${res.status}` };
+  return { ok: res.ok, status: res.status, value };
+}
+
+/** POST /api/v1/settings: a set or reset, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
+export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
+  const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string }>(API.settings, token, body);
+  if (r.ok && r.value.ok) return { ok: true, lines: r.value.lines ?? [] };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text. 202 → the request's seq. */
+export async function postCommand(token: string, id: string, command: string, note: string): Promise<CommandResult> {
+  const text = note.trim();
+  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
+  if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
+export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
+  if (r.ok) return { ok: true, ended: r.value.ended === true };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
 /**
