@@ -177,7 +177,8 @@ describe("path_companions load check", () => {
     });
 
     it("an absent key loads with no companions", async () => {
-      const { path_companions: _, ...rest } = SQLITE;
+      const rest: Record<string, unknown> = { ...SQLITE };
+      delete rest.path_companions;
       const loaded = await loadConfig(root(rest));
       expect(loaded.config.path_companions).toEqual([]);
     });

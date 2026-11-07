@@ -42,7 +42,7 @@ describe("prompts/triage.md", () => {
     expect(b).toContain("`docs/design/<topic>.md`");
     expect(b).toContain("`docs/plugins/<interface>.md`");
     expect(b).not.toMatch(/Name an index only when/);
-    expect(b).toMatch(/never the index/i);
+    expect(b).toMatch(/not the index/i);
   });
 
   it("asks for in_short as the first field, before the problem and any file-level field", () => {

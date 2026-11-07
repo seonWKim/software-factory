@@ -299,7 +299,8 @@ describe("config keys: path_companions (design 04-triage.md)", () => {
   });
 
   it("an absent key loads with no companions", async () => {
-    const { path_companions: _, ...rest } = SQLITE;
+    const rest: Record<string, unknown> = { ...SQLITE };
+    delete rest.path_companions;
     expect((await loadConfig(root(rest))).config.path_companions).toEqual([]);
   });
 

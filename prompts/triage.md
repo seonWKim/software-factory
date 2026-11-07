@@ -40,7 +40,7 @@ Produce:
   is rejected.
   Docs: `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic
   files that apply. The documentation targets are the topic files the change touches
-  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), never the index: name those in files_to_change
+  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), not the index: name those in files_to_change
   and allowed_paths. A new topic file also needs its one line in the index, so list the index then too.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).

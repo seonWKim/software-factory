@@ -22,6 +22,7 @@ the `05-*` files.
 - [04-gate-commands.md](design/04-gate-commands.md): the human commands (`/approve`, `/reject`, `/revise`, `/verdict`, `/help`), refusals, footers and suggestions, and `/revise` or "Request changes" on a pull request.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): the scope, size and floor gates before a push, sync with the base, and the resolve run's gates.
+- [04-triage.md](design/04-triage.md): path companions, the files triage adds to a spec's allowed paths, and the topic folders beside the doc indexes.
 - [04-split-specs.md](design/04-split-specs.md): triage size estimates, splitting a big spec into phases, and the phase hold.
 
 ## 5. Coordination
