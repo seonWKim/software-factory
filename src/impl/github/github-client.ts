@@ -36,6 +36,8 @@ export class GitHubError extends Error {
 export const DEFAULT_MIN_REMAINING = 200;
 /** Default ETag cache size per client (one per process): entries, each one GET's URL, ETag and body. */
 export const DEFAULT_ETAG_ENTRIES = 500;
+/** Below this share of the hourly limit left, optional reads wait for the reset too (issue #254). */
+export const LOW_BUDGET_SHARE = 0.1;
 /** A body larger than this is never cached (keeps the per-process cache bounded in bytes too). */
 const MAX_CACHED_BODY = 1_000_000;
 
@@ -110,12 +112,14 @@ export class GitHubClient {
   }
 
   /**
-   * True while fewer than `min_remaining` core calls are left and the reset has not passed: skip optional
-   * reads (refreshes that a later poll makes as well). Logs one line on entering and one on leaving.
+   * True while fewer than `min_remaining` core calls, or under LOW_BUDGET_SHARE (10%) of the limit, are left and the
+   * reset has not passed: skip optional reads (refreshes that a later poll makes as well). Logs one line on entering
+   * and one on leaving.
    */
   lowBudget(): boolean {
     const r = this.rate;
-    const low = r !== null && r.remaining < this.minRemaining && this.now() < Date.parse(r.reset_at);
+    const floor = r === null ? 0 : Math.max(this.minRemaining, r.limit * LOW_BUDGET_SHARE);
+    const low = r !== null && r.remaining < floor && this.now() < Date.parse(r.reset_at);
     if (low !== this.low) {
       this.low = low;
       if (low) this.opts.log?.warn("GitHub budget low: optional reads wait for the reset", { remaining: r!.remaining, min_remaining: this.minRemaining, reset_at: r!.reset_at });

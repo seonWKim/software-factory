@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
-import { Controller } from "../src/core/controller.js";
+import { Controller, DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
 import { statusOf } from "../src/core/status-label.js";
 import type { DependencyState, RunKind, SourceRef, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -96,6 +96,11 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     await f.controller.tickCoordination();
     expect((await f.get(a)).blocked_reason).toBe("waiting for other/repo#5 to merge");
     source.states.set("other/repo#5", "merged");
+    // The forge's answer is reused for 10 minutes (issue #254): before that the item still waits.
+    f.clock.advance(DEPENDENCY_STATE_TTL_MS - 1);
+    await f.controller.tickCoordination();
+    expect((await f.get(a)).blocked_on).toBe("dependency");
+    f.clock.advance(1);
     await f.controller.tickCoordination();
     expect(await f.store.listDependencyEdges({ work_item_id: a })).toMatchObject([{ depends_on: "other/repo#5", state: "merged" }]);
     expect((await f.get(a)).blocked_on).toBe("none");
