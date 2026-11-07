@@ -56,7 +56,7 @@ export interface ChatSuccess {
 export type ChatFailureCode = "provider_setup" | "rate_limited" | "aborted" | "http_error" | "network_error" | "bad_response";
 
 /** The provider error codes that need a person to fix the account or the config (design §5 Restarts). */
-export const PROVIDER_SETUP_CODES: readonly string[] = ["insufficient_quota", "invalid_api_key", "model_not_found"];
+const PROVIDER_SETUP_CODES: readonly string[] = ["insufficient_quota", "invalid_api_key", "model_not_found"];
 
 export interface ChatFailure {
   ok: false;
