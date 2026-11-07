@@ -1911,6 +1911,13 @@ export class Worker {
       await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
     }
 
+    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next. The reason is a
+    // member's error text, scanned like any other before it reaches a log.
+    for (const f of result.fallbacks ?? []) {
+      const clean = (await this.d.scanner.scan("log", f.reason)).clean;
+      this.d.log.warn("runner fallback", { run_id: run.id, step: step ?? "", from: f.from, to: f.to, reason: clean ? f.reason.slice(0, 300) : "[withheld]" });
+    }
+
     if (result.status === "aborted") {
       // The lease wins over a pause that came at the same moment: the run is no longer ours to pause.
       if (pause?.aborted && !signal.aborted) throw new RunPaused(s!.paused_by ?? "unknown", session?.id ?? null, result.last_note ?? null);
