@@ -277,7 +277,7 @@ describe("SQLite migration 23: app command request handling", () => {
 
     await store.migrate();
     expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["old"]);
+    expect(await store.getAppCommandRequest(1)).toMatchObject({ key: "old", handled_at: null, refusal: null });
     await store.close();
   });
 });
@@ -335,6 +335,6 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0023 on MySQL", () => {
     const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
     db.onCleanup(() => store.close());
     await store.migrate();
-    expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["old"]);
+    expect(await store.getAppCommandRequest(1)).toMatchObject({ key: "old", handled_at: null, refusal: null });
   });
 });

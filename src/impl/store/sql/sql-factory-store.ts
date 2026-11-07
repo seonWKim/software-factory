@@ -1756,13 +1756,6 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
-  async listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]> {
-    const rows = await this.db.all(
-      `SELECT * FROM app_command_requests WHERE handled_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-    );
-    return rows.map(rowToAppCommandRequest);
-  }
-
   async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
     const n = await this.db.run("UPDATE app_command_requests SET handled_at = ?, refusal = ? WHERE seq = ? AND handled_at IS NULL", [
       this.now(),

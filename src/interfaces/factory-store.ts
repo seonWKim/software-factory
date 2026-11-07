@@ -705,8 +705,6 @@ export interface FactoryStore {
    * before it. A `key` already stored is a no-op that reports the existing request with `created: false`.
    */
   recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }>;
-  /** Requests not yet handled, oldest (lowest seq) first, at most `limit`. Read-only. */
-  listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]>;
   /**
    * Marks request `seq` handled now, with `refusal` (null: applied). Conditional: only a pending request changes,
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.

@@ -476,11 +476,6 @@ export class Controller {
     await this.outboxStep();
   }
 
-  /** One app command step: the pending requests, oldest first (design §4, app requests). */
-  async tickAppCommands(): Promise<void> {
-    await this.tickCommands();
-  }
-
   /**
    * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
    * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,

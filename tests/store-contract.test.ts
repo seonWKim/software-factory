@@ -1738,21 +1738,15 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
       const again = await store.recordAppCommandRequest(req("k1", { command: "reject" }));
       expect(again).toEqual({ created: false, request: first.request });
-      expect(await store.listPendingAppCommandRequests(10)).toEqual([first.request]);
       expect(await store.getAppCommandRequest(first.request.seq)).toEqual(first.request);
       expect(await store.getAppCommandRequest(first.request.seq + 1000)).toBeNull();
     });
 
-    it("pending read is oldest first, at most `limit`, and leaves out handled requests", async () => {
+    it("each request's seq is greater than the ones recorded before it", async () => {
       const { store } = await make();
       const seqs: number[] = [];
       for (const k of ["a", "b", "c", "d"]) seqs.push((await store.recordAppCommandRequest(req(k))).request.seq);
-      expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
-      expect((await store.listPendingAppCommandRequests(2)).map((r) => r.key)).toEqual(["a", "b"]);
-      expect(await store.listPendingAppCommandRequests(0)).toEqual([]);
-      await store.markAppCommandRequest(seqs[0]!, null);
-      await store.markAppCommandRequest(seqs[2]!, "no");
-      expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["b", "d"]);
+      expect(seqs).toEqual([...new Set(seqs)].sort((x, y) => x - y));
     });
 
     it("a conditional mark sets handled_at and the refusal once; a second mark changes nothing", async () => {

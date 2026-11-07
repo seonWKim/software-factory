@@ -6,8 +6,7 @@ import type { PollResult, PollSource, SourceCloseReason } from "../../interfaces
 /**
  * The `local` poll source (issues #199, #282): a local item's surface is the store itself. The controller reads
  * the command inbox (`command_inbox`) on its own and writes every message to the item thread (`item_thread`), so
- * `poll` gives no events and leaves the cursor where it was, and `postComment` only makes sure the message is in
- * the thread (the controller never calls it for a local item). It never writes a command or creates an item, and
+ * `poll` gives no events and leaves the cursor where it was. It never writes a command or creates an item, and
  * makes no network call.
  */
 export class LocalSource implements PollSource {
@@ -21,6 +20,11 @@ export class LocalSource implements PollSource {
     return { events: [], next_cursor: cursor ?? "" };
   }
 
+  /**
+   * Kept because every SourceAdapter must have it: the controller gives a local item's messages no outbox row, so
+   * it never calls this for a local item. Called anyway (another caller of the adapter contract), it keeps the
+   * contract's promise: the message is in the item's thread once per marker, and an unknown id throws.
+   */
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
     const item = source.type === "local" ? await this.store.getWorkItemBySource("local", source.id) : null;
     if (!item) throw new Error(`local source: no local work item with source id ${JSON.stringify(source.id)}`);
