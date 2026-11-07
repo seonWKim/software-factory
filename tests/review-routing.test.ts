@@ -12,9 +12,10 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
@@ -36,6 +37,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const reviews = [...(opts.reviews ?? [])];
@@ -46,7 +48,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
     review: () => ({ output: reviews.shift() ?? pass() }),
   });
   const scanner = new PatternEgressScanner(async () => [SECRET]);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent,
     scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
@@ -74,7 +76,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
   const reasons = async () => (await store.listStateChanges((await item()).id)).map((c) => c.reason);
   const reviewComments = () =>
     broker.calls.filter((c) => c.name === "github.comment").map((c) => (c.args as { body: string }).body);
-  return { store, source, sandbox, broker, runner, controller, worker, step, start, approve, item, runs, reasons, reviewComments };
+  return { store, source, forge, sandbox, broker, runner, controller, worker, step, start, approve, item, runs, reasons, reviewComments };
 }
 
 describe("parseReview: finding kinds and unverified checks", () => {
@@ -192,10 +194,10 @@ describe("review routing", () => {
 
   it("a pass with unverified items goes through the CI gate as a pass; they are not findings", async () => {
     const f = await factory({ reviews: [pass({ unverified: ["could not run npm test: listen EPERM"] })] });
-    f.source.checkResults = [{ state: "passed" }];
+    f.forge.checkResults = [{ state: "passed" }];
     const it4 = await f.start();
     expect(it4).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0, revision_count: 0 });
-    expect(f.source.checkCalls).toEqual([42]);
+    expect(f.forge.checkCalls).toEqual([42]);
     const review = (await f.runs("review"))[0]!;
     const stored = (review.outcome as unknown as { data: { review: ReviewOutput } }).data.review;
     expect(stored.findings).toEqual([]);
@@ -221,11 +223,11 @@ describe("review routing", () => {
 
   it("on an adopted PR a bug with spec findings keeps today's route: changes requested, no implement or triage run", async () => {
     const f = await factory({ reviews: [bug([spec("needs a doc"), code("typo")])] });
-    const pr: SourceEvent = {
+    const pr: ForgeEvent = {
       kind: "pr_open", source: { type: "github_issue", id: "o/r#50", link: "https://github.com/o/r/pull/50" }, pr_number: 50,
       head_branch: "feature/x", head_sha: "h1", title: "A change", body: "b", author: { provider: "github", subject: "2", login: "bob" }, labels: [],
     };
-    f.source.queue.push(pr);
+    f.forge.queue.push(pr);
     await f.step();
     const adopted = (await f.store.getWorkItemBySource("github_issue", "o/r#50"))!;
     expect(adopted).toMatchObject({ origin: "adopted", stage: "REVIEW", blocked_on: "human", blocked_reason: "changes_requested", revision_count: 0 });
