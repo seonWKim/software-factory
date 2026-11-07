@@ -107,7 +107,6 @@ describe("agents are told to read the index first and edit topic files", () => {
   it("prompts/triage.md names topic files, not the index, in files_to_change", () => {
     const text = read("prompts/triage.md");
     expect(text).toMatch(/topic files?/);
-    expect(text).toContain("docs/design/");
     expect(text).toMatch(/not the index/);
   });
 

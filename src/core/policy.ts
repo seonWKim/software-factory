@@ -58,16 +58,18 @@ export function retryDelayMs(attempt: number, base_ms: number, max_ms: number): 
 
 /**
  * Why a run failed, for the retry budget (design §5 Restarts): a usage or rate limit is not an attempt, and
- * neither is a stall (the model printed nothing for `stall_ms`); infra failures (lease loss, timeout,
- * exception) count toward `max_restart`; anything else is the task's own failure and counts toward
- * `max_attempts`. A run with no outcome (cancelled) is a task failure.
+ * neither is a stall (the model printed nothing for `stall_ms`); a pre-push check whose failing test files
+ * also fail on the base branch (`checks_env`) spends neither budget and has its own cap, CHECKS_ENV_LIMIT per
+ * item; infra failures (lease loss, timeout, exception) count toward `max_restart`; anything else is the
+ * task's own failure and counts toward `max_attempts`. A run with no outcome (cancelled) is a task failure.
  */
-export type FailureClass = "rate_limited" | "stalled" | "infra" | "task";
+export type FailureClass = "rate_limited" | "stalled" | "checks_env" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
   if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
   if (outcome.error_code === AGENT_STALLED) return "stalled";
+  if (outcome.error_code === CHECKS_ENV) return "checks_env";
   return outcome.infra ? "infra" : "task";
 }
 
@@ -85,6 +87,16 @@ export const MODEL_STALL = "model_stall" as const;
 export const MODEL_STALL_SINCE = "model_stall_since" as const;
 /** The time of the last probe that got an answer: it ends a stall pause whose probe time it is not before. */
 export const MODEL_ANSWERED = "model_answered" as const;
+
+/**
+ * The error code of an implement run whose pre-push check failed twice and whose failing test files fail the
+ * same way on a clean checkout of the base commit (design §5 Restarts, decided 2026-11-07): the environment's
+ * fault (a timeout under load, a broken base), not the branch's. Its own failure class; nothing is pushed.
+ */
+export const CHECKS_ENV = "checks_env";
+
+/** The `checks_env` runs an item is requeued for, counted over its whole run history; the next one blocks it. */
+export const CHECKS_ENV_LIMIT = 2;
 
 /** The error code of a run stopped by a usage or rate limit. */
 export const RATE_LIMITED = "rate_limited";
