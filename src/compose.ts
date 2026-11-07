@@ -4,7 +4,11 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import {
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
+} from "./core/config.js";
+import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
@@ -184,6 +188,12 @@ export interface FileConfig {
    * `when`, each `also` path is added to `allowed_paths`. Absent: none. Checked by pathCompanionsConfig.
    */
   path_companions?: unknown;
+  /**
+   * The project's toolchain (design 05-sandbox.md, issue #334): `caches` (folders the agent may read, never
+   * write), `env` (non-secret agent env entries) and `warm_command` (argv the worker runs before the agent, with
+   * the network; absent: `repo.install_command`). Absent: none of it. A PR-only key. Checked by toolchainConfig.
+   */
+  toolchain?: unknown;
 }
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -216,10 +226,11 @@ export function cliConfig(
 }
 
 /**
- * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth). On a shared store (MySQL: the enterprise
- * case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, and `toolchain`: what agents may read and
+ * the env they get). On a shared store (MySQL: the enterprise case) they come only from the checked-in file, so a
+ * user's own config cannot loosen them; solo use may set any key.
  */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth"] as const;
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain"] as const;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -288,14 +299,22 @@ export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
 /** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
 export const FORGE_PLACEHOLDER = "{{forge}}";
 
+/** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
+export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
- * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; and the forge name
- * (`plugins.forge`, else "local").
+ * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
+ * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
+ * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge);
+  const caches = toolchain && toolchain.caches.length > 0 ? ` (${toolchain.caches.map((c) => `\`${c}\``).join(", ")})` : "";
+  const offline = toolchain
+    ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
+    : "";
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -427,7 +446,10 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
-  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local");
+  // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
+  const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
+  if (toolchain) config.toolchain = toolchain;
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local", config.toolchain);
   const prompts: Prompts = {
     triage: await readPrompt("triage"),
     implement: await readPrompt("implement"),
@@ -634,6 +656,8 @@ export async function build(
   await store.migrate();
 
   const scanner = await p.scanner(secrets);
+  // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
+  await checkToolchainEnv(loaded.config.toolchain, scanner);
   const credentials = await p.githubCredentials(secrets, clock);
   const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
   const sandbox = await p.sandbox();
@@ -959,6 +983,64 @@ export function checkCommandsConfig(value: unknown): { check_commands?: string[]
     throw new Error('repo.check_commands must be a non-empty list of argv, e.g. [["npm", "run", "typecheck"], ["npm", "test"]]');
   }
   return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
+}
+
+/**
+ * `toolchain` from factory.config.json (design 05-sandbox.md, issue #334): absent → undefined. Otherwise
+ * `caches` is a list of absolute folders (a leading `~` is the owner's HOME), normalized, none overlapping a
+ * `deny_paths` entry in either direction (so neither the secret file's folder nor the owner's config); `env` maps
+ * env var names to strings, each key passing the G1 key check (`toolchainEnvKeyRefusal`); `warm_command` is argv,
+ * absent: `install_command`. Every problem fails startup at once, one per line, each naming its entry. The values
+ * are scanned for secrets in build(), by the configured scanner (`checkToolchainEnv`).
+ */
+export function toolchainConfig(
+  raw: unknown,
+  ctx: { home: string; install_command: readonly string[]; deny_paths: readonly string[] },
+): ToolchainConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) throw new Error("toolchain must be an object with caches, env and warm_command");
+  const problems: string[] = [];
+  const caches: string[] = [];
+  if (raw.caches !== undefined && !Array.isArray(raw.caches)) problems.push("toolchain.caches must be a list of absolute folders");
+  (Array.isArray(raw.caches) ? (raw.caches as unknown[]) : []).forEach((c, i) => {
+    const expanded = typeof c === "string" && (c === "~" || c.startsWith("~/")) && ctx.home !== "" ? join(ctx.home, c.slice(1)) : c;
+    if (typeof expanded !== "string" || !expanded.startsWith("/")) {
+      problems.push(`toolchain.caches[${i}] must be an absolute folder (or start with ~/), got ${JSON.stringify(c) ?? String(c)}`);
+    } else caches.push(resolve(expanded));
+  });
+  for (const o of toolchainCacheOverlaps(caches, ctx.deny_paths.map((d) => resolve(d)))) {
+    problems.push(`toolchain.caches[${o.index}] ${o.cache} overlaps the denied path ${o.denied}`);
+  }
+  const env: Record<string, string> = {};
+  if (raw.env !== undefined && !isRecord(raw.env)) problems.push("toolchain.env must be an object of env var names to strings");
+  for (const [key, value] of Object.entries(isRecord(raw.env) ? raw.env : {})) {
+    const refusal = toolchainEnvKeyRefusal(key);
+    if (refusal) problems.push(refusal);
+    else if (typeof value !== "string") problems.push(`toolchain.env.${key} must be a string`);
+    else env[key] = value;
+  }
+  let warm_command: string[] = [...ctx.install_command];
+  try {
+    warm_command = argvConfig("toolchain.warm_command", raw.warm_command, ctx.install_command);
+  } catch (err) {
+    problems.push((err as Error).message);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  return { caches, env, warm_command };
+}
+
+/**
+ * G1 on the toolchain's env values at startup: each value goes through the configured egress scanner (known
+ * secret values and secret patterns), so a token pasted into `toolchain.env` never reaches an agent. Fails naming
+ * the entry and the rule, never the value. No block, or no entry: nothing is scanned.
+ */
+export async function checkToolchainEnv(toolchain: ToolchainConfig | undefined, scanner: EgressScanner): Promise<void> {
+  const problems: string[] = [];
+  for (const [key, value] of Object.entries(toolchain?.env ?? {})) {
+    const scan = await scanner.scan("log", value);
+    if (!scan.clean) problems.push(`toolchain.env.${key} looks like a credential (${scan.findings.map((f) => f.rule).join(", ")}) (G1)`);
+  }
+  if (problems.length > 0) throw new Error(problems.join("\n"));
 }
 
 /** A gate command from config: absent → `fallback`; otherwise a non-empty argv of non-empty strings, or startup fails. */

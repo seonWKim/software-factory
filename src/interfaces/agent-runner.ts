@@ -34,6 +34,18 @@ export interface AgentRunSpec {
    * (architecture §5): the run's git folder is inside its workdir, so implement runs need none.
    */
   writable_paths: readonly string[];
+  /**
+   * The declared toolchain caches (`toolchain.caches`, design 05-sandbox.md): the agent may read them, never
+   * write them; `deny_paths` still wins inside them. Every runner passes them to `guardPolicy`, and a harness to
+   * its read allow list only. Absent: none, and the harness settings are as before.
+   */
+  readable_paths?: readonly string[];
+  /**
+   * `toolchain.env`: non-secret entries for the agent's environment, checked at startup (G1, key and value). Set,
+   * even empty, only when config has a `toolchain` block; a runner then also points the per-run toolchain homes
+   * into the run's temp folder. Absent: the agent environment is as before.
+   */
+  toolchain_env?: Readonly<Record<string, string>>;
   model_class: "cheap" | "standard" | "strong";
   timeout_ms: number;
   /**

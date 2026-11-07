@@ -40,7 +40,12 @@ export function defineTool(
         if (typeof input !== "object" || input === null || Array.isArray(input)) {
           return { ok: false, error: `${spec.name}: input must be an object` };
         }
-        return await spec.run(input as Record<string, unknown>, ctx);
+        // Only a read-capability tool sees the read-only roots (toolchain caches): Write and Edit check against
+        // the workdir and writable_paths alone, so a cache is never a write target (design 05-sandbox.md).
+        const scoped = spec.capability === "read" || ctx.policy.readable_paths.length === 0
+          ? ctx
+          : { ...ctx, policy: { ...ctx.policy, readable_paths: [] } };
+        return await spec.run(input as Record<string, unknown>, scoped);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { ok: false, error: err instanceof Refusal ? message : `${spec.name} failed: ${message}` };
@@ -97,18 +102,19 @@ export async function canonicalize(ctx: ToolContext, paths: readonly string[]): 
 
 /** The guard's view of the policy, canonical forms included. Built once per tool call. */
 export interface ResolvedGuard {
-  /** Canonical workdir and writable_paths: where file tools may read and write. */
+  /** Canonical workdir, writable_paths and (for a read tool) readable_paths: where the tool may operate. */
   roots: string[];
   /** Lexical and canonical forms of every deny_paths entry. */
   denies: string[];
 }
 
 export async function resolveGuard(ctx: ToolContext, target: string): Promise<{ guard: ResolvedGuard; canonical: string | null }> {
-  const { workdir, writable_paths, deny_paths } = ctx.policy;
-  const all = await canonicalize(ctx, [target, workdir, ...writable_paths, ...deny_paths]);
+  const { workdir, writable_paths, readable_paths, deny_paths } = ctx.policy;
+  const rootList = [workdir, ...writable_paths, ...readable_paths];
+  const all = await canonicalize(ctx, [target, ...rootList, ...deny_paths]);
   const canonical = all[0] ?? null;
-  const roots = all.slice(1, 2 + writable_paths.length).filter((p): p is string => p !== null);
-  const denies = [...deny_paths, ...all.slice(2 + writable_paths.length).filter((p): p is string => p !== null)];
+  const roots = all.slice(1, 1 + rootList.length).filter((p): p is string => p !== null);
+  const denies = [...deny_paths, ...all.slice(1 + rootList.length).filter((p): p is string => p !== null)];
   return { guard: { roots, denies }, canonical };
 }
 
@@ -140,7 +146,8 @@ export function isDenied(guard: ResolvedGuard, path: string): boolean {
 /**
  * The path check for Read, Glob, Grep, Write and Edit. Resolves `input` against the workdir, then refuses it
  * if either its lexical or its canonical form is under a deny entry, or if its canonical form is outside the
- * workdir and every writable_paths entry. Returns the canonical path: the one the tool then operates on.
+ * workdir, every writable_paths entry and (read tools only, see defineTool) every readable_paths entry. Returns
+ * the canonical path: the one the tool then operates on.
  */
 export async function checkPath(ctx: ToolContext, input: string): Promise<{ path: string; guard: ResolvedGuard }> {
   // Control characters (newlines, NUL) would break the NUL/newline-separated helper output.
