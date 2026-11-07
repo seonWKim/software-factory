@@ -163,7 +163,7 @@ async function setup(opts: {
   const broker = new GitPushBroker();
   const storage = new MemoryStorage();
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
     prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),

@@ -630,7 +630,7 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner , repeated_failure_rule: false });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
