@@ -192,7 +192,7 @@ export class FakeSource implements PollSource {
   /** Who closed each source item, by source id, as the last delivered source_closed said. */
   closers = new Map<string, ExternalIdentity | null>();
   /** Every setStatus call, in order, including ones that threw. */
-  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
+  statusCalls: { source: SourceRef; status: WorkStatus; change_ref: string | null }[] = [];
   /** When set, setStatus records the call, then throws this without changing labels. */
   statusError: Error | null = null;
   /**
@@ -200,18 +200,18 @@ export class FakeSource implements PollSource {
    * in a set stands for a label the factory does not own.
    */
   labels = new Map<string, Set<string>>();
-  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
-    this.statusCalls.push({ source, status, pr_number });
+  async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
+    this.statusCalls.push({ source, status, change_ref });
     if (this.statusError) throw this.statusError;
-    const key = labelTarget(source, pr_number);
+    const key = labelTarget(source, change_ref);
     const set = this.labels.get(key) ?? new Set<string>();
     for (const s of WORK_STATUSES) if (s !== status) set.delete(s);
     set.add(status);
     this.labels.set(key, set);
   }
   /** The status labels on a target. */
-  statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
-    const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
+  statusLabels(source: SourceRef, change_ref: string | null = null): string[] {
+    const set = this.labels.get(labelTarget(source, change_ref)) ?? new Set<string>();
     return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
   }
 }
@@ -280,15 +280,15 @@ export class FakeForge implements Forge {
   /** When set, closePr throws this before posting anything. */
   prCommentError: Error | null = null;
   async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
-    this.prCloseCalls.push(input.pr_number);
-    if ((this.prStates.get(input.pr_number) ?? "open") !== "open") return "not_open";
+    this.prCloseCalls.push(input.pr);
+    if ((this.prStates.get(input.pr) ?? "open") !== "open") return "not_open";
     if (this.prCommentError) throw this.prCommentError;
     if (!this.prComments.some((c) => c.marker === input.marker)) {
       const closer = this.source?.closers.get(input.closed.id) ?? null;
-      this.prComments.push({ pr_number: input.pr_number, body: input.body(closer), marker: input.marker });
+      this.prComments.push({ pr_number: input.pr, body: input.body(closer), marker: input.marker });
     }
     if (this.prCloseError) throw this.prCloseError;
-    this.prStates.set(input.pr_number, "closed");
+    this.prStates.set(input.pr, "closed");
     return "closed";
   }
   /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
@@ -385,7 +385,7 @@ export class FakeStreamSource implements StreamSource {
     this.closed.push(source);
   }
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
-  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
+  statusCalls: { source: SourceRef; status: WorkStatus; change_ref: string | null }[] = [];
   private wake: (() => void)[] = [];
   private connection: { ended: boolean; error: Error | null } | null = null;
 
@@ -446,8 +446,8 @@ export class FakeStreamSource implements StreamSource {
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     this.reactions.push({ source, comment_id: commentId });
   }
-  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
-    this.statusCalls.push({ source, status, pr_number });
+  async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
+    this.statusCalls.push({ source, status, change_ref });
   }
 
   private notify(): void {
@@ -462,8 +462,8 @@ export function fakeStreamRegistry(base: Registry = REGISTRY, make: () => FakeSt
   return withPlugin(base, "source", "fake-stream", make);
 }
 
-export function labelTarget(source: SourceRef, pr_number: number | null): string {
-  return pr_number === null ? source.id : `${source.id}:pr#${pr_number}`;
+export function labelTarget(source: SourceRef, change_ref: string | null): string {
+  return change_ref === null ? source.id : `${source.id}:pr#${change_ref}`;
 }
 
 /** Only subject "1" may approve. */

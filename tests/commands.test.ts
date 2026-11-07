@@ -351,7 +351,7 @@ describe("footers match what the controller accepts", () => {
       const state = commandState(item);
       await controller.handleEvent({
         kind: "revise_requested", source: issueRef(42), comment_id: String(n), requester: alice, feedback: "fix the flag",
-        pr: { pr_number: 42, head_branch: `${config.branch_prefix}${item.id}` },
+        pr: { change_ref: "42", head_branch: `${config.branch_prefix}${item.id}` },
       });
       const after = (await store.getWorkItem(item.id))!;
       const refused = source.comments.filter((c) => c.marker === `<!-- factory:refused:${n} -->`);

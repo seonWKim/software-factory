@@ -1,8 +1,9 @@
 import type { GitHubBudgetStatus } from "../../core/controller.js";
+import type { Timestamp } from "../../core/types.js";
 import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import { ConsoleLogger } from "../log/console-logger.js";
-import type { GitHubApi, GitHubCredentials, RepoIdentity, RepoPath } from "../../interfaces/github-credentials.js";
+import type { GitHubApi, GitHubCredentials, RepoIdentity, RepoPath, SharedBudget } from "../../interfaces/github-credentials.js";
 
 export type RepoRef = RepoPath;
 
@@ -92,6 +93,9 @@ export interface GitHubClientOptions {
   budget_share?: number;
 }
 
+/** The plugin name the shared budget row is stored under (`forge_budget.plugin`). */
+export const FORGE_BUDGET_PLUGIN = "github";
+
 /** This process's counted calls in one rate-limit window, the window named by its reset time. */
 interface Window {
   reset_at: string;
@@ -147,6 +151,10 @@ export function clientOptions(github: { min_remaining?: unknown; budget_share?: 
  * answer but a 304), `lowBudget()` is true and callers skip the reads that can wait. The count is per process
  * (in memory, like the ETag cache): replicas of one factory on one App split its share between them.
  *
+ * GitHub's numbers themselves are shared (`shareBudget`): each response's limit is written to the store, and the
+ * stored row is read at most once per tick, so a replica that made no call yet still sees what another one's last
+ * response said and skips its optional reads below 10% left.
+ *
  * Catch-up reads (a first start's backlog) take a per-minute allowance, `takeCatchUp`: at most
  * (budget_share × limit) / 60 a minute, so a new start spreads them over several polls.
  */
@@ -157,6 +165,11 @@ export class GitHubClient implements GitHubApi {
   private readonly minRemaining: number;
   private readonly share: number;
   private rate: RateBudget | null = null;
+  /** When `rate` was read (ISO): this process's response, or the stored row it came from. A newer row replaces it. */
+  private rateAt: string | null = null;
+  private shared: SharedBudget | null = null;
+  /** When the shared row was last read, ms; -Infinity: read on the next refresh. */
+  private sharedReadAt = -Infinity;
   private window: Window | null = null;
   /** Catch-up reads taken in the current clock minute (`minute`, ms since the epoch / 60 000). */
   private catchUp = { minute: -1, taken: 0 };
@@ -171,6 +184,46 @@ export class GitHubClient implements GitHubApi {
     this.maxEntries = opts.etag_entries ?? DEFAULT_ETAG_ENTRIES;
     this.minRemaining = opts.min_remaining ?? DEFAULT_MIN_REMAINING;
     this.share = opts.budget_share ?? DEFAULT_BUDGET_SHARE;
+  }
+
+  /** Shares the budget through the store from now on (src/compose.ts, once the project key is known). */
+  shareBudget(shared: SharedBudget): void {
+    this.shared = shared;
+    this.sharedReadAt = -Infinity;
+  }
+
+  /**
+   * Reads the shared row when `refresh_ms` has passed since the last read, and takes it when it is newer than what
+   * this process knows. A store failure is logged and changes nothing: the client's own responses still count.
+   */
+  async refreshSharedBudget(): Promise<void> {
+    const sh = this.shared;
+    const now = this.now();
+    if (!sh || now - this.sharedReadAt < sh.refresh_ms) return;
+    this.sharedReadAt = now;
+    try {
+      const row = await sh.store.getForgeBudget(sh.project, FORGE_BUDGET_PLUGIN);
+      if (row && (this.rateAt === null || row.updated_at > this.rateAt)) {
+        this.rate = { limit: row.limit, remaining: row.remaining, reset_at: row.reset_at };
+        this.rateAt = row.updated_at;
+      }
+    } catch (err) {
+      this.opts.log?.warn("shared GitHub budget read failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    }
+  }
+
+  /** Writes this process's latest reading; the store keeps it only if no newer one is there. Never fails a call. */
+  private async writeShared(): Promise<void> {
+    const sh = this.shared;
+    const r = this.rate;
+    if (!sh || !r || this.rateAt === null) return;
+    try {
+      await sh.store.putForgeBudget({
+        project: sh.project, plugin: FORGE_BUDGET_PLUGIN, ...r, reset_at: r.reset_at as Timestamp, updated_at: this.rateAt as Timestamp,
+      });
+    } catch (err) {
+      this.opts.log?.warn("shared GitHub budget write failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    }
   }
 
   /** The core rate limit as of the last response; null before any response carried the headers. */
@@ -278,6 +331,7 @@ export class GitHubClient implements GitHubApi {
   }
 
   private async send(method: string, path: string, body?: unknown, accept = "application/vnd.github+json"): Promise<Response> {
+    await this.refreshSharedBudget();
     const r = this.rate;
     if (r && r.remaining <= 0 && this.now() < Date.parse(r.reset_at)) {
       // GitHub would answer this rate limit too; not sending it keeps a retry loop from hammering the API until the reset.
@@ -299,7 +353,7 @@ export class GitHubClient implements GitHubApi {
       },
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
-    this.readRate(res.headers);
+    if (this.readRate(res.headers)) await this.writeShared();
     if (res.status !== 304) this.count();
     if (res.status === 304 && cached) {
       this.cache.delete(key);
@@ -327,15 +381,20 @@ export class GitHubClient implements GitHubApi {
     return res;
   }
 
-  /** Keeps the core limit from the response headers; another resource's limit (search, graphql) is ignored. */
-  private readRate(h: Headers): void {
+  /**
+   * Keeps the core limit from the response headers; another resource's limit (search, graphql) is ignored. True
+   * when the headers carried it.
+   */
+  private readRate(h: Headers): boolean {
     const resource = h.get("x-ratelimit-resource");
-    if (resource !== null && resource !== "core") return;
+    if (resource !== null && resource !== "core") return false;
     const remaining = Number(h.get("x-ratelimit-remaining"));
     const limit = Number(h.get("x-ratelimit-limit"));
     const reset = Number(h.get("x-ratelimit-reset"));
-    if (h.get("x-ratelimit-remaining") === null || !Number.isFinite(remaining) || !Number.isFinite(reset)) return;
+    if (h.get("x-ratelimit-remaining") === null || !Number.isFinite(remaining) || !Number.isFinite(reset)) return false;
     this.rate = { limit: Number.isFinite(limit) ? limit : 0, remaining, reset_at: new Date(reset * 1000).toISOString() };
+    this.rateAt = new Date(this.now()).toISOString();
+    return true;
   }
 
   /** One counted call in the window of the last reported reset; a new reset time starts a new window at zero. */

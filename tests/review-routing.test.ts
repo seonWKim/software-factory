@@ -224,7 +224,7 @@ describe("review routing", () => {
   it("on an adopted PR a bug with spec findings keeps today's route: changes requested, no implement or triage run", async () => {
     const f = await factory({ reviews: [bug([spec("needs a doc"), code("typo")])] });
     const pr: ForgeEvent = {
-      kind: "pr_open", source: { type: "github_issue", id: "o/r#50", link: "https://github.com/o/r/pull/50" }, pr_number: 50,
+      kind: "change_open", source: { type: "github_issue", id: "o/r#50", link: "https://github.com/o/r/pull/50" }, change_ref: "50",
       head_branch: "feature/x", head_sha: "h1", title: "A change", body: "b", author: { provider: "github", subject: "2", login: "bob" }, labels: [],
     };
     f.forge.queue.push(pr);

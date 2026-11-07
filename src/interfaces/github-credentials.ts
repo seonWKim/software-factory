@@ -1,4 +1,5 @@
 import type { GitHubBudgetStatus } from "../core/controller.js";
+import type { FactoryStore } from "./factory-store.js";
 import type { Secret } from "./secret-store.js";
 
 /**
@@ -30,6 +31,18 @@ export interface RepoIdentity extends RepoPath {
 }
 
 /**
+ * Where the client shares the forge's rate limit with every replica (design 05-sources, call budget): the store's
+ * `forge_budget` row of `project`. Read at most once per `refresh_ms` (the controller's tick), written after each
+ * response that carried the limit; a newer reading wins.
+ */
+export interface SharedBudget {
+  store: Pick<FactoryStore, "getForgeBudget" | "putForgeBudget">;
+  /** The project key. */
+  project: string;
+  refresh_ms: number;
+}
+
+/**
  * The forge's REST client as plugins see it: the calls they make, the token kept inside. One per process,
  * built by the selected credential plugin (docs/plugins.md, GitHubCredentials), so its rate-limit budget and
  * conditional-request cache are shared by every plugin that calls the forge.
@@ -51,6 +64,10 @@ export interface GitHubApi {
   takeCatchUp(n: number): number;
   /** The rate-limit budget as the status page shows it; null before any response carried it. */
   status(): GitHubBudgetStatus | null;
+  /** Shares the budget through the store from now on (src/compose.ts, once the project key is known). */
+  shareBudget(shared: SharedBudget): void;
+  /** Reads the shared budget row at most once per `refresh_ms`, taking it when newer than this process's reading. */
+  refreshSharedBudget(): Promise<void>;
 }
 
 /** What a credential plugin builds: the credentials, and the one client over them. */

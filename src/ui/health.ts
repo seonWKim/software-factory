@@ -1,17 +1,43 @@
 // The status page's Health panel and GET /api/health: the same checks as `factory doctor`, from the one
-// implementation (doctorChecks, src/setup.ts), which the composition root passes in as `run`. This module
-// holds no check logic. It limits how often the checks run, shares one run between concurrent requests,
-// and egress-scans every message before it leaves (design §9). Below it, the latest improve report (design §7):
-// its group counts, drafts and filings, every text through the Withholder.
+// implementation (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync
+// line (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent
+// requests, and egress-scans every message before it leaves (design §9). Below it, the latest improve report
+// (design §7): its group counts, drafts and filings, every text through the Withholder.
 
+import { syncLeaseName } from "../core/lease.js";
+import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FailureGroup, ImproveReport } from "../core/types.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
 import { esc } from "./html.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
+
+/** Below this share of the limit left, the sync line is a warn: optional reads wait for the reset on every replica. */
+const LOW_SHARE = 0.1;
+
+/**
+ * The GitHub sync line (design 05-coordination, sync lease): the shared budget (`forge_budget`, plugin `plugin`) and
+ * the replica holding `sync:github_issue:<project>`, from the store only, no GitHub call. E.g.
+ * `GitHub: 812/5000 left, resets 09:12, synced by replica host:42` (reset in UTC). A warn with no live holder or
+ * under 10% left. None while neither is stored (no GitHub plugin selected, or nothing synced yet).
+ */
+export async function syncChecks(
+  store: Pick<FactoryStore, "getCursor" | "getForgeBudget" | "getSyncLease">, repo: { owner: string; name: string }, plugin: string, now: Date,
+): Promise<Check[]> {
+  const project = await readStoredProject(store, repo);
+  if (!project) return [];
+  const [budget, lease] = [await store.getForgeBudget(project.key, plugin), await store.getSyncLease(syncLeaseName("github_issue", project.key))];
+  if (!budget && !lease) return [];
+  const holder = lease && Date.parse(lease.expires_at) > now.getTime() ? lease.owner : null;
+  const left = budget ? `${budget.remaining}/${budget.limit} left, resets ${budget.reset_at.slice(11, 16)}` : "budget not reported yet";
+  const low = budget !== null && Date.parse(budget.reset_at) > now.getTime() && budget.remaining < budget.limit * LOW_SHARE;
+  const msg = `GitHub: ${left}, ${holder ? `synced by replica ${holder}` : "no replica holds the sync lease"}`;
+  return [{ ok: holder !== null && !low, ...((holder === null || low) && { warn: true }), msg }];
+}
 
 /** One finished run, messages as the checks wrote them. Never leaves this module unfiltered. */
 interface RawRun {

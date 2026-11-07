@@ -44,7 +44,7 @@ export class LocalSource implements PollSource {
   async markSeen(_source: SourceRef, _commentId: string | null): Promise<void> {}
 
   /** The store already holds the item's stage; there is no other surface to label. */
-  async setStatus(_source: SourceRef, _status: WorkStatus, _pr_number: number | null): Promise<void> {}
+  async setStatus(_source: SourceRef, _status: WorkStatus, _change_ref: string | null): Promise<void> {}
 
   /** The store holds the item's state; there is nothing to close elsewhere. */
   async closeIssue(_source: SourceRef, _reason?: SourceCloseReason): Promise<void> {}

@@ -768,7 +768,7 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
 
   it("build() makes one client and hands it to every context that needs one; only the broker gets credentials", async () => {
     const credentials = { token: async () => null };
-    const api = { tag: "the one client" } as unknown as GitHubApi;
+    const api = { tag: "the one client", shareBudget: () => {} } as unknown as GitHubApi;
     let made = 0;
     const seen: Record<string, Record<string, unknown>> = {};
     const record = <T>(kind: string, ctx: object, x: T): T => ((seen[kind] = ctx as Record<string, unknown>), x);

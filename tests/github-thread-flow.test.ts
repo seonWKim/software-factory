@@ -325,7 +325,7 @@ describe("GitHub comments in the local store (issue #284)", () => {
     f.hub.comment(42, 150, "/revise rename the flag", { onPr: true });
     await f.controller.tickIntake();
     expect(await f.githubRows()).toEqual([expect.objectContaining({
-      key: "github:150", args: { source: issueRef(42), text: "rename the flag", pr: { pr_number: 42, head_branch: `factory/${item.id}` } },
+      key: "github:150", args: { source: issueRef(42), text: "rename the flag", pr: { change_ref: "42", head_branch: `factory/${item.id}` } },
     })]);
     expect((await f.thread(item.id)).filter(([m]) => m === "github:150")).toEqual([["github:150", "/revise rename the flag"]]);
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING", loop_count: 1 });

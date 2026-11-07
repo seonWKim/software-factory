@@ -18,6 +18,7 @@ import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
+import { FORGE_BUDGET_PLUGIN } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
@@ -26,7 +27,7 @@ import { type SecretName, secretName } from "./interfaces/secret-store.js";
 import { createPlugin, selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
-import { HealthMonitor } from "./ui/health.js";
+import { HealthMonitor, syncChecks } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
 import { LastChecks, serverRevision } from "./ui/system-actions.js";
@@ -293,7 +294,13 @@ async function main(argv: readonly string[]): Promise<number> {
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
           // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
           health: new HealthMonitor(
-            lastChecks.wrap(async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))]),
+            lastChecks.wrap(async () => [
+              ...(await modelStallChecks(parts.store)),
+              ...(await projectKeyChecks(parts.store, loaded.config.repo)),
+              // The GitHub sync line: the shared budget and the sync lease holder, read from the store (design 05-coordination).
+              ...(loaded.config.local_only === true ? [] : await syncChecks(parts.store, loaded.config.repo, FORGE_BUDGET_PLUGIN, parts.clock.now())),
+              ...(await doctorChecks(loaded)),
+            ]),
             parts.clock,
           ),
           lastChecks,

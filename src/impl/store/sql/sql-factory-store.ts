@@ -87,6 +87,10 @@ import type {
   ItemMessage,
   LeaseResult,
   ListenerLease,
+  ForgeBudget,
+  SyncFence,
+  SyncLease,
+  SyncLeaseResult,
   LabelState,
   LabelTarget,
   MergeCheck,
@@ -1655,6 +1659,77 @@ export class SqlFactoryStore implements FactoryStore {
     );
   }
 
+  // Sync leases (design 05-coordination, sync lease)
+
+  async acquireSyncLease(name: string, owner: string, lease_ms: number): Promise<SyncLeaseResult> {
+    return this.db.transaction(async (tx): Promise<SyncLeaseResult> => {
+      const expires_at = this.after(lease_ms);
+      const created = await this.insertOnce(tx, "INSERT INTO sync_leases (name, owner, token, expires_at) VALUES (?, ?, 1, ?)", [
+        name, owner, expires_at,
+      ]);
+      if (created) return { ok: true, lease: { name, owner, token: 1, expires_at } };
+      // Conditional: the holder itself extends its lease with the same token; anyone else takes only an expired (or
+      // released) lease, and taking it bumps the token.
+      const taken = await tx.run(
+        `UPDATE sync_leases SET token = CASE WHEN owner = ? THEN token ELSE token + 1 END, owner = ?, expires_at = ?
+         WHERE name = ? AND (owner = ? OR expires_at <= ?)`,
+        [owner, owner, expires_at, name, owner, this.now()],
+      );
+      const lease = await this.selectSyncLease(tx, name);
+      return taken === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "held", holder: lease };
+    });
+  }
+
+  async renewSyncLease(name: string, token: number, lease_ms: number): Promise<SyncLeaseResult> {
+    return this.db.transaction(async (tx): Promise<SyncLeaseResult> => {
+      const renewed = await tx.run("UPDATE sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.after(lease_ms), name, token]);
+      const lease = await this.selectSyncLease(tx, name);
+      return renewed === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "lease_lost", holder: lease };
+    });
+  }
+
+  async releaseSyncLease(name: string, token: number): Promise<void> {
+    await this.db.transaction((tx) => tx.run("UPDATE sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.now(), name, token]));
+  }
+
+  async getSyncLease(name: string): Promise<SyncLease | null> {
+    return this.selectSyncLease(this.db, name);
+  }
+
+  async advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      if (!(await this.fenceHeld(tx, fence))) return false;
+      return expected === null
+        ? this.insertOnce(tx, "INSERT INTO cursors (name, value) VALUES (?, ?)", [cursor, next])
+        : (await tx.run("UPDATE cursors SET value = ? WHERE name = ? AND value = ?", [next, cursor, expected])) === 1;
+    });
+  }
+
+  // Forge budget (design 05-sources, call budget)
+
+  async getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null> {
+    const [row] = await this.db.all("SELECT * FROM forge_budget WHERE project_key = ? AND plugin = ?", [project, plugin]);
+    return row ? rowToForgeBudget(row) : null;
+  }
+
+  async putForgeBudget(b: ForgeBudget): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const values = [b.remaining, b.limit, b.reset_at, b.updated_at];
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO forge_budget (project_key, plugin, remaining, `limit`, reset_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [b.project, b.plugin, ...values],
+      );
+      if (created) return true;
+      // Conditional: only a newer reading replaces the row, so replicas writing out of order keep the latest.
+      const n = await tx.run(
+        "UPDATE forge_budget SET remaining = ?, `limit` = ?, reset_at = ?, updated_at = ? WHERE project_key = ? AND plugin = ? AND updated_at < ?",
+        [...values, b.project, b.plugin, b.updated_at],
+      );
+      return n === 1;
+    });
+  }
+
   // Identity links (design 2026-11-01)
 
   async resolveLink(provider: LinkedAccount["provider"], subject: string): Promise<UserId | null> {
@@ -2095,8 +2170,8 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO item_thread (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
-        [input.work_item_id, input.marker, input.body, now],
+        "INSERT INTO item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)",
+        [input.work_item_id, input.marker, input.body, now, input.actor ?? null],
       );
       const message = (await this.selectItemMessage(tx, input.work_item_id, input.marker))!;
       const d = input.delivery;
@@ -2130,8 +2205,9 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToDelivery);
   }
 
-  async claimDelivery(seq: number, lease_ms: number): Promise<number | null> {
+  async claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
     return this.db.transaction(async (tx) => {
+      if (fence && !(await this.fenceHeld(tx, fence))) return null;
       const now = this.now();
       const until = new Date(this.clock.now().getTime() + Math.max(0, lease_ms)).toISOString();
       const n = await tx.run(
@@ -2364,6 +2440,20 @@ export class SqlFactoryStore implements FactoryStore {
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
     const [row] = await q.all("SELECT * FROM source_inbox WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
     return row ? rowToInbox(row) : null;
+  }
+
+  private async selectSyncLease(q: SqlExecutor, name: string): Promise<SyncLease | null> {
+    const [row] = await q.all("SELECT * FROM sync_leases WHERE name = ?", [name]);
+    return row ? { name: row.name as string, owner: row.owner as string, token: Number(row.token), expires_at: row.expires_at as Timestamp } : null;
+  }
+
+  /**
+   * Whether `fence.token` is still the token of its sync lease. FOR UPDATE: a takeover (token + 1) waits for the
+   * fenced write to commit, so no write lands after another replica took the lease.
+   */
+  private async fenceHeld(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
+    const [held] = await tx.all(`SELECT token FROM sync_leases WHERE name = ? AND token = ?${this.db.dialect.forUpdate}`, [fence.name, fence.token]);
+    return held !== undefined;
   }
 
   private async selectListenerLease(q: SqlExecutor, source_type: SourceType): Promise<ListenerLease | null> {
@@ -2599,6 +2689,18 @@ function rowToItemMessage(row: Row): ItemMessage {
     marker: row.marker as string,
     body: row.body as string,
     created_at: row.created_at as Timestamp,
+    ...(row.actor != null && { actor: row.actor as string }),
+  };
+}
+
+function rowToForgeBudget(row: Row): ForgeBudget {
+  return {
+    project: row.project_key as string,
+    plugin: row.plugin as string,
+    remaining: Number(row.remaining),
+    limit: Number(row.limit),
+    reset_at: row.reset_at as Timestamp,
+    updated_at: row.updated_at as Timestamp,
   };
 }
 

@@ -80,7 +80,7 @@ interface Cursor {
   review_ids?: number[];
   /**
    * The starting point (design §5, Merges): a PR merged before it is never checked (no merger read, no
-   * pr_merged). Set once: the first poll takes it from the Clock; a cursor written before it existed takes its
+   * change_merged). Set once: the first poll takes it from the Clock; a cursor written before it existed takes its
    * `pulls` time, so an install that already runs reads no history. Only `github.history_since` moves it, back.
    */
   start?: string;
@@ -120,7 +120,7 @@ export class GitHubForge implements Forge {
   }
 
   /**
-   * Closed PRs since the cursor, then the open PRs: pr_open for each reported one, pr_unmergeable for factory PRs
+   * Closed PRs since the cursor, then the open PRs: change_open for each reported one, change_unmergeable for factory PRs
    * that cannot merge, and the "Request changes" reviews on the reported ones. Under the budget threshold the
    * per-PR reads wait for the reset; the next poll makes them (they are not cursored, or keep their cursor).
    */
@@ -130,7 +130,7 @@ export class GitHubForge implements Forge {
     const next: Cursor = { pulls: c.pulls ?? null, reviews: c.reviews ?? null, review_ids: c.review_ids ?? [] };
     const events: ForgeEvent[] = await this.closedPulls(c, next, this.pollContext);
 
-    // Open PRs. Not cursored: reported on every poll while open. pr_open for every factory PR and every other
+    // Open PRs. Not cursored: reported on every poll while open. change_open for every factory PR and every other
     // non-draft PR against the base from this repository (design 2026-11-01); the controller reads more about a
     // PR only when it does not know it yet. Then factory PRs that cannot merge into their base: the controller
     // keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
@@ -142,9 +142,9 @@ export class GitHubForge implements Forge {
       if (p.base.ref === this.baseBranch && !this.isFork(p) && (factory || !p.draft)) {
         reviewed.push(p);
         events.push({
-          kind: "pr_open",
+          kind: "change_open",
           source: this.prRef(p.number),
-          pr_number: p.number,
+          change_ref: String(p.number),
           head_branch: p.head.ref,
           head_sha: p.head.sha,
           title: p.title ?? "",
@@ -156,16 +156,16 @@ export class GitHubForge implements Forge {
       if (!factory || low) continue;
       const full = await this.client.request<GhPullFull>("GET", `${this.base}/pulls/${p.number}`);
       if (full.mergeable !== false) continue;
-      events.push({ kind: "pr_unmergeable", pr_number: full.number, head_branch: full.head.ref, head_sha: full.head.sha, base_sha: full.base.sha });
+      events.push({ kind: "change_unmergeable", change_ref: String(full.number), head_branch: full.head.ref, head_sha: full.head.sha, base_sha: full.base.sha });
     }
 
-    // "Request changes" reviews on the PRs reported open, after their pr_open (design §4).
+    // "Request changes" reviews on the PRs reported open, after their change_open (design §4).
     if (!low) events.push(...(await this.changeRequests(reviewed, c, next)));
     return { events, next_cursor: JSON.stringify(next) };
   }
 
   /**
-   * pr_merged and pr_closed for every PR (not only factory ones, design 2026-11-01: a merge with no work item is
+   * change_merged and change_closed for every PR (not only factory ones, design 2026-11-01: a merge with no work item is
    * an unreviewed merge) updated since the cursor. Pulls have no `since`: read newest-updated first and stop at
    * the cursor, without reading the pages past it (GitHub call budget). A merge before the starting point gets
    * no merger read and no event, so a first start flags no past merge. A `github.history_since` older than the
@@ -198,15 +198,15 @@ export class GitHubForge implements Forge {
         // The list endpoint omits merged_by; the single-PR endpoint has it.
         const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${this.base}/pulls/${p.number}`);
         events.push({
-          kind: "pr_merged",
-          pr_number: p.number,
+          kind: "change_merged",
+          change_ref: String(p.number),
           head_branch: p.head.ref,
           merge_sha: p.merge_commit_sha,
           merger: full.merged_by ? identity(full.merged_by) : null,
           ...fork,
         });
       } else {
-        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref, ...fork });
+        events.push({ kind: "change_closed", change_ref: String(p.number), head_branch: p.head.ref, ...fork });
       }
     }
     // With no closed PR read yet, the next poll still stops at the starting point.
@@ -241,7 +241,7 @@ export class GitHubForge implements Forge {
         events.push({
           kind: "pr_changes_requested",
           source: this.prRef(p.number),
-          pr_number: p.number,
+          change_ref: String(p.number),
           head_branch: p.head.ref,
           review_id: String(r.id),
           reviewer: identity(r.user),
@@ -263,11 +263,11 @@ export class GitHubForge implements Forge {
   }
 
   /** A pull request as a target: same id space as issues (comments and labels share the issues API), its own link. */
-  prRef(pr_number: number): SourceRef {
+  prRef(pr: number): SourceRef {
     return {
       type: this.ref_type,
-      id: `${this.repo.owner}/${this.repo.name}#${pr_number}`,
-      link: `https://github.com/${this.repo.owner}/${this.repo.name}/pull/${pr_number}`,
+      id: `${this.repo.owner}/${this.repo.name}#${pr}`,
+      link: `https://github.com/${this.repo.owner}/${this.repo.name}/pull/${pr}`,
     };
   }
 
@@ -278,17 +278,17 @@ export class GitHubForge implements Forge {
     return ours.id === ref.id && ours.link === ref.link ? Number(m[1]) : null;
   }
 
-  postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string | null }> {
-    return this.issues.postComment(this.prRef(pr_number), body, marker);
+  postPrComment(pr: number, body: string, marker: string): Promise<{ url: string | null }> {
+    return this.issues.postComment(this.prRef(pr), body, marker);
   }
 
-  setPrStatus(source: SourceRef, status: WorkStatus, pr_number: number): Promise<void> {
-    return this.issues.setStatus(source, status, pr_number);
+  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void> {
+    return this.issues.setStatus(source, status, String(pr));
   }
 
   /** Every path the PR changes, both sides of a rename. GitHub lists at most 3000 files per PR. */
-  async prFiles(pr_number: number): Promise<string[]> {
-    const files = await this.client.list<GhPullFile>(`${this.base}/pulls/${pr_number}/files`, 30);
+  async prFiles(pr: number): Promise<string[]> {
+    const files = await this.client.list<GhPullFile>(`${this.base}/pulls/${pr}/files`, 30);
     const paths = new Set<string>();
     for (const f of files) {
       paths.add(f.filename);
@@ -298,8 +298,8 @@ export class GitHubForge implements Forge {
   }
 
   /** The actor of the latest `labeled` event for `label` in the PR's timeline; null when none. */
-  async labelAddedBy(pr_number: number, label: string): Promise<ExternalIdentity | null> {
-    const events = await this.client.list<GhTimelineEvent>(`${this.base}/issues/${pr_number}/timeline`, 10);
+  async labelAddedBy(pr: number, label: string): Promise<ExternalIdentity | null> {
+    const events = await this.client.list<GhTimelineEvent>(`${this.base}/issues/${pr}/timeline`, 10);
     const added = events.filter((e) => e.event === "labeled" && e.label?.name === label).at(-1);
     return added?.actor ? identity(added.actor) : null;
   }
@@ -330,15 +330,15 @@ export class GitHubForge implements Forge {
    * closed item is a GitHub issue), then closes the PR (state closed, never a merge). A merged or closed PR is left alone.
    */
   async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
-    const pull = await this.client.request<{ state: string }>("GET", `${this.base}/pulls/${input.pr_number}`);
+    const pull = await this.client.request<{ state: string }>("GET", `${this.base}/pulls/${input.pr}`);
     if (pull.state !== "open") return "not_open";
     let closer: ExternalIdentity | null = null;
     if (input.closed.type === this.ref_type) {
       const issue = await this.client.request<{ closed_by: GhUser | null }>("GET", `${this.base}/issues/${issueNumberFromSourceId(input.closed.id)}`);
       closer = issue.closed_by ? identity(issue.closed_by) : null;
     }
-    await this.client.commentOnce(this.repo, input.pr_number, input.body(closer), input.marker);
-    await this.client.request("PATCH", `${this.base}/pulls/${input.pr_number}`, { state: "closed" });
+    await this.client.commentOnce(this.repo, input.pr, input.body(closer), input.marker);
+    await this.client.request("PATCH", `${this.base}/pulls/${input.pr}`, { state: "closed" });
     return "closed";
   }
 
@@ -347,9 +347,9 @@ export class GitHubForge implements Forge {
    * one keeps it pending, else (none at all included) it passed. Under the budget threshold the gate waits
    * (pending) and a later pass reads the checks.
    */
-  async prChecks(pr_number: number): Promise<PrChecks> {
+  async prChecks(pr: number): Promise<PrChecks> {
     if (this.client.lowBudget()) return { state: "pending" };
-    const results = await this.prCheckResults(pr_number);
+    const results = await this.prCheckResults(pr);
     const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
     if (failed.length) return { state: "failed", failed };
     return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
@@ -362,9 +362,9 @@ export class GitHubForge implements Forge {
    * `failure` or `error`, is failed; any unfinished one is pending. Under the budget threshold it reads nothing
    * and throws, so the review prompt says the results could not be read.
    */
-  async prCheckResults(pr_number: number): Promise<PrCheckResult[]> {
+  async prCheckResults(pr: number): Promise<PrCheckResult[]> {
     if (this.client.lowBudget()) throw new Error("GitHub request budget low: checks not read");
-    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${this.base}/pulls/${pr_number}`);
+    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${this.base}/pulls/${pr}`);
     const sha = encodeURIComponent(pull.head.sha);
     const runs: GhCheckRun[] = [];
     for (let page = 1; page <= CHECK_PAGES; page++) {

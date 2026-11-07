@@ -69,14 +69,14 @@ async function item(f: F, adopted = false): Promise<WorkItem> {
 const MERGE_SHA = "aaaa1111";
 const branch = (it: WorkItem) => it.head_branch ?? `factory/${it.id}`;
 const merged = (it: WorkItem, merger: ExternalIdentity | null = alice): ForgeEvent => ({
-  kind: "pr_merged", pr_number: 42, head_branch: branch(it), merge_sha: MERGE_SHA, merger,
+  kind: "change_merged", change_ref: "42", head_branch: branch(it), merge_sha: MERGE_SHA, merger,
 });
 const prRef: SourceRef = { type: "github_issue", id: "o/r#42", link: "https://github.com/o/r/pull/42" };
 const pushed = (it: WorkItem, head_sha: string): ForgeEvent => ({
-  kind: "pr_open", source: prRef, pr_number: 42, head_branch: branch(it), head_sha, title: "t", body: "b", author: alice, labels: [],
+  kind: "change_open", source: prRef, change_ref: "42", head_branch: branch(it), head_sha, title: "t", body: "b", author: alice, labels: [],
 });
 const verdictOnPr = (it: WorkItem, args: string, comment_id: string): SourceEvent => ({
-  kind: "verdict_submitted", target: { kind: "pr", pr_number: 42, head_branch: branch(it) }, comment_id, approver: alice, args,
+  kind: "verdict_submitted", target: { kind: "pr", change_ref: "42", head_branch: branch(it) }, comment_id, approver: alice, args,
 });
 const verdicts = async (f: F, it: WorkItem) =>
   (await f.store.listVerdicts(it.id)).map((v) => ({ verdict: v.verdict, severity: v.severity, implicit: v.implicit, pr_head: v.pr_head }));

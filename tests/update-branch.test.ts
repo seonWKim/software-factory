@@ -147,7 +147,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
     await controller.tickRuns();
   };
   const event = (head_sha = "h1", base_sha = "b1"): ForgeEvent => ({
-    kind: "pr_unmergeable", pr_number: 42, head_branch: branch, head_sha, base_sha,
+    kind: "change_unmergeable", change_ref: "42", head_branch: branch, head_sha, base_sha,
   });
   const remoteSha = () => git(origin, "rev-parse", `refs/heads/${branch}`);
   const updateRuns = async () => (await store.listRuns(id)).filter((r) => r.kind === "update");
@@ -177,7 +177,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
   };
 }
 
-describe("update run: pr_unmergeable", () => {
+describe("update run: change_unmergeable", () => {
   it("enqueues exactly one update run with the event's key, however often the event arrives", async () => {
     const f = await setup("clean");
     f.forge.queue.push(f.event(), f.event());

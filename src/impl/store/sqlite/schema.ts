@@ -673,4 +673,26 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE verdicts ADD COLUMN pr_head TEXT;
   CREATE INDEX IF NOT EXISTS verdicts_head ON verdicts (work_item_id, pr_head);
   `,
+  // 40: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
+  // `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a sync source and delivers its outbox, like
+  // `listener_leases` but keyed by name. `forge_budget`: the forge's rate limit per (project_key, plugin), a newer
+  // `updated_at` wins. `item_thread.actor`: the account ID of a message that came from a source, NULL otherwise.
+  `
+  CREATE TABLE IF NOT EXISTS sync_leases (
+    name        TEXT PRIMARY KEY,
+    owner       TEXT NOT NULL,
+    token       INTEGER NOT NULL,
+    expires_at  TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS forge_budget (
+    project_key TEXT NOT NULL,
+    plugin      TEXT NOT NULL,
+    remaining   INTEGER NOT NULL,
+    \`limit\`     INTEGER NOT NULL,
+    reset_at    TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (project_key, plugin)
+  );
+  ALTER TABLE item_thread ADD COLUMN actor TEXT;
+  `,
 ];
