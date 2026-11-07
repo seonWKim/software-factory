@@ -225,6 +225,7 @@ describe("footers match what the controller accepts", () => {
     max_revisions: { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" },
     implementing: { stage: "RUNNING" },
     dependency_hold: { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #1 to merge" },
+    dependency_closed: { stage: "RUNNING", blocked_on: "human", blocked_reason: "dependency_closed:#1" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
     failed_review: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
     failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:update:invalid_output" },
