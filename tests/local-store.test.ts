@@ -15,6 +15,8 @@ import { BACKENDS, MYSQL_URL, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlD
 // comments, and the CLI command log. Types and tables only: nothing outside the store calls these yet.
 
 /** The MySQL step and SQLite migration that add both tables. */
+// Never pin a step as the newest (a length, `at(-1)` equal to it, or "pending alone"): a later migration would
+// fail these checks from outside its allowed paths. Compare with `>=`, read MIGRATIONS.length, or use mysqlStepsUpTo.
 const STEP = 21;
 const STEP_FILE = "0021-local-items.sql";
 const TABLES = ["cli_commands", "item_messages"];
@@ -248,12 +250,12 @@ async function sqliteColumns(driver: SqliteDriver): Promise<{ name: string; type
 }
 
 describe("SQLite migration 23: app command request handling", () => {
-  it("is the latest migration; migrate() on a fresh database reaches 23 with nullable handled_at and refusal", async () => {
-    expect(MIGRATIONS).toHaveLength(HANDLING_STEP);
+  it("migrate() on a fresh database reaches the latest migration, with nullable handled_at and refusal", async () => {
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(HANDLING_STEP);
     const driver = new SqliteDriver(":memory:");
     const store = new SqlFactoryStore(driver, new FakeClock());
     await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: HANDLING_STEP, latest: HANDLING_STEP });
+    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     expect((await sqliteColumns(driver)).slice(6)).toEqual([
       { name: "handled_at", type: "TEXT", nn: 0 },
       { name: "refusal", type: "TEXT", nn: 0 },
@@ -261,7 +263,7 @@ describe("SQLite migration 23: app command request handling", () => {
     await store.close();
   });
 
-  it("a database recorded at version 22 reaches 23 after migrate(); a row from before stays pending", async () => {
+  it("a database recorded at version 22 reaches the latest after migrate(); a row from before stays pending", async () => {
     const driver = new SqliteDriver(":memory:");
     const store = new SqlFactoryStore(driver, new FakeClock());
     await store.migrate();
@@ -274,7 +276,7 @@ describe("SQLite migration 23: app command request handling", () => {
     expect((await sqliteColumns(driver)).map((c) => c.name)).not.toContain("handled_at");
 
     await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: HANDLING_STEP, latest: HANDLING_STEP });
+    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["old"]);
     await store.close();
   });
@@ -290,7 +292,7 @@ describe("SQLite migration 23 run again", () => {
     await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
 
     await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: HANDLING_STEP, latest: HANDLING_STEP });
+    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     expect(await store.getAppCommandRequest(request.seq)).toMatchObject({ refusal: "refused" });
     expect((await sqliteColumns(driver)).map((c) => c.name).filter((n) => n === "handled_at")).toHaveLength(1);
     await store.close();
@@ -298,24 +300,25 @@ describe("SQLite migration 23 run again", () => {
 });
 
 describe("MySQL step 0023: app command request handling", () => {
-  it("is the last step, a .sql file after 0022, that adds handled_at and refusal", () => {
+  it("is a .sql file step after 0022 that adds handled_at and refusal", () => {
     const steps = readSteps(STEPS_DIR, INLINE_STEPS);
     const step = steps.find((s) => s.name === "app-command-handling")!;
     expect(step).toMatchObject({ number: HANDLING_STEP, from: COMMANDS_STEP, kind: "sql", file: HANDLING_STEP_FILE });
-    expect(steps.at(-1)?.number).toBe(HANDLING_STEP);
+    expect(steps.at(-1)!.number).toBeGreaterThanOrEqual(HANDLING_STEP);
     const sql = readFileSync(join(STEPS_DIR, HANDLING_STEP_FILE), "utf8");
     expect(sql).toMatch(new RegExp(`ALTER TABLE ${COMMANDS_TABLE} ADD COLUMN handled_at .*ADD COLUMN refusal `));
   });
 });
 
 describe.skipIf(!MYSQL_URL)("MySQL step 0023 on MySQL", () => {
-  it("pending alone at state 22; after npm run migrate the table has handled_at and refusal, and old rows stay pending", async () => {
+  it("pending at state 22; after npm run migrate the table has handled_at and refusal, and old rows stay pending", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
     await new MysqlMigrations(c, { dir: mysqlStepsUpTo(COMMANDS_STEP) }).apply(() => undefined);
     await c.query(`INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES ('old', 'local:owner', 'approve', '{}', 't')`);
 
-    const status = await new MysqlMigrations(c).status();
+    // Steps up to 23 only: later steps are pending too and have their own tests.
+    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(HANDLING_STEP) }).status();
     expect(status.state).toBe(COMMANDS_STEP);
     expect(status.pending.map((p) => p.label)).toEqual([HANDLING_STEP_FILE]);
 
