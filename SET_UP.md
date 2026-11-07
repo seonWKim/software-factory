@@ -322,6 +322,26 @@ Filters (in the URL, so a filtered view can be bookmarked; each option shows how
 - `closed=1`: show closed items too
 - `q`: search the issue number (`#12` or `12`) and the title as shown
 
-Slack (optional, for real-time threads): [`docs/slack-setup.md`](docs/slack-setup.md), mostly `scripts/slack-app.sh create|tokens|check`.
+### Slack (optional: real-time threads)
+
+Off by default; nothing changes until you turn it on. Once on, mentioning the bot in a listed channel starts a work item from that thread, and the factory answers in the thread with the spec, status and buttons. PRs and code stay on GitHub.
+
+One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md) (mostly `scripts/slack-app.sh create|tokens|check`):
+
+1. **The app, from the manifest** ([`slack/manifest.json`](slack/manifest.json)): Socket Mode on (no public URL or open port), interactivity on (for the buttons), bot scopes `app_mentions:read`, `channels:history`, `chat:write`, events `app_mention` and `message.channels`.
+2. **The tokens go in the secret file** (`~/.config/software-factory/.env`, never in the repository), through `scripts/slack-app.sh tokens`:
+   - `SLACK_BOT_TOKEN` (`xoxb-…`, OAuth & Permissions page): reads threads and posts in them.
+   - `SLACK_APP_TOKEN` (`xapp-…`, Basic Information → App-Level Tokens, scope `connections:write`): opens the Socket Mode connection.
+3. **The channel:** `/invite @software-factory` in the channel, then copy its ID (channel details, bottom of the **About** tab, `C…`). Use the ID, not the name.
+4. **Turn it on** in `factory.config.json`, then restart the factory:
+
+   ```json
+   "slack": { "channels": ["C0123456789"] },
+   "plugins": { "source": ["github-issues", "local", "slack"] }
+   ```
+
+5. **Link your Slack account** to your factory user (with `auth: github`, a Slack account has no rights until it is linked): run `factory link-code github:<your GitHub user ID>`, then post `@software-factory /link <code>` in the channel.
+
+In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons. To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

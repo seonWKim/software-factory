@@ -7,6 +7,7 @@ import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } fr
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, useNow } from "./common.js";
+import { ItemCommands } from "./item-commands.js";
 import { transcriptPath } from "./transcript.js";
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
@@ -170,7 +171,7 @@ export function ItemsPage() {
   );
 }
 
-/** One work item: its state, runs (with errors) and timeline. */
+/** One work item: its state, command buttons, runs (with errors) and timeline. */
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
@@ -205,6 +206,7 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
+      <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
       {item.merge_check && (
         <Section title="Merge check">
           <p className="text-sm" data-merge-check-detail>

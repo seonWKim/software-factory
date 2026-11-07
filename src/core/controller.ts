@@ -630,7 +630,14 @@ export class Controller {
         // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
         if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
-        if ("refuse" in principal) return;
+        if ("refuse" in principal) {
+          // On GitHub the intake label is the gate and a refusal stays silent. A chat source has no label: the
+          // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
+          if (e.source.type !== PR_SOURCE_TYPE) {
+            await this.post(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
+          }
+          return;
+        }
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: e.source,
