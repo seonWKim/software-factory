@@ -415,4 +415,17 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE app_command_requests ADD COLUMN refusal TEXT;
   CREATE INDEX IF NOT EXISTS app_command_requests_pending ON app_command_requests (handled_at, seq);
   `,
+  // 24: merge checks (issue #248, design §5 Merge check). One row per item: its latest local merge check against
+  // the base. `mergeable` is 0 or 1; `conflicts` is JSON text (the conflicting paths). Every replica reads it.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 24.
+  `
+  CREATE TABLE IF NOT EXISTS merge_checks (
+    work_item_id  TEXT PRIMARY KEY REFERENCES work_items(id),
+    mergeable     INTEGER NOT NULL,
+    conflicts     TEXT NOT NULL,
+    head_sha      TEXT NOT NULL,
+    base_sha      TEXT NOT NULL,
+    checked_at    TEXT NOT NULL
+  );
+  `,
 ];
