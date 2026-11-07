@@ -626,4 +626,12 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS work_items_change ON work_items (project, change_ref);
   CREATE UNIQUE INDEX IF NOT EXISTS unreviewed_merges_change ON unreviewed_merges (project, change_ref);
   `,
+  // 36: the mirror mark of CLI commands on sync-source items (design 05-sources, CLI intake). `mirror`: 1 when the
+  // command is to be posted once on its item's source (a CLI command on a GitHub item), 0 otherwise and on every
+  // older row. `mirrored_at`: when that post succeeded, NULL until then. The index serves the unmirrored read.
+  `
+  ALTER TABLE command_inbox ADD COLUMN mirror INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
+  CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
+  `,
 ];

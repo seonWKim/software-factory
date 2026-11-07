@@ -804,6 +804,17 @@ export interface FactoryStore {
   appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+  /**
+   * Commands appended with `mirror` and not marked mirrored yet, in seq order, at most `limit` (the CLI's commands
+   * on items of a sync source such as GitHub). Read-only.
+   */
+  listUnmirroredCliCommands(limit: number): Promise<CliCommand[]>;
+  /**
+   * Marks command `key` mirrored now. Conditional: only a command appended with `mirror` and not marked yet
+   * changes, so a second mark (a retry, another replica) changes nothing and returns false. Returns whether this
+   * call marked it.
+   */
+  markCliCommandMirrored(key: string): Promise<boolean>;
 
   // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an
   // entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
@@ -1006,6 +1017,11 @@ export interface NewCliCommand {
   command: string;
   /** The command's arguments, stored as JSON. */
   args: Record<string, unknown>;
+  /**
+   * The command is to be mirrored once to its item's sync source (a CLI command on a GitHub item), best effort:
+   * listed by `listUnmirroredCliCommands` until `markCliCommandMirrored`. Absent or false: nothing to mirror.
+   */
+  mirror?: boolean;
 }
 
 export interface CliCommand extends NewCliCommand {

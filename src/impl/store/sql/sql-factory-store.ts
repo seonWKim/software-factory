@@ -2070,8 +2070,8 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, command: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO command_inbox (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+        "INSERT INTO command_inbox (command_key, actor, command, args, created_at, mirror) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0],
       );
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
     });
@@ -2082,6 +2082,21 @@ export class SqlFactoryStore implements FactoryStore {
       after_seq,
     ]);
     return rows.map(rowToCliCommand);
+  }
+
+  async listUnmirroredCliCommands(limit: number): Promise<CliCommand[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM command_inbox WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+    );
+    return rows.map(rowToCliCommand);
+  }
+
+  async markCliCommandMirrored(key: string): Promise<boolean> {
+    const n = await this.db.run("UPDATE command_inbox SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [
+      this.now(),
+      key,
+    ]);
+    return n > 0;
   }
 
   // App command requests (issue #245)
@@ -2497,6 +2512,7 @@ function rowToCliCommand(row: Row): CliCommand {
     actor: row.actor as string,
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,
+    ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
     created_at: row.created_at as Timestamp,
   };
 }
