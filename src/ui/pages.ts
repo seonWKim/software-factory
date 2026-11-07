@@ -344,13 +344,10 @@ async function runningSection(c: Ctx): Promise<string> {
   )}</section>`;
 }
 
-/**
- * Who holds a running run: the worker's lease owner, or for an interactive session the person's user ID (design §5,
- * 2026-11-01), never a display name.
- */
+/** The worker's lease owner, or for a session (design §5, 2026-11-01) the person's user ID, never a display name. */
 async function workerCell(c: Ctx, r: Run): Promise<string> {
-  if (r.kind === "interactive") return `session: ${r.actor_id ? await c.w.text(r.actor_id) : `<span class="muted">unknown</span>`}`;
-  return r.lease ? await c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`;
+  const id = r.kind === "interactive" ? r.actor_id : (r.lease?.owner ?? null);
+  return `${r.kind === "interactive" ? "session: " : ""}${id ? await c.w.text(id) : `<span class="muted">unknown</span>`}`;
 }
 
 async function queueSection(c: Ctx): Promise<string> {

@@ -140,34 +140,18 @@ export function isCovered(path: string, allowed: readonly string[]): boolean {
  */
 export const IMPLEMENT_KINDS: readonly RunKind[] = ["implement", "update"];
 
-/**
- * A person's session on an item (design §5, 2026-11-01). It also writes the item's branch, so it counts with
- * IMPLEMENT_KINDS for "one branch writer per item", but no worker ever claims it.
- */
+/** A person's session (design §5, 2026-11-01): writes the item's branch like IMPLEMENT_KINDS, never claimed by a worker. */
 export const INTERACTIVE: RunKind = "interactive";
-
-/** The error code of `session abandon`: the person ended the session; the remote branch is kept. */
+/** Session error codes: `session abandon`, and the reaper's on an expired session lease (never requeued). */
 export const SESSION_ABANDONED = "abandoned";
-/** The error code the reaper writes when an interactive run's lease expires: the terminal is gone. Never requeued. */
 export const SESSION_LOST = "session_lost";
-/**
- * The blocked reason of an item whose session ended without a PR (design §5, 2026-11-01): RUNNING, blocked on a
- * human, no run queued. The next `session start` takes it up again.
- */
+/** The blocked reason of an item whose session ended without a PR: RUNNING, blocked on a human, nothing queued. */
 export const SESSION_RELEASED = "session_released";
 
-/**
- * Whether two path lists overlap, by the scope gate's coverage rule (`isCovered`): an equal path, or a path under
- * a folder (ending in `/`) of the other list. The same rule as the coordination cost's shared paths.
- */
+/** The paths two lists share by the scope gate's coverage rule (as the coordination cost's shared paths). */
 export function pathsOverlap(a: readonly string[], b: readonly string[]): string[] {
   const out = new Set<string>();
-  for (const x of a) {
-    for (const y of b) {
-      if (x === y || isCovered(y, [x])) out.add(y);
-      else if (isCovered(x, [y])) out.add(x);
-    }
-  }
+  for (const x of a) for (const y of b) if (x === y || isCovered(y, [x])) out.add(y); else if (isCovered(x, [y])) out.add(x);
   return [...out].sort();
 }
 

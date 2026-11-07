@@ -479,19 +479,12 @@ export class SqlFactoryStore implements FactoryStore {
           await tx.all(`SELECT work_item_id FROM runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
         ).map((r) => r.work_item_id as string),
       );
-      // Open sessions (design §5, 2026-11-01): their items and paths. An implement-type run waits while its item has
-      // one or overlaps one, so a worker never writes where a person is working.
-      const sessions = await tx.all(
-        `SELECT r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
-         WHERE r.status = 'running' AND r.kind = ?`,
-        [INTERACTIVE],
-      );
-      const sessionPaths = sessions.map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
+      const sessions = (await this.runningPaths(tx, [INTERACTIVE])).map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
       const overlapsSession = async (itemId: string): Promise<boolean> => {
-        if (sessionPaths.length === 0) return false;
-        if (sessionPaths.some((x) => x.id === itemId)) return true;
+        if (sessions.length === 0 || sessions.some((x) => x.id === itemId)) return sessions.length > 0;
         const it = await this.selectItem(tx, itemId as WorkItemId);
-        return it !== null && sessionPaths.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
+        return it !== null && sessions.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
       };
 
       // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
@@ -765,8 +758,7 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
-        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ?
-         ORDER BY started_at DESC, ${seq} DESC`,
+        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
         [INTERACTIVE],
       );
       const paused: WorkerId[] = [];
@@ -875,9 +867,7 @@ export class SqlFactoryStore implements FactoryStore {
           // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
           const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
           await tx.run(
-            `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
-               updated_at = ?
-             WHERE id = ? AND status = 'running'`,
+            "UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
             [JSON.stringify(lost), now, now, run.id as string],
           );
         } else if (Number(run.attempt) >= max_attempts) {
@@ -908,92 +898,73 @@ export class SqlFactoryStore implements FactoryStore {
   // Interactive sessions (design §5, 2026-11-01)
 
   async startSession(input: StartSessionInput): Promise<StartSessionResult> {
-    const { forUpdate } = this.db.dialect;
+    const { forUpdate, seq } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<StartSessionResult> => {
       // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const current = await this.selectItem(tx, input.id, forUpdate);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
-
-      const own = await tx.all(
-        `SELECT id, kind, status FROM runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${this.db.dialect.seq}`,
-        [input.id],
-      );
+      const own = await tx.all(`SELECT id, kind, status FROM runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
       const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
       const writer = own.find((r) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string));
       if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
-
-      const paths = input.patch.allowed_paths ?? current.allowed_paths;
-      const others = await tx.all(
-        `SELECT r.id, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
-         WHERE r.status = 'running' AND r.work_item_id <> ? AND r.kind IN (${placeholders(IMPLEMENT_KINDS.length + 1)})
-         ORDER BY r.created_at, r.${this.db.dialect.seq}`,
-        [input.id, ...IMPLEMENT_KINDS, INTERACTIVE],
-      );
-      for (const o of others) {
-        const shared = pathsOverlap(paths, parseList(o.allowed_paths));
-        if (shared.length > 0) {
-          return { ok: false, reason: "overlap", work_item_id: o.work_item_id as WorkItemId, run_id: o.id as RunId, paths: shared };
+      for (const o of await this.runningPaths(tx, [...IMPLEMENT_KINDS, INTERACTIVE])) {
+        const paths = pathsOverlap(input.patch.allowed_paths ?? current.allowed_paths, parseList(o.allowed_paths));
+        if (o.work_item_id !== input.id && paths.length > 0) {
+          return { ok: false, reason: "overlap", work_item_id: o.work_item_id as WorkItemId, run_id: o.id as RunId, paths };
         }
       }
-
       const runId = newId("run") as RunId;
       const now = this.now();
       const session: SessionRecord = { actor_id: input.actor.id, transcript_url: input.transcript_url, tokens: null, notes: [], last_finish: null };
-      const runInput: RunInput = { session };
       await tx.run(
-        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at,
-           input, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, started_at,
+           created_at, updated_at) VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?)`,
         [runId, input.id, INTERACTIVE, `${input.id}:interactive:${runId}`, input.owner, this.after(input.lease_ms),
-          JSON.stringify(runInput), now, now, now],
+          JSON.stringify({ session } satisfies RunInput), now, now, now],
       );
-
       const { changes, sets, values } = diffPatch(current, input.patch);
       const version = current.version + 1;
-      const updated = await tx.run(
-        `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
-        [...values, version, now, input.id, input.expected_version],
-      );
-      if (updated !== 1) throw new Error("session start: the item changed under its row lock");
-      const state_change = await this.insertStateChange(
-        tx, input.id, version, input.actor, input.reason, changes, { ...input.detail, run_id: runId },
-      );
+      await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
+        ...values, version, now, input.id, input.expected_version,
+      ]);
+      const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, { ...input.detail, run_id: runId });
       const cancelled: RunId[] = [];
-      for (const r of own.filter((x) => x.kind === "triage" && x.status === "queued")) {
-        const n = await tx.run(
-          "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'queued'",
-          [now, r.id as string],
-        );
+      for (const r of own.filter((x) => x.kind === "triage")) {
+        const n = await tx.run("UPDATE runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'queued'", [now, r.id as string]);
         if (n === 1) cancelled.push(r.id as RunId);
       }
-      const item = (await this.selectItem(tx, input.id))!;
-      const run = (await this.selectRun(tx, runId))!;
-      return { ok: true, item, run, state_change, cancelled };
+      return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled };
     });
   }
 
   async updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult> {
-    const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<LeaseResult> => {
-      const run = await this.selectRun(tx, runId, forUpdate);
-      if (!run || run.kind !== INTERACTIVE || run.status !== "running" || run.lease?.token !== token || !run.input?.session) {
-        return { ok: false, reason: "lease_lost" };
-      }
+      const run = await this.selectRun(tx, runId, this.db.dialect.forUpdate);
+      const s = run?.input?.session;
+      if (!run || !s || run.status !== "running" || run.lease?.token !== token) return { ok: false, reason: "lease_lost" };
       const now = this.now();
-      const s: SessionRecord = { ...run.input.session };
-      if (update.note !== undefined) s.notes = [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES);
-      if (update.tokens !== undefined) s.tokens = update.tokens;
-      if (update.transcript_url !== undefined) s.transcript_url = update.transcript_url;
-      if (update.last_finish !== undefined) s.last_finish = { ...update.last_finish, at: now };
-      const written = await tx.run(
-        "UPDATE runs SET input = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
-        [JSON.stringify({ ...run.input, session: s }), now, runId, token],
-      );
-      return written === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
+      const next: SessionRecord = {
+        ...s,
+        ...(update.note !== undefined ? { notes: [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES) } : {}),
+        ...(update.tokens !== undefined ? { tokens: update.tokens } : {}),
+        ...(update.transcript_url !== undefined ? { transcript_url: update.transcript_url } : {}),
+        ...(update.last_finish !== undefined ? { last_finish: { ...update.last_finish, at: now } } : {}),
+      };
+      await tx.run("UPDATE runs SET input = ?, updated_at = ? WHERE id = ?", [JSON.stringify({ ...run.input, session: next }), now, runId]);
+      return { ok: true, run: (await this.selectRun(tx, runId))! };
     });
+  }
+
+  /** Running runs of `kinds` with their item's allowed_paths. */
+  private runningPaths(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<Row[]> {
+    return tx.all(
+      `SELECT r.id, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`,
+      [...kinds],
+    );
   }
 
   async listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]> {

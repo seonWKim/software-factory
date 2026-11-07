@@ -559,11 +559,8 @@ export class FakeBroker implements ToolBroker {
     (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
-    if (scripted) {
-      if (scripted.ok && name === "github.push_branch") this.remote.set((args as { branch: string }).branch, "pushed");
-      return scripted;
-    }
-    if (name === "github.push_branch") this.remote.set((args as { branch: string }).branch, "pushed");
+    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
+    if (scripted) return scripted;
     if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
@@ -662,26 +659,15 @@ export async function pipeline(opts: {
 /** `factory session`'s local records (src/core/session.ts), in memory instead of under state_dir. */
 export class MemorySessionFiles implements SessionFiles {
   files = new Map<string, SessionFile>();
-  async read(id: WorkItemId) {
-    return this.files.get(id) ?? null;
-  }
-  async list() {
-    return [...this.files.values()];
-  }
-  async write(f: SessionFile) {
-    this.files.set(f.work_item_id, f);
-  }
-  async remove(id: WorkItemId) {
-    this.files.delete(id);
-  }
+  read = async (id: WorkItemId) => this.files.get(id) ?? null;
+  list = async () => [...this.files.values()];
+  write = async (f: SessionFile) => void this.files.set(f.work_item_id, f);
+  remove = async (id: WorkItemId) => void this.files.delete(id);
 }
 
-/** The repo's issues by number, for `session start` on an issue with no work item. */
+/** The repo's issues by number, for `session start` on an issue with no work item. Records each number asked. */
 export class FakeIssues implements IssueLookup {
   asked: number[] = [];
   constructor(readonly issues: Record<number, SessionIssue> = {}) {}
-  async issue(n: number) {
-    this.asked.push(n);
-    return this.issues[n] ?? null;
-  }
+  issue = async (n: number) => (this.asked.push(n), this.issues[n] ?? null);
 }

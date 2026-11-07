@@ -205,8 +205,7 @@ export function rowToWorkItem(r: Row): WorkItem {
 
 export function rowToRun(r: Row): Run {
   const input = parseJson<RunInput | null>(r.input ?? null);
-  // An interactive run's record lives in its input column (design §5, 2026-11-01): no schema step, and every
-  // older row (no `session` key) reads null.
+  // An interactive run's record is in its input column (design §5, 2026-11-01): older rows read null.
   const session = input?.session ?? null;
   return {
     id: r.id as RunId,

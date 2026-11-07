@@ -253,54 +253,24 @@ export interface RecordConflictsInput {
 
 export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
-/**
- * `session start` (design §5, 2026-11-01): one `interactive` run, written `running` with a lease, plus the
- * item's transition, in one transaction under the claim lock, so no claim runs between the checks and the write.
- */
+/** `session start` (design §5, 2026-11-01): the item's transition plus one `interactive` run, written running. */
+/** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
 export interface StartSessionInput {
-  id: WorkItemId;
-  /** Applies only if the item's current version equals this. */
-  expected_version: number;
-  /** The person: the state change's actor and the run's `actor_id`. */
-  actor: Extract<Actor, { kind: "user" }>;
-  /** The item's change, e.g. the owner's spec and `stage: RUNNING`, or clearing `session_released`. */
-  patch: WorkItemPatch;
-  /** The state change's reason, e.g. `session_started`. */
-  reason: string;
-  /** Stored on the state change; the store adds `run_id`. */
-  detail: StateChangeDetail;
-  /** The lease owner, e.g. `session:<host>:<pid>`. Never a worker id. */
-  owner: string;
-  lease_ms: number;
-  transcript_url: string | null;
+  id: WorkItemId; expected_version: number; actor: Extract<Actor, { kind: "user" }>; patch: WorkItemPatch; reason: string; detail: StateChangeDetail;
+  owner: string; lease_ms: number; transcript_url: string | null;
 }
 
 export type StartSessionResult =
-  /** `cancelled`: the item's queued triage runs, cancelled in the same transaction. */
+  /** `cancelled`: the item's queued triage runs. */
   | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
-  /** The item has a running interactive run already. Nothing changed. */
-  | { ok: false; reason: "session_open"; run_id: RunId }
-  /** The item has a queued or running implement-type run. Nothing changed. */
-  | { ok: false; reason: "implement_run"; run_id: RunId }
-  /**
-   * A running implement-type or interactive run of another item has allowed_paths overlapping this item's (after
-   * the patch). `paths`: the shared paths. Nothing changed.
-   */
+  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
+  /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
   | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
 
-/** What `session note`, `--tokens`, `--transcript` and `session finish` write on an interactive run. */
-export interface SessionUpdate {
-  /** Appended to the run's notes with the store's time. Already egress-scanned by the caller. */
-  note?: string;
-  /** The latest total: replaces the stored one. A whole number of 0 or more. */
-  tokens?: number;
-  /** Replaces the stored URL. Already checked and egress-scanned by the caller. */
-  transcript_url?: string;
-  /** The result of a finish attempt; `at` is the store's time. */
-  last_finish?: Omit<SessionFinish, "at">;
-}
+/** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
+export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
 
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion {
@@ -400,9 +370,8 @@ export interface FactoryStore {
    * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
    * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
-   * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed, and a queued implement-type run is
-   * skipped, and stays queued, while its item has an open session or its allowed_paths overlap those of another
-   * item with an open session (a running interactive run).
+   * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while
+   * its item has an open session (a running interactive run) or its allowed_paths overlap one's.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
    */
@@ -450,20 +419,16 @@ export interface FactoryStore {
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
    * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
-   * An `interactive` run is never requeued (design §5, 2026-11-01): it fails with `session_lost` at once, its
-   * attempt count aside, and its item's controller step releases the item.
+   * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01).
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
 
-  // Interactive sessions (design §5, 2026-11-01)
-
   /**
-   * `session start`: refused, with nothing written, while the item has a running interactive run, a queued or
-   * running implement-type run, or a running implement-type or interactive run of another item overlaps its
-   * allowed_paths (after `patch`). Else, in one transaction under the claim lock: the transition (version bump,
-   * state change with the person as actor and `run_id` added to `detail`), every queued triage run of the item
-   * cancelled, and one `interactive` run inserted `running` (attempt 1, lease token 1, started_at now).
+   * `session start` (design §5, 2026-11-01), one transaction under the claim lock. Refused with nothing written while
+   * the item has a running interactive run or a queued or running implement-type run, or a running implement-type or
+   * interactive run of another item overlaps its allowed_paths (after `patch`). Else: the transition, the item's
+   * queued triage runs cancelled, and one `interactive` run inserted running (attempt 1, lease token 1).
    */
   startSession(input: StartSessionInput): Promise<StartSessionResult>;
   /** Writes `update` on the interactive run while it is `running` with this `token`; lease_lost otherwise. */

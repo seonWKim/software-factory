@@ -204,10 +204,8 @@ describe("factory stats: interactive sessions (design §5, 2026-11-01)", () => {
   /** One session on a new item, its tokens reported, then ended `end` (or left open with null). */
   async function session(store: Store, n: number, tokens: number, end: "succeeded" | "failed" | null) {
     const { item } = await store.createWorkItem(issue(n), system);
-    const r = await store.startSession({
-      id: item.id, expected_version: item.version, actor: person, patch: { stage: "RUNNING", allowed_paths: [`src/${n}/`] },
-      reason: "session_started", detail: {}, owner: "session:h:1", lease_ms: 60_000, transcript_url: null,
-    });
+    const patch = { stage: "RUNNING" as const, allowed_paths: [`src/${n}/`] };
+    const r = await store.startSession({ id: item.id, expected_version: 1, actor: person, patch, reason: "session_started", detail: {}, owner: "session:h:1", lease_ms: 60_000, transcript_url: null });
     if (!r.ok) throw new Error(r.reason);
     await store.updateSession(r.run.id, 1, { tokens });
     if (end === "succeeded") await store.completeRun(r.run.id, 1, { status: "succeeded", summary: "", data: { pr_number: n } });
@@ -222,20 +220,13 @@ describe("factory stats: interactive sessions (design §5, 2026-11-01)", () => {
     await session(store, 22, 999, null); // still open: not counted
     const before = JSON.stringify(await store.listWorkItems(1000));
     const report = await collectStats(store, config);
-    expect(report.interactive).toEqual({ runs: 2, tokens: 350 });
     expect(formatStatsText(report)).toContain("interactive sessions: 2 finished, 350 tokens reported");
     const json = JSON.stringify(report);
     expect(JSON.parse(json).interactive).toEqual({ runs: 2, tokens: 350 });
     expect(json).not.toMatch(/github:|wi_|run_/);
-    // The tier rows are unchanged by sessions.
-    expect(report.tiers[0]).toMatchObject({ tier: 1, items: 2, token_cost: 150 });
+    expect(report.tiers[0]).toMatchObject({ tier: 1, items: 2, token_cost: 150 }); // the tier rows are unchanged by sessions
     expect(JSON.stringify(await store.listWorkItems(1000))).toBe(before);
-  });
-
-  it("an empty store reports zero sessions", async () => {
-    const { store } = await newStore();
-    const report = await collectStats(store, config);
-    expect(report.interactive).toEqual({ runs: 0, tokens: 0 });
+    expect((await collectStats((await newStore()).store, config)).interactive).toEqual({ runs: 0, tokens: 0 });
   });
 });
 

@@ -490,46 +490,25 @@ export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
 export interface SessionParts {
-  clock: Clock;
-  store: FactoryStore;
-  scanner: EgressScanner;
-  sandbox: Sandbox;
-  broker: ToolBroker;
-  auth: AuthProvider;
-  github: GitHubClient;
-  /** The configured repo resolved to its project key, with the live settings (runtime overrides) applied. */
-  config: FactoryConfig;
+  clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubClient; config: FactoryConfig;
   close(): Promise<void>;
 }
 
-/**
- * The parts of build() a session uses, built through the same registry: the configured store (migrated), egress
- * scanner, sandbox, auth with its grant sources, and the tool broker, the only way a session pushes or opens a PR.
- * The gates read the same settings as a worker, runtime overrides included.
- */
+/** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */
 export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const { stateDir, registry, plugins: sel } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded);
-  const base = p.base;
-  const clock = await p.clock();
-  const secrets = await p.secrets();
+  const [base, clock, secrets] = [p.base, await p.clock(), await p.secrets()];
   const store = await p.store(secrets, clock);
   await store.migrate();
-  const scanner = await p.scanner(secrets);
-  const credentials = await p.githubCredentials(secrets, clock);
+  const [scanner, credentials, sandbox] = [await p.scanner(secrets), await p.githubCredentials(secrets, clock), await p.sandbox()];
   const github = new GitHubClient(credentials);
-  const sandbox = await p.sandbox();
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
-  const project = await resolveProject(github, base.repo);
-  const settings = new LiveSettings({
-    config: resolvedConfig(loaded.config, project),
-    base: { ...settingsBase(loaded), layers: resolvedConfig(loaded.config, project).settings },
-    source: store,
-    log: new ConsoleLogger(clock, "settings"),
-  });
+  const config = resolvedConfig(loaded.config, await resolveProject(github, base.repo));
+  const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();
   return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => store.close() };
 }

@@ -715,33 +715,20 @@ describe("ui: interactive sessions (design §5, 2026-11-01)", () => {
   it("shows an interactive run in Running now and in the item timeline with the actor's user ID, never a display name", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const item = await setTitle(store, 9, "Owner session");
-    const ready = await patch(store, item, { stage: "RUNNING", allowed_paths: ["src/a/"], blocked_on: "human", blocked_reason: "session_released" });
-    const r = await store.startSession({
-      id: ready.id, expected_version: ready.version, actor: { kind: "user", id: "github:1" as UserId },
-      patch: { blocked_on: "none", blocked_reason: null }, reason: "session_started", detail: { spec_source: "triage" },
-      owner: "session:host:1", lease_ms: LEASE, transcript_url: null,
-    });
+    const item = await patch(store, await setTitle(store, 9, "Owner session"), { stage: "RUNNING", allowed_paths: ["src/a/"] });
+    const actor = { kind: "user" as const, id: "github:1" as UserId };
+    const r = await store.startSession({ id: item.id, expected_version: item.version, actor, patch: {}, reason: "session_started", detail: {}, owner: "session:host:1", lease_ms: LEASE, transcript_url: null });
     if (!r.ok) throw new Error(r.reason);
     await store.updateSession(r.run.id, 1, { tokens: 777 });
     // The page functions themselves, without a server.
     const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
     const parsed = parseFilters(new URLSearchParams());
     if (!parsed.ok) throw new Error(parsed.error);
-
     const running = section(await renderIndex(deps, parsed.filters), "running");
-    expect(running).toContain("interactive");
-    expect(running).toContain("session: github:1");
-    expect(running).not.toContain(alice.login!);
-
+    expect(running).toMatch(/interactive[\s\S]*session: github:1/);
     const page = (await renderItem(deps, item.id))!;
-    const timeline = section(page, "timeline");
-    expect(timeline).toContain("session_started");
-    expect(timeline).toContain("github:1");
-    expect(timeline).not.toContain(alice.login!);
-    const runs = section(page, "runs");
-    expect(runs).toContain("interactive");
-    expect(runs).toContain("(github:1)");
-    expect(runs).toContain("777");
+    expect(section(page, "timeline")).toMatch(/github:1[\s\S]*session_started/);
+    expect(section(page, "runs")).toMatch(/interactive <span class="muted">\(github:1\)<\/span>[\s\S]*777/);
+    expect(running + page).not.toContain(alice.login!);
   });
 });

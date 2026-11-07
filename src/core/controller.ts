@@ -1718,7 +1718,6 @@ export class Controller {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
-      // An interactive run's reported total instead (design §5, 2026-11-01), added once, as this transition acks it.
       const tokens = it.token_cost + runTokenCount(run);
       if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
@@ -1846,17 +1845,12 @@ export class Controller {
           // Written already acknowledged, so never here; kept for exhaustiveness.
           return ack("run_ignored");
         case "interactive": {
-          // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): the same
-          // move as an implement run's PR, so the PR gets the factory's review run.
-          const pr = Number(data.pr_number);
-          const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
+          // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
+          const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
+          const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
           return {
-            patch: { stage: "REVIEW", pr_number: pr, token_cost: tokens, ...(files ? { pr_files: files } : {}) },
-            actor: SYSTEM,
-            reason: "session_finished",
-            detail: { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) },
-            ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+            patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
+            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
           };
         }
         case "update": {
@@ -2513,18 +2507,12 @@ export class Controller {
  * second apply is refused as already acknowledged, and adds nothing). A run with no usage changes nothing.
  */
 /**
- * A session that ended without a PR (abandoned, lease lost, cancelled), design §5, 2026-11-01: never retried. The
- * item is released: RUNNING, blocked on a human with `session_released`, no run queued, so the next `session start`
- * (or a human command) picks it up. The pushed branch, if any, stays on the forge.
+ * A session that ended without a PR (abandoned, lease lost), design §5, 2026-11-01: never retried. The item is released:
+ * RUNNING, blocked on a human with `session_released`, nothing queued, for the next `session start`. A pushed branch stays.
  */
-function sessionReleased(it: WorkItem, run: Run, code: string): Decision {
-  return {
-    patch: { blocked_on: "human", blocked_reason: SESSION_RELEASED },
-    actor: SYSTEM,
-    reason: SESSION_RELEASED,
-    detail: { run_id: run.id, error_code: code, ...(run.actor_id ? { actor_id: run.actor_id } : {}) },
-    ack_run: run.id,
-  };
+function sessionReleased(_it: WorkItem, run: Run, code: string): Decision {
+  const detail = { run_id: run.id, error_code: code, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+  return { patch: { blocked_on: "human", blocked_reason: SESSION_RELEASED }, actor: SYSTEM, reason: SESSION_RELEASED, detail, ack_run: run.id };
 }
 
 function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
