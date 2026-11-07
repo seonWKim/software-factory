@@ -5,6 +5,7 @@ import { GitHubClient, GitHubError, githubMinRemaining } from "../src/impl/githu
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import { secretName } from "../src/interfaces/secret-store.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubForge } from "../src/impl/forge/github-forge.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { recordingLog } from "./helpers/fakes.js";
 
@@ -86,9 +87,20 @@ function setup(n: number, opts: { etag_entries?: number; min_remaining?: number 
   const gh = fakeGitHub(clock, n);
   const log = recordingLog();
   const client = new GitHubClient(credentials, "https://gh.test", { fetch: gh.fetchFn, clock, log, ...opts });
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, { clock, history_since: null, log });
-  return { clock, gh, log, client, source };
+  const repo = { owner: "o", name: "r" };
+  const ctx = { clock, history_since: null, log };
+  const source = new GitHubIssueSource(client, repo, "factory", "factory/", "main", undefined, null);
+  // Both GitHub plugins selected (issue #273): the forge reads the PRs, the source everything else.
+  const forge = new GitHubForge(client, repo, "factory/", "main", source, ctx);
+  /** One poll tick as the controller makes it: the source, then the forge, each through its own cursor. */
+  const tick = async (cursors: Cursors = { source: null, forge: null }) => {
+    const s = await source.poll(cursors.source);
+    const f = await forge.poll(cursors.forge);
+    return { events: [...s.events, ...f.events], next: { source: s.next_cursor, forge: f.next_cursor } };
+  };
+  return { clock, gh, log, client, source, forge, tick };
 }
+type Cursors = { source: string | null; forge: string | null };
 
 describe("GitHubClient conditional requests (ETag / 304)", () => {
   it("sends the stored ETag back and answers a 304 with the kept body", async () => {
@@ -128,23 +140,22 @@ describe("GitHubClient rate-limit budget", () => {
   });
 
   it("under min_remaining skips the optional reads until the reset, logging one line on entering and one on leaving", async () => {
-    const { gh, client, source, clock, log } = setup(3, { min_remaining: 200 });
-    const first = await source.poll(null);
+    const { gh, client, forge, tick, clock, log } = setup(3, { min_remaining: 200 });
+    const first = await tick();
     gh.state.remaining = 150;
     gh.state.calls = [];
     await client.request("GET", "/repos/o/r/pulls/200"); // the response that reports the low budget
     gh.state.calls = [];
-    const low = await source.poll(first.next_cursor);
+    const low = await tick(first.next);
     const paths = gh.state.calls.map((c) => c.path.split("?")[0]);
     // The intake lists still run; the per-PR mergeable reads, the reviews and the commits wait.
     expect(paths).toEqual(["/repos/o/r/issues", "/repos/o/r/issues", "/repos/o/r/issues/comments", "/repos/o/r/pulls", "/repos/o/r/pulls"]);
     expect(low.events.filter((e) => e.kind === "pr_open")).toHaveLength(3);
     // The commit and review cursors stay put, so the next poll reads them.
-    const before = JSON.parse(first.next_cursor);
-    const after = JSON.parse(low.next_cursor);
-    expect([after.commits, after.reviews]).toEqual([before.commits, before.reviews]);
+    expect(JSON.parse(low.next.source).commits).toEqual(JSON.parse(first.next.source).commits);
+    expect(JSON.parse(low.next.forge).reviews).toEqual(JSON.parse(first.next.forge).reviews);
     gh.state.calls = [];
-    expect(await source.prChecks(200)).toEqual({ state: "pending" });
+    expect(await forge.prChecks(200)).toEqual({ state: "pending" });
     expect(gh.state.calls).toEqual([]);
     expect(log.lines.filter((l) => l.msg.startsWith("GitHub budget"))).toEqual([
       { level: "warn", msg: "GitHub budget low: optional reads wait for the reset", fields: { remaining: 150, min_remaining: 200, reset_at: new Date(gh.state.reset * 1000).toISOString() } },
@@ -153,7 +164,7 @@ describe("GitHubClient rate-limit budget", () => {
     clock.advance(3601_000);
     expect(client.lowBudget()).toBe(false);
     gh.state.calls = [];
-    await source.poll(low.next_cursor);
+    await tick(low.next);
     expect(gh.state.calls.some((c) => c.path.startsWith("/repos/o/r/commits"))).toBe(true);
     expect(gh.state.calls.some((c) => /\/pulls\/\d+$/.test(c.path))).toBe(true);
     expect(log.lines.filter((l) => l.msg.startsWith("GitHub budget")).map((l) => l.msg)).toEqual([
@@ -187,14 +198,14 @@ describe("GitHubClient rate-limit budget", () => {
 });
 
 describe("GitHub calls per poll", () => {
-  /** Counted calls of the third poll (the steady state: the cursor has settled, nothing changed on GitHub). */
+  /** Counted calls of the third poll tick (the steady state: the cursors have settled, nothing changed on GitHub). */
   async function steadyPoll(n: number, etag_entries?: number) {
-    const { gh, source } = setup(n, etag_entries === undefined ? {} : { etag_entries });
-    const first = await source.poll(null);
-    const second = await source.poll(first.next_cursor);
+    const { gh, tick } = setup(n, etag_entries === undefined ? {} : { etag_entries });
+    const first = await tick();
+    const second = await tick(first.next);
     gh.state.calls = [];
-    await source.poll(second.next_cursor);
-    return { counted: gh.state.counted, sent: gh.state.calls.length };
+    await tick(second.next);
+    return { counted: gh.state.counted, sent: gh.state.calls.length, paths: gh.state.calls.map((c) => c.path.split("?")[0]!) };
   }
 
   it("drops from 6 + N to 0 for N open factory PRs when nothing changed", async () => {
@@ -202,17 +213,29 @@ describe("GitHub calls per poll", () => {
     const before = await steadyPoll(n, 0);
     const after = await steadyPoll(n);
     // open issues, closed issues, comments, closed PRs (one page), open PRs, N mergeable reads, the newest PR's
-    // reviews, base commits.
+    // reviews, base commits: the same calls as when the source read the PRs itself (issue #273), each made once.
     expect(before.counted).toBe(6 + n + 1);
+    expect(before.paths.filter((p) => p === "/repos/o/r/pulls")).toEqual(["/repos/o/r/pulls", "/repos/o/r/pulls"]);
     expect(after.sent).toBe(before.sent);
     expect(after.counted).toBe(0);
   });
 
+  it("a first tick with both GitHub plugins makes 6 + N calls, as the source alone did before issue #273", async () => {
+    const n = 4;
+    const { gh, tick } = setup(n, { etag_entries: 0 });
+    await tick();
+    // open issues, closed issues, comments, base commits; closed PRs (one page), open PRs, N mergeable reads (no
+    // review is read on the first poll).
+    expect(gh.state.counted).toBe(6 + n);
+    const lists = gh.state.calls.map((c) => c.path.split("?")[0]!).filter((p) => !/\/pulls\/\d+$/.test(p));
+    expect(lists).toEqual(["/repos/o/r/issues", "/repos/o/r/issues", "/repos/o/r/issues/comments", "/repos/o/r/commits", "/repos/o/r/pulls", "/repos/o/r/pulls"]);
+  });
+
   it("reads one page of closed PRs past the cursor, not every page", async () => {
-    const { gh, source } = setup(1);
-    const first = await source.poll(null);
+    const { gh, tick } = setup(1);
+    const first = await tick();
     gh.state.calls = [];
-    await source.poll(first.next_cursor);
+    await tick(first.next);
     expect(gh.state.calls.filter((c) => c.path.startsWith("/repos/o/r/pulls?state=closed")).map((c) => c.path)).toEqual([
       "/repos/o/r/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
     ]);
