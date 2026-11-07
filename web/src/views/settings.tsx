@@ -147,11 +147,19 @@ function ResetButton({ row, label, token, project }: { row: SettingRow; label: s
   );
 }
 
+/** What a key controls, under its name; always shown, narrow screens included. */
+function Description({ text }: { text: string }) {
+  return <p className="mt-1 max-w-64 text-xs text-pretty text-zinc-600 dark:text-zinc-400">{text}</p>;
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   return (
     <tr data-key={row.key}>
-      <Td className="font-mono text-xs whitespace-nowrap">{row.key}</Td>
+      <Td>
+        <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
+        <Description text={row.description} />
+      </Td>
       <Td className="min-w-48">
         <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
         {row.key === "workers" && row.max !== undefined && (
@@ -216,7 +224,10 @@ export function SettingsPage() {
         <Table label="Changes by PR only" head={["Key", ""]}>
           {v.pr_only.map((p) => (
             <tr key={p.key} data-key={p.key}>
-              <Td className="font-mono text-xs">{p.key}</Td>
+              <Td>
+                <span className="font-mono text-xs">{p.key}</span>
+                <Description text={p.description} />
+              </Td>
               <Td className="text-zinc-600 dark:text-zinc-400">{p.note}</Td>
             </tr>
           ))}
