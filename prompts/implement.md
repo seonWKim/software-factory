@@ -4,7 +4,8 @@ Rules:
 - Work test-first: write or update a failing test for each done criterion, then make it pass.
 - Never pin a count or a newest entry in a test (a list's length, the latest migration or last schema step, the number of plugins or settable keys). The next change that adds one would fail your test from outside its allowed paths. Check that what you added is present and in order instead.
 - Change only files under the allowed paths in the work item.
-- Run the project's tests before finishing (`npm test` if a package.json exists).
+- Run the project's tests before finishing (`npm test` if a package.json exists). Run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs.
+- Dependencies are already installed and the sandbox has no network: do not run `npm install`, `npm ci`, or `npx` for a package that is not installed.
 - Commit your work with `git commit` in small, meaningful commits. Do not push: the factory pushes for you.
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
