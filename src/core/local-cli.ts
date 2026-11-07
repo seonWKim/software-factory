@@ -6,9 +6,10 @@ import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
- * state. The `local` source reads that log and the controller applies each command with the same authorize
- * check and the same replies as the GitHub comment, through the auth plugin for local commands (`local` by
- * default, issue #318). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
+ * state, for an item of any source. The controller reads that log and applies each command with the same
+ * authorize check and the same replies as the GitHub comment, through the auth plugin for local commands (`local`
+ * by default, issue #318); a command on a GitHub item is also mirrored to its issue, best effort, once GitHub
+ * answers (design 05-sources, CLI intake). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
  * writing command becomes the local owner; `users` lets the owner give others roles. No GitHub call.
  */
 
@@ -49,6 +50,12 @@ export function localIdentity(actor: string): ExternalIdentity {
 }
 
 const ANONYMOUS_USER = `local:${ANONYMOUS}` as UserId;
+const CLI_KEY_PREFIX = "cli:";
+
+/** Whether a command inbox key (or the comment id of its event) is a CLI command's: `cli:<random id>`. */
+export function isCliCommandKey(key: string): boolean {
+  return key.startsWith(CLI_KEY_PREFIX);
+}
 const USER_ID = /^[a-z]+:\S+$/;
 
 export interface CliCommandSpec {
@@ -207,10 +214,11 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "command": {
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
-      if (item.source.type !== "local") return fail(`${a.id} is not a local work item: reply \`/${a.command}\` on its issue instead`);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
-      const { command } = await d.store.appendCliCommand({ key: `cli:${d.newId()}`, actor: user, command: a.command, args });
+      // An item of a sync source (GitHub) gets the command mirrored on its issue later; a local item has no other surface.
+      const mirror = item.source.type !== "local";
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
       return {
         code: 0,
         lines: [`stored \`/${a.command}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
