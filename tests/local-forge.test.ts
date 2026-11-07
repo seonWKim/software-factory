@@ -1,14 +1,21 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Plugins, loadConfig } from "../src/compose.js";
 import type { LocalMergeSpec } from "../src/core/local-merge.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import type { ToolBroker } from "../src/interfaces/tool-broker.js";
+import { FakeGitHubClient, cleanScanner } from "./helpers/fakes.js";
+import { newStore } from "./helpers/store.js";
 
 // The local merge's temporary worktree (design 05-sources, Local items beside a forge; issue #333): the merged result
 // is checked in a detached worktree beside the run folders, never in the live checkout, which keeps its HEAD,
-// index and status; a failed check moves nothing; two merges of one branch at once move the base once.
+// index and status; a failed check moves nothing; two merges of one branch at once move the base once. Compose builds
+// the local broker and the local-mode sandbox beside the selected GitHub ones, with no new setting.
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
@@ -86,5 +93,47 @@ describe("the local merge's temporary worktree", { timeout: 30_000 }, () => {
     expect([a, b].filter((x) => x.merged && !x.already)).toHaveLength(1);
     expect([a, b].every((x) => x.merged && x.sha === main)).toBe(true);
     expect(git(r.repo, "rev-list", "--count", `${mainBefore}..main`)).toBe("2");
+  });
+});
+
+describe("compose: the local parts beside the GitHub plugin", () => {
+  const REAL = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.config.json"), "utf8")) as Record<string, unknown>;
+  afterEach(() => vi.unstubAllEnvs());
+
+  async function loaded(overrides: Record<string, unknown>) {
+    const dir = mkdtempSync(join(tmpdir(), "sf-local-parts-"));
+    mkdirSync(join(dir, "prompts"));
+    for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+    writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, store: { type: "sqlite" }, state_dir: "state", worktrees_dir: "wt", ...overrides }));
+    writeFileSync(join(dir, "secrets.env"), "MYSQL_PASSWORD=pw\n");
+    vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets.env"));
+    return loadConfig(dir);
+  }
+  const ctx = async () => ({
+    github: new FakeGitHubClient(), credentials: { token: async () => null }, secrets: { get: async () => null } as never,
+    store: (await newStore()).store, scanner: cleanScanner, clock: new FakeClock(),
+  });
+
+  it("with the GitHub plugin selected: the local broker and the selected sandbox in local mode (no origin fetch, the local base)", async () => {
+    const l = await loaded({});
+    expect(l.config).not.toHaveProperty("local_only");
+    const selected = {} as ToolBroker;
+    const parts = (await new Plugins(l).localParts(selected, await ctx()))!;
+    expect(parts.broker).toBeInstanceOf(LocalToolBroker);
+    expect(parts.broker).not.toBe(selected);
+    expect(parts.broker.allTools().map((t) => t.name)).toEqual(["github.push_branch"]);
+    expect(parts.sandbox).toBeInstanceOf(NoOpSandbox);
+    // A repo with no origin at all: only the local mode reads the base without a fetch.
+    const r = repoWithBranch();
+    expect(await parts.sandbox.updateBase({ repo: r.repo, base_ref: "main" })).toBe(git(r.repo, "rev-parse", "main"));
+  });
+
+  it("with no GitHub plugin selected: none, the selected broker and sandbox are the local ones", async () => {
+    const l = await loaded({
+      auth: "local", permissions: { grants: ["static"] },
+      plugins: { ...(REAL.plugins as object), awake: "none", updater: "none", source: ["local"], broker: "local" },
+    });
+    expect(l.config.local_only).toBe(true);
+    expect(await new Plugins(l).localParts({} as ToolBroker, await ctx())).toBeUndefined();
   });
 });
