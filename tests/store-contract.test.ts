@@ -340,9 +340,12 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         [{ status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage }, "rate_limited", 20],
         [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: true }, "stalled", 0],
       ] as const;
-      for (const [outcome, cls, tokens] of cases) {
-        const { store, item } = await queued();
+      // One store for every case (a fresh MySQL database per case is slow): one item each, claimed in turn.
+      const { store } = await make();
+      for (const [i, [outcome, cls, tokens]] of cases.entries()) {
+        const { item } = await store.createWorkItem(issue(i + 1), system, { enqueue: { kind: "triage", idempotency_key: `t${i}` } });
         const run = (await claim(store))!;
+        expect(run.work_item_id).toBe(item.id);
         await store.completeRun(run.id, run.lease!.token, outcome);
         expect(await store.listRunAttempts(item.id)).toMatchObject([
           { status: "failed", error_code: outcome.error_code, failure_class: cls, tokens },
