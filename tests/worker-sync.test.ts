@@ -59,6 +59,9 @@ class GitPushBroker implements ToolBroker {
   listTools(): ToolDescriptor[] {
     return [];
   }
+  allTools(): ToolDescriptor[] {
+    return [];
+  }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
     if (name === "github.preflight") {

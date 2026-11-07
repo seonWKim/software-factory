@@ -407,6 +407,9 @@ describe("plugin registry: guards can be switched", () => {
     listTools(): ToolDescriptor[] {
       return [];
     }
+    allTools(): ToolDescriptor[] {
+      return [];
+    }
     async call(): Promise<ToolResult> {
       return { ok: true, content: null };
     }
