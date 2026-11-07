@@ -7,8 +7,8 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.migrations.json",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('web/dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.migrations.json && vite build --config web/vite.config.ts --logLevel warn",
+    "typecheck": "tsc -p tsconfig.test.json && tsc -p web/tsconfig.json",
     "test": "vitest run",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run",
     "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
@@ -16,8 +16,20 @@
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.3.5",
+    "@tanstack/react-query": "^5.107.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.20.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "jsdom": "^29.1.1",
+    "lucide-react": "^1.70.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.5",
     "typescript": "^5.9.3",
+    "vite": "^8.3.6",
     "vitest": "^4.1.12"
   },
   "bin": {

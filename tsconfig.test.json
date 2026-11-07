@@ -1,5 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true, "rootDir": "." },
-  "include": ["src", "tests", "vitest.config.ts"]
+  "include": ["src", "tests", "vitest.config.ts"],
+  // The web app's test is checked with web/tsconfig.json (DOM and JSX).
+  "exclude": ["tests/ui-shell.test.tsx"]
 }
