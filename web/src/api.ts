@@ -1,6 +1,7 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
-// POST /api/v1/settings (postSettings) and POST /api/v1/items/:id/commands (postCommand), each with the
-// per-process CSRF token (from GET /api/v1/settings or GET /api/v1/session) in x-csrf-token.
+// POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand) and POST /api/v1/pauses/resume
+// (postResume), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session or /api/v1/pauses)
+// in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -323,6 +324,18 @@ export interface DataPageBody {
   run_items: Record<string, string>;
 }
 
+/** One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time. */
+export interface PauseRow {
+  name: string;
+  ends_at: string;
+}
+
+/** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
+export interface PausesView {
+  pauses: PauseRow[];
+  csrf_token: string | null;
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -339,6 +352,8 @@ export const API = {
   health: "/api/v1/health",
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
+  pauses: "/api/v1/pauses",
+  resume: "/api/v1/pauses/resume",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
@@ -393,6 +408,13 @@ export async function postCommand(token: string, id: string, command: string, no
   const text = note.trim();
   const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
+export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
+  if (r.ok) return { ok: true, ended: r.value.ended === true };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

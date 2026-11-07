@@ -1,5 +1,10 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type QueueRow, type RunRow, type UnreviewedMerges, useApi } from "../api.js";
+import {
+  API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PausesView, type QueueRow, type RunRow,
+  type UnreviewedMerges, postResume, useApi,
+} from "../api.js";
+import { Button } from "../components/ui/button.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
@@ -68,6 +73,66 @@ export function FactoryBanner({ factory, now }: { factory: FactoryState | null |
   );
 }
 
+/** What each claim pause stops (design §5 Restarts). */
+const PAUSE_LABELS: Record<string, string> = {
+  rate_limit: "Usage or rate limit: no run starts",
+  forge_auth: "Forge refused the credentials: no implement or update run starts",
+  preflight_access: "Push or PR access check failed: no implement or update run starts",
+  model_stall: "Model not answering: no run starts until a probe answers",
+};
+
+/** One pause with its "Resume now" button; the endpoint's refusal shows next to the button. */
+function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | null; now: number }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const resume = async () => {
+    if (token === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postResume(token, pause.name);
+      if (!r.ok) setError(r.error);
+      else await client.invalidateQueries({ queryKey: [API.pauses] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ends = Date.parse(pause.ends_at);
+  const label = pause.name === "model_stall" ? "next probe" : "ends";
+  return (
+    <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+      <span className="font-mono text-xs">{pause.name}</span>
+      <span className="min-w-0 text-pretty text-zinc-700 dark:text-zinc-300">{PAUSE_LABELS[pause.name] ?? pause.name}</span>
+      <span className="tabular-nums whitespace-nowrap text-zinc-600 dark:text-zinc-400" title={pause.ends_at}>
+        {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
+      </span>
+      {token !== null && (
+        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => void resume()}>
+          Resume now
+        </Button>
+      )}
+      {error && <span role="alert" className="text-xs text-pretty break-words text-red-700 dark:text-red-300">{error}</span>}
+    </li>
+  );
+}
+
+/** Every claim pause in effect, each with "Resume now". Hidden while there is none. */
+export function ClaimPauses({ now }: { now: number }) {
+  const q = useApi<PausesView>(API.pauses);
+  if (q.isError) return <ErrorNote error={q.error} />;
+  if (!q.data || q.data.pauses.length === 0) return null;
+  return (
+    <Section title="Claim pauses" count={q.data.pauses.length}>
+      <ul aria-label="Claim pauses" className="space-y-1">
+        {q.data.pauses.map((p) => <PauseItem key={p.name} pause={p} token={q.data.csrf_token} now={now} />)}
+      </ul>
+    </Section>
+  );
+}
+
 /** The factory floor: what needs the operator, what runs, what waits; then the numbers. */
 export function FloorPage() {
   const now = useNow();
@@ -81,6 +146,7 @@ export function FloorPage() {
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} />
+      <ClaimPauses now={now} />
       <Section title="Needs you" count={items.data ? needs.length : undefined}>
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
@@ -332,6 +398,7 @@ export function HealthPage() {
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   return (
     <>
+      <ClaimPauses now={now} />
       <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
         <ul className="space-y-1 text-sm">
           {checks.map((c, i) => (
