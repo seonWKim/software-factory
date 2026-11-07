@@ -97,7 +97,7 @@ export function FloorPage() {
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
           {o.unreviewed_merges_7d} PRs merged without review in the last 7 days.{" "}
-          <Link href={`${BASE}health`} className="text-blue-700 hover:underline dark:text-blue-400">See them on Health</Link>
+          <Link href={`${BASE}health`} className={LINK_CLASS}>See them on Health</Link>
         </p>
       )}
       {o && (
@@ -320,7 +320,7 @@ export function HealthPage() {
               {merges.data.merges.map((m) => (
                 <tr key={`${m.project}#${m.pr_number}`}>
                   <Td className="tabular-nums">
-                    {m.pr_url ? <a href={m.pr_url} target="_blank" rel="noreferrer" className="hover:underline">#{m.pr_number}</a> : `#${m.pr_number}`}
+                    {m.pr_url ? <a href={m.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.pr_number}</a> : `#${m.pr_number}`}
                   </Td>
                   <Td className="text-xs break-words">{m.merged_by}</Td>
                   <Td className="font-mono text-xs">{m.merge_sha}</Td>
