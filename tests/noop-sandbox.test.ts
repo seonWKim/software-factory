@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { WRITE_TOOLS } from "../src/core/worker.js";
+import { buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
+import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox, type ProcessRunner } from "../src/impl/sandbox/noop-sandbox.js";
 
@@ -331,5 +334,45 @@ describe("NoOpSandbox run folder with a read-only node_modules", { timeout: 30_0
     expect(added).toEqual([]);
     expect(tempFiles).toEqual([]);
     expect(cache).toBe(true);
+  });
+});
+
+describe("NoOpSandbox: an implement run's write rules (design §5 Sandbox)", () => {
+  /** Whether one of the settings' `Edit(//<root>/**)` allow rules covers `path`. */
+  const allowed = (rules: readonly string[], path: string) =>
+    rules.some((r) => {
+      const root = /^Edit\(\/(\/.*)\/\*\*\)$/.exec(r)?.[1];
+      return root !== undefined && path.startsWith(`${root}/`);
+    });
+
+  it("still lets the run write to its own folder, writable_paths and the declared cache and temp paths, never the live checkout", async () => {
+    const { root, repo } = repoWithOrigin();
+    // The run folders sit inside the live checkout, as `.worktrees/` does in the factory's own repo.
+    const sbx = new NoOpSandbox(join(repo, ".worktrees"));
+    const h = await sbx.create({ repo, branch: "factory/wi_w", base_ref: "main" });
+    const writable = join(root, "cache");
+    const tmp = join(root, "homes", "run_w", "tmp");
+    const spec = {
+      role: "implement", tools: WRITE_TOOLS, deny_paths: [], writable_paths: [writable], system_prompt: "s", sandbox: h,
+    } as unknown as AgentRunSpec;
+    const args = buildClaudeArgs(spec, "m", "claude", undefined, [tmp]);
+    const settings = JSON.parse(args[args.indexOf("--settings") + 1]!) as {
+      permissions: { allow: string[] };
+      sandbox: { enabled: boolean; allowUnsandboxedCommands: boolean; filesystem: { allowWrite: string[] } };
+    };
+    const { allow } = settings.permissions;
+    for (const p of [join(h.workdir, "src", "a.ts"), join(h.workdir, ".vite-cache", "x"), join(writable, "x"), join(tmp, "x")]) {
+      expect(allowed(allow, p)).toBe(true);
+    }
+    expect(allowed(allow, join(repo, "placeholder"))).toBe(false);
+    // Bash: the OS sandbox is on, cannot be bypassed, and adds only writable_paths beyond its own run folder.
+    expect(settings.sandbox).toMatchObject({ enabled: true, allowUnsandboxedCommands: false, filesystem: { allowWrite: [writable] } });
+
+    // The run folder itself is writable through the sandbox, its cache folder included.
+    const r = await sbx.exec(h, ["sh", "-c", "mkdir -p .vite-cache && echo x > .vite-cache/c && echo y > new.txt"], { env: { PATH: process.env.PATH! } });
+    expect(r.exit_code).toBe(0);
+    expect(readFileSync(join(h.workdir, ".vite-cache", "c"), "utf8")).toBe("x\n");
+    expect(readFileSync(join(h.workdir, "new.txt"), "utf8")).toBe("y\n");
+    await sbx.destroy(h);
   });
 });

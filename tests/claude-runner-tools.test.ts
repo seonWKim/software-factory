@@ -28,10 +28,10 @@ function flag(args: string[], name: string): string | undefined {
 }
 
 describe("claude-code runner tool flags (snapshot)", () => {
-  it("write set: --tools and --allowedTools are exactly Bash,Read,Edit,Write,Glob,Grep", () => {
+  it("write set: --tools is Bash,Read,Edit,Write,Glob,Grep; --allowedTools leaves out the path-scoped Edit and Write", () => {
     const args = buildClaudeArgs(spec(WRITE_TOOLS), "m");
     expect(flag(args, "--tools")).toBe("Bash,Read,Edit,Write,Glob,Grep");
-    expect(flag(args, "--allowedTools")).toBe("Bash,Read,Edit,Write,Glob,Grep");
+    expect(flag(args, "--allowedTools")).toBe("Bash,Read,Glob,Grep");
   });
 
   it("read set: --tools and --allowedTools are exactly Read,Glob,Grep", () => {
@@ -40,11 +40,12 @@ describe("claude-code runner tool flags (snapshot)", () => {
     expect(flag(args, "--allowedTools")).toBe("Read,Glob,Grep");
   });
 
-  it("--allowedTools lists exactly the names in spec.tools and nothing else", () => {
+  it("--allowedTools lists exactly the names in spec.tools but Edit and Write, and nothing else", () => {
     for (const tools of [[Read], [Glob, Read], TOOLS, READ_TOOLS, WRITE_TOOLS]) {
       const args = buildClaudeArgs(spec(tools), "m");
-      expect(flag(args, "--allowedTools")!.split(",")).toEqual(tools.map((t) => t.name));
-      expect(flag(args, "--tools")!.split(",")).toEqual(tools.map((t) => t.name));
+      const names = tools.map((t) => t.name);
+      expect(flag(args, "--allowedTools")!.split(",")).toEqual(names.filter((n) => n !== "Edit" && n !== "Write"));
+      expect(flag(args, "--tools")!.split(",")).toEqual(names);
     }
   });
 
@@ -60,6 +61,7 @@ describe("buildHarnessSettings (snapshot)", () => {
     expect(buildHarnessSettings({ deny_paths: DENY, writable_paths: WRITABLE })).toEqual({
       env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
       permissions: {
+        allow: ["Edit(//home/op/.cache/run/**)"],
         deny: [
           "Read(//home/op/.config/software-factory)",
           "Read(//home/op/.config/software-factory/**)",
@@ -125,6 +127,51 @@ describe("buildHarnessSettings (snapshot)", () => {
     expect(s.permissions.deny[0]).toBe("Read(**/.env)");
     expect(s.permissions.deny).toHaveLength(11 + ENV_FILE_DENY.length);
     expect(s.sandbox.filesystem).toEqual({ denyRead: [], allowWrite: [] });
+  });
+});
+
+describe("native Write and Edit are path-scoped (live checkout)", () => {
+  const LIVE = "/home/op/software-factory";
+  const RUN = `${LIVE}/.worktrees/sbx_1`;
+  const TMP = "/state/agents/homes/run_1/tmp";
+  const implementSpec = { ...spec(WRITE_TOOLS), role: "implement", sandbox: { id: "sbx_1", workdir: RUN } } as AgentRunSpec;
+
+  /** The settings an implement run's `claude -p` gets, read back from its `--settings` argument. */
+  const settings = () =>
+    JSON.parse(flag(buildClaudeArgs(implementSpec, "m", "claude", undefined, [TMP]), "--settings")!) as {
+      permissions: { allow: string[]; deny: string[] };
+    };
+
+  /** Whether an `Edit(//<root>/**)` allow rule covers `path` (an absolute, normalized path). */
+  const allowed = (rules: readonly string[], path: string) =>
+    rules.some((r) => {
+      const root = /^Edit\(\/(\/.*)\/\*\*\)$/.exec(r)?.[1];
+      return root !== undefined && path.startsWith(`${root}/`);
+    });
+
+  it("allows Write and Edit only under the run folder, writable_paths and the run's temp folder", () => {
+    const { allow } = settings().permissions;
+    expect(allow).toEqual([`Edit(/${RUN}/**)`, "Edit(//home/op/.cache/run/**)", `Edit(/${TMP}/**)`]);
+    for (const p of [`${RUN}/src/a.ts`, `${RUN}/.vite-cache/x`, "/home/op/.cache/run/x", `${TMP}/t`]) expect(allowed(allow, p)).toBe(true);
+  });
+
+  it("refuses an absolute path to the live checkout, and any other path outside the roots", () => {
+    const { allow } = settings().permissions;
+    for (const p of [`${LIVE}/placeholder`, `${LIVE}/src/a.ts`, `${LIVE}/.worktrees/sbx_2/x`, "/etc/hosts", "/home/op/.cache/other"]) {
+      expect(allowed(allow, p)).toBe(false);
+    }
+    // No bare Write or Edit anywhere that would allow every path: not in --allowedTools, not in the allow rules.
+    const args = buildClaudeArgs(implementSpec, "m", "claude", undefined, [TMP]);
+    expect(flag(args, "--allowedTools")!.split(",")).not.toEqual(expect.arrayContaining(["Write"]));
+    expect(flag(args, "--allowedTools")!.split(",")).not.toEqual(expect.arrayContaining(["Edit"]));
+    expect(allow.every((r) => /^Edit\(\/\/.+\/\*\*\)$/.test(r))).toBe(true);
+  });
+
+  it("relative writable_paths resolve against the run folder; no run folder means no run-folder rule", () => {
+    const rel = buildHarnessSettings({ deny_paths: [], writable_paths: [".git"] }, RUN) as { permissions: { allow: string[] } };
+    expect(rel.permissions.allow).toEqual([`Edit(/${RUN}/**)`, `Edit(/${RUN}/.git/**)`]);
+    const none = buildHarnessSettings({ deny_paths: [], writable_paths: [] }) as { permissions: { allow: string[] } };
+    expect(none.permissions.allow).toEqual([]);
   });
 });
 

@@ -223,6 +223,9 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: "0",
 };
 
+/** The most paths one live-checkout report names; `count` gives the total. */
+const LIVE_REPORT_PATHS = 20;
+
 const TRUSTED_GIT_KEYS = new Set([
   "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
   "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
@@ -2312,6 +2315,7 @@ export class Worker {
     }
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
+    const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
       run_id: run.id,
       work_item_id: item.id,
@@ -2332,6 +2336,7 @@ export class Worker {
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
+    await this.reportLiveCheckout(run, handle, liveBefore, step);
     // One line per time a gate hook sent the agent back (design §4, issue #302); the worker's gates still decide.
     for (const b of result.gate_blocks ?? []) {
       if (b.hook === "stop" && s) s.stop_blocks = (s.stop_blocks ?? 0) + 1;
@@ -2383,6 +2388,37 @@ export class Worker {
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
     }
     return result;
+  }
+
+  /**
+   * The untracked, not ignored files in the live checkout (`repo.path`, the owner's checkout), from a trusted git
+   * call through the sandbox. Null when git cannot list them (a sandbox that cannot see the host checkout): then
+   * the check is skipped. Best effort, never a failure (design §5 Sandbox).
+   */
+  private async liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
+    const r = await this.d.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
+      env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
+    }).catch(() => null);
+    return r?.exit_code === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
+  }
+
+  /**
+   * After an agent step: the files that appeared in the live checkout while it ran (untracked files there before
+   * the step are not reported) are logged with the run id. The run goes on: the file may be the owner's or
+   * another run's, and the harness and tool guards are what stop a write (design §5 Sandbox).
+   */
+  private async reportLiveCheckout(run: Run, handle: SandboxHandle, before: Set<string> | null, step: string | undefined): Promise<void> {
+    if (!before) return;
+    const after = await this.liveUntracked(handle);
+    const added = [...(after ?? [])].filter((p) => !before.has(p)).sort();
+    if (added.length === 0) return;
+    this.d.log.warn("files appeared in the live checkout during an agent step", {
+      run_id: run.id,
+      step: step ?? "",
+      checkout: this.cfg.repo.path,
+      paths: added.slice(0, LIVE_REPORT_PATHS).join(","),
+      count: added.length,
+    });
   }
 
   /**
