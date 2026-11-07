@@ -1,4 +1,4 @@
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { API, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
@@ -169,6 +169,8 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: Infinity,
+    // A filter or mode change keeps the current steps on screen until the new first page arrives.
+    placeholderData: keepPreviousData,
   });
   const pages = q.data?.pages ?? [];
   const last = pages.at(-1);

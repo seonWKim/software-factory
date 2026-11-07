@@ -29,14 +29,15 @@ const overview = { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, l
 function run(id: string, status: string, extra: Record<string, unknown> = {}) {
   return {
     id, kind: "implement", status, attempt: 2, started_at: AT, finished_at: "2026-11-07T00:03:00.000Z", created_at: AT, tokens: 1500,
-    error: status === "failed" ? { code: "checks_failed", detail: "npm test failed" } : null, attempts: [], worker_id: "host:1:0", transcript_parts: [""], ...extra,
+    error: status === "failed" ? { code: "checks_failed", detail: "npm test failed" } : null, attempts: [{ attempt: 1, worker_id: "host:9:9" }, { attempt: 2, worker_id: "host:1:0" }], ...extra,
   };
 }
 const detail = {
   as_of: AT,
   item: { id: ITEM, source: { type: "github", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, title: "Port", stage: "RUNNING", close_reason: null, blocked_on: "none", blocked_reason: null, tier: 1, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null, version: 1, created_at: AT, updated_at: AT },
   timeline: [],
-  runs: [run(FAILED, "failed"), run(LEAKY, "succeeded"), run(PLAIN, "succeeded"), run("run_none", "succeeded", { transcript_parts: [] })],
+  runs: [run(FAILED, "failed"), run(LEAKY, "succeeded"), run(PLAIN, "succeeded"), run("run_none", "succeeded")],
+  transcripts: { [FAILED]: [""], [LEAKY]: [""], [PLAIN]: [""] },
 };
 
 /** Big transcript: 200 Bash calls then an Edit, so a filtered page has to read on. */
@@ -119,6 +120,7 @@ function mount(path: string) {
   );
 }
 
+const stepsNow = () => within(screen.getByRole("list", { name: "Transcript steps" })).getAllByRole("listitem");
 const stepsOf = async () => within(await screen.findByRole("list", { name: "Transcript steps" })).getAllByRole("listitem");
 
 describe("item page: Runs section", () => {
@@ -214,10 +216,9 @@ describe("transcript view", () => {
     await stepsOf();
     const group = screen.getByRole("group", { name: "Step type" });
     fireEvent.click(within(group).getByRole("button", { name: "Edits" }));
-    await waitFor(async () => expect((await stepsOf()).length).toBe(1));
-    expect((await stepsOf())[0]!.textContent).toContain("Edit");
+    await waitFor(() => expect(stepsNow().map((s) => s.textContent)).toEqual([expect.stringContaining("Edit")]));
     fireEvent.click(within(group).getByRole("button", { name: "Commands" }));
-    await waitFor(async () => expect((await stepsOf())[0]!.textContent).toContain("npm test"));
+    await waitFor(() => expect(stepsNow().map((s) => s.textContent)).toEqual([expect.stringContaining("npm test")]));
     expect(within(group).getByRole("button", { name: "Commands" }).getAttribute("aria-pressed")).toBe("true");
   });
 

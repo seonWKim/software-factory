@@ -269,7 +269,6 @@ async function item(c: ApiCtx, id: WorkItemId) {
   for (const r of runs) {
     const attempts = [];
     for (const a of attemptsOf.get(r.id) ?? []) attempts.push(await attemptRow(c, a));
-    const last = attemptsOf.get(r.id)?.at(-1);
     runRows.push({
       id: r.id,
       kind: r.kind,
@@ -284,10 +283,6 @@ async function item(c: ApiCtx, id: WorkItemId) {
           ? { code: await c.text(r.outcome.error_code, "run_outcome"), detail: await c.text(r.outcome.detail, "run_outcome") }
           : null,
       attempts,
-      /** The last claim's worker (the lease owner while it has no attempt record). */
-      worker_id: await c.text(last?.worker_id ?? r.lease?.owner ?? null),
-      /** The stored transcript parts ("" is the main step); empty: no transcript to link. */
-      transcript_parts: runParts(stored, id, r.id),
     });
   }
   return {
@@ -313,6 +308,11 @@ async function item(c: ApiCtx, id: WorkItemId) {
     },
     timeline,
     runs: runRows,
+    /** Run id → its stored transcript parts ("" is the main step), for runs with a stored transcript only. */
+    transcripts: Object.fromEntries(runs.flatMap((r) => {
+      const parts = runParts(stored, id, r.id);
+      return parts.length > 0 ? [[r.id, parts] as const] : [];
+    })),
   };
 }
 

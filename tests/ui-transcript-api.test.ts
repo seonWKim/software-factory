@@ -205,11 +205,12 @@ describe("transcript api", () => {
   it("the item route lists each run's worker and its stored transcript parts", async () => {
     const { d, a, none, storage } = await setup();
     await storage.put(`transcripts/${a.item.id}/${a.run.id}.resolve.json`, enc("x\n"));
-    const r = await get(d, `/api/v1/items/${a.item.id}`);
-    const runs = (JSON.parse(r.body) as { runs: { id: string; worker_id: string | null; transcript_parts: string[] }[] }).runs;
-    expect(runs.find((x) => x.id === a.run.id)).toMatchObject({ worker_id: "host:1:0", transcript_parts: ["", "resolve"] });
-    const r2 = await get(d, `/api/v1/items/${none.item.id}`);
-    expect((JSON.parse(r2.body) as { runs: { transcript_parts: string[] }[] }).runs[0]!.transcript_parts).toEqual([]);
+    type Detail = { runs: { id: string; attempts: { worker_id: string | null }[] }[]; transcripts: Record<string, string[]> };
+    const r = JSON.parse((await get(d, `/api/v1/items/${a.item.id}`)).body) as Detail;
+    expect(r.runs.find((x) => x.id === a.run.id)!.attempts.at(-1)!.worker_id).toBe("host:1:0");
+    expect(r.transcripts).toEqual({ [a.run.id]: ["", "resolve"] });
+    const r2 = JSON.parse((await get(d, `/api/v1/items/${none.item.id}`)).body) as Detail;
+    expect(r2.transcripts).toEqual({});
     expect(storage.gets).toBe(0);
     // A second part opens by name.
     const t = await body(d, path(a.item.id, a.run.id, "?part=resolve"));

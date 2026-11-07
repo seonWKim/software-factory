@@ -130,11 +130,11 @@ export interface ItemDetail {
     created_at: string;
     tokens: number | null;
     error: { code: string | null; detail: string | null } | null;
-    /** The last claim's worker id; null when the run was never claimed. */
-    worker_id?: string | null;
-    /** The stored transcript's parts ("" is the main step); empty or absent: no transcript to open. */
-    transcript_parts?: string[];
+    /** One record per claim, in attempt order; the last one's worker is the run's worker. */
+    attempts?: { attempt: number; worker_id: string | null }[];
   }[];
+  /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
+  transcripts?: Record<string, string[]>;
 }
 
 /** Which steps the transcript filter keeps (tool calls of that kind). */

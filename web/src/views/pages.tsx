@@ -177,6 +177,7 @@ export function ItemPage({ id }: { id: string }) {
   if (q.isError) return <ErrorNote error={q.error} />;
   if (!q.data) return <Loading rows={6} />;
   const { item, runs, timeline } = q.data;
+  const transcripts = q.data.transcripts ?? {};
   return (
     <>
       <p className="mb-1 text-sm">
@@ -215,12 +216,12 @@ export function ItemPage({ id }: { id: string }) {
                 <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
                 </Td>
-                <Td className="font-mono text-xs whitespace-nowrap">{r.worker_id ?? "–"}</Td>
+                <Td className="font-mono text-xs whitespace-nowrap">{r.attempts?.at(-1)?.worker_id ?? "–"}</Td>
                 <Td className="tabular-nums whitespace-nowrap">{r.started_at ? `${ago(r.started_at, now)} ago` : "–"}</Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
                 <Td className="whitespace-nowrap">
-                  {r.transcript_parts && r.transcript_parts.length > 0 ? (
+                  {(transcripts[r.id]?.length ?? 0) > 0 ? (
                     <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>Open</Link>
                   ) : "–"}
                 </Td>
