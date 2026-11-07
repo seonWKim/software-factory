@@ -8,6 +8,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 
 | File | What |
 |---|---|
+| `ARCHITECTURE.md` | Overview for review: every component as a box, every connection labelled by how it talks (call, store queue, outbox/inbox, HTTP, tool RPC, exec, IPC, remote) |
 | `PLAN.md` | Phases (0 decisions, 1 MVP by hand, 2 self-build, 3 autonomy) and open decisions |
 | `docs/design.md` | Index of the living design: one line per topic file in `docs/design/` |
 | `SET_UP.md` | One-time setup before using the factory (`npm run setup`) |
