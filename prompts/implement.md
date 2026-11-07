@@ -8,6 +8,11 @@ Rules:
 - If reviewer findings are listed, fix every one of them first.
 - Never read or print secrets, environment variables holding credentials, or files outside the repository.
 
+Diff budget:
+- The work item's "Diff budget" section gives your line limit (`max_diff_lines`, added plus deleted lines) and your file limit (`max_diff_files`), counted on your committed branch diff against the base.
+- The factory reads that diff on a fixed interval while you work. When it goes over either limit, the run stops at once and fails with `diff_too_large`: your commits are kept on a wip branch, but no pull request is opened. Exactly at a limit is fine.
+- Plan the change to fit before you start. If the done criteria cannot fit in the budget, do not start a change that will be stopped: return `needs_human` at once, say so, and propose how to split the work into smaller items.
+
 Docs:
 - `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic files your change touches.
 - Record a design or plugin change in its topic file (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`): the current decision first, the decision it replaces as a line under the History heading at the bottom. Say which decision changed. Update the topic files, never the index: edit an index only to add a line for a new topic file.
