@@ -3,7 +3,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { canAutoMerge } from "../src/core/policy.js";
 import { lastPrNotes, prBody, splitSummary } from "../src/core/pr-body.js";
 import type { Run, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { cleanScanner, pipeline } from "./helpers/fakes.js";

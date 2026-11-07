@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Plugins, loadConfig } from "../src/compose.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
 import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import type { Forge } from "../src/interfaces/forge.js";
@@ -55,7 +55,7 @@ describe("forge: an optional kind with no default", () => {
   });
 
   it("the github descriptor is kind forge, named github, with no default", async () => {
-    const d = (await import("../src/impl/forge/github.plugin.js")).default;
+    const d = (await import("../src/impl/github/forge.plugin.js")).default;
     expect(d.kind).toBe("forge");
     expect(d.name).toBe("github");
     expect(d.default).toBeUndefined();
