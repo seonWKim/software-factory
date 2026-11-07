@@ -153,8 +153,8 @@ describe("preflight-access pause", () => {
     // After the pause has ended, a failure starts a new pause: one more comment, one more line.
     f.clock.advance(f.config.retry_max_ms * 2);
     f.broker.responses["github.preflight"] = [ACCESS];
-    await f.w1.tick();
-    await f.controller.tickRuns();
+    await f.step();
+    expect((await f.runs(b, "implement"))[1]!.outcome).toMatchObject({ error_code: "preflight_access" });
     expect(pauseComments(f)).toHaveLength(2);
     expect(pauseLines(f)).toHaveLength(2);
   });

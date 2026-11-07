@@ -174,6 +174,12 @@ describe("repeatsFastInfraFailure", () => {
     expect(repeatsFastInfraFailure([run("1", infra()), between, c], c)).toBe(false);
   });
 
+  it("an empty detail is not compared: it says nothing about the cause", () => {
+    const a = run("1", infra("agent_timed_out", ""), 0);
+    const b = run("2", infra("agent_timed_out", ""), 100);
+    expect(repeatsFastInfraFailure([a, b], b)).toBe(false);
+  });
+
   it("a run with no start time is not compared", () => {
     const a = { ...run("1", infra()), started_at: null };
     const b = run("2", infra(), 100);
