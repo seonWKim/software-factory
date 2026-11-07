@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { PHASE_HOLD, PHASES_OPEN, phaseMarker } from "../src/core/split.js";
-import type { RunOutcome, SourceRef, WorkItem } from "../src/core/types.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, SPLIT_FILING_STALE_MS, phaseMarker } from "../src/core/split.js";
+import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
@@ -63,7 +63,9 @@ async function setup(cfg: FactoryConfig = config) {
   const get = async (it: WorkItem) => (await store.getWorkItem(it.id))!;
   const bySource = async (src: SourceRef) => (await store.getWorkItemBySource("github_issue", src.id))!;
   const runsOf = async (it: WorkItem) => store.listRuns(it.id);
-  return { clock, store, source, controller, intake, finish, triaged, approve, closeSource, get, bySource, runsOf, set };
+  /** A second controller on the same store and source: another replica, or an old process still draining. */
+  const replica = () => new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+  return { clock, store, source, controller, replica, intake, finish, triaged, approve, closeSource, get, bySource, runsOf, set };
 }
 
 describe("split spec flow", () => {
@@ -215,6 +217,49 @@ describe("split spec flow", () => {
     // Once split, a third /approve is refused and files nothing.
     await f.approve(issueRef(73));
     expect(f.source.subIssues).toHaveLength(3);
+  });
+
+  it("one /approve applied by two controllers at once files one set of phases, even when the marker lookup misses", async () => {
+    const f = await setup();
+    const parent = await f.intake(78);
+    await f.finish("triage", f.triaged(bigSpec(3)));
+    // #172 and #252 (2026-11-07): a draining process and its successor both polled the same /approve, and the
+    // marker lookup did not yet see the issues the other pass had just filed.
+    f.source.subIssueLookupMisses = true;
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(78), comment_id: "20000001", approver: alice });
+    await Promise.all([f.controller.tickIntake(), f.replica().tickIntake()]);
+
+    expect(f.source.subIssues.map((s) => s.title)).toEqual(["Phase 1/3: Part 1", "Phase 2/3: Part 2", "Phase 3/3: Part 3"]);
+    expect(await f.store.listPhases(parent.id)).toHaveLength(3);
+    expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: PHASES_OPEN });
+    const reasons = (await f.store.listStateChanges(parent.id)).map((c) => c.reason);
+    expect(reasons.filter((r) => r === SPLIT_FILING)).toHaveLength(1);
+    expect(reasons.filter((r) => r === "split_approved")).toHaveLength(1);
+    // One split comment, and no refusal: the losing pass of the same command stays quiet.
+    expect(f.source.comments.filter((c) => c.marker.includes(`split:${parent.id}`))).toHaveLength(1);
+    expect(f.source.comments.some((c) => c.body.includes("was not applied"))).toBe(false);
+  });
+
+  it("a claim left by a stopped process is refused while fresh and taken over once stale", async () => {
+    const f = await setup();
+    const parent = await f.intake(79);
+    await f.finish("triage", f.triaged(bigSpec(2)));
+    // The process stopped right after claiming the filing.
+    const it0 = await f.get(parent);
+    const claimed = await f.store.transition({
+      id: it0.id, expected_version: it0.version, patch: { blocked_on: "upstream", blocked_reason: SPLIT_FILING },
+      actor: { kind: "user", id: "github:1" as UserId }, reason: SPLIT_FILING, detail: { phases: 2, comment_id: "1" },
+    });
+    expect(claimed.ok).toBe(true);
+
+    await f.approve(issueRef(79));
+    expect(f.source.subIssues).toHaveLength(0);
+    expect(f.source.comments.at(-1)!.body).toContain("is filing this split's phases");
+
+    f.clock.advance(SPLIT_FILING_STALE_MS);
+    await f.approve(issueRef(79));
+    expect(f.source.subIssues.map((s) => s.title)).toEqual(["Phase 1/2: Part 1", "Phase 2/2: Part 2"]);
+    expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
   });
 
   it("a phase closed as not planned keeps the next phase held and the parent open", async () => {

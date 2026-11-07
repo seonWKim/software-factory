@@ -157,9 +157,11 @@ export class FakeSource implements PollSource {
   subIssueCalls = 0;
   /** When set, the call with this 1-based number files the issue, then throws before linking it. */
   subIssueFailAt: number | null = null;
+  /** When set, the marker lookup finds nothing, as a search that has not caught up with a just-filed issue. */
+  subIssueLookupMisses = false;
   async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
     this.subIssueCalls++;
-    let issue = this.subIssues.find((i) => i.marker === input.marker);
+    let issue = this.subIssueLookupMisses ? undefined : this.subIssues.find((i) => i.marker === input.marker);
     if (!issue) {
       const n = 100 + this.subIssues.length;
       const ref = { type: this.type, id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` };
