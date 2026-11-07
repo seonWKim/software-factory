@@ -1,9 +1,11 @@
 #!/usr/bin/env node
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
@@ -11,7 +13,7 @@ import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./sess
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { cliUserConfig } from "./core/config.js";
-import { CLI_COMMANDS, CLI_TOP_WORDS, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
+import { CLI_COMMANDS, CLI_TOP_WORDS, type CliEnvironment, cliIdentity, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { enqueueManualImprove } from "./core/improver.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
@@ -66,7 +68,7 @@ const USAGE = `factory <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
-  ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
@@ -81,7 +83,9 @@ const USAGE = `factory <command>
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
 ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
-               local work items (plugins.source includes "local"), acting as cli_user; no GitHub call
+               local work items (plugins.source includes "local"), acting as the CLI identity (cli_user, else
+               local:<git user.email>, else local:<OS user>, else local:anonymous), authorized by the local auth
+               plugin (auth.local, default "local"); no GitHub call
   issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -241,8 +245,9 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
     }
     case "ui": {
-      // An ID, never a display name: the OS login of the local owner, as `factory settings` stores it.
-      const parts = await buildUiParts(loaded, { actor: `local:${userInfo().username}` });
+      // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
+      // sees one user for the UI and the terminal.
+      const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
       const ui = await startUi(
         {
           store: parts.store,
@@ -261,10 +266,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
+          commands: parts.commands,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (Settings is the only write; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();
@@ -389,6 +396,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     case "retry":
     case "revise":
     case "reject":
+    case "users":
       return localCli(loaded, cmd, args);
     case "canary": {
       const report = await runCanary(loaded);
@@ -401,6 +409,24 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
   }
 }
 
+/** What the environment says about the operator (issue #318): git's user.email in the repo, then the OS user. */
+async function cliEnvironment(root: string): Promise<CliEnvironment> {
+  let gitEmail: string | null = null;
+  try {
+    const r = await promisify(execFile)("git", ["config", "user.email"], { cwd: root, timeout: 5000 });
+    gitEmail = r.stdout.trim() || null;
+  } catch {
+    gitEmail = null;
+  }
+  let osUser: string | null = null;
+  try {
+    osUser = userInfo().username || null;
+  } catch {
+    osUser = process.env.USER || process.env.USERNAME || null;
+  }
+  return { gitEmail, osUser };
+}
+
 /**
  * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
@@ -411,13 +437,14 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
     console.error(action.error);
     return 1;
   }
-  let user;
+  let cliUser;
   try {
-    user = cliUserConfig(loaded.file);
+    cliUser = cliUserConfig(loaded.file);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     return 1;
   }
+  const identity = cliIdentity(cliUser, await cliEnvironment(loaded.root));
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const store = await buildStatsStore(loaded);
   try {
@@ -427,7 +454,7 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
     const r = await runLocalCli(
       {
         store,
-        user,
+        identity,
         project: async () => (await resolveProject())?.key ?? null,
         read: (path) => readFile(path, "utf8"),
         newId: () => randomUUID(),
@@ -435,7 +462,8 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
       action,
     );
     for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
-    if (r.code === 0 && action.action !== "list" && action.action !== "show" && !selectedSources(loaded.plugins).includes("local")) {
+    const writes = action.action === "create" || action.action === "command";
+    if (r.code === 0 && writes && !selectedSources(loaded.plugins).includes("local")) {
       console.error('note: plugins.source does not include "local", so the controller does not read local items yet');
     }
     return r.code;

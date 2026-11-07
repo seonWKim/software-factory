@@ -526,10 +526,10 @@ async function mysqlEnv(database: string, onCleanup: (f: () => Promise<void>) =>
   };
 }
 
-// --- improve reports (SQLite 26, MySQL step 0026, issue #306) ---------------------------------------------
+// --- improve reports (SQLite 27, MySQL step 0027, issue #306) ---------------------------------------------
 
-const IMPROVE_STEP = 26;
-const IMPROVE_FILE = "0026-improve-reports.sql";
+const IMPROVE_STEP = 27;
+const IMPROVE_FILE = "0027-improve-reports.sql";
 const IMPROVE_TABLES = ["filed_patterns", "improve_reports"];
 
 /** The column names of `table` in a CREATE TABLE IF NOT EXISTS statement of `text`, in order. */
@@ -538,8 +538,8 @@ function createdColumns(text: string, table: string): string[] {
   return [...body.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|BIGINT|MEDIUMTEXT|CHAR)/gm)].map((m) => m[1]!);
 }
 
-describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
-  it("SQLite reaches version 26 or later and creates both tables, empty", async () => {
+describe("improve reports: SQLite migration 27 and MySQL step 0027", () => {
+  it("SQLite reaches version 27 or later and creates both tables, empty", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(IMPROVE_STEP);
     const { store } = await newStore();
     expect((await store.schemaVersion()).applied).toBeGreaterThanOrEqual(IMPROVE_STEP);
@@ -547,7 +547,7 @@ describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
     for (const t of IMPROVE_TABLES) expect(tables.find((x) => x.name === t)?.rows, t).toBe(0);
   });
 
-  it("SQLite migration 26 is safe to run again after the recorded version is set back", async () => {
+  it("SQLite migration 27 is safe to run again after the recorded version is set back", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "sf-sqlite-improve-")), "factory.db");
     const first = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
     await first.migrate();
@@ -561,7 +561,7 @@ describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
     await again.close();
   });
 
-  it("step 0026 is a .sql file after 0025 that creates the same columns as SQLite migration 26", () => {
+  it("step 0027 is a .sql file after 0026 that creates the same columns as SQLite migration 27", () => {
     const steps = readSteps(STEPS_DIR, INLINE_STEPS);
     expect(steps.find((x) => x.name === "improve-reports")).toMatchObject({ number: IMPROVE_STEP, from: IMPROVE_STEP - 1, kind: "sql", file: IMPROVE_FILE });
     const mysqlSql = readFileSync(join(STEPS_DIR, IMPROVE_FILE), "utf8");
@@ -573,8 +573,8 @@ describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
   });
 });
 
-describe.skipIf(!MYSQL_URL)("MySQL step 0026 on MySQL", () => {
-  it("on a database at state 25 it is pending, then creates both tables, empty; a store reads and writes reports", async () => {
+describe.skipIf(!MYSQL_URL)("MySQL step 0027 on MySQL", () => {
+  it("on a database at state 26 it is pending, then creates both tables, empty; a store reads and writes reports", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
     await new MysqlMigrations(c, { dir: mysqlStepsUpTo(IMPROVE_STEP - 1) }).apply(() => undefined);

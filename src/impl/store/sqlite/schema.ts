@@ -459,12 +459,24 @@ export const MIGRATIONS: readonly string[] = [
     checked_at    TEXT NOT NULL
   );
   `,
-  // 26: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run: its
+  // 26: local users (issue #318). Who may act from the local CLI and UI under the `local` auth plugin: one row per
+  // factory user ID with its role (`owner`, `approver`, `requester`). `owner_slot` is 1 on the owner's row and NULL
+  // on every other, so UNIQUE allows one owner. IF NOT EXISTS: safe to run again below 26.
+  `
+  CREATE TABLE IF NOT EXISTS local_users (
+    user_id     TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,
+    owner_slot  INTEGER UNIQUE,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+  `,
+  // 27: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run: its
   // window and its groups; `failure_groups` and `one_run_patterns` are JSON text (run IDs and item IDs per error code
   // and normalized detail). `filed_patterns`: a pattern filed from a report, one per (project_key, pattern_key); created
   // empty, nothing writes it yet. `project_key` holds only project keys (never owner/name), so the project-key data
   // step has nothing to rewrite. IF NOT EXISTS: safe to run again on a database whose recorded version was set back
-  // below 26.
+  // below 27.
   `
   CREATE TABLE IF NOT EXISTS improve_reports (
     run_id            TEXT PRIMARY KEY REFERENCES runs(id),

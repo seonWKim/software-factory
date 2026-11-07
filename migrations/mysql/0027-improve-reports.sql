@@ -1,4 +1,4 @@
--- Improve reports and filed patterns (issue #306, design §7): the same tables as SQLite migration 26.
+-- Improve reports and filed patterns (issue #306, design §7): the same tables as SQLite migration 27.
 -- `improve_reports`: one row per improve run: its window and its groups; `failure_groups` and `one_run_patterns`
 -- are JSON text (run IDs and item IDs per error code and normalized detail). `filed_patterns`: a pattern filed from
 -- a report, one per (project_key, pattern_key); created empty, nothing writes it yet. `project_key` holds only

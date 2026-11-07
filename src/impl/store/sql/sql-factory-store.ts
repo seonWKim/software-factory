@@ -91,6 +91,8 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   RecordVerdictResult,
+  LocalRole,
+  LocalUser,
   RedeemLinkResult,
   ResetSettingInput,
   SchemaVersion,
@@ -1440,6 +1442,69 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
+  // Local users (issue #318)
+
+  async getLocalUser(user_id: UserId): Promise<LocalUser | null> {
+    const [row] = await this.db.all("SELECT * FROM local_users WHERE user_id = ?", [user_id]);
+    return row ? rowToLocalUser(row) : null;
+  }
+
+  async listLocalUsers(): Promise<LocalUser[]> {
+    const rows = await this.db.all("SELECT * FROM local_users ORDER BY CASE WHEN owner_slot = 1 THEN 0 ELSE 1 END, created_at, user_id");
+    return rows.map(rowToLocalUser);
+  }
+
+  async claimLocalOwner(user_id: UserId): Promise<LocalUser> {
+    const owner = async () => {
+      const [row] = await this.db.all("SELECT * FROM local_users WHERE owner_slot = 1");
+      return row ? rowToLocalUser(row) : null;
+    };
+    const now = this.now();
+    try {
+      return await this.db.transaction(async (tx): Promise<LocalUser> => {
+        const [held] = await tx.all(`SELECT * FROM local_users WHERE owner_slot = 1${this.db.dialect.forUpdate}`);
+        if (held) return rowToLocalUser(held);
+        const updated = await tx.run("UPDATE local_users SET role = 'owner', owner_slot = 1, added_by = ? WHERE user_id = ?", [user_id, user_id]);
+        if (updated === 0) {
+          await tx.run("INSERT INTO local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, 'owner', 1, ?, ?)", [user_id, user_id, now]);
+        }
+        const [row] = await tx.all("SELECT * FROM local_users WHERE user_id = ?", [user_id]);
+        return rowToLocalUser(row!);
+      });
+    } catch (err) {
+      // Another claim won the one owner slot first (unique `owner_slot`): that owner stands.
+      const won = await owner();
+      if (won) return won;
+      throw err;
+    }
+  }
+
+  async setLocalUserRole(
+    user_id: UserId, role: Exclude<LocalRole, "owner">, added_by: UserId,
+  ): Promise<{ ok: true; created: boolean } | { ok: false; reason: "owner" }> {
+    const now = this.now();
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all(`SELECT role FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
+      if (row && row.role === "owner") return { ok: false as const, reason: "owner" as const };
+      if (row) {
+        await tx.run("UPDATE local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
+        return { ok: true as const, created: false };
+      }
+      await tx.run("INSERT INTO local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
+      return { ok: true as const, created: true };
+    });
+  }
+
+  async removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner"> {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all(`SELECT role FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
+      if (!row) return "missing" as const;
+      if (row.role === "owner") return "owner" as const;
+      await tx.run("DELETE FROM local_users WHERE user_id = ?", [user_id]);
+      return "removed" as const;
+    });
+  }
+
   // Runtime settings overrides (design 2026-11-03)
 
   async listSettingOverrides(): Promise<SettingOverride[]> {
@@ -1669,6 +1734,17 @@ export class SqlFactoryStore implements FactoryStore {
   async getAppCommandRequest(seq: number): Promise<AppCommandRequest | null> {
     const [row] = await this.db.all("SELECT * FROM app_command_requests WHERE seq = ?", [seq]);
     return row ? rowToAppCommandRequest(row) : null;
+  }
+
+  async listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]> {
+    // `args` is JSON text written by JSON.stringify on both backends, so the pair appears verbatim; LIKE narrows
+    // (its wildcards escaped with `!`), and the exact check below drops any row whose id only looked alike.
+    const needle = `${JSON.stringify("work_item_id")}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`);
+    const rows = await this.db.all(
+      `SELECT * FROM app_command_requests WHERE args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
+      [`%${needle}%`],
+    );
+    return rows.map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id).reverse();
   }
 
   // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
@@ -2163,4 +2239,13 @@ function toCell(v: unknown): TableCell {
   if (v instanceof Date) return v.toISOString();
   if (v instanceof Uint8Array) return Buffer.from(v).toString("utf8");
   return String(v);
+}
+
+function rowToLocalUser(r: Row): LocalUser {
+  return {
+    user_id: String(r.user_id) as UserId,
+    role: String(r.role) as LocalRole,
+    added_by: String(r.added_by) as UserId,
+    created_at: String(r.created_at) as Timestamp,
+  };
 }
