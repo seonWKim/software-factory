@@ -1,3 +1,4 @@
+import type { GitHubBudgetStatus } from "../../core/controller.js";
 import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
@@ -27,6 +28,8 @@ export class GitHubError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** Set on a rate limit (GitHubRateLimitError, also a call refused locally with no calls left): the reset time (ISO) the caller waits for. */
+    readonly wait_until: string | null = null,
   ) {
     super(message);
   }
@@ -43,7 +46,7 @@ export class GitHubRateLimitError extends GitHubError {
     message: string,
     readonly reset_at: string,
   ) {
-    super(status, message);
+    super(status, message, reset_at);
   }
 }
 
@@ -69,6 +72,8 @@ function rateLimitReset(status: number, h: Headers, body: string, now: number): 
 
 /** Default `github.min_remaining`: below this many core calls left in the hour, optional reads wait for the reset. */
 export const DEFAULT_MIN_REMAINING = 200;
+/** Default `github.budget_share`: this factory may use the whole hourly core limit (solo: one App, one factory). */
+export const DEFAULT_BUDGET_SHARE = 1;
 /** Default ETag cache size per client (one per process): entries, each one GET's URL, ETag and body. */
 export const DEFAULT_ETAG_ENTRIES = 500;
 /** A body larger than this is never cached (keeps the per-process cache bounded in bytes too). */
@@ -93,6 +98,14 @@ export interface GitHubClientOptions {
   min_remaining?: number;
   /** ETag cache entries; 0 turns conditional requests off. Absent: DEFAULT_ETAG_ENTRIES. */
   etag_entries?: number;
+  /** `github.budget_share` (docs/plugins/github-credentials.md): this process's part of the hourly core limit. Absent: 1. */
+  budget_share?: number;
+}
+
+/** This process's counted calls in one rate-limit window, the window named by its reset time. */
+interface Window {
+  reset_at: string;
+  counted: number;
 }
 
 interface Cached {
@@ -110,6 +123,19 @@ export function githubMinRemaining(github: { min_remaining?: unknown } | undefin
 }
 
 /**
+ * `github.budget_share` from factory.config.json: absent means DEFAULT_BUDGET_SHARE, else a number greater than 0
+ * and at most 1 (the part of the installation's hourly core limit this factory may use).
+ */
+export function githubBudgetShare(github: { budget_share?: unknown } | undefined): number {
+  const v = github?.budget_share;
+  if (v === undefined) return DEFAULT_BUDGET_SHARE;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0 || v > 1) {
+    throw new Error(`github.budget_share must be a number greater than 0 and at most 1, got ${JSON.stringify(v) ?? String(v)}`);
+  }
+  return v;
+}
+
+/**
  * REST client. The token comes from GitHubCredentials at call time and never leaves this class.
  *
  * Every GET is conditional (design §5 Sources, GitHub call budget): the last ETag and body per URL are kept in a
@@ -118,16 +144,24 @@ export function githubMinRemaining(github: { min_remaining?: unknown } | undefin
  * body is still current, and an empty cache (a new process, another replica) just makes full calls.
  *
  * Every response's `x-ratelimit-*` headers are kept (`budget()`). A 403 or 429 that is a rate limit throws a
- * GitHubRateLimitError with its reset (`rateLimitReset`). With none left before the reset, a call is refused here
- * with the same error, without sending it; under `min_remaining`, `lowBudget()` is true and callers skip the reads
- * that can wait.
+ * GitHubRateLimitError with its reset (`rateLimitReset`), also as `wait_until`. With none left before the reset, a
+ * call is refused here with the same error, without sending it; under `min_remaining`, or once this process has made its `budget_share` of the window's limit in counted calls (every
+ * answer but a 304), `lowBudget()` is true and callers skip the reads that can wait. The count is per process
+ * (in memory, like the ETag cache): replicas of one factory on one App split its share between them.
+ *
+ * Catch-up reads (a first start's backlog) take a per-minute allowance, `takeCatchUp`: at most
+ * (budget_share × limit) / 60 a minute, so a new start spreads them over several polls.
  */
 export class GitHubClient {
   private readonly cache = new Map<string, Cached>();
   private readonly fetchFn: typeof fetch;
   private readonly maxEntries: number;
   private readonly minRemaining: number;
+  private readonly share: number;
   private rate: RateBudget | null = null;
+  private window: Window | null = null;
+  /** Catch-up reads taken in the current clock minute (`minute`, ms since the epoch / 60 000). */
+  private catchUp = { minute: -1, taken: 0 };
   private low = false;
 
   constructor(
@@ -138,6 +172,7 @@ export class GitHubClient {
     this.fetchFn = opts.fetch ?? ((...a) => fetch(...a));
     this.maxEntries = opts.etag_entries ?? DEFAULT_ETAG_ENTRIES;
     this.minRemaining = opts.min_remaining ?? DEFAULT_MIN_REMAINING;
+    this.share = opts.budget_share ?? DEFAULT_BUDGET_SHARE;
   }
 
   /** The core rate limit as of the last response; null before any response carried the headers. */
@@ -145,19 +180,67 @@ export class GitHubClient {
     return this.rate ? { ...this.rate } : null;
   }
 
+  /** This process's counted calls in the current window; 0 once its reset has passed. */
+  counted(): number {
+    const w = this.window;
+    return w === null || this.now() >= Date.parse(w.reset_at) ? 0 : w.counted;
+  }
+
+  /** The calls this process may count in a window: `budget_share` × the limit, rounded down; null before any limit is known. */
+  private shareLimit(): number | null {
+    return this.rate && this.rate.limit > 0 ? Math.floor(this.share * this.rate.limit) : null;
+  }
+
+  /** The budget as the status page shows it (design §9): GitHub's numbers, this process's share and count, the state. */
+  status(): GitHubBudgetStatus | null {
+    const r = this.rate;
+    if (!r) return null;
+    const before = this.now() < Date.parse(r.reset_at);
+    const state = before && r.remaining <= 0 ? "waiting" : this.lowBudget() ? "low" : "ok";
+    return {
+      limit: r.limit, remaining: r.remaining, reset_at: r.reset_at, budget_share: this.share, share_limit: this.shareLimit(),
+      counted: this.counted(), state, as_of: new Date(this.now()).toISOString(),
+    };
+  }
+
   /**
-   * True while fewer than `min_remaining` core calls are left and the reset has not passed: skip optional
-   * reads (refreshes that a later poll makes as well). Logs one line on entering and one on leaving.
+   * True while the reset has not passed and fewer than `min_remaining` core calls are left, or this process has
+   * made its `budget_share` of the limit: skip optional reads (refreshes that a later poll makes as well). Logs
+   * one line on entering and one on leaving.
    */
   lowBudget(): boolean {
     const r = this.rate;
-    const low = r !== null && r.remaining < this.minRemaining && this.now() < Date.parse(r.reset_at);
+    const before = r !== null && this.now() < Date.parse(r.reset_at);
+    const floor = before && r!.remaining < this.minRemaining;
+    const cap = this.shareLimit();
+    const shared = before && cap !== null && this.counted() >= cap;
+    const low = floor || shared;
     if (low !== this.low) {
       this.low = low;
-      if (low) this.opts.log?.warn("GitHub budget low: optional reads wait for the reset", { remaining: r!.remaining, min_remaining: this.minRemaining, reset_at: r!.reset_at });
-      else this.opts.log?.info("GitHub budget back: optional reads resume", { remaining: r?.remaining ?? null });
+      if (low) {
+        this.opts.log?.warn("GitHub budget low: optional reads wait for the reset", {
+          remaining: r!.remaining, min_remaining: this.minRemaining, reset_at: r!.reset_at,
+          ...(!floor && { counted: this.counted(), budget_share: this.share }),
+        });
+      } else this.opts.log?.info("GitHub budget back: optional reads resume", { remaining: r?.remaining ?? null });
     }
     return low;
+  }
+
+  /**
+   * Takes up to `n` catch-up reads from this minute's allowance, (budget_share × limit) / 60 rounded down, at
+   * least 1; returns how many it took (0: wait for the next minute). None while `lowBudget()`. Before any limit
+   * is known, every one is granted.
+   */
+  takeCatchUp(n: number): number {
+    if (this.lowBudget()) return 0;
+    const cap = this.shareLimit();
+    if (cap === null) return n;
+    const minute = Math.floor(this.now() / 60_000);
+    if (minute !== this.catchUp.minute) this.catchUp = { minute, taken: 0 };
+    const granted = Math.max(0, Math.min(n, Math.max(1, Math.floor(cap / 60)) - this.catchUp.taken));
+    this.catchUp.taken += granted;
+    return granted;
   }
 
   async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -219,6 +302,7 @@ export class GitHubClient {
       ...(body !== undefined && { body: JSON.stringify(body) }),
     });
     this.readRate(res.headers);
+    if (res.status !== 304) this.count();
     if (res.status === 304 && cached) {
       this.cache.delete(key);
       this.cache.set(key, cached);
@@ -254,6 +338,14 @@ export class GitHubClient {
     const reset = Number(h.get("x-ratelimit-reset"));
     if (h.get("x-ratelimit-remaining") === null || !Number.isFinite(remaining) || !Number.isFinite(reset)) return;
     this.rate = { limit: Number.isFinite(limit) ? limit : 0, remaining, reset_at: new Date(reset * 1000).toISOString() };
+  }
+
+  /** One counted call in the window of the last reported reset; a new reset time starts a new window at zero. */
+  private count(): void {
+    const reset = this.rate?.reset_at;
+    if (reset === undefined) return;
+    if (this.window?.reset_at !== reset) this.window = { reset_at: reset, counted: 0 };
+    this.window.counted++;
   }
 
   private now(): number {
