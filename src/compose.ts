@@ -2,12 +2,13 @@
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
 import { mkdir, readFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
-import { saveProjectLabel } from "./core/project-labels.js";
+import { saveProject, saveProjectLabel } from "./core/project-labels.js";
+import type { Logger } from "./core/log.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -24,6 +25,7 @@ import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -32,11 +34,13 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type GitHubClientOptions, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
+import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
+import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
@@ -161,6 +165,11 @@ export interface FileConfig {
    */
   openai_compatible?: OpenAICompatibleConfig;
   /**
+   * The `slack` source (issue #109, src/impl/source/slack-config.ts): `channels`, the Slack channel IDs it listens
+   * in. Checked at load; required once `plugins.source` lists `slack`, ignored otherwise.
+   */
+  slack?: SlackConfig;
+  /**
    * Path companions (design 04-triage.md): a list of `{ when, also }`. When triage's `files_to_change` names
    * `when`, each `also` path is added to `allowed_paths`. Absent: none. Checked by pathCompanionsConfig.
    */
@@ -175,7 +184,7 @@ export interface Loaded {
   /** Where factory.config.json and prompts/ were read: the runtime copy under the updater, else `root`. */
   codeRoot: string;
   file: FileConfig;
-  /** Not yet resolved to a project key: build() resolves the configured repo through GitHub (resolveProject). */
+  /** Not yet resolved to a project key: build() finds the configured repo's key in the store, or asks GitHub (startupProject). */
   config: LoadedConfig;
   prompts: Prompts;
   secretsFile: string;
@@ -309,7 +318,7 @@ export interface RepoLookup {
 /**
  * The configured repo as a project (design 2026-11-01): its key from GitHub's node ID, its label from the path
  * GitHub reports now (a renamed repo gets its new path). Throws a message naming the configured repo and the
- * reason when GitHub cannot resolve it; the process then exits with that message instead of writing anything.
+ * reason (the GitHub error as its `cause`) when GitHub cannot resolve it; startupProject decides what a start does then.
  */
 export async function resolveProject(github: RepoLookup, repo: RepoRef): Promise<ProjectRef> {
   try {
@@ -319,7 +328,71 @@ export async function resolveProject(github: RepoLookup, repo: RepoRef): Promise
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(
       `cannot resolve the configured repo ${repo.owner}/${repo.name} (factory.config.json repo.owner / repo.name) to its GitHub repository ID: ${reason}`,
+      { cause: err },
     );
+  }
+}
+
+/** First wait between startup lookups while the configured repo's key is not known yet; it doubles up to the max. */
+export const PROJECT_RETRY_MS = 30_000;
+const PROJECT_RETRY_MAX_MS = 600_000;
+
+/** A lookup error retrying cannot fix: bad credentials, or no such repository. Startup stops on it. */
+function permanentLookupError(err: unknown): boolean {
+  return err instanceof GitHubError && (err.status === 401 || err.status === 404);
+}
+
+const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300);
+
+/** What startupProject needs: the store holding the key, the forge lookup, and where to log and wait. */
+export interface StartupProjectDeps {
+  store: Pick<FactoryStore, "getCursor" | "advanceCursor" | "listSettingOverrides" | "listWorkItems">;
+  lookup: RepoLookup;
+  repo: RepoRef;
+  clock: Clock;
+  log: Logger;
+  /** Stops the wait for a first resolution (SIGTERM, a drain). */
+  signal?: AbortSignal;
+}
+
+/**
+ * The configured repo's project at startup (design 2026-11-07): GitHub is a sync plugin, so a start never waits
+ * on it once the key is known. The stored key comes first; the returned `refreshed` is one background GitHub read
+ * that stores the current label (a rename) and logs, never throws, when GitHub fails or is rate limited. Only a
+ * store that has never had the key (a first start) asks GitHub before returning: a rate limit, an outage or a
+ * network error is logged and retried, waiting PROJECT_RETRY_MS and doubling up to 10 minutes, until it resolves
+ * or `signal` stops it. Every stored item, command and run carries the key, so before the first resolution there
+ * is nothing local to process. A 401 or a 404 stops startup with the configured repo and the reason.
+ */
+export async function startupProject(d: StartupProjectDeps): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
+  const known = await storeProjectResolver(d.store, d.repo)();
+  if (known) {
+    // A store written before the key cursor: found by its label, stored now so the next start reads it directly.
+    await saveProject(d.store, d.repo, known);
+    const refreshed = resolveProject(d.lookup, d.repo).then(
+      async (now) => {
+        if (now.key === known.key) {
+          await saveProjectLabel(d.store, now);
+          return;
+        }
+        await saveProject(d.store, d.repo, now);
+        d.log.warn("GitHub reports another repository ID for the configured repo; the next start uses it", { project: now.label });
+      },
+    ).catch((err: unknown) => d.log.warn("GitHub unreachable at startup; using the stored project key", { project: known.label, error: errorText(err) }));
+    return { project: known, refreshed };
+  }
+  for (let wait = PROJECT_RETRY_MS; ; wait = Math.min(wait * 2, PROJECT_RETRY_MAX_MS)) {
+    try {
+      const project = await resolveProject(d.lookup, d.repo);
+      await saveProject(d.store, d.repo, project);
+      return { project, refreshed: Promise.resolve() };
+    } catch (err) {
+      if (permanentLookupError((err as { cause?: unknown }).cause)) throw err;
+      d.log.warn("the configured repo's project key is not stored yet and GitHub cannot resolve it; retrying", {
+        repo: `${d.repo.owner}/${d.repo.name}`, retry_in_ms: wait, error: errorText(err),
+      });
+    }
+    await d.clock.sleep(wait, d.signal);
   }
 }
 
@@ -334,7 +407,7 @@ export interface Built {
   clock: Clock;
   store: FactoryStore;
   secrets: SecretStore;
-  /** The configured repo, resolved at startup. */
+  /** The configured repo, from the store, or from GitHub on a first start (startupProject). */
   project: ProjectRef;
   controller: Controller;
   /** `config.max_workers` worker slots, `workers` of them claiming; `run(signal)` runs them all. */
@@ -395,11 +468,19 @@ export class Plugins {
   testDatabase(secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
   }
+  /**
+   * The selected forge (`plugins.forge`, issue #172), or null when config selects none: then nothing is built.
+   * Optional and not yet used by build(): the controller still reads PR facts from its sources.
+   */
+  async forge(github: GitHubClient): Promise<Forge | null> {
+    const name = this.loaded.plugins.forge;
+    return name === undefined ? null : createPlugin(this.loaded.registry, "forge", name, { ...this.base, github });
+  }
 }
 
 export async function build(
   loaded: Loaded,
-  opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number; repoLookup?: RepoLookup } = {},
+  opts: { clock?: Clock; extraScanValues?: string[]; workerIndexBase?: number; repoLookup?: RepoLookup; signal?: AbortSignal } = {},
 ): Promise<Built> {
   const { stateDir, registry, plugins: sel } = loaded;
   await mkdir(join(stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -417,7 +498,10 @@ export async function build(
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
-  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github, store }));
+  const sourceLog = new ConsoleLogger(clock, "source");
+  for (const name of selectedSources(sel)) {
+    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog }));
+  }
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -441,10 +525,11 @@ export async function build(
   // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
 
-  // Startup resolution (design 2026-11-01), after every plugin check so a bad selection is reported first: the
-  // project key every write uses, and the label refreshed from GitHub (a renamed repo shows its new path).
-  const project = await resolveProject(opts.repoLookup ?? github, base.repo);
-  await saveProjectLabel(store, project);
+  // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
+  // project key every write uses, from the store; GitHub refreshes the label in the background (a rename).
+  const { project, refreshed } = await startupProject({
+    store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
+  });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
@@ -489,6 +574,8 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
+    cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
@@ -496,7 +583,7 @@ export async function build(
     settings,
   });
 
-  return { loaded, clock, store, secrets, project, controller, worker, close: () => store.close() };
+  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
@@ -554,8 +641,16 @@ export interface UiParts {
   settings: UiSettings;
   /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
   commands: UiCommands;
+  /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
+  pauses: UiPauses;
   close(): Promise<void>;
 }
+
+/** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
+const NO_FORGE = new Proxy({}, {
+  // Not a thenable: awaiting the client itself must not hang.
+  get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error("the UI process makes no forge call"))),
+}) as unknown as GitHubClient;
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -564,7 +659,8 @@ export interface UiParts {
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
  * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
- * commands route acts as `ui.user_id` (null: not configured) and takes the same token.
+ * commands route acts as `ui.user_id` (null: not configured) and takes the same token. The pause route's owner
+ * check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -583,9 +679,26 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // One token per process for both write routes; held only in memory, never written to a file, the store or a log.
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
-  return { clock, store, scanner, settings, commands, close: () => store.close() };
+  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
+  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  const base = p.base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const cliUser = cliUserConfig(loaded.file);
+  const pauses: UiPauses = {
+    // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
+    authorize: async (user_id) => {
+      const project = await settings.resolveProject();
+      if (!project) return { allow: false, reason: "no project is stored yet" };
+      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
+    },
+    csrfToken: token,
+    log: new ConsoleLogger(clock, "ui"),
+  };
+  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
@@ -612,10 +725,11 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
-  const config = resolvedConfig(loaded.config, await resolveProject(github, base.repo));
+  const { project, refreshed } = await startupProject({ store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
+  const config = resolvedConfig(loaded.config, project);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();
-  return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => store.close() };
+  return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
 }
 
 /**

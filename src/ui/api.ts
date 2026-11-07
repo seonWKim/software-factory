@@ -5,9 +5,10 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The two write routes, POST
-// /api/v1/settings (settings-api.ts) and POST /api/v1/items/:id/commands (commands.ts), are handled behind
-// server.ts's write guards; GET /api/v1/settings and GET /api/v1/session are here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The three write routes, POST
+// /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts) and POST
+// /api/v1/pauses/resume (pause-api.ts), are handled behind server.ts's write guards; GET /api/v1/settings,
+// GET /api/v1/session and GET /api/v1/pauses are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
@@ -18,7 +19,9 @@ import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js"
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
+import { type PauseDeps, readPauses } from "./pause-api.js";
 import { readSettings } from "./settings-api.js";
+import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -39,7 +42,7 @@ export function isApiPath(pathname: string): boolean {
 }
 
 /** Answers one GET (or HEAD) under /api/v1. */
-export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
+export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
   const path = url.pathname.slice("/api/v1".length);
   const c = new ApiCtx(d);
   switch (path) {
@@ -65,6 +68,8 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
     }
     case "/data/tables":
       return data(await dataTables(c.data()));
+    case "/pauses":
+      return readPauses(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -75,6 +80,19 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return apiError(404, "No such table.");
     }
     return data(await dataTable(c.data(), name, url.searchParams));
+  }
+  const tr = /^\/items\/([^/]+)\/runs\/([^/]+)\/transcript$/.exec(path);
+  if (tr) {
+    let id: string;
+    let run: string;
+    try {
+      id = decodeURIComponent(tr[1]!);
+      run = decodeURIComponent(tr[2]!);
+    } catch {
+      return apiError(404, "No such run for this work item.");
+    }
+    const r = await transcript(d, id as WorkItemId, run, url.searchParams);
+    return { status: r.status, value: r.value };
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
@@ -250,6 +268,15 @@ async function item(c: ApiCtx, id: WorkItemId) {
   // One record per claim (design §6), listed under its run in attempt order.
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
+  // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
+  let stored: string[] = [];
+  if (c.d.storage) {
+    try {
+      stored = await c.d.storage.list(itemPrefix(id));
+    } catch {
+      stored = [];
+    }
+  }
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -296,6 +323,11 @@ async function item(c: ApiCtx, id: WorkItemId) {
     },
     timeline,
     runs: runRows,
+    /** Run id → its stored transcript parts ("" is the main step), for runs with a stored transcript only. */
+    transcripts: Object.fromEntries(runs.flatMap((r) => {
+      const parts = runParts(stored, id, r.id);
+      return parts.length > 0 ? [[r.id, parts] as const] : [];
+    })),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };

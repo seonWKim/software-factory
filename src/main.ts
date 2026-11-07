@@ -23,16 +23,17 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
-import { selectedSources } from "./plugins.js";
+import { createPlugin, selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
+import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
@@ -56,6 +57,9 @@ const USAGE = `factory <command>
                pause n workers (those whose runs started most recently) or every loop: their implement and
                review runs go back to the queue within one tick with their WIP committed locally, nothing
                pushed; other runs finish first. resume clears every pause. Stored, so it survives a restart
+  resume [name | --all]
+               end a claim pause now: rate_limit (no name), forge_auth, preflight_access or model_stall, or
+               --all for every one; prints what it ended or "no pause in effect". Logged with your local:<login>
   link-code <user_id>
                prints a one-time code that links another account (e.g. Slack) to a factory user such as
                github:12345: post /link <code> from that account. Works once, for 10 minutes
@@ -83,7 +87,8 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
                local work items, read by the controller from the store whatever plugins.source lists, acting
                as the CLI identity (cli_user, else local:<git user.email>, else local:<OS user>, else
                local:anonymous), authorized by the local auth plugin (auth.local, default "local"); no GitHub call
-  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
+  issue        create / comment / edit <number> --body-file <path> / title / sub-issue through the factory's
+               GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
@@ -94,7 +99,7 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
-  const app = await build(loaded);
+  const app = await build(loaded, { signal });
   const loops = [];
   if (cmd !== "worker") loops.push(app.controller.run(signal));
   if (cmd !== "controller") loops.push(app.worker.run(signal));
@@ -131,7 +136,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
-        const app = await build(loaded);
+        const app = await build(loaded, { signal: stop.signal });
         await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
@@ -185,6 +190,25 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
       return 0;
     }
+    case "resume": {
+      // The pauses live in the store (design §5 Restarts); an unknown name is refused before the store opens.
+      const action = parseResumeArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${RESUME_USAGE}`);
+        return 1;
+      }
+      const store = await buildStatsStore(loaded);
+      try {
+        await store.migrate();
+        const clock = await new Plugins(loaded).clock();
+        // An ID, never a display name: the OS login of the local owner.
+        const r = await runResume({ store, actor: `local:${userInfo().username}`, log: new ConsoleLogger(clock, "resume") }, action);
+        for (const line of r.lines) console.log(line);
+        return r.code;
+      } finally {
+        await store.close();
+      }
+    }
     case "link-code": {
       // Only the code's hash is stored; the code is printed here once and nowhere else (design 2026-11-01).
       const store = await buildStatsStore(loaded);
@@ -213,8 +237,10 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
             store,
             base: settingsBase(loaded),
             repo: { owner, name },
-            // Only for --project: the configured repo's key, from the forge (design 2026-11-01).
+            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07).
             resolveProject: async () => {
+              const stored = await storeProjectResolver(store, { owner, name })();
+              if (stored) return stored;
               const p = new Plugins(loaded);
               const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
               return resolveProject(github, { owner, name });
@@ -247,17 +273,25 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
-          health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
+          // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
+          health: new HealthMonitor(
+            async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))],
+            parts.clock,
+          ),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // The configured shared storage, read only by the transcript view (byte ranges, design §9).
+          storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
           // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
           commands: parts.commands,
+          // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
+          pauses: parts.pauses,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, and item commands when ui.user_id is set; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();
@@ -469,7 +503,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
       const r = await addCase(
         {
           store,
-          project: await resolveProject(github, { owner, name }),
+          project: (await storeProjectResolver(store, { owner, name })()) ?? (await resolveProject(github, { owner, name })),
           github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
           scanner: await p.scanner(secrets),
           casesDir: join(loaded.root, "golden", "cases"),

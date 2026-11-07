@@ -8,6 +8,7 @@ import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemI
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { SharedStorage } from "../interfaces/shared-storage.js";
 import {
   type FacetCounts, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts, isFiltered,
 } from "./filters.js";
@@ -49,6 +50,12 @@ export interface UiDeps {
    * actor, a store-only project resolver and the per-process CSRF token. Absent: GET is a 404 and POST a 405.
    */
   settings?: UiSettings;
+  /**
+   * Where the worker stores run transcripts (`transcripts/<item>/<run>.json`), read back one byte range at a
+   * time for the app's transcript view (design §9, issue #303). Absent: no run has a transcript link and the
+   * transcript route is a 404.
+   */
+  storage?: SharedStorage;
   /**
    * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): ui.user_id
    * and the per-process token. Absent: the session is a 404 and a commands POST a 503.

@@ -52,6 +52,14 @@ export function projectLabelCursor(key: string): string {
   return `project_label:${key}`;
 }
 
+/**
+ * The store cursor that holds the key of the configured repo `owner/name` (design 2026-11-07): written once
+ * GitHub resolved it, read at every later startup so starting never waits on GitHub.
+ */
+export function projectKeyCursor(repo: { owner: string; name: string }): string {
+  return `project_key:${repo.owner}/${repo.name}`;
+}
+
 /** What the status page shows for a project with no stored label yet: never the raw key. */
 export const UNKNOWN_PROJECT_LABEL = "unknown project";
 

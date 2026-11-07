@@ -128,7 +128,9 @@ describe("a .ts step", () => {
     expect(cfg.compilerOptions).toMatchObject({ rootDir: ".", outDir: "dist" });
     expect(cfg.include).toContain("migrations/**/*.ts");
     const pkg = JSON.parse(await readFile(join(process.cwd(), "package.json"), "utf8")) as { scripts: Record<string, string> };
-    expect(pkg.scripts.build).toContain("tsc -p tsconfig.migrations.json");
+    // npm run build (scripts/build.mjs) compiles it with --outDir set to the staged dist/ swapped in afterwards.
+    expect(pkg.scripts.build).toBe("node scripts/build.mjs");
+    expect(await readFile(join(process.cwd(), "scripts", "build.mjs"), "utf8")).toContain('join(root, "tsconfig.migrations.json"), "--outDir", stagedDist');
     expect(pkg.scripts.migrate).toContain("dist/main.js migrate");
   });
 });

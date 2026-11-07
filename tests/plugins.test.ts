@@ -76,6 +76,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
   test_database: { none: NoTestDatabase },
+  // Optional with no default (issue #172): the default selection builds no forge.
+  forge: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -177,8 +179,14 @@ describe("plugin registry: defaults", () => {
       test_database: "none",
     });
     const ctx = await context(loaded);
+    expect(loaded.plugins).not.toHaveProperty("forge");
     for (const kind of PLUGIN_KINDS) {
       const name = loaded.plugins[kind];
+      if (REGISTRY[kind].optional) {
+        expect(name, kind).toBeUndefined();
+        continue;
+      }
+      if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
       expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
       if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
@@ -239,7 +247,8 @@ describe("plugin registry: every discovered plugin", () => {
 
       it("builds an object from a full context without running anything", async () => {
         vi.stubEnv("PATH", pathWithFakeCaffeinate());
-        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
+        // A `slack` block too: the slack source needs its channels to build (it is off in the checked-in config).
+        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0TEST0001"] } }));
         const ctx = await context(loaded);
         const isMysql = d.kind === "store" && d.name === "mysql";
         const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
@@ -773,7 +782,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 16 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(16);
+  it("covers 17 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(17);
   });
 });

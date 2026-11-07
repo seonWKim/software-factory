@@ -28,7 +28,7 @@ const TAIL = 2000;
 
 /**
  * Files whose change needs a build and a restart. Anything else (docs) only moves the newest folder.
- * web/ is the status app that `npm run build` builds into web/dist (design §9).
+ * web/ is the status app that `npm run build` (scripts/build.mjs) builds into web/dist (design §9).
  */
 export function isCodePath(file: string): boolean {
   return (
@@ -38,6 +38,7 @@ export function isCodePath(file: string): boolean {
     file === "package.json" ||
     file === "package-lock.json" ||
     file === "factory.config.json" ||
+    file === "scripts/build.mjs" ||
     /^tsconfig[^/]*\.json$/.test(file)
   );
 }
