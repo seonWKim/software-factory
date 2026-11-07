@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -41,9 +41,12 @@ const failure = (p: Promise<unknown>): Promise<string | null> =>
   );
 
 describe("plugin discovery: finding descriptor files", () => {
-  it("the source tree holds 24 *.plugin.ts descriptors, sorted by path, and no other file", () => {
+  it("finds every *.plugin.ts descriptor in the source tree, sorted by path, and no other file", () => {
     const files = findPluginFiles([IMPL_DIR]);
-    expect(files.length).toBe(24);
+    // Counted from the tree, not pinned, so a new plugin needs no edit here.
+    const onDisk = readdirSync(IMPL_DIR, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".plugin.ts"));
+    expect(files.length).toBe(onDisk.length);
+    expect(files.length).toBeGreaterThan(0);
     expect(files).toEqual([...files].sort());
     for (const f of files) expect(f).toMatch(/\.plugin\.ts$/);
     for (const f of files) expect(relative(IMPL_DIR, f).startsWith("..")).toBe(false);
