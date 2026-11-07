@@ -164,7 +164,7 @@ describe("solo setup", () => {
     const controller = new Controller({ store, source: new LocalSource(store), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     await controller.catchUpStatus();
     // A refused app request posts its reply through the local source.
-    await store.recordAppCommandRequest({ key: "k1", actor: "local:someone", command: "frobnicate", args: { work_item_id: item.id } });
+    await store.recordAppCommandRequest({ key: "k1", actor: "local:someone" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
     await controller.tickAppCommands();
     expect(await store.listItemMessages(item.id)).toHaveLength(1);
     for (const table of ["posted_comments", "label_states"]) {

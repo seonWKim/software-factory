@@ -26,7 +26,7 @@ async function setup() {
   const { item } = await store.createWorkItem(
     { source: issueRef(7), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system,
   );
-  const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1", command: "frobnicate", args: { work_item_id: item.id } });
+  const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
   return { store, clock, marker: `<!-- factory:refused:app-${request.seq} -->` };
 }
 

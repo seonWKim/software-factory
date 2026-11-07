@@ -69,7 +69,7 @@ describe("controller: a repeat post with a different body", () => {
     const { item } = await store.createWorkItem(
       { source: issueRef(7), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system,
     );
-    const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1", command: "frobnicate", args: { work_item_id: item.id } });
+    const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
     const marker = `<!-- factory:refused:app-${request.seq} -->`;
     // The same marker was posted earlier with another body.
     await store.recordPostedComment({ source_id: issueRef(7).id, marker, comment_id: "9", url: "https://github.com/o/r/issues/7#issuecomment-9", body: "an older text" });
