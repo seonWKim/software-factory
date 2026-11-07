@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
@@ -16,6 +17,11 @@ import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
+/** A project label as the cursor `project_label:<key>` stores it, and the PR link built like prUrl in src/main.ts. */
+const LABEL = "github.com/o/r";
+const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
+/** The SQLite migration that adds the change columns, found by what it does so a renumber at merge needs no edit. */
+const CHANGE_MIGRATION = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN change_ref")) + 1;
 
 describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
@@ -979,6 +985,55 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.countUnreviewedMergesSince(since)).toBe(2);
       expect(await store.countUnreviewedMergesSince(new Date(clock.now().getTime() + 1000).toISOString() as Timestamp)).toBe(0);
       expect(await store.countUnreviewedMergesSince("1970-01-01T00:00:00.000Z" as Timestamp)).toBe(3);
+    });
+  });
+
+  describe("change fields beside pr_number (migration 31)", () => {
+    const raw = async (store: FactoryStore, table: string, id: string) =>
+      (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
+    const adoptedIn = (n: number, project: string) => ({
+      ...issue(n),
+      project,
+      source: { type: "github_issue" as const, id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` },
+      adopted: { pr_number: n, head_branch: "feature/x", head_sha: "h1", allowed_paths: ["src/a.ts"], tier: 4 as const },
+    });
+
+    it("the adopted insert writes change_ref, and change_url from the stored label; intake writes neither", async () => {
+      const { store } = await make();
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      const labelled = (await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
+      const unlabelled = (await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
+      const plain = (await store.createWorkItem(issue(7), system)).item;
+      expect(await raw(store, "work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await raw(store, "work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
+      expect(await raw(store, "work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 5))!.id).toBe(labelled.id);
+      expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 6))!.id).toBe(unlabelled.id);
+    });
+
+    it("a patch that sets pr_number writes change_ref, and change_url when the label is stored", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item;
+      const b = (await store.createWorkItem({ ...issue(2), project: OTHER_PROJECT_KEY }, system)).item;
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      await store.transition({ id: a.id, expected_version: 1, patch: { pr_number: 34 }, actor: system, reason: "x" });
+      await store.transition({ id: b.id, expected_version: 1, patch: { pr_number: 35 }, actor: system, reason: "x" });
+      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "work_items", b.id)).toMatchObject({ change_ref: "35", change_url: null });
+      // A patch without pr_number leaves the change columns alone.
+      await store.transition({ id: a.id, expected_version: 2, patch: { blocked_on: "human" }, actor: system, reason: "x" });
+      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      // The change columns are not part of the state change: only the patched fields are.
+      const [, set] = await store.listStateChanges(a.id);
+      expect(set!.changes).toEqual({ pr_number: { from: null, to: 34 } });
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 34))!.id).toBe(a.id);
+      expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 35))!.id).toBe(b.id);
+    });
+
+    it("an unreviewed merge insert writes change_ref", async () => {
+      const { store } = await make();
+      const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: null });
+      expect(await raw(store, "unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
     });
   });
 
@@ -2117,5 +2172,93 @@ describe("MySQL step 28 (host-sleeps)", () => {
     const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
     await store.recordHostSleep(s);
     expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+  });
+});
+
+describe("migration 31 (change fields) on an existing SQLite database", () => {
+  const adoptedIn = (n: number, project: string) => ({
+    ...issue(n),
+    project,
+    adopted: { pr_number: n, head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
+  });
+
+  it("prUrl in src/main.ts builds the same string as the backfill and the store writes", () => {
+    expect(readFileSync(join(process.cwd(), "src", "main.ts"), "utf8")).toContain("prUrl: (label, n) => `https://${label}/pull/${n}`");
+    expect(CHANGE_MIGRATION).toBeGreaterThan(0);
+  });
+
+  it("backfills change_ref and change_url from pr_number and the label, adds the indexes; pr_number-only rows still resolve", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
+    const clock = new FakeClock();
+    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
+    await seed.migrate();
+    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
+    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
+    const patched = (await seed.createWorkItem(issue(7), system)).item;
+    await seed.transition({ id: patched.id, expected_version: 1, patch: { pr_number: 9 }, actor: system, reason: "x" });
+    const plain = (await seed.createWorkItem(issue(8), system)).item;
+    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 11, merge_sha: "m", merger_id: null });
+    await seed.close();
+    // Back to the state before the migration: no change columns or indexes, every row as it was.
+    const db = new DatabaseSync(path);
+    db.exec(`
+      DROP INDEX work_items_change; DROP INDEX unreviewed_merges_change;
+      ALTER TABLE work_items DROP COLUMN change_ref; ALTER TABLE work_items DROP COLUMN change_url;
+      ALTER TABLE unreviewed_merges DROP COLUMN change_ref;
+      DELETE FROM schema_migrations WHERE version >= ${CHANGE_MIGRATION};
+    `);
+    db.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      const row = async (table: string, id: string) => (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
+      expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
+      expect(await row("work_items", patched.id)).toMatchObject({ change_ref: "9", change_url: prUrl(LABEL, 9) });
+      expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
+      expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
+    } finally {
+      await store.close();
+    }
+
+    const check = new DatabaseSync(path);
+    const index = (name: string) => check.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) as { sql: string } | undefined;
+    expect(index("work_items_change")?.sql).toMatch(/ON work_items \(project, change_ref\)/);
+    expect(index("unreviewed_merges_change")?.sql).toMatch(/UNIQUE INDEX .* ON unreviewed_merges \(project, change_ref\)/);
+    // A row an older controller wrote: pr_number only, change_ref NULL. The lookup falls back to pr_number.
+    check.prepare("UPDATE work_items SET pr_number = 12 WHERE id = ?").run(plain.id);
+    check.close();
+    const reopened = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      expect((await reopened.getWorkItemByPr(PROJECT_KEY, 12))!).toMatchObject({ id: plain.id, pr_number: 12 });
+      expect((await reopened.getWorkItemByPr(PROJECT_KEY, 5))!.id).toBe(labelled.id);
+      expect(await reopened.getWorkItemByPr(OTHER_PROJECT_KEY, 12)).toBeNull();
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+describe("MySQL step 31 (change-fields)", () => {
+  it("is a .ts data step right after the SQLite migration's starting state", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")).toMatchObject({
+      number: CHANGE_MIGRATION, from: CHANGE_MIGRATION - 1, kind: "ts",
+    });
+  });
+
+  it.skipIf(!MYSQL_URL)("a row written with pr_number only still resolves by PR", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const { item } = await store.createWorkItem(issue(1), system);
+    await conn.query("UPDATE work_items SET pr_number = 12 WHERE id = ?", [item.id]);
+    expect((await store.getWorkItemByPr(PROJECT_KEY, 12))!).toMatchObject({ id: item.id, pr_number: 12 });
+    expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, 12)).toBeNull();
   });
 });
