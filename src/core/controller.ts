@@ -67,6 +67,7 @@ import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -1159,10 +1160,24 @@ export class Controller {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
+      return this.decide(id, async (x) =>
+        withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
+  }
+
+  /**
+   * A spec decision (approve, reject, revise) gets the standing-approval detail (design 05-standing-approvals):
+   * gate, tier, kind, outcome, whether the spec changed, and the deciding user's ID. Any other decision as it is.
+   */
+  private async withSpecDecision(it: WorkItem, d: Decision | Refusal): Promise<Decision | Refusal> {
+    if (!d || "refuse" in d) return d;
+    const outcome = SPEC_DECISIONS[d.reason];
+    if (!outcome) return d;
+    const kind = specKind(it, it.parent_id === null && (await this.specPhases(it)) !== null);
+    const gate = specDecisionDetail({ tier: it.tier, kind, outcome, spec_changed: specChanged(outcome, d.patch), actor: d.actor });
+    return { ...d, detail: { ...d.detail, ...gate } };
   }
 
   /**
@@ -1733,7 +1748,13 @@ export class Controller {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+      detail: {
+        phases: phases.length,
+        sub_issues: JSON.stringify(refs.map((r) => r.id)),
+        ...(note ? { note } : {}),
+        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor }),
+        ...tag,
+      },
     });
     return null;
   }

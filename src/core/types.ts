@@ -209,6 +209,35 @@ export interface ImproveReport extends ImproveWindow {
   created_at: Timestamp;
 }
 
+/** Standing approvals (design 05-standing-approvals): the gate a human decision is made at. Only the spec gate so far. */
+export type StandingGate = "spec";
+/** What the spec at the gate is: a phase of a split, a split into phases, or a single spec. */
+export type SpecKind = "phase" | "split" | "single";
+/** A human's decision at a gate. */
+export type GateOutcome = "approved" | "rejected" | "revised";
+
+/** A standing-approval rule, one per (gate, tier). Stored only: nothing acts on it yet. `set_by`: a user ID. */
+export interface StandingRule {
+  gate: StandingGate;
+  tier: Tier;
+  enabled: boolean;
+  set_by: UserId;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export type StandingProposalId = Brand<string, "StandingProposalId">;
+
+/** A proposal to turn a rule on, one per (gate, tier, run_length): the run that reached `threshold`. */
+export interface StandingProposal {
+  id: StandingProposalId;
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
+  created_at: Timestamp;
+}
+
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
 export interface SessionRecord { notes: SessionNote[]; last_finish: SessionFinish | null }
 export interface SessionNote { at: Timestamp; text: string }
