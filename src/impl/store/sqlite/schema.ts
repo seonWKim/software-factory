@@ -393,4 +393,18 @@ export const MIGRATIONS: readonly string[] = [
     created_at   TEXT NOT NULL
   );
   `,
+  // 22: app command requests (issue #244). One row per command request; read in `seq` order. `request_key` is the
+  // idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes. Table only: nothing
+  // reads or writes it yet.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 22.
+  `
+  CREATE TABLE IF NOT EXISTS app_command_requests (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  );
+  `,
 ];
