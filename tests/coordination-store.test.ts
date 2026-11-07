@@ -202,6 +202,55 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect((await claim(store, w2))?.work_item_id).toBe(b);
     });
 
+    it("two queued items that hold each other and an open PR: the decisions name the PR; once it merges they stop naming it at once and the oldest is claimed", async () => {
+      const { store, clock } = await make();
+      const pr = await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      const a = await item(store, clock, 2, { files_to_change: [WORKER, "SET_UP.md"] });
+      const b = await item(store, clock, 3, { files_to_change: [WORKER, "SET_UP.md"] });
+      expect(await claim(store)).toBeNull();
+      // Each also shares more (6.0) with the other than with the PR (3.0), but the PR is what holds them.
+      for (const id of [a, b]) {
+        expect(await store.listClaimDecisions(id)).toMatchObject([{ decision: "held", holder_work_item_id: pr, holder_kind: "pr", cost: 3 }]);
+      }
+      // The merge path closes the item: no decision names it from that commit on, before any claim runs.
+      const it = (await store.getWorkItem(pr))!;
+      await store.transition({
+        id: pr, expected_version: it.version, actor: system, reason: "pr_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "abc" },
+      });
+      expect(await store.listClaimDecisions(a)).toEqual([]);
+      expect(await store.listClaimDecisions(b)).toEqual([]);
+      // Now they hold only each other: the oldest goes first, the other waits for it.
+      expect((await claim(store))?.work_item_id).toBe(a);
+      expect(await claim(store, w2)).toBeNull();
+      expect(await store.listClaimDecisions(b)).toMatchObject([{ decision: "held", holder_work_item_id: a, holder_kind: "running" }]);
+    });
+
+    it("a run held only by a queued run that cannot start (an open PR holds it) is claimed", async () => {
+      const { store, clock } = await make();
+      await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      const older = await item(store, clock, 2, { files_to_change: ["SET_UP.md", WORKER] });
+      const younger = await item(store, clock, 3, { files_to_change: [WORKER] });
+      expect((await claim(store))?.work_item_id).toBe(younger);
+      expect((await store.listClaimDecisions(younger))[0]).toMatchObject({ decision: "deadlock", holder_work_item_id: older, holder_kind: "waiting" });
+      expect((await store.listClaimDecisions(older))[0]).toMatchObject({ decision: "held", holder_kind: "pr" });
+    });
+
+    it("closing an item keeps an approval of a run it held", async () => {
+      const { store, clock } = await make();
+      const a = await item(store, clock, 1, { files_to_change: [WORKER] });
+      const b = await item(store, clock, 2, { files_to_change: [WORKER] });
+      const first = (await claim(store))!;
+      expect(await claim(store, w2)).toBeNull();
+      const run = await runOf(store, b);
+      const before = (await store.getWorkItem(b))!;
+      expect(await store.approveClaimHold({ id: b, expected_version: before.version, actor: human as never, run_id: run.id })).toMatchObject({ ok: true });
+      await store.completeRun(first.id, first.lease!.token, ok);
+      const it = (await store.getWorkItem(a))!;
+      await store.transition({ id: a, expected_version: it.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+      expect(await store.listClaimDecisions(b)).toMatchObject([{ holder_work_item_id: a, approved_by: human.id }]);
+    });
+
     it("triage and review runs are never held by the coordination rule", async () => {
       const { store, clock } = await make();
       const a = await item(store, clock, 1, { files_to_change: [WORKER] });
