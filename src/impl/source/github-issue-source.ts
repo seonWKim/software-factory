@@ -2,8 +2,10 @@ import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
+import type { Logger } from "../../core/log.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import type { Clock } from "../../interfaces/clock.js";
 import { type FactoryStore, labelTarget } from "../../interfaces/factory-store.js";
 import type {
   ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
@@ -147,6 +149,22 @@ interface Cursor {
    */
   reviews?: string | null;
   review_ids?: number[];
+  /**
+   * The starting point (design §5, Merges): a PR merged before it is never checked (no merger read, no
+   * pr_merged). Set once: the first poll takes it from the Clock; a cursor written before it existed takes its
+   * `pulls` time, so an install that already runs reads no history. Only `github.history_since` moves it, back.
+   */
+  start?: string;
+  /** The `github.history_since` value already acted on, so a restart neither reads that history again nor warns again. */
+  history_since?: string | null;
+}
+
+/** What poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
+export interface PollContext {
+  clock: Clock;
+  /** In GitHub's UTC format (githubHistorySince); null when not set. */
+  history_since: string | null;
+  log: Logger;
 }
 
 /**
@@ -209,6 +227,27 @@ export function commentBackoffMs(attempts: number): number {
 
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
+/** Closed-PR pages read past a cursor or back to `github.history_since`, 100 each, newest-updated first. */
+const CLOSED_PULL_PAGES = 5;
+
+/** A time in the UTC format GitHub returns for updated_at: `2026-11-07T00:00:00Z`, no milliseconds. */
+function githubTime(d: Date): string {
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * `github.history_since`: how far back merges are checked (design §5, Merges). Absent: null. A date or an ISO
+ * time, returned in GitHub's UTC format; anything else throws an error naming the setting (startup fails).
+ */
+export function githubHistorySince(github: { history_since?: unknown } | undefined): string | null {
+  const v = github?.history_since;
+  if (v === undefined || v === null) return null;
+  const ms = typeof v === "string" && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/.test(v) ? Date.parse(v) : NaN;
+  if (Number.isNaN(ms)) {
+    throw new Error(`github.history_since must be a date like 2026-01-01 or a UTC time like 2026-01-01T00:00:00Z, got ${JSON.stringify(v) ?? String(v)}`);
+  }
+  return githubTime(new Date(ms));
+}
 
 export class GitHubIssueSource implements PollSource, DependencySource {
   readonly type = "github_issue" as const;
@@ -226,9 +265,12 @@ export class GitHubIssueSource implements PollSource, DependencySource {
      * budget). Without one (the forge's own source) every post reads the thread and every status reads the labels.
      */
     private readonly store: FactoryStore | null = null,
+    /** Required to poll (the forge's own source never polls). */
+    private readonly pollContext: PollContext | null = null,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {
+    if (!this.pollContext) throw new Error("GitHubIssueSource.poll needs a PollContext (clock, history_since, log)");
     const c: Cursor = cursor ? (JSON.parse(cursor) as Cursor) : { issues: null, comments: null, pulls: null };
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const events: SourceEvent[] = [];
@@ -323,30 +365,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       }
     }
 
-    // Pulls have no `since`: read newest-updated first and stop at the cursor, without reading the pages
-    // past it (design §5 Sources, GitHub call budget).
-    // Every PR, not only factory ones (design 2026-11-01): a merge with no work item is an unreviewed merge.
-    const pastCursor = (page: GhPull[]) => c.pulls !== null && (page.at(-1)?.updated_at ?? "") < c.pulls;
-    const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, c.pulls ? 5 : 1, pastCursor);
-    for (const p of pulls) {
-      if (c.pulls && p.updated_at < c.pulls) break;
-      next.pulls = max(next.pulls, p.updated_at);
-      const fork = this.isFork(p) ? { fork: true as const } : {};
-      if (p.merged_at && p.merge_commit_sha) {
-        // The list endpoint omits merged_by; the single-PR endpoint has it.
-        const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${base}/pulls/${p.number}`);
-        events.push({
-          kind: "pr_merged",
-          pr_number: p.number,
-          head_branch: p.head.ref,
-          merge_sha: p.merge_commit_sha,
-          merger: full.merged_by ? identity(full.merged_by) : null,
-          ...fork,
-        });
-      } else {
-        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref, ...fork });
-      }
-    }
+    events.push(...(await this.closedPulls(base, c, next, this.pollContext)));
 
     // Open PRs. Not cursored: reported on every poll while open. pr_open for every factory PR and every other
     // non-draft PR against the base from this repository (design 2026-11-01); the controller reads more about a
@@ -413,6 +432,56 @@ export class GitHubIssueSource implements PollSource, DependencySource {
 
     events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /**
+   * pr_merged and pr_closed for every PR (not only factory ones, design 2026-11-01: a merge with no work item is
+   * an unreviewed merge) updated since the cursor. Pulls have no `since`: read newest-updated first and stop at
+   * the cursor, without reading the pages past it (GitHub call budget). A merge before the starting point gets
+   * no merger read and no event, so a first start flags no past merge. A `github.history_since` older than the
+   * starting point moves it back once: that poll reads back to it, at most CLOSED_PULL_PAGES pages.
+   */
+  private async closedPulls(base: string, c: Cursor, next: Cursor, ctx: PollContext): Promise<SourceEvent[]> {
+    let start = c.start ?? c.pulls ?? githubTime(ctx.clock.now());
+    let stop = c.pulls;
+    const since = ctx.history_since;
+    next.history_since = c.history_since ?? null;
+    if (since !== null && since !== c.history_since) {
+      next.history_since = since;
+      if (since < start) {
+        start = since;
+        stop = since;
+      } else {
+        ctx.log.warn("github.history_since is not before the starting point: ignored", { history_since: since, start });
+      }
+    }
+    next.start = start;
+    const pastStop = (page: GhPull[]) => stop !== null && (page.at(-1)?.updated_at ?? "") < stop;
+    const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, stop ? CLOSED_PULL_PAGES : 1, pastStop);
+    const events: SourceEvent[] = [];
+    for (const p of pulls) {
+      if (stop && p.updated_at < stop) break;
+      next.pulls = max(next.pulls, p.updated_at);
+      const fork = this.isFork(p) ? { fork: true as const } : {};
+      if (p.merged_at && p.merge_commit_sha) {
+        if (p.merged_at < start) continue;
+        // The list endpoint omits merged_by; the single-PR endpoint has it.
+        const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${base}/pulls/${p.number}`);
+        events.push({
+          kind: "pr_merged",
+          pr_number: p.number,
+          head_branch: p.head.ref,
+          merge_sha: p.merge_commit_sha,
+          merger: full.merged_by ? identity(full.merged_by) : null,
+          ...fork,
+        });
+      } else {
+        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref, ...fork });
+      }
+    }
+    // With no closed PR read yet, the next poll still stops at the starting point.
+    next.pulls ??= start;
+    return events;
   }
 
   /**

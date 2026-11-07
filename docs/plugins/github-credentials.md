@@ -16,8 +16,10 @@ Turn on / off: set `plugins.github_auth` to `app` (bot) or `token` (your account
 Shared REST client settings (both plugins; `GitHubClient`, design §5 Sources, GitHub call budget):
 
 - `"github": { "min_remaining": 200 }`: below this many core API calls left in the hour, optional reads (per-PR mergeable, review and base-commit reads in the poll, PR checks) wait until the reset; the intake lists always run. Absent: 200. A whole number, 0 or more; `0` turns the skipping off (calls are still refused locally once none are left). One log line (`component: "github"`) on entering and one on leaving.
+- `"github": { "history_since": "2026-01-01" }`: read by the `github-issues` source, not the client: check merges back to this date, once, at most 5 pages of closed PRs (docs/plugins/source-adapter.md, `github-issues`). Absent: merges before the first start are not checked. A date or UTC time; anything else fails at startup naming the setting.
 - Conditional GETs (ETag / `If-None-Match`, a 304 does not count against the limit) are always on, with a per-process cache of 500 URLs; there is no setting.
 
 ## History
 
+- **`history_since`** (added 2026-11-07, issue #341). Before: the `github` block had only `min_remaining`, and a first start checked the merges on the first page of closed PRs.
 - **Call budget** (changed 2026-11-07). Before: the client had no settings, sent no conditional requests and ignored the rate-limit headers.
