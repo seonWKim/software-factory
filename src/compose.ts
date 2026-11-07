@@ -40,6 +40,7 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
+import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
@@ -163,6 +164,11 @@ export interface FileConfig {
    * localhost, 127.0.0.1 or [::1]) and a model name per class. Checked at load; no plugin reads it yet.
    */
   openai_compatible?: OpenAICompatibleConfig;
+  /**
+   * The `slack` source (issue #109, src/impl/source/slack-config.ts): `channels`, the Slack channel IDs it listens
+   * in. Checked at load; required once `plugins.source` lists `slack`, ignored otherwise.
+   */
+  slack?: SlackConfig;
   /**
    * Path companions (design 04-triage.md): a list of `{ when, also }`. When triage's `files_to_change` names
    * `when`, each `also` path is added to `allowed_paths`. Absent: none. Checked by pathCompanionsConfig.
@@ -505,7 +511,10 @@ export async function build(
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
-  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github, store }));
+  const sourceLog = new ConsoleLogger(clock, "source");
+  for (const name of selectedSources(sel)) {
+    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog }));
+  }
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });

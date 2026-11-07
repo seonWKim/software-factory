@@ -85,7 +85,13 @@ describe("suggestCommand", () => {
       answer("none", "", 0.99),
     ];
     for (const c of cases) expect({ c, s: await suggestCommand("ship it", SPEC_PENDING, new ScriptedLLM([c])) }).toEqual({ c, s: null });
-    expect(await suggestCommand("ship it", SPEC_PENDING, new ScriptedLLM([answer("approve", "", 0.7)]))).not.toBeNull();
+    expect(await suggestCommand("ship it", SPEC_PENDING, new ScriptedLLM([answer("approve", "", SUGGEST_MIN_CONFIDENCE)]))).not.toBeNull();
+  });
+
+  it("offers a suggestion only at 0.85 confidence or more: 0.8 is not offered, 0.9 is", async () => {
+    expect(SUGGEST_MIN_CONFIDENCE).toBe(0.85);
+    expect(await suggestCommand("ship it", SPEC_PENDING, new ScriptedLLM([answer("approve", "", 0.8)]))).toBeNull();
+    expect(await suggestCommand("ship it", SPEC_PENDING, new ScriptedLLM([answer("approve", "", 0.9)]))).toMatchObject({ command: "approve" });
   });
 
   it("returns null for a command not in the list, an extra command, or one that does not apply in the state", async () => {

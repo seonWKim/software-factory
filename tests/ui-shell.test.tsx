@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
 import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
@@ -56,6 +57,9 @@ const RESPONSES: Record<string, unknown> = {
   },
 };
 let fetched: string[] = [];
+let posts: { url: string; headers: Record<string, string>; body: unknown }[] = [];
+/** The answer to the next command POST. */
+let postAnswer: { status: number; body: unknown } = { status: 202, body: { request_id: "app:x", seq: 9, command: "approve", work_item_id: "wi_1" } };
 let hidden = false;
 
 /** Browser storage for the test: Node 25's own experimental localStorage would otherwise shadow jsdom's. */
@@ -77,13 +81,19 @@ class MemoryStorage {
 
 beforeEach(() => {
   fetched = [];
+  posts = [];
+  postAnswer = { status: 202, body: { request_id: "app:x", seq: 9, command: "approve", work_item_id: "wi_1" } };
   hidden = false;
   vi.stubGlobal("localStorage", new MemoryStorage());
   document.documentElement.classList.remove("dark");
   history.replaceState(null, "", "/app/");
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => (hidden ? "hidden" : "visible"));
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     fetched.push(url);
+    if (init?.method === "POST") {
+      posts.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify(postAnswer.body), { status: postAnswer.status, headers: { "content-type": "application/json" } });
+    }
     const body = RESPONSES[url.split("?")[0]!];
     if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
     return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
@@ -313,5 +323,145 @@ describe("Running now and Queue", () => {
     cleanup();
     const b = render(<QueueTable queue={[q] as never} items={items} now={NOW_MS} />).container;
     expect([...b.querySelectorAll("tbody tr td:nth-child(2) a")].map((x) => x.getAttribute("href"))).toEqual(["https://github.com/o/r/issues/1", "/app/items/wi_1"]);
+  });
+});
+
+// ---- Item commands (issue #228): a button per command, the note box, reject's confirmation, the outcome ----
+const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it` });
+const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
+  ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
+const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true };
+
+function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(cmd), replies: ReturnType<typeof reply>[] = [], session: object | null = SESSION) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (session) client.setQueryData(["/api/v1/session"], session);
+  return render(
+    <QueryClientProvider client={client}>
+      <ItemCommands id="wi_1" commands={commands} replies={replies} />
+    </QueryClientProvider>,
+  );
+}
+const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+const rowOf = (name: string) => document.querySelector(`[data-command="${name}"]`) as HTMLElement;
+const typeNote = (text: string) => fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: text } });
+const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)));
+
+describe("item commands", () => {
+  it("shows one button per command, in the API's order, labelled with its name", () => {
+    mountCommands(["retry", "approve", "budget"].map(cmd));
+    expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["retry", "approve", "budget"]);
+  });
+
+  it("the item page shows the buttons from the item API's commands list", async () => {
+    RESPONSES["/api/v1/session"] = SESSION;
+    (detail as Record<string, unknown>).commands = [cmd("approve"), cmd("reject")];
+    (detail as Record<string, unknown>).replies = [];
+    try {
+      history.replaceState(null, "", "/app/items/wi_1");
+      mount();
+      expect(await screen.findByRole("button", { name: "approve" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "reject" })).toBeTruthy();
+    } finally {
+      delete RESPONSES["/api/v1/session"];
+      delete (detail as Record<string, unknown>).commands;
+      delete (detail as Record<string, unknown>).replies;
+    }
+  });
+
+  it("revise and reject stay disabled while the box is blank and send nothing", async () => {
+    mountCommands();
+    expect(button("revise").disabled).toBe(true);
+    expect(button("reject").disabled).toBe(true);
+    expect(button("approve").disabled).toBe(false);
+    typeNote("   ");
+    fireEvent.click(button("revise"));
+    await settle();
+    expect(posts).toEqual([]);
+    typeNote("tighten the tests");
+    expect(button("revise").disabled).toBe(false);
+  });
+
+  it("a send posts { command, note } with the session token; the note only when the box has text", async () => {
+    mountCommands();
+    fireEvent.click(button("approve"));
+    await settle();
+    typeNote("  more tests please ");
+    fireEvent.click(button("revise"));
+    await settle();
+    expect(posts.map((p) => [p.url, p.body])).toEqual([
+      ["/api/v1/items/wi_1/commands", { command: "approve" }],
+      ["/api/v1/items/wi_1/commands", { command: "revise", note: "more tests please" }],
+    ]);
+    expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
+    expect(posts[0]!.headers["content-type"]).toBe("application/json");
+  });
+
+  it("reject asks to confirm: cancel posts nothing, confirm posts once", async () => {
+    mountCommands();
+    typeNote("out of scope");
+    fireEvent.click(button("reject"));
+    await settle();
+    expect(posts).toEqual([]);
+    fireEvent.click(button("Cancel"));
+    expect(screen.queryByRole("button", { name: "Confirm reject" })).toBeNull();
+    await settle();
+    expect(posts).toEqual([]);
+    fireEvent.click(button("reject"));
+    fireEvent.click(button("Confirm reject"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "out of scope" }]);
+  });
+
+  it("a 202 shows sent at once; a failed send shows its error next to its button", async () => {
+    mountCommands();
+    fireEvent.click(button("approve"));
+    await settle();
+    expect(within(rowOf("approve")).getByRole("status").textContent).toBe("sent");
+    postAnswer = { status: 403, body: { error: "Missing or stale x-csrf-token; reload the page." } };
+    fireEvent.click(button("retry"));
+    await settle();
+    expect(within(rowOf("retry")).getByRole("alert").textContent).toBe("Missing or stale x-csrf-token; reload the page.");
+    expect(within(rowOf("approve")).getByRole("status").textContent).toBe("sent");
+  });
+
+  it("shows the latest request's outcome per command: its refusal, sent, or Done", () => {
+    mountCommands(["approve", "retry", "revise", "reject"].map(cmd), [
+      reply(1, "approve", true, "You may not approve this item."),
+      reply(2, "retry", true),
+      reply(3, "approve", false),
+      reply(4, "revise", true),
+      reply(5, "revise", true, "Nothing to revise."),
+    ]);
+    expect(rowOf("approve").querySelector("[data-outcome]")!.textContent).toBe("sent");
+    expect(rowOf("retry").querySelector("[data-outcome]")!.textContent).toBe("Done");
+    expect(rowOf("revise").querySelector("[data-outcome]")!.textContent).toBe("Nothing to revise.");
+    expect(rowOf("reject").querySelector("[data-outcome]")).toBeNull();
+  });
+
+  it("a local send shows sent until a reply as new as it arrives", () => {
+    const replies = [reply(4, "retry", true)];
+    expect(commandOutcome(replies, "retry", { seq: 9 })).toEqual({ tone: "status", text: "sent" });
+    expect(commandOutcome([...replies, reply(9, "retry", true)], "retry", { seq: 9 })).toEqual({ tone: "status", text: "Done" });
+    expect(commandOutcome(replies, "retry", { error: "boom" })).toEqual({ tone: "error", text: "boom" });
+  });
+
+  it("with commands off every button is disabled and the page says so", () => {
+    mountCommands(undefined, [], { ...SESSION, commands_enabled: false });
+    typeNote("some text");
+    for (const b of document.querySelectorAll("[data-command] > button")) expect((b as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/Commands are off/)).toBeTruthy();
+  });
+});
+
+describe("Floor item links (issue #228)", () => {
+  it("Needs you and Work items rows link their title to the item page", async () => {
+    mount();
+    const needs = await screen.findByRole("table", { name: "Needs you" });
+    expect(within(needs).getByRole("link", { name: "Spec waiting" }).getAttribute("href")).toBe("/app/items/wi_1");
+    cleanup();
+    history.replaceState(null, "", "/app/items");
+    mount();
+    const all = await screen.findByRole("table", { name: "Work items" });
+    expect(within(all).getByRole("link", { name: "Being built" }).getAttribute("href")).toBe("/app/items/wi_2");
   });
 });

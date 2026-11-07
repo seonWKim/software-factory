@@ -2,7 +2,7 @@
 
 One-time setup for the factory's Slack app. It lets the factory talk with people in Slack threads in real time (Socket Mode). It takes about five minutes: three steps are commands, three are clicks in the browser, because Slack has no API for them.
 
-Nothing uses these tokens until the Slack source plugin is enabled (#109). Setting the app up early is safe.
+Nothing uses these tokens until the `slack` source plugin is selected (SET_UP.md, Slack; docs/plugins/source-adapter.md). Setting the app up early is safe.
 
 ## What gets created
 
@@ -71,7 +71,7 @@ socket: hello received (connections: 1)
 
 ### 7. Invite the bot to a channel (Slack)
 
-In the channel the factory should listen in, type `/invite @software-factory`. Copy the channel ID from the channel details (bottom of the **About** tab, `C…`). The Slack source plugin (#109) reads it from `factory.config.json`.
+In the channel the factory should listen in, type `/invite @software-factory`. Copy the channel ID from the channel details (bottom of the **About** tab, `C…`). The `slack` source plugin reads it from the `slack` block of `factory.config.json`: `"slack": { "channels": ["C…"] }`.
 
 ## Changing the app later
 
