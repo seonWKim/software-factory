@@ -14,6 +14,7 @@ import type { Capability, CapabilitySearch } from "./interfaces/capability-searc
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -44,9 +45,16 @@ export interface Instances {
   awake: KeepAwake;
   github_auth: GitHubCredentials;
   test_database: TestDatabase;
+  forge: Forge;
 }
 
 export type PluginKind = keyof Instances;
+
+/**
+ * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
+ * selects nothing. Never a guard.
+ */
+export type OptionalKind = "forge";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -82,6 +90,7 @@ export interface Contexts {
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
   /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
   test_database: BaseContext & { secrets: SecretStore };
+  forge: BaseContext & { github: GitHubClient };
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
@@ -112,7 +121,10 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   create: PluginFactory<K>;
   /** The secret names this plugin reads (none if left out); see declaredSecrets. */
   secrets?: readonly SecretDeclaration[];
-  /** Absent: not a default. store and auth take none: their top-level config keys always pick one. */
+  /**
+   * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
+   * kinds (forge) take none either: leaving their key out selects nothing.
+   */
   default?: PluginDefault;
 }
 
@@ -134,6 +146,8 @@ export interface InterfaceEntry<K extends PluginKind> {
   configKey: string;
   /** Guards can be switched but never disabled (architecture §5). */
   guard: boolean;
+  /** Optional kinds (forge): no default, and an absent value or "none" selects nothing. Never a guard. */
+  optional: boolean;
   plugins: Readonly<Record<string, PluginFactory<K>>>;
   /**
    * The secret names each plugin reads, one per plugin name (an empty list for none). The SecretStore
@@ -150,9 +164,10 @@ export type Registry = { readonly [K in PluginKind]: InterfaceEntry<K> };
  * One plugin name per interface, as selected by config. `plugins.source` may list several sources (design
  * 2026-11-01): then `sources` holds them all, in config order, and `source` is the first. `plugins.runner` and
  * `plugins.llm` may list a fallback chain (design 2026-11-07) the same way, in `runners` and `llms`. A single
- * name, or a list of one, leaves the list out, so the selection is exactly what one name always gave.
+ * name, or a list of one, leaves the list out, so the selection is exactly what one name always gave. An
+ * optional kind (forge) is absent when config selects none.
  */
-export type Selection = { [K in PluginKind]: string } & {
+export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & { [K in OptionalKind]?: string } & {
   sources?: readonly string[];
   runners?: readonly string[];
   llms?: readonly string[];
@@ -209,7 +224,8 @@ function selectedNames(selection: Selection, kind: PluginKind): readonly string[
   if (kind === "source") return selectedSources(selection);
   if (kind === "runner") return selectedRunners(selection);
   if (kind === "llm") return selectedLlms(selection);
-  return [selection[kind]];
+  const name = selection[kind];
+  return name === undefined ? [] : [name];
 }
 
 /**

@@ -25,6 +25,7 @@ import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -459,6 +460,14 @@ export class Plugins {
   }
   testDatabase(secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
+  }
+  /**
+   * The selected forge (`plugins.forge`, issue #172), or null when config selects none: then nothing is built.
+   * Optional and not yet used by build(): the controller still reads PR facts from its sources.
+   */
+  async forge(github: GitHubClient): Promise<Forge | null> {
+    const name = this.loaded.plugins.forge;
+    return name === undefined ? null : createPlugin(this.loaded.registry, "forge", name, { ...this.base, github });
   }
 }
 
