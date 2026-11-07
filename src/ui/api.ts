@@ -17,11 +17,12 @@ import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItem
 import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, listRows } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
+import { type Why, deadlocked } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -154,14 +155,39 @@ class ApiCtx {
     const n = /#(\d+)$/.exec(it.source.id)?.[1];
     return n ? { number: Number(n), url: it.source.link } : null;
   }
+
+  /**
+   * `why` as the API returns it: the sentence through the Withholder, the refs as numbers, and `ref_url`, the
+   * item's repository issue URL to append a ref to (null when the source link is not an issue or PR URL).
+   */
+  async why(w: Why, it: WorkItem) {
+    const repo = /^(https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+)\/(?:issues|pull)\/\d+$/.exec(it.source.link)?.[1];
+    return {
+      code: w.code,
+      text: (await this.text(w.text))!,
+      next_actor: w.next_actor,
+      refs: w.refs.filter((n) => Number.isSafeInteger(n)),
+      ref_url: repo ? await this.text(`${repo}/issues/`) : null,
+    };
+  }
+
+  /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
+  async whyOfItem(it: WorkItem) {
+    const s = this.d.store;
+    const { active, position } = await activeRuns(s);
+    const run = active.get(it.id) ?? null;
+    const decision = await latestDecision(s, it.id, run);
+    const waiting = waitingOn(it, await readPhases(s, [it]));
+    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now), it);
+  }
 }
 
 async function overview(c: ApiCtx) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
-  const needs_you = await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const running = await s.listRunsByStatus(["running"], LIST_LIMIT);
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
+  const needs_you = (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await deadlocks(c, [...running, ...queued]));
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
@@ -191,6 +217,25 @@ async function overview(c: ApiCtx) {
     },
     unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
+}
+
+/**
+ * Open items not blocked on a person whose current run's latest claim decision is a deadlock: they are in Needs
+ * you too (issue #310). One claim-decision read per item with an active implement run.
+ */
+async function deadlocks(c: ApiCtx, active: readonly Run[]): Promise<number> {
+  const s = c.d.store;
+  const seen = new Set<WorkItemId>();
+  let n = 0;
+  for (const r of active.filter((x) => x.kind === "implement")) {
+    if (seen.has(r.work_item_id)) continue;
+    seen.add(r.work_item_id);
+    const d = (await s.listClaimDecisions(r.work_item_id)).at(-1) ?? null;
+    if (!d || !active.some((x) => x.work_item_id === r.work_item_id && deadlocked(d, x))) continue;
+    const it = await s.getWorkItem(r.work_item_id);
+    if (it && it.stage !== "CLOSED" && it.blocked_on !== "human") n++;
+  }
+  return n;
 }
 
 const MERGES_DEFAULT = 50;
@@ -225,7 +270,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const parsed = parseFilters(params);
   if (!parsed.ok) return apiError(400, parsed.error);
   const f = parsed.filters;
-  const rows = await listRows({ store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, f);
+  const ctx = { store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms };
+  const rows = await listRows(ctx, f);
   const shown = applyFilters(rows, f);
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
@@ -254,9 +300,12 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       dependents: r.dependents,
       conflicts: r.conflicts,
       merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
+      why: await c.why(r.why, it),
     });
   }
-  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets: facetCounts(rows, f) });
+  // The closed items count in the facets even when the list leaves them out (the Closed option's count).
+  const facets = facetCounts([...rows, ...(await closedFacetRows(ctx, f))], f);
+  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets });
 }
 
 async function item(c: ApiCtx, id: WorkItemId) {
@@ -315,11 +364,17 @@ async function item(c: ApiCtx, id: WorkItemId) {
       token_cost: it.token_cost,
       pr_number: it.pr_number,
       pr_url: await c.prUrl(it),
+      spec_comment_url: await c.text(it.spec_comment_url),
+      // A phase of a split spec links to its parent; a split parent lists its phases (the store's listPhases).
+      parent_id: it.parent_id,
+      phase: it.phase,
+      phases: await phaseRows(c, it),
       version: it.version,
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
       merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
+      why: await c.whyOfItem(it),
     },
     timeline,
     runs: runRows,
@@ -331,6 +386,15 @@ async function item(c: ApiCtx, id: WorkItemId) {
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
+}
+
+/** A split parent's phases in phase order, each with its title through the Withholder; empty for any other item. */
+async function phaseRows(c: ApiCtx, it: WorkItem) {
+  const out = [];
+  for (const p of await c.d.store.listPhases(it.id)) {
+    out.push({ id: p.id, phase: p.phase, title: await c.text(p.title || null), stage: p.stage, source: { type: p.source.type, id: p.source.id, link: p.source.link } });
+  }
+  return out;
 }
 
 /** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */
@@ -410,11 +474,26 @@ async function runs(c: ApiCtx) {
   return { as_of: c.now.toISOString(), runs: out };
 }
 
+/** Queued runs, oldest first, each with why its item waits (what the Starts column shows). */
 async function queue(c: ApiCtx) {
-  const runs = await c.d.store.listRunsByStatus(["queued"], LIST_LIMIT);
-  return {
-    as_of: c.now.toISOString(),
-    queue: runs.map((r, i) => ({
+  const s = c.d.store;
+  const runs = await s.listRunsByStatus(["queued"], LIST_LIMIT);
+  const { active, position } = await activeRuns(s);
+  const items = new Map<WorkItemId, WorkItem | null>();
+  for (const r of runs) if (!items.has(r.work_item_id)) items.set(r.work_item_id, await s.getWorkItem(r.work_item_id));
+  const phases = await readPhases(s, [...items.values()].filter((it): it is WorkItem => it !== null));
+  const pauses = await readClaimPauses(s);
+  const out = [];
+  for (const [i, r] of runs.entries()) {
+    const it = items.get(r.work_item_id) ?? null;
+    let why = null;
+    if (it) {
+      // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
+      const run = active.get(it.id) ?? r;
+      const decision = await latestDecision(s, it.id, run);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, decision, pauses, waitingOn(it, phases), c.now), it);
+    }
+    out.push({
       position: i + 1,
       id: r.id,
       kind: r.kind,
@@ -422,8 +501,10 @@ async function queue(c: ApiCtx) {
       attempt: r.attempt,
       created_at: r.created_at,
       not_before: r.not_before,
-    })),
-  };
+      why,
+    });
+  }
+  return { as_of: c.now.toISOString(), queue: out };
 }
 
 /**

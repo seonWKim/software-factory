@@ -85,6 +85,8 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type {
   AppCommandRequest, CliCommand, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, ThreadDelivery, ThreadLinkField, TransitionInput,
 } from "../interfaces/factory-store.js";
+import { labelTarget } from "../interfaces/factory-store.js";
+import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
@@ -601,7 +603,11 @@ export class Controller {
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
-    for (const it of items) if (it.stage !== "CLOSED") await this.showStatus(it);
+    const open = items.filter((it) => it.stage !== "CLOSED");
+    // One batched read of the stored label states: a target already showing its status costs no call at all.
+    const stored = await this.d.store.listLabelStates(open.map((it) => it.source.id));
+    const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
+    for (const it of open) await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
   }
 
   async tickModelProbe(): Promise<void> {
@@ -2458,6 +2464,8 @@ export class Controller {
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
+    // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
+    if (code === PROVIDER_SETUP) return this.providerSetup(it, run);
     // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
     if (run.kind === "implement" && code === SPEC_CONFLICT) {
       const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
@@ -2781,7 +2789,8 @@ export class Controller {
    */
   private async resolveFailed(it: WorkItem, run: Run, code: string): Promise<Decision> {
     const auto = parseAutoResolveKey(run.idempotency_key);
-    const next = auto ? nextAutoResolveAttempt(auto.attempt) : null;
+    // provider_setup is never retried (design §5 Restarts): the item waits on a person, as after the last attempt.
+    const next = auto && code !== PROVIDER_SETUP ? nextAutoResolveAttempt(auto.attempt) : null;
     if (auto && next !== null) {
       const failedAt = Date.parse(run.finished_at ?? this.d.clock.now().toISOString());
       const reset = run.outcome?.status === "failed" && code === "rate_limited" ? run.outcome.reset_at : null;
@@ -3016,6 +3025,35 @@ export class Controller {
       actor: SYSTEM,
       reason: "run_failed",
       detail: { run_id: run.id, error_code: code },
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * A run the model provider refused for its account or config (`provider_setup`, design §5 Restarts): the quota,
+   * the API key or the model name. Any run kind; never retried, since waiting does not fix it, and no claim pause.
+   * Blocks on a human with `run_failed:<kind>:provider_setup`, so `/retry` runs it again once fixed. One comment,
+   * keyed on the run, says what to fix and quotes the provider's message, dropped if the egress scan flags it.
+   */
+  private async providerSetup(it: WorkItem, run: Run): Promise<Decision> {
+    const detail = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+    const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${PROVIDER_SETUP}` };
+    const body = (withDetail: boolean) => [
+      "## Factory check: the model provider needs setup",
+      "",
+      `The ${run.kind} run failed (\`${PROVIDER_SETUP}\`): ${describeFailure(PROVIDER_SETUP)}.${withDetail && detail ? ` ${detail}` : ""}`,
+      "",
+      "The factory does not retry this automatically, since waiting will not fix it. Check the provider account's quota or billing, the API key (`npm run setup`) and the model names in `factory.config.json`, then comment `/retry` to run it again.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: PROVIDER_SETUP },
       ack_run: run.id,
     };
   }
@@ -3288,12 +3326,12 @@ export class Controller {
 
   /**
    * The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. An
-   * adopted item's source is its PR, so it is labelled once.
+   * adopted item's source is its PR, so it is labelled once. `current` says a target already shows the status.
    */
-  private async showStatus(it: WorkItem): Promise<void> {
+  private async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
-    await this.setStatus(it.source, status, null);
-    if (it.pr_number !== null && it.origin !== "adopted") await this.setStatus(it.source, status, it.pr_number);
+    if (!current(null)) await this.setStatus(it.source, status, null);
+    if (it.pr_number !== null && it.origin !== "adopted" && !current(it.pr_number)) await this.setStatus(it.source, status, it.pr_number);
   }
 
   /**
@@ -3358,6 +3396,14 @@ export class Controller {
     if (!adapter) return;
     const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms);
     if (token === null) return;
+    // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
+    // edited, only logged.
+    const stored = await this.d.store.getPostedComment(row.target.id, row.marker, row.body);
+    if (stored?.comment_id) {
+      if (!stored.same_body) this.d.log.warn("comment already posted with another body; not edited", { source_id: row.target.id, marker: row.marker });
+      await this.d.store.finishDelivery(row.seq, token, stored.url);
+      return;
+    }
     let url: string | null;
     try {
       url = (await adapter.postComment(row.target, row.body, row.marker)).url;
@@ -3640,6 +3686,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",
   agent_timed_out: "the agent run timed out",

@@ -195,17 +195,18 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot and local intake, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local intake and the bm25 doc index, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, github_auth, sources, ...rest } = loaded.plugins;
+      const { store: _s, auth: _a, github_auth, sources, capability, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
       expect(sources).toEqual(["github-issues", "local"]);
-      const { github_auth: _g, ...defaults } = defaultPlugins(platform);
+      expect(capability).toBe("bm25");
+      const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local"] });
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local"], capability: "bm25" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
@@ -700,11 +701,11 @@ describe("plugin registry: CapabilitySearch wiring", () => {
     }
   };
 
-  it("the checked-in config still selects list-all, and build() passes it to the worker", async () => {
-    expect((REAL.plugins as Record<string, unknown>).capability).toBe("list-all");
+  it("the checked-in config selects bm25, and build() passes it to the worker", async () => {
+    expect((REAL.plugins as Record<string, unknown>).capability).toBe("bm25");
     const c = await capabilityOf();
-    expect(c).toBeInstanceOf(ListAllCapabilitySearch);
-    expect(await c!.search("zebra", 8)).toEqual([]);
+    expect(c).toBeInstanceOf(Bm25CapabilitySearch);
+    expect((await c!.search("zebra", 8)).map((x) => x.id)).toEqual(["docs/guide.md"]);
   });
 
   it('"capability": "bm25" gives Bm25CapabilitySearch over the code root\'s docs; switching back gives list-all', async () => {

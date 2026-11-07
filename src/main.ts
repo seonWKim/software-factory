@@ -7,7 +7,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
@@ -42,7 +42,10 @@ import { DRAIN_MARGIN_MS } from "./impl/updater/git-worktree.js";
 import { withDrain } from "./migrate-drain.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
-const USAGE = `factory <command>
+const USAGE = `factory [--config <path>] <command>
+
+  --config <path>  load this factory.config.json instead of the checked-in one (also FACTORY_CONFIG; the flag
+               wins); state_dir and worktrees_dir then resolve from its folder
 
   setup        one-time setup: secret file, tokens (hidden prompt), label, checks, canary
                --rotate-github / --rotate-claude / --rotate-mysql to replace a stored credential
@@ -113,9 +116,11 @@ function stopOnSignals(): AbortSignal {
   return stop.signal;
 }
 
-async function main(cmd: string | undefined, args: string[]): Promise<number> {
-  // The supervisor sets the code root (its runtime copy) for its child; state stays in the cwd (main checkout).
-  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV] });
+async function main(argv: readonly string[]): Promise<number> {
+  // The config path is made absolute once, here; the supervisor passes that value to its children.
+  const { args: [cmd, ...args], configFile } = cliConfig(argv, process.env, process.cwd());
+  // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
+  const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
   if (cmd === "doctor") {
     // A config that does not load is a doctor finding: one FAIL line per problem, no stack, exit 1.
     let loaded: Loaded;
@@ -554,7 +559,7 @@ async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
   return schema.length > 0 ? schema : legacy(new MysqlDriver(options));
 }
 
-main(process.argv[2], process.argv.slice(3)).then(
+main(process.argv.slice(2)).then(
   (code) => process.exit(code),
   (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);

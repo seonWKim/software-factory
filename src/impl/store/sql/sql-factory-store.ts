@@ -73,8 +73,12 @@ import type {
   ItemMessage,
   LeaseResult,
   ListenerLease,
+  LabelState,
+  LabelTarget,
   MergeCheck,
   NewMergeCheck,
+  NewPostedComment,
+  PostedComment,
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
@@ -308,6 +312,16 @@ export class SqlFactoryStore implements FactoryStore {
     const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
     if (current.stage !== "CLOSED" && item.stage === "CLOSED" && outcome) {
       await tx.run("UPDATE budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
+    }
+    // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so
+    // the queued runs' decisions that name it go too; the next claim records what holds them now (design §5).
+    // An approval stays: it is the human's, for that run.
+    if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
+      await tx.run(
+        `DELETE FROM claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
+           AND run_id IN (SELECT id FROM runs WHERE status = 'queued')`,
+        [input.id],
+      );
     }
     return { ok: true, item, state_change, enqueued, cancelled };
   }
@@ -1604,6 +1618,116 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToMergeCheck);
   }
 
+  // GitHub sync records (design §5, GitHub call budget): posted comments and label states, shared by replicas.
+
+  async getPostedComment(
+    source_id: string, marker: string, body: string,
+  ): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null> {
+    const [row] = await this.db.all("SELECT * FROM posted_comments WHERE source_id = ? AND marker = ?", [source_id, marker]);
+    if (!row) return null;
+    const c = rowToPostedComment(row);
+    return { ...c, same_body: c.body_hash === bodyHash(body), waiting: c.next_attempt_at !== null && c.next_attempt_at > this.now() };
+  }
+
+  async recordPostedComment(c: NewPostedComment): Promise<void> {
+    const now = this.now();
+    const values: SqlValue[] = [c.comment_id, c.url, bodyHash(c.body), now];
+    // A row of failed posts only gets the comment; a row that has one keeps it.
+    const update = () =>
+      this.db.run(
+        `UPDATE posted_comments SET comment_id = ?, url = ?, body_hash = ?, attempts = 0, next_attempt_at = NULL, updated_at = ?
+         WHERE source_id = ? AND marker = ? AND comment_id IS NULL`,
+        [...values, c.source_id, c.marker],
+      );
+    if ((await update()) > 0) return;
+    try {
+      await this.db.run(
+        `INSERT INTO posted_comments (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
+         VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
+        [...values, now, c.source_id, c.marker],
+      );
+    } catch (err) {
+      if (!this.db.isDuplicateKey(err)) throw err;
+      await update();
+    }
+  }
+
+  async recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean> {
+    const now = this.now();
+    const next_attempt_at = this.after(delay_ms);
+    if (attempts === 1) {
+      const inserted = await this.insertOnce(
+        this.db,
+        `INSERT INTO posted_comments (source_id, marker, comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at)
+         VALUES (?, ?, NULL, NULL, NULL, 1, ?, ?, ?)`,
+        [source_id, marker, next_attempt_at, now, now],
+      );
+      if (inserted) return true;
+    }
+    const changed = await this.db.run(
+      "UPDATE posted_comments SET attempts = ?, next_attempt_at = ?, updated_at = ? WHERE source_id = ? AND marker = ? AND attempts = ?",
+      [attempts, next_attempt_at, now, source_id, marker, attempts - 1],
+    );
+    return changed > 0;
+  }
+
+  async claimLabelWrite(source_id: string, target: LabelTarget, status: string, ttl_ms: number): Promise<string | null> {
+    const token = newId("lbl");
+    const now = this.now();
+    const until = this.after(ttl_ms);
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx.all(
+        `SELECT * FROM label_states WHERE source_id = ? AND target = ?${this.db.dialect.forUpdate}`, [source_id, target],
+      );
+      if (!row) {
+        const inserted = await this.insertOnce(
+          tx,
+          `INSERT INTO label_states (source_id, target, status, claim_token, claim_status, claim_until, updated_at)
+           VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+          [source_id, target, token, status, until, now],
+        );
+        // A concurrent first claim committed first: that write is under way.
+        return inserted ? token : null;
+      }
+      if (row.status === status) return null;
+      const held = row.claim_token !== null && row.claim_status === status && String(row.claim_until) > now;
+      if (held) return null;
+      // Conditional on the claim read, so of two replicas taking over the same row only one wins.
+      const changed = await tx.run(
+        `UPDATE label_states SET claim_token = ?, claim_status = ?, claim_until = ?, updated_at = ?
+         WHERE source_id = ? AND target = ? AND ${row.claim_token === null ? "claim_token IS NULL" : "claim_token = ?"}`,
+        [token, status, until, now, source_id, target, ...(row.claim_token === null ? [] : [row.claim_token as string])],
+      );
+      return changed > 0 ? token : null;
+    });
+  }
+
+  async recordLabelState(source_id: string, target: LabelTarget, status: string, token: string): Promise<void> {
+    await this.db.run(
+      `UPDATE label_states SET status = ?, claim_token = NULL, claim_status = NULL, claim_until = NULL, updated_at = ?
+       WHERE source_id = ? AND target = ? AND claim_token = ?`,
+      [status, this.now(), source_id, target, token],
+    );
+  }
+
+  async releaseLabelClaim(source_id: string, target: LabelTarget, token: string): Promise<void> {
+    await this.db.run(
+      "UPDATE label_states SET claim_token = NULL, claim_status = NULL, claim_until = NULL WHERE source_id = ? AND target = ? AND claim_token = ?",
+      [source_id, target, token],
+    );
+  }
+
+  async listLabelStates(source_ids: readonly string[]): Promise<LabelState[]> {
+    const out: LabelState[] = [];
+    // In chunks, so a long list stays under every backend's parameter limit.
+    for (let i = 0; i < source_ids.length; i += 500) {
+      const chunk = source_ids.slice(i, i + 500);
+      const rows = await this.db.all(`SELECT * FROM label_states WHERE source_id IN (${placeholders(chunk.length)})`, [...chunk]);
+      out.push(...rows.map(rowToLabelState));
+    }
+    return out;
+  }
+
   // Worker processes (design §5 Coordination, 2026-11-07)
 
   async reportWorkerProcess(r: WorkerProcessReport): Promise<WorkerProcess> {
@@ -2257,6 +2381,32 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
     started_at,
     ended_at,
     duration_ms: Number.isFinite(start) && Number.isFinite(end) ? end - start : null,
+  };
+}
+
+/** A posted comment's body is stored only as this hash: enough to tell that a repeat post changed it. */
+function bodyHash(body: string): string {
+  return createHash("sha256").update(body).digest("hex");
+}
+
+function rowToPostedComment(row: Row): PostedComment {
+  return {
+    source_id: row.source_id as string,
+    marker: row.marker as string,
+    comment_id: (row.comment_id as string | null) ?? null,
+    url: (row.url as string | null) ?? null,
+    body_hash: (row.body_hash as string | null) ?? null,
+    attempts: Number(row.attempts),
+    next_attempt_at: (row.next_attempt_at as Timestamp | null) ?? null,
+  };
+}
+
+function rowToLabelState(row: Row): LabelState {
+  return {
+    source_id: row.source_id as string,
+    target: row.target as LabelTarget,
+    status: (row.status as string | null) ?? null,
+    updated_at: row.updated_at as Timestamp,
   };
 }
 

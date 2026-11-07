@@ -26,7 +26,7 @@ import {
   failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
-import { stripAnsi } from "./output-summary.js";
+import { failingTests, stripAnsi } from "./output-summary.js";
 import {
   MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
 } from "./mechanical.js";
@@ -36,7 +36,7 @@ import {
   type Run, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
 import {
-  type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
 } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -294,6 +294,9 @@ const PAUSE_NEXT_STEPS = "continue the work item from the WIP commit; finished s
 
 /** Transcript scan rules that fail the run: a real secret value, or the canary a test agent was told to find (G6). */
 const TRANSCRIPT_FAIL_RULES: readonly string[] = ["known_secret", "factory_canary"];
+
+/** The most failing test names a `checks_failed` detail lists. */
+const MAX_FAILING_TESTS = 10;
 
 function tail(s: string): string {
   const clean = stripAnsi(s);
@@ -1555,7 +1558,10 @@ export class Worker {
       marker: `<!-- factory:checks:${run.id} -->`,
     });
     if (!posted.ok) this.d.log.warn("checks failed comment failed", { run_id: run.id, error_code: posted.error_code });
-    throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})`.slice(0, 500), false, {
+    // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
+    const tests = failingTests(second.tail, MAX_FAILING_TESTS);
+    const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
+    throw new RunFailure(CHECKS_FAILED_RUN, `\`${cmd}\` ${second.how} after one fix step (before it: \`${before}\` ${first.how})${named}`.slice(0, 500), false, {
       output_tail: second.tail,
     });
   }
@@ -2158,6 +2164,14 @@ export class Worker {
     if (result.status === "rate_limited") {
       const reset = result.reset_at && !Number.isNaN(Date.parse(result.reset_at)) ? (new Date(result.reset_at).toISOString() as Timestamp) : null;
       throw new RunFailure(RATE_LIMITED, result.error ?? "usage or rate limit", false, { reset_at: reset, output_tail: tail(result.transcript) });
+    }
+    if (result.status === "failed" && result.code === PROVIDER_SETUP) {
+      // The provider's quota, key or model needs a person (design §5 Restarts). Its message can echo part of the
+      // key: a message the scan flags is dropped, with the output tail that holds it, and the code is kept.
+      const said = result.error ?? "";
+      const clean = said === "" || (await this.d.scanner.scan("run_outcome", said)).clean;
+      throw new RunFailure(PROVIDER_SETUP, clean ? said : "the provider's message is withheld: the egress scan flagged it", false,
+        clean ? { output_tail: tail(result.transcript) } : {});
     }
     // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {

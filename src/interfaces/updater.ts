@@ -10,6 +10,11 @@ import type { ExecResult } from "./sandbox.js";
  */
 export const CODE_ROOT_ENV = "SOFTWARE_FACTORY_CODE_ROOT";
 /**
+ * The config file to load instead of the code root's factory.config.json, as `--config <path>` does. The
+ * supervisor sets it, absolute, for each child and each migrate call, so an update keeps the same file.
+ */
+export const CONFIG_ENV = "FACTORY_CONFIG";
+/**
  * Set by the supervisor for its child: the first worker index of the child's block. The child's worker pool
  * numbers its workers from it, so two children alive at once (old draining, new claiming) never share an index.
  * Unset: 0.
@@ -59,7 +64,7 @@ export interface ChildSpec {
   args: readonly string[];
   /** Working directory: the main checkout (the state root). */
   cwd: string;
-  /** Added to the supervisor's environment for the child. */
+  /** Added to the supervisor's environment for the child (CODE_ROOT_ENV, and CONFIG_ENV with an external config). */
   env: Readonly<Record<string, string>>;
 }
 

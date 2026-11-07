@@ -32,7 +32,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -176,13 +176,82 @@ export interface FileConfig {
   path_companions?: unknown;
 }
 
-export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+
+/** The checked-in config's name under the code root. */
+export const CONFIG_FILE = "factory.config.json";
+
+/**
+ * The config path for this process, parsed once at startup for every command: `--config <path>` (or
+ * `--config=<path>`) anywhere in `argv`, else FACTORY_CONFIG, made absolute against `cwd`. `args` is `argv`
+ * without the flag. No flag and no env var: `configFile` is undefined (the code root's checked-in file).
+ */
+export function cliConfig(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): { args: string[]; configFile: string | undefined } {
+  const args: string[] = [];
+  let flag: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--config" || a.startsWith("--config=")) {
+      const value = a === "--config" ? argv[++i] : a.slice("--config=".length);
+      if (!value) throw new Error("--config needs a path to a factory.config.json");
+      flag = value;
+    } else args.push(a);
+  }
+  const chosen = flag ?? (env[CONFIG_ENV] || undefined);
+  return { args, configFile: chosen === undefined ? undefined : resolve(cwd, chosen) };
+}
+
+/**
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth). On a shared store (MySQL: the enterprise
+ * case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
+ */
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth"] as const;
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
+async function readConfigFile(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (err) {
+    throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+}
+
+/** An external config on a shared store, with REVIEWED_KEYS (and `defaults.floors`) taken from the checked-in file. */
+async function withReviewedKeys(raw: unknown, checkedIn: string): Promise<unknown> {
+  if (!isRecord(raw) || !isRecord(raw.store) || raw.store.type !== "mysql") return raw;
+  const reviewed = await readConfigFile(checkedIn);
+  if (!isRecord(reviewed)) return raw; // checkConfigKeys reports the external file's own shape
+  const out: Record<string, unknown> = { ...raw };
+  const take = (to: Record<string, unknown>, from: Record<string, unknown>, k: string) => {
+    if (k in from) to[k] = from[k];
+    else delete to[k];
+  };
+  for (const k of REVIEWED_KEYS) take(out, reviewed, k);
+  if (isRecord(out.defaults) || isRecord(reviewed.defaults)) {
+    const defaults = { ...(isRecord(out.defaults) ? out.defaults : {}) };
+    take(defaults, isRecord(reviewed.defaults) ? reviewed.defaults : {}, "floors");
+    out.defaults = defaults;
+  }
+  return out;
+}
 
 export interface Loaded {
-  /** The state root: the main checkout. State dir, worktrees, repo path and the database resolve here. */
+  /** The cwd: the main checkout. Repo path resolves here; so do state and worktrees without an external config. */
   root: string;
-  /** Where factory.config.json and prompts/ were read: the runtime copy under the updater, else `root`. */
+  /** Where prompts/ (and the checked-in factory.config.json) were read: the runtime copy under the updater, else `root`. */
   codeRoot: string;
+  /** The config file that was read, absolute. */
+  configFile: string;
+  /** The `--config` / FACTORY_CONFIG file, absolute; null when the code root's checked-in file is used. */
+  externalConfig: string | null;
+  /** `worktrees_dir`, resolved like the state dir. */
+  worktreesDir: string;
   file: FileConfig;
   /** Not yet resolved to a project key: build() finds the configured repo's key in the store, or asks GitHub (startupProject). */
   config: LoadedConfig;
@@ -205,15 +274,21 @@ export interface Loaded {
 }
 
 /**
- * `codeRoot` is where config and prompts are read (the updater's runtime copy); `root` is where state lives.
- * `platform` picks the platform-dependent plugin defaults (docs/plugins.md); the host's unless a test passes one.
+ * `codeRoot` is where prompts are read (the updater's runtime copy); `root` is the cwd. `configFile` (from
+ * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
+ * folder becomes where `state_dir` and `worktrees_dir` resolve; without it they resolve from `root`.
+ * `repo.path` always resolves from `root`. `platform` picks the platform-dependent plugin defaults
+ * (docs/plugins.md); the host's unless a test passes one.
  */
 export async function loadConfig(
   root = process.cwd(),
-  opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
+  opts: { registry?: Registry; codeRoot?: string | undefined; configFile?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
-  const raw: unknown = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8"));
+  const checkedIn = join(codeRoot, CONFIG_FILE);
+  const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
+  const configFile = externalConfig ?? checkedIn;
+  const raw = externalConfig === null ? await readConfigFile(checkedIn) : await withReviewedKeys(await readConfigFile(externalConfig), checkedIn);
   checkConfigKeys(raw);
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
@@ -245,7 +320,9 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
-  const stateDir = resolve(root, file.state_dir);
+  const stateBase = externalConfig === null ? root : dirname(externalConfig);
+  const stateDir = resolve(stateBase, file.state_dir);
+  const worktreesDir = resolve(stateBase, file.worktrees_dir);
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
@@ -307,7 +384,7 @@ export async function loadConfig(
     throw err;
   });
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
+  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
 /** What startup resolution needs from the GitHub client: one read of the repository. */

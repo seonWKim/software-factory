@@ -10,10 +10,10 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { BACKENDS, MYSQL_URL, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, system } from "./helpers/store.js";
 
-// The thread outbox (issue #282): SQLite migration 27 and MySQL step 0027 add `thread_outbox`, and copy pending app
+// The thread outbox (issue #282): SQLite migration 28 and MySQL step 0028 add `thread_outbox`, and copy pending app
 // requests into `command_inbox`. Never pin a step as the newest: a later migration would fail these checks.
-const STEP = 27;
-const STEP_FILE = "0027-thread-outbox.sql";
+const STEP = 28;
+const STEP_FILE = "0028-thread-outbox.sql";
 
 const ref = (n: number): SourceRef => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
 
@@ -122,14 +122,14 @@ for (const backend of BACKENDS) {
   });
 }
 
-describe("SQLite migration 27: thread outbox", () => {
+describe("SQLite migration 28: thread outbox", () => {
   it("is in the migration list and creates thread_outbox; pending app requests are copied into the inbox once", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
     expect(MIGRATIONS[STEP - 1]).toContain("CREATE TABLE IF NOT EXISTS thread_outbox (");
     const driver = new SqliteDriver(":memory:");
     const store = new SqlFactoryStore(driver, new FakeClock());
     await store.migrate();
-    // Back to 26: no outbox, and requests written before the inbox copy existed.
+    // Back to 27: no outbox, and requests written before the inbox copy existed.
     await driver.run("DROP TABLE thread_outbox");
     await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
     const req = "INSERT INTO app_command_requests (request_key, actor, command, args, created_at, handled_at) VALUES (?, ?, ?, ?, ?, ?)";
@@ -147,14 +147,14 @@ describe("SQLite migration 27: thread outbox", () => {
   });
 });
 
-describe("MySQL step 0027: thread outbox", () => {
+describe("MySQL step 0028: thread outbox", () => {
   const sql = () => readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
   const columns = (text: string) => {
     const body = /CREATE TABLE IF NOT EXISTS thread_outbox \(([\s\S]*?)\n\s*\)/.exec(text)![1]!;
     return [...body.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|BIGINT|MEDIUMTEXT|CHAR|INT)\b/gm)].map((m) => m[1]);
   };
 
-  it("is a .sql step after 0026 that creates the same columns as SQLite migration 27", () => {
+  it("is a .sql step after 0027 that creates the same columns as SQLite migration 28", () => {
     const steps = readSteps(STEPS_DIR, INLINE_STEPS);
     expect(steps.find((s) => s.name === "thread-outbox")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
     expect(columns(sql())).toEqual(columns(MIGRATIONS[STEP - 1]!));
@@ -162,8 +162,8 @@ describe("MySQL step 0027: thread outbox", () => {
   });
 });
 
-describe.skipIf(!MYSQL_URL)("MySQL step 0027 on MySQL", () => {
-  it("from state 26 it creates thread_outbox and copies pending app requests once, also when run again", async () => {
+describe.skipIf(!MYSQL_URL)("MySQL step 0028 on MySQL", () => {
+  it("from state 27 it creates thread_outbox and copies pending app requests once, also when run again", async () => {
     const db = await newEmptyMysqlDatabase();
     const c: Queryable = await db.connect();
     await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);

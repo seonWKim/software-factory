@@ -108,6 +108,63 @@ describe("chat client: 429", () => {
   });
 });
 
+describe("chat client: provider setup errors", () => {
+  const QUOTA = "You exceeded your current quota, please check your plan and billing details.";
+
+  it("a 429 whose body has error.code insufficient_quota is provider_setup with the provider's message, not rate_limited", async () => {
+    const s = await serve({
+      status: 429,
+      headers: { "retry-after": "30" },
+      body: { error: { message: QUOTA, type: "insufficient_quota", code: "insufficient_quota" } },
+    });
+    const r = failure(await chatCompletion({ baseUrl: s.baseUrl, apiKey: KEY, request: REQUEST }));
+    expect(r.code).toBe("provider_setup");
+    expect(r.status).toBe(429);
+    expect(r.message).toContain("insufficient_quota");
+    expect(r.message).toContain(QUOTA);
+    expect(r).not.toHaveProperty("reset_at");
+  });
+
+  it.each([
+    ["invalid_api_key", 401],
+    ["invalid_api_key", 400],
+    ["model_not_found", 404],
+    ["model_not_found", 400],
+    ["insufficient_quota", 403],
+  ])("error.code %s on HTTP %i is provider_setup with the provider's message", async (code, status) => {
+    const s = await serve({ status, body: { error: { message: `the provider says ${code}`, code } } });
+    const r = failure(await chatCompletion({ baseUrl: s.baseUrl, apiKey: KEY, request: REQUEST }));
+    expect(r.code).toBe("provider_setup");
+    expect(r.status).toBe(status);
+    expect(r.message).toContain(`the provider says ${code}`);
+  });
+
+  it("a plain 429 keeps the provider's message and stays rate_limited", async () => {
+    const s = await serve({ status: 429, body: { error: { message: "Rate limit reached for requests", code: "rate_limit_exceeded" } } });
+    const r = failure(await chatCompletion({ baseUrl: s.baseUrl, apiKey: KEY, request: REQUEST }));
+    expect(r.code).toBe("rate_limited");
+    expect(r.message).toContain("Rate limit reached for requests");
+  });
+
+  it("the provider's message is capped and has the key redacted, also where the cap would cut it", async () => {
+    const CANARY = "sk-canary-0a1b2c3d4e5f6789";
+    const long = `Incorrect API key provided: ${CANARY}. ${"x".repeat(2000)}`;
+    // The key sits right at the cap: cutting before redacting would leave a part of it.
+    const atCap = `${"y".repeat(290)}${CANARY}`;
+    const s = await serve(
+      { status: 401, body: { error: { message: long, code: "invalid_api_key" } } },
+      { status: 401, body: { error: { message: atCap, code: "invalid_api_key" } } },
+    );
+    for (let i = 0; i < 2; i++) {
+      const r = failure(await chatCompletion({ baseUrl: s.baseUrl, apiKey: CANARY, request: REQUEST }));
+      expect(r.code).toBe("provider_setup");
+      expect(r.message.length).toBeLessThanOrEqual(400);
+      expect(r.message).not.toContain(CANARY);
+      expect(r.message).not.toContain(CANARY.slice(0, 10));
+    }
+  });
+});
+
 describe("chat client: other failures, no retry", () => {
   it.each([400, 401, 403, 404, 500, 502, 503])("HTTP %i is a failure that is not rate_limited, after exactly one request", async (status) => {
     const s = await serve({ status, body: { error: { message: "nope" } } }, { status: 200, body: completion() });
