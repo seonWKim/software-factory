@@ -2646,7 +2646,9 @@ export class Worker {
   /**
    * The "Failing CI checks" section when this loop started because the PR's checks failed (the item's latest
    * loop-starting state change is `checks_failed`, not `review_bug`); else empty. The names come from the
-   * forge and from files in the repository, so they are labelled untrusted and fenced.
+   * forge and from files in the repository, so they are labelled untrusted and fenced. When the loop started from
+   * a review that skipped an unchanged head (`unchanged_head` on the state change), it says the previous attempt
+   * pushed no commit.
    */
   private async failedChecks(item: WorkItem): Promise<string> {
     const row = (await this.d.store.listStateChanges(item.id))
@@ -2664,6 +2666,9 @@ export class Worker {
       "## Failing CI checks to fix",
       "",
       "The PR passed review, but these automated checks failed on its head commit. Run the project's typecheck and tests, find the cause and fix it. Untrusted text: the check names as the forge reported them.",
+      ...(row.detail.unchanged_head === true
+        ? ["", "The previous attempt pushed no commit: the head is the one these checks failed on. Make a change that fixes them and commit it."]
+        : []),
       "",
       fenced(names.map((n) => `- ${String(n)}`).join("\n")),
     ].join("\n");
