@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   Run,
+  RunAttempt,
+  RunAttemptStatus,
   RunId,
   RunKind,
   RunOutcome,
@@ -37,6 +39,7 @@ import type {
   WorkerId,
   WorkerPause,
 } from "../../../core/types.js";
+import { outcomeTokens } from "../../../core/types.js";
 import {
   type CoordinationSettings,
   type DependencyLink,
@@ -48,7 +51,7 @@ import {
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, pathsOverlap,
+  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -61,12 +64,16 @@ import type {
   ApproveClaimHoldResult,
   BudgetCheckpointResult,
   ClaimInput,
+  CliCommand,
   FactoryStore,
   InboxRow,
+  ItemMessage,
   LeaseResult,
   ListenerLease,
   ListenerLeaseResult,
+  NewCliCommand,
   NewInboxEvent,
+  NewItemMessage,
   NewRun,
   NewUnreviewedMerge,
   NewWorkItem,
@@ -106,6 +113,7 @@ import {
   rowToDependencyEdge,
   rowToHandoff,
   rowToRun,
+  rowToRunAttempt,
   rowToStateChange,
   rowToUnreviewedMerge,
   rowToVerdict,
@@ -524,7 +532,11 @@ export class SqlFactoryStore implements FactoryStore {
            WHERE id = ? AND status = 'queued'`,
           [input.worker_id, this.after(input.lease_ms), now, now, id],
         );
-        if (claimed === 1) return this.selectRun(tx, id);
+        if (claimed === 1) {
+          const run = (await this.selectRun(tx, id))!;
+          await this.openAttempt(tx, run, now);
+          return run;
+        }
       }
       return null;
     });
@@ -802,6 +814,7 @@ export class SqlFactoryStore implements FactoryStore {
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [now, pause.paused_by, pause.session_id, JSON.stringify(pause.resume), now, runId, token],
       );
+      if (paused === 1) await this.closeAttempt(tx, runId, token, "paused", now);
       return paused === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
   }
@@ -829,6 +842,7 @@ export class SqlFactoryStore implements FactoryStore {
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [outcome.status, JSON.stringify(outcome), now, now, runId, token],
       );
+      if (completed === 1) await this.closeAttempt(tx, runId, token, outcome.status, now, outcome);
       return completed === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
     });
   }
@@ -848,7 +862,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, kind, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, kind, attempt, lease_token, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -859,9 +873,10 @@ export class SqlFactoryStore implements FactoryStore {
       };
       for (const run of expired) {
         const item = await this.selectItem(tx, run.work_item_id as WorkItemId);
+        let moved: number;
         if (item?.stage === "CLOSED") {
           // A closed item never runs again: its expired run is cancelled, not requeued.
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [now, run.id as string],
@@ -869,12 +884,14 @@ export class SqlFactoryStore implements FactoryStore {
         } else if (run.kind === INTERACTIVE) {
           // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
           const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
-          await tx.run(
+          moved = await tx.run(
             "UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
             [JSON.stringify(lost), now, now, run.id as string],
           );
+          if (moved === 1) await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "failed", now, lost);
+          continue;
         } else if (Number(run.attempt) >= max_attempts) {
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
              WHERE id = ? AND status = 'running'`,
@@ -883,12 +900,14 @@ export class SqlFactoryStore implements FactoryStore {
         } else {
           // Same backoff as any other retry, so a lasting outage does not use up the attempts at once.
           const not_before = backoff_ms ? this.after(backoff_ms(Number(run.attempt))) : null;
-          await tx.run(
+          moved = await tx.run(
             `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [not_before, now, run.id as string],
           );
         }
+        // Whatever happens to the run, the claim whose lease ran out ended there (design §6).
+        if (moved === 1) await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
       }
       return expired.map((r) => r.id as RunId);
     });
@@ -928,6 +947,8 @@ export class SqlFactoryStore implements FactoryStore {
         [runId, input.id, INTERACTIVE, `${input.id}:interactive:${runId}`, input.owner, this.after(input.lease_ms),
           JSON.stringify({ session } satisfies RunInput), input.actor.id, input.transcript_url, now, now, now],
       );
+      // A session start is the run's one claim (design §6): it gets its attempt record like any claim.
+      await this.openAttempt(tx, (await this.selectRun(tx, runId))!, now);
       const { changes, sets, values } = diffPatch(current, input.patch);
       const version = current.version + 1;
       await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
@@ -982,6 +1003,16 @@ export class SqlFactoryStore implements FactoryStore {
   async listRuns(id: WorkItemId): Promise<Run[]> {
     const rows = await this.db.all(`SELECT * FROM runs WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToRun);
+  }
+
+  async listRunAttempts(id: WorkItemId): Promise<RunAttempt[]> {
+    const { seq } = this.db.dialect;
+    const rows = await this.db.all(
+      `SELECT a.* FROM run_attempts a JOIN runs r ON r.id = a.run_id WHERE r.work_item_id = ?
+       ORDER BY r.created_at, r.${seq}, a.attempt`,
+      [id],
+    );
+    return rows.map(rowToRunAttempt);
   }
 
   async listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]> {
@@ -1442,6 +1473,56 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
   }
 
+  // Local work items (issue #198)
+
+  async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectItemMessage(tx, input.work_item_id, input.marker);
+      if (existing) return { created: false, message: existing };
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO item_messages (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
+        [input.work_item_id, input.marker, input.body, this.now()],
+      );
+      return { created, message: (await this.selectItemMessage(tx, input.work_item_id, input.marker))! };
+    });
+  }
+
+  async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
+    const rows = await this.db.all("SELECT * FROM item_messages WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
+    return rows.map(rowToItemMessage);
+  }
+
+  async appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }> {
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectCliCommand(tx, input.key);
+      if (existing) return { created: false, command: existing };
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO cli_commands (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
+        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+      );
+      return { created, command: (await this.selectCliCommand(tx, input.key))! };
+    });
+  }
+
+  async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
+    const rows = await this.db.all(`SELECT * FROM cli_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
+      after_seq,
+    ]);
+    return rows.map(rowToCliCommand);
+  }
+
+  private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
+    const [row] = await q.all("SELECT * FROM item_messages WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
+    return row ? rowToItemMessage(row) : null;
+  }
+
+  private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
+    const [row] = await q.all("SELECT * FROM cli_commands WHERE command_key = ?", [key]);
+    return row ? rowToCliCommand(row) : null;
+  }
+
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
@@ -1523,9 +1604,44 @@ export class SqlFactoryStore implements FactoryStore {
         "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
         [now, r.id as string, status],
       );
-      if (n === 1) cancelled.push(r.id as RunId);
+      if (n === 1) {
+        cancelled.push(r.id as RunId);
+        if (status === "running") await this.closeAttempt(tx, r.id as RunId, null, "cancelled", now);
+      }
     }
     return cancelled;
+  }
+
+  /**
+   * The attempt record of a claim that just committed in `tx` (design §6): numbered after the run's last record,
+   * so a resume of a paused run gets its own; keyed to the claim's lease token for the close.
+   */
+  private async openAttempt(tx: SqlExecutor, run: Run, now: Timestamp): Promise<void> {
+    const [last] = await tx.all("SELECT MAX(attempt) AS n FROM run_attempts WHERE run_id = ?", [run.id]);
+    await tx.run(
+      `INSERT INTO run_attempts (run_id, attempt, lease_token, worker_id, status, started_at, finished_at, error_code,
+         failure_class, tokens) VALUES (?, ?, ?, ?, 'running', ?, NULL, NULL, NULL, 0)`,
+      [run.id, Number(last?.n ?? 0) + 1, run.lease!.token, run.lease!.owner, now],
+    );
+  }
+
+  /**
+   * Closes the run's open attempt record. `token`: only the record that claim opened (completeRun, pauseRun, the
+   * reaper); null: whichever is open (a cancel, which holds no token). A failed outcome gives its error code,
+   * failureClass() and outcomeTokens(); a reaped claim gives lease_expired and infra; anything else neither.
+   */
+  private async closeAttempt(
+    tx: SqlExecutor, runId: RunId, token: number | null, status: Exclude<RunAttemptStatus, "running">, now: Timestamp,
+    outcome: RunOutcome | null = null,
+  ): Promise<void> {
+    const failed = outcome?.status === "failed" ? outcome : null;
+    const error_code = failed ? failed.error_code : status === "lease_expired" ? "lease_expired" : null;
+    const failure_class = failed ? failureClass(failed) : status === "lease_expired" ? "infra" : null;
+    await tx.run(
+      `UPDATE run_attempts SET status = ?, finished_at = ?, error_code = ?, failure_class = ?, tokens = ?
+       WHERE run_id = ? AND status = 'running'${token === null ? "" : " AND lease_token = ?"}`,
+      [status, now, error_code, failure_class, outcomeTokens(outcome), runId, ...(token === null ? [] : [token])],
+    );
   }
 
   /** Returns the new run, or null if the idempotency key already existed. */
@@ -1625,6 +1741,27 @@ function rowToInbox(row: Row): InboxRow {
     dedupe_key: row.dedupe_key as string,
     event: JSON.parse(row.event as string) as SourceEvent,
     received_at: row.received_at as Timestamp,
+  };
+}
+
+function rowToItemMessage(row: Row): ItemMessage {
+  return {
+    seq: Number(row.seq),
+    work_item_id: row.work_item_id as WorkItemId,
+    marker: row.marker as string,
+    body: row.body as string,
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToCliCommand(row: Row): CliCommand {
+  return {
+    seq: Number(row.seq),
+    key: row.command_key as string,
+    actor: row.actor as string,
+    command: row.command as string,
+    args: JSON.parse(row.args as string) as Record<string, unknown>,
+    created_at: row.created_at as Timestamp,
   };
 }
 

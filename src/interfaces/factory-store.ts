@@ -13,6 +13,7 @@ import type {
   Tier,
   Handoff,
   Run,
+  RunAttempt,
   RunId,
   RunInput,
   RunKind,
@@ -145,7 +146,8 @@ export interface TransitionInput {
    * Stop every `running` run of this item, of any kind, in the same transaction: status `cancelled`, lease
    * cleared, no outcome, unacknowledged. The worker holding one gets `lease_lost` on its next heartbeat and
    * on completeRun (so its outcome is not stored), and the tool broker refuses its calls, so nothing it does
-   * afterwards is pushed. Used when an item closes from its source (design §4).
+   * afterwards is pushed. Used when an item closes from its source (design §4). Each stopped run's open
+   * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
 }
@@ -374,6 +376,7 @@ export interface FactoryStore {
    * its item has an open session (a running interactive run) or its allowed_paths overlap one's.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
+   * Every claim, a resume included, writes one `running` attempt record (design §6) in the same transaction.
    */
   claimRun(input: ClaimInput): Promise<Run | null>;
   /**
@@ -391,7 +394,7 @@ export interface FactoryStore {
   /**
    * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
    * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
-   * (it is not finished). lease_lost when the run is no longer ours.
+   * (it is not finished). lease_lost when the run is no longer ours. Closes the claim's attempt record as `paused`.
    */
   pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume }): Promise<LeaseResult>;
   /**
@@ -411,7 +414,10 @@ export interface FactoryStore {
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
-  /** Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`. */
+  /**
+   * Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`.
+   * Closes the attempt record that claim opened (same token): status, error code, failure class, tokens.
+   */
   completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult>;
   /** Finished runs the controller has not applied yet, oldest first. */
   listUnacknowledgedRuns(limit: number): Promise<Run[]>;
@@ -419,7 +425,9 @@ export interface FactoryStore {
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
    * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
-   * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01).
+   * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01), and its attempt record
+   * closes as `failed` with that code.
+   * In every other case the claim's attempt record closes as `lease_expired`, failure class `infra`, tokens 0.
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
@@ -436,6 +444,11 @@ export interface FactoryStore {
   /** Runs of `kind` in one of `statuses`, any item, oldest first. Read-only. */
   listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]>;
   listRuns(id: WorkItemId): Promise<Run[]>;
+  /**
+   * Every attempt record (one per claim, design §6) of the item's runs: runs in listRuns order, each run's
+   * attempts in attempt order. Read-only.
+   */
+  listRunAttempts(id: WorkItemId): Promise<RunAttempt[]>;
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
   listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
   /**
@@ -586,6 +599,54 @@ export interface FactoryStore {
   listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
+
+  // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
+  // of commands the CLI sends. Store only: nothing calls these yet.
+
+  /**
+   * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
+   * for that item is a no-op that reports the existing message with `created: false`.
+   */
+  recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }>;
+  /** The messages of `work_item_id` only, oldest first. Empty for an item with none. Read-only. */
+  listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]>;
+  /**
+   * Appends one CLI command. Its `seq` is greater than every command appended before it. A `key` already
+   * stored is a no-op that reports the existing command with `created: false`.
+   */
+  appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
+  /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
+  listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+}
+
+export interface NewItemMessage {
+  work_item_id: WorkItemId;
+  /** Unique within the item; a repeat with the same marker stores nothing. */
+  marker: string;
+  body: string;
+}
+
+export interface ItemMessage extends NewItemMessage {
+  seq: number;
+  /** Store clock's now when the message was first recorded. */
+  created_at: Timestamp;
+}
+
+export interface NewCliCommand {
+  /** Idempotency key, unique across all commands: a repeat with the same key stores nothing. */
+  key: string;
+  /** The ID of whoever ran the command (e.g. `local:<login>`), never a display name. */
+  actor: string;
+  /** The command's name. */
+  command: string;
+  /** The command's arguments, stored as JSON. */
+  args: Record<string, unknown>;
+}
+
+export interface CliCommand extends NewCliCommand {
+  seq: number;
+  /** Store clock's now when the command was first appended. */
+  created_at: Timestamp;
 }
 
 /** What a WorkerPool reports each tick. */
