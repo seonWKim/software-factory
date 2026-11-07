@@ -79,7 +79,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
   it("when the dependency's PR merges, the held run is claimable on the next claim with no other action", async () => {
     const source = new DepSource();
     const f = await setup(source);
-    const dep = await f.item(92, { stage: "REVIEW", pr_number: 192 }, []);
+    const dep = await f.item(92, { stage: "REVIEW", change_ref: "192" }, []);
     source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "sub_issue" }]);
     const a = await f.item(1);
     await f.controller.tickCoordination();
@@ -115,7 +115,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
   it("a dependency closed without a merge: blocked on a human, the reason names it, no run stays queued", async () => {
     const source = new DepSource();
     const f = await setup(source);
-    const dep = await f.item(92, { stage: "REVIEW", pr_number: 192 }, []);
+    const dep = await f.item(92, { stage: "REVIEW", change_ref: "192" }, []);
     source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
     const a = await f.item(1);
     await f.controller.tickCoordination();
@@ -158,7 +158,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
   it("/retry on a dependency closed unmerged reads the dependencies again: a PR closed unmerged still refuses, a fixed link releases", async () => {
     const source = new DepSource();
     const f = await setup(source);
-    const dep = await f.item(92, { stage: "REVIEW", pr_number: 192 }, []);
+    const dep = await f.item(92, { stage: "REVIEW", change_ref: "192" }, []);
     source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
     const a = await f.item(1);
     await f.controller.tickCoordination();

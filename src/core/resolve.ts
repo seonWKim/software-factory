@@ -40,13 +40,13 @@ export function fence(text: string, lang = "text"): string {
 
 /** The user prompt of a resolve run: the spec, every conflict with both sides, the notes marked untrusted. */
 export function renderResolvePrompt(
-  item: Pick<WorkItem, "id" | "problem" | "done_criteria" | "scope" | "allowed_paths" | "pr_number" | "source">,
+  item: Pick<WorkItem, "id" | "problem" | "done_criteria" | "scope" | "allowed_paths" | "change_ref" | "source">,
   baseRef: string,
   files: readonly ConflictFile[],
   notes: string,
 ): string {
   const lines = [
-    `# Resolve merge conflicts: work item ${item.id}, PR #${item.pr_number ?? "?"}`,
+    `# Resolve merge conflicts: work item ${item.id}, PR #${item.change_ref ?? "?"}`,
     "",
     `Source: ${item.source.link}`,
     "",

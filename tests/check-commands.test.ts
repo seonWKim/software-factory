@@ -109,7 +109,7 @@ describe("update and resolve runs run the check list", () => {
     const { item } = await f.store.createWorkItem(issue(7), system);
     const moved = await f.store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "test_setup",
-      patch: { stage: "RUNNING", pr_number: 42, allowed_paths: ["src/"] },
+      patch: { stage: "RUNNING", change_ref: "42", allowed_paths: ["src/"] },
       enqueue: { kind, idempotency_key: `${kind}-1` },
     });
     if (!moved.ok) throw new Error("setup");

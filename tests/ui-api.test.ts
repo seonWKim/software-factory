@@ -60,7 +60,7 @@ async function seeded(opts: { store?: (s: FactoryStore) => FactoryStore } = {}) 
   const approve = await make(store, 1, "Spec for <script>alert(1)</script> the gate");
   await patch(store, approve, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
   const merge = await make(store, 2, "Merge me");
-  await patch(store, merge, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42, tier: 2 });
+  await patch(store, merge, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42", tier: 2 });
   // Secrets: a title, a blocked reason, a state-change reason and detail value.
   const secretive = await make(store, 3, `Leaky ${SECRET} title`);
   await patch(store, secretive, { blocked_on: "human", blocked_reason: `custom ${SECRET}` }, `reason ${SECRET}`);
@@ -650,7 +650,7 @@ describe("ui api: plugins, issue and PR links (issue #240)", () => {
     const adopted = (await store.createWorkItem(
       { ...issue(90), source: { type: "github_issue", id: "o/r#90", link: "https://github.com/o/r/pull/90" } }, system,
     )).item;
-    await patch(store, adopted, { pr_number: 90 });
+    await patch(store, adopted, { change_ref: "90" });
     const list = (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
     const merge = list.find((i) => i.id === items.merge.id)!;
     expect(merge.issue).toEqual({ number: 2, url: "https://github.com/o/r/issues/2" });
@@ -966,7 +966,7 @@ describe("ui api: unreviewed merges", () => {
   type Merge = { project: string; pr_number: number; pr_url: string | null; merge_sha: string; merged_by: string; recorded_at: string };
   const list = async (d: UiDeps, q = "") => (await json<{ merges: Merge[] }>(d, `/api/v1/unreviewed-merges${q}`)).merges;
   const rec = (store: FactoryStore, n: number, merger: string | null = null, sha = `${n}`.repeat(40)) =>
-    store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: n, merge_sha: sha, merger_id: merger as UserId | null });
+    store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: String(n), merge_sha: sha, merger_id: merger as UserId | null });
 
   it("lists rows newest first with the label, a short sha and the merger id, never the project key", async () => {
     const { d, store, clock } = await seeded();

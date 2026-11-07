@@ -102,7 +102,7 @@ describe("controller: comment links", () => {
   it("stores the failure comment URL of a failed update run", async () => {
     const f = await setup();
     const item = await f.intake();
-    await seed(f, item, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 5 }, { kind: "update", idempotency_key: "upd" });
+    await seed(f, item, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "5" }, { kind: "update", idempotency_key: "upd" });
     await f.finish("update", failed("git_failed"));
     const url = f.urlOf("run-failed:");
     expect(url).toBeDefined();

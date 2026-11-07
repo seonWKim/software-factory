@@ -91,7 +91,7 @@ async function item(f: F, pr = true): Promise<WorkItem> {
   if (!pr) return item;
   const r = await f.store.transition({
     id: item.id, expected_version: item.version, actor: system, reason: "test",
-    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 },
+    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" },
   });
   if (!r.ok) throw new Error(r.reason);
   return r.item;
@@ -211,7 +211,7 @@ describe("controller: /verdict", () => {
 
     const closed = await f.store.transition({
       id: noPr.id, expected_version: noPr.version, actor: system, reason: "test",
-      patch: { stage: "CLOSED", close_reason: "rejected", pr_number: 42 },
+      patch: { stage: "CLOSED", close_reason: "rejected", change_ref: "42" },
     });
     if (!closed.ok) throw new Error(closed.reason);
     await f.controller.handleEvent(verdict("accept none", "517"));

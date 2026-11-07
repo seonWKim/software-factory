@@ -149,7 +149,7 @@ describe("multi-source controller: per-item routing", () => {
       { source: slackRef(5), title: "t", requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
       { kind: "system", id: "system:test" },
     );
-    await store.transition({ id: item.id, expected_version: item.version, patch: { pr_number: 9 }, actor: { kind: "system", id: "system:test" }, reason: "test" });
+    await store.transition({ id: item.id, expected_version: item.version, patch: { change_ref: "9" }, actor: { kind: "system", id: "system:test" }, reason: "test" });
     await c.catchUpStatus();
     expect(only.statusCalls.map((x) => x.pr_number)).toEqual([null, 9]);
   });
