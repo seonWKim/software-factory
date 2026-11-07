@@ -44,7 +44,7 @@ async function setup() {
     const { item } = await store.createWorkItem(issue(n), system);
     const r = await store.transition({
       id: item.id, expected_version: item.version, actor: system, reason: "pr_merged",
-      patch: { stage: "CLOSED", close_reason: "completed", pr_number: pr, merge_sha: sha },
+      patch: { stage: "CLOSED", close_reason: "completed", change_ref: String(pr), merge_sha: sha },
     });
     if (!r.ok) throw new Error(r.reason);
     return r.item;

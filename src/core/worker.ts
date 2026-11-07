@@ -1,4 +1,5 @@
 import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
+import { prNumber } from "./change-ref.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
@@ -1010,7 +1011,7 @@ export class Worker {
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const wip = (): WipRef => wipAt(head);
     const db = await this.database(run);
-    let content: { number: number } | null = null;
+    let content: { number: number; url?: string } | null = null;
     try {
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
@@ -1024,7 +1025,7 @@ export class Worker {
           ...this.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
         });
         if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
-        content = pr.content as { number: number };
+        content = pr.content as { number: number; url?: string };
       }
     } catch (err) {
       throw await this.keepWip(run, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
@@ -1033,6 +1034,8 @@ export class Worker {
     // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
     return {
       pr_number: content?.number ?? null,
+      // The forge's PR link, stored as the item's change_url (design 02).
+      pr_url: typeof content?.url === "string" ? content.url : null,
       commits: work.commits,
       files: paths.slice(0, MAX_PR_FILES),
       // What the PR body was built from, so an update run can rebuild it and the CI gate can hold an incomplete PR.
@@ -2030,7 +2033,7 @@ export class Worker {
     // A local item (no PR tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
     // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
     const local = !this.hasTool("github.open_pr");
-    if (item.pr_number === null && !local) throw new RunFailure("no_pr", "work item has no PR");
+    if (item.change_ref === null && !local) throw new RunFailure("no_pr", "work item has no PR");
     // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
     if (item.head_branch !== null || local) {
       await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branchFor(item, this.cfg.branch_prefix)}`]);
@@ -2077,7 +2080,7 @@ export class Worker {
     const scan = await this.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
     if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
     const posted = await this.forgeComment(ctx, {
-      number: item.pr_number,
+      number: prNumber(item),
       body: reviewComment(v),
       marker: `<!-- factory:review:${run.id} -->`,
     });
@@ -2091,7 +2094,7 @@ export class Worker {
    * `result`; the controller decides the state. Git and push errors fail the run.
    */
   private async update(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
-    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    if (item.change_ref === null) throw new RunFailure("no_pr", "work item has no PR");
     const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
@@ -2100,7 +2103,7 @@ export class Worker {
     });
     const comment = async (body: string) => {
       const r = await this.forgeComment(ctx, {
-        number: item.pr_number,
+        number: prNumber(item),
         body,
         marker: `<!-- factory:update:${run.id} -->`,
       });
@@ -2136,7 +2139,7 @@ export class Worker {
       if (merge.exit_code !== 0 && !mechanical) {
         await this.recordConflicts(item, base_sha, conflicts);
         await comment([
-          `PR #${item.pr_number} could not be updated with ${repo.base_branch}: merging \`${baseRef}\` conflicts in these files.`,
+          `PR #${item.change_ref} could not be updated with ${repo.base_branch}: merging \`${baseRef}\` conflicts in these files.`,
           `Nothing was pushed. The factory starts an automatic resolve run (at most ${AUTO_RESOLVE_LIMIT} per base commit); past that, a human needs to resolve them or comment \`/resolve\`.`,
           "",
           ...conflicts.map((f) => `- \`${f}\``),
@@ -2151,7 +2154,7 @@ export class Worker {
       if (checks.failed) {
         const f = checks.failed;
         await comment([
-          `PR #${item.pr_number} was not updated with ${repo.base_branch}: \`${baseRef}\` merged cleanly, but the tests failed on the updated branch (\`${commandText(f.command)}\` ${f.how}).`,
+          `PR #${item.change_ref} was not updated with ${repo.base_branch}: \`${baseRef}\` merged cleanly, but the tests failed on the updated branch (\`${commandText(f.command)}\` ${f.how}).`,
           "Nothing was pushed. A human needs to look.",
         ].join("\n"));
         const exit = f.how.match(/^exited (\d+)$/);
@@ -2175,7 +2178,7 @@ export class Worker {
         ? `with only appended lines on both sides in ${mechanical.map((f) => `\`${f}\``).join(", ")}, merged in code (base lines first),`
         : "cleanly";
       await comment(
-        `PR #${item.pr_number} updated with ${repo.base_branch}: merged \`${baseRef}\` (${base_sha.slice(0, 8)}) ${how} and ${passed} passed. A human merge is still required.`,
+        `PR #${item.change_ref} updated with ${repo.base_branch}: merged \`${baseRef}\` (${base_sha.slice(0, 8)}) ${how} and ${passed} passed. A human merge is still required.`,
       );
       return { result: "pushed", merge_sha, head_sha, base_sha };
     } finally {
@@ -2195,7 +2198,7 @@ export class Worker {
    * failure throws: nothing is pushed and the controller re-blocks the item.
    */
   private async resolve(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
-    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    if (item.change_ref === null) throw new RunFailure("no_pr", "work item has no PR");
     const system_prompt = this.d.prompts.resolve;
     if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
     const { repo, branch_prefix } = this.cfg;
@@ -2741,7 +2744,7 @@ function renderWorkItem(item: WorkItem, opts: { includeSpec: boolean }): string 
  */
 function renderAdoptedPr(item: WorkItem): string {
   return [
-    `# Change #${item.pr_number} (work item ${item.id})`,
+    `# Change #${item.change_ref} (work item ${item.id})`,
     "",
     `Source: ${item.source.link}`,
     "",

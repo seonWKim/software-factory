@@ -159,7 +159,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
   describe("open PRs", () => {
     it("an open PR holds a conflicting waiting item with no run active for the PR's item; the PR's stored file list is used", async () => {
       const { store, clock } = await make();
-      const pr = await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, allowed_paths: ["lib/"], pr_files: [WORKER] }, []);
+      const pr = await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", allowed_paths: ["lib/"], pr_files: [WORKER] }, []);
       const b = await item(store, clock, 2, { files_to_change: [WORKER] });
       expect(await claim(store)).toBeNull();
       expect((await store.listClaimDecisions(b))[0]).toMatchObject({
@@ -167,14 +167,14 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       });
       // The stored list decides: allowed_paths ["lib/"] would not overlap at all.
       const other = await make();
-      await item(other.store, other.clock, 1, { stage: "REVIEW", pr_number: 92, allowed_paths: [WORKER], pr_files: ["lib/x.ts"] }, []);
+      await item(other.store, other.clock, 1, { stage: "REVIEW", change_ref: "92", allowed_paths: [WORKER], pr_files: ["lib/x.ts"] }, []);
       await item(other.store, other.clock, 2, { files_to_change: [WORKER] });
       expect(await claim(other.store)).not.toBeNull();
     });
 
     it("a PR opened before PR file lists were stored falls back to its allowed_paths, and the decision says so", async () => {
       const { store, clock } = await make();
-      await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, allowed_paths: ["src/core/"], pr_files: null }, []);
+      await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", allowed_paths: ["src/core/"], pr_files: null }, []);
       const b = await item(store, clock, 2, { files_to_change: [WORKER] });
       expect(await claim(store)).toBeNull();
       expect((await store.listClaimDecisions(b))[0]).toMatchObject({ holder_ref: "#92", holder_kind: "pr", fallback: true, cost: 3 });
@@ -182,10 +182,10 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("a closed item's PR holds nothing, and an item with a PR is never cost-held itself", async () => {
       const { store, clock } = await make();
-      await item(store, clock, 1, { stage: "CLOSED", close_reason: "completed", pr_number: 91, pr_files: [WORKER] }, []);
-      await item(store, clock, 2, { stage: "REVIEW", pr_number: 92, pr_files: [WORKER] }, []);
+      await item(store, clock, 1, { stage: "CLOSED", close_reason: "completed", change_ref: "91", pr_files: [WORKER] }, []);
+      await item(store, clock, 2, { stage: "REVIEW", change_ref: "92", pr_files: [WORKER] }, []);
       // A review fix on PR 93: conflicts with PR 92 are handled at merge, not by holding the fix.
-      const fix = await item(store, clock, 3, { pr_number: 93, pr_files: [WORKER] });
+      const fix = await item(store, clock, 3, { change_ref: "93", pr_files: [WORKER] });
       expect(await claim(store)).toMatchObject({ work_item_id: fix });
     });
   });
@@ -207,7 +207,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("two queued items that hold each other and an open PR: the decisions name the PR; once it merges they stop naming it at once and the oldest is claimed", async () => {
       const { store, clock } = await make();
-      const pr = await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      const pr = await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", pr_files: ["SET_UP.md"] }, []);
       const a = await item(store, clock, 2, { files_to_change: [WORKER, "SET_UP.md"] });
       const b = await item(store, clock, 3, { files_to_change: [WORKER, "SET_UP.md"] });
       expect(await claim(store)).toBeNull();
@@ -231,7 +231,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("a run held only by a queued run that cannot start (an open PR holds it) is claimed", async () => {
       const { store, clock } = await make();
-      await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", pr_files: ["SET_UP.md"] }, []);
       const older = await item(store, clock, 2, { files_to_change: ["SET_UP.md", WORKER] });
       const younger = await item(store, clock, 3, { files_to_change: [WORKER] });
       expect((await claim(store))?.work_item_id).toBe(younger);
@@ -259,7 +259,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       const a = await item(store, clock, 1, { files_to_change: [WORKER] });
       expect((await claim(store))?.work_item_id).toBe(a);
       // Same hotspot, but triage and review runs: both claimed while a's implement run holds the file.
-      const b = await item(store, clock, 2, { stage: "REVIEW", pr_number: 92, files_to_change: [WORKER], pr_files: [WORKER] }, ["review"]);
+      const b = await item(store, clock, 2, { stage: "REVIEW", change_ref: "92", files_to_change: [WORKER], pr_files: [WORKER] }, ["review"]);
       const c = await item(store, clock, 3, { stage: "NEW", files_to_change: [WORKER] }, ["triage"]);
       const kinds = [(await claim(store, w2))!, (await claim(store, w2))!].map((r) => [r.work_item_id, r.kind]);
       expect(kinds).toEqual([[b, "review"], [c, "triage"]]);
@@ -349,14 +349,14 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
     it("a hold keeps its start when its holder changes, so the run_after_minutes timer does not restart", async () => {
       const { store, clock } = await make();
       const s = policy({ hold_policy: { mode: "run_after_minutes", minutes: 20 } });
-      await item(store, clock, 1, { stage: "REVIEW", pr_number: 91, pr_files: [WORKER] }, []);
+      await item(store, clock, 1, { stage: "REVIEW", change_ref: "91", pr_files: [WORKER] }, []);
       const b = await item(store, clock, 2, { files_to_change: [WORKER] });
       expect(await claimWith(store, s)).toBeNull();
       const [first] = await store.listClaimDecisions(b);
       expect(first).toMatchObject({ decision: "held", holder_ref: "#91" });
       clock.advance(10 * MIN);
       // A second PR that shares more files takes over as the named holder.
-      await item(store, clock, 3, { stage: "REVIEW", pr_number: 93, pr_files: [WORKER, "SET_UP.md"] }, []);
+      await item(store, clock, 3, { stage: "REVIEW", change_ref: "93", pr_files: [WORKER, "SET_UP.md"] }, []);
       const it2 = (await store.getWorkItem(b))!;
       await store.transition({ id: b, expected_version: it2.version, actor: system, reason: "x", patch: { files_to_change: [WORKER, "SET_UP.md"] } });
       expect(await claimWith(store, s)).toBeNull();
@@ -415,7 +415,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("a dependency that is a work item counts as merged once it closed completed with a merge sha", async () => {
       const { store, clock } = await make();
-      const dep = await item(store, clock, 92, { stage: "REVIEW", pr_number: 192 }, []);
+      const dep = await item(store, clock, 92, { stage: "REVIEW", change_ref: "192" }, []);
       const a = await item(store, clock, 1, { files_to_change: ["lib/a.ts"] });
       await store.replaceDependencyEdges(a, [{ depends_on: "o/r#92", kind: "sub_issue" }]);
       expect(await claim(store)).toBeNull();

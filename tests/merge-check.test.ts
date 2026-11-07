@@ -71,7 +71,7 @@ async function readyItem(store: FactoryStore, n: number, type: SourceType = "git
   const { item } = await store.createWorkItem({ ...issue(n), source: { ...issue(n).source, type } }, system);
   const r = await store.transition({
     id: item.id, expected_version: item.version, actor: system, reason: "seed",
-    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: PR },
+    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(PR) },
   });
   if (!r.ok) throw new Error(r.reason);
   return r.item;
@@ -271,7 +271,7 @@ describe("merge check: caching, throttling and the update run", () => {
     const { item: other } = await store.createWorkItem(issue(2), system);
     const r = await store.transition({
       id: other.id, expected_version: other.version, actor: system, reason: "seed",
-      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 8 },
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "8" },
     });
     expect(r.ok).toBe(true);
     sandbox.heads[`factory/${other.id}`] = "d".repeat(40);

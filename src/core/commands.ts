@@ -129,7 +129,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "resolve",
     usage: "/resolve [notes]",
-    description: "Let an agent resolve the PR's merge conflict; notes go to the agent",
+    description:
+      "Let an agent resolve the PR's merge conflict; notes go to the agent. " +
+      "`/resolve +paths <path>...` (at most 10, notes on the lines below) also adds those paths to the allowed paths",
     // Also the answer to a resolve run that asked for a human: the reply is the next resolve run's notes.
     phases: ["merge_conflict", "agent_needs_human"],
     asked_by: ["resolve"],
@@ -209,7 +211,7 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
   return undefined;
 }
 
-type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number"> & Partial<Pick<WorkItem, "merge_sha">>;
+type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha">>;
 
 /** The phase of an item; the same checks, in the same order, as the controller's command handling. */
 export function commandPhase(it: ItemState): CommandPhase {
@@ -240,7 +242,7 @@ export function commandPhase(it: ItemState): CommandPhase {
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
 export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
   const phase = commandPhase(it);
-  return { phase, has_pr: it.pr_number !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
+  return { phase, has_pr: it.change_ref !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
 }
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
@@ -406,7 +408,7 @@ export function commandPathProblem(p: string): string | null {
 }
 
 /**
- * Splits `+paths <path>...` off the text after `/approve` or `/retry` (design §4, issue #280). The flag starts
+ * Splits `+paths <path>...` off the text after `/approve`, `/retry` or `/resolve` (design §4, issue #280). The flag starts
  * the text's first line; the paths are the rest of that line, separated by whitespace (a path may be wrapped
  * in backticks, and a leading `./` is dropped); the note is the lines below. Without the flag, no paths and
  * the whole text is the note. A refusal for no paths, more than MAX_COMMAND_PATHS, or a path that is empty,

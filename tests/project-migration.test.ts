@@ -83,7 +83,7 @@ async function seedLegacy(b: Backend) {
   const a = await store.createWorkItem({ ...issue(1), project: KEYS["o/r"]!.key }, system);
   const c = await store.createWorkItem({ ...issue(2), project: KEYS["o/r"]!.key }, system);
   const d = await store.createWorkItem({ ...issue(3), project: KEYS["x/y"]!.key }, system);
-  await store.recordUnreviewedMerge({ project: KEYS["o/r"]!.key, pr_number: 9, merge_sha: "m9", merger_id: null });
+  await store.recordUnreviewedMerge({ project: KEYS["o/r"]!.key, change_ref: "9", merge_sha: "m9", merger_id: null });
   for (const [ownerName, ref] of Object.entries(KEYS)) {
     for (const t of PROJECT_TABLES) await driver.run(`UPDATE ${t} SET project = ? WHERE project = ?`, [ownerName, ref.key]);
   }

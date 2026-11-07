@@ -38,7 +38,7 @@ async function runOnce(store: FactoryStore, item: WorkItem, kind: "resolve" | "i
 
 async function block(store: FactoryStore, item: WorkItem, blocked_reason: string) {
   const cur = (await store.getWorkItem(item.id))!;
-  const r = await store.transition({ id: item.id, expected_version: cur.version, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason, pr_number: 42 }, actor: system, reason: "x" });
+  const r = await store.transition({ id: item.id, expected_version: cur.version, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason, change_ref: "42" }, actor: system, reason: "x" });
   if (!r.ok) throw new Error("transition failed");
 }
 

@@ -247,7 +247,7 @@ describe("writes use the key", () => {
     expect(await f.projects()).toEqual([PROJECT.key, PROJECT.key]);
     expect((await f.store.listStateChanges((await f.store.listWorkItems(1))[0]!.id)).length).toBeGreaterThan(1);
     await expect(f.store.createWorkItem({ ...issue(8), project: "o/r" }, system)).rejects.toThrow(/project key/);
-    await expect(f.store.recordUnreviewedMerge({ project: "o/r", pr_number: 1, merge_sha: "m", merger_id: null })).rejects.toThrow(/project key/);
+    await expect(f.store.recordUnreviewedMerge({ project: "o/r", change_ref: "1", merge_sha: "m", merger_id: null })).rejects.toThrow(/project key/);
     expect(await f.projects()).toEqual([PROJECT.key, PROJECT.key]);
   });
 
@@ -255,7 +255,7 @@ describe("writes use the key", () => {
     const f = await rawStore();
     await saveProjectLabel(f.store, { key: KEY, label: "github.com/o/r" });
     const { item } = await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
-    await f.store.transition({ id: item.id, expected_version: 1, patch: { pr_number: 12, merge_sha: "m12" }, actor: system, reason: "x" });
+    await f.store.transition({ id: item.id, expected_version: 1, patch: { change_ref: "12", merge_sha: "m12" }, actor: system, reason: "x" });
 
     // Startup after the rename: GitHub returns the same node ID under the new path.
     const renamed = await resolveProject({ repoIdentity: async () => ({ node_id: NODE_ID, owner: "new-owner", name: "r2", host: "github.com" }) }, { owner: "o", name: "r" });
@@ -264,7 +264,7 @@ describe("writes use the key", () => {
     expect(await saveProjectLabel(f.store, renamed)).toBe(false); // a second startup changes nothing
     expect(await readProjectLabel(f.store, KEY)).toBe("github.com/new-owner/r2");
 
-    expect((await f.store.getWorkItemByPr(renamed.key, 12))?.id).toBe(item.id);
+    expect((await f.store.getWorkItemByPr(renamed.key, "12"))?.id).toBe(item.id);
     expect((await f.store.getWorkItemByMergeSha(renamed.key, "m12"))?.id).toBe(item.id);
   });
 });
@@ -285,7 +285,7 @@ describe("the label, never the key, is shown", () => {
     const f = await rawStore();
     await saveProjectLabel(f.store, { key: KEY, label: "github.com/o/r" });
     const { item } = await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
-    await f.store.transition({ id: item.id, expected_version: 1, patch: { pr_number: 42, stage: "REVIEW" }, actor: system, reason: "x" });
+    await f.store.transition({ id: item.id, expected_version: 1, patch: { change_ref: "42", stage: "REVIEW" }, actor: system, reason: "x" });
 
     const index = await renderIndex(uiDeps(f.store, f.clock), { ...NO_FILTERS });
     const page = (await renderItem(uiDeps(f.store, f.clock), item.id))!;
@@ -300,7 +300,7 @@ describe("the label, never the key, is shown", () => {
   it("a project with no stored label shows a fixed text, not the key", async () => {
     const f = await rawStore();
     const { item } = await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
-    await f.store.transition({ id: item.id, expected_version: 1, patch: { pr_number: 42 }, actor: system, reason: "x" });
+    await f.store.transition({ id: item.id, expected_version: 1, patch: { change_ref: "42" }, actor: system, reason: "x" });
     const page = (await renderItem(uiDeps(f.store, f.clock), item.id))!;
     expect(page).toContain(UNKNOWN_PROJECT_LABEL);
     expect(page).toContain("PR #42");

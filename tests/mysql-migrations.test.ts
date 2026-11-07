@@ -138,13 +138,13 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     db.onCleanup(() => seed.close());
     const label = "github.com/o/r";
     const adoptedIn = (n: number, project: string) => ({
-      ...issue(n), project, adopted: { pr_number: n, head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
+      ...issue(n), project, adopted: { change_ref: String(n), head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
     });
     await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, label);
     const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), system)).item;
     const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), system)).item;
     const plain = (await seed.createWorkItem(issue(8), system)).item;
-    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 11, merge_sha: "m", merger_id: null });
+    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "11", merge_sha: "m", merger_id: null });
     // Back to the state before the step: no change columns or keys, every row as it was.
     const step = readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")!;
     await c.query("ALTER TABLE work_items DROP INDEX work_items_change, DROP COLUMN change_ref, DROP COLUMN change_url");

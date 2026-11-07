@@ -84,7 +84,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
   const moved = await store.transition({
     id: created.id,
     expected_version: created.version,
-    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 },
+    patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" },
     actor: system,
     reason: "test_setup",
   });
@@ -203,11 +203,11 @@ describe("update run: pr_unmergeable", () => {
   it("does nothing for an item that is not waiting for a merge of that PR", async () => {
     const f = await setup("clean");
     const cases = [
-      { stage: "REVIEW", blocked_on: "none", blocked_reason: null, pr_number: 42 },
-      { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", pr_number: 42 },
-      { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 41 },
-      { stage: "RUNNING", blocked_on: "none", blocked_reason: null, pr_number: 42 },
-      { stage: "CLOSED", blocked_on: "none", blocked_reason: null, pr_number: 42 },
+      { stage: "REVIEW", blocked_on: "none", blocked_reason: null, change_ref: "42" },
+      { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", change_ref: "42" },
+      { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "41" },
+      { stage: "RUNNING", blocked_on: "none", blocked_reason: null, change_ref: "42" },
+      { stage: "CLOSED", blocked_on: "none", blocked_reason: null, change_ref: "42" },
     ] as const;
     for (const patch of cases) {
       const it0 = (await f.store.getWorkItem(f.id))!;

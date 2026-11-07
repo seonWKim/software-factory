@@ -76,7 +76,7 @@ async function seeded() {
   const waiting = await setTitle(store, 1, "Spec for <script>alert(1)</script> the gate");
   await patch(store, waiting, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
   const merging = await setTitle(store, 2, "Merge me");
-  await patch(store, merging, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42, tier: 2 });
+  await patch(store, merging, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42", tier: 2 });
 
   // Finished runs: one succeeded with tokens, one failed carrying a secret-shaped string.
   const done = await setTitle(store, 3, "Done item");
@@ -353,7 +353,7 @@ async function seededNeeds() {
 
   const spec = await mk(1, "Spec item", { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", spec_comment_url: "https://github.com/o/r/issues/1#issuecomment-11" });
   clock.advance(HOUR);
-  await mk(2, "Merge item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+  await mk(2, "Merge item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
   clock.advance(HOUR);
   await mk(3, "Failed item", { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", failure_comment_url: "https://github.com/o/r/issues/3#issuecomment-33" });
   clock.advance(HOUR);
@@ -362,9 +362,9 @@ async function seededNeeds() {
   await fail(maxed, "m:2", "agent_failed");
   await patch(store, maxed, { blocked_on: "human", blocked_reason: "max_attempts" });
   clock.advance(HOUR);
-  await mk(5, "Loops item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", pr_number: 50 });
+  await mk(5, "Loops item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", change_ref: "50" });
   clock.advance(HOUR);
-  const conflict = await mk(6, "Conflict item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 60 });
+  const conflict = await mk(6, "Conflict item", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "60" });
   clock.advance(HOUR);
   await patch(store, conflict, { blocked_reason: "merge_conflict_pending" });
   clock.advance(HOUR / 2);
@@ -478,7 +478,7 @@ describe("ui: Needs you (?state=needs)", () => {
     const { store } = await newStore(clock);
     for (let n = 1; n <= 205; n++) {
       const { item } = await store.createWorkItem(issue(n), system);
-      await store.transition({ id: item.id, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: n }, actor: system, reason: "x" });
+      await store.transition({ id: item.id, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(n) }, actor: system, reason: "x" });
     }
     const page = await get(await startOn(store, clock), "/classic");
     expect(page.body).toMatch(/<title>[^<]*\(205\)[^<]*<\/title>/);
