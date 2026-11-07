@@ -1316,9 +1316,13 @@ describe("/resolve on a merge conflict", () => {
 
     // Gates ran before the push, in order: install, then test.
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
-    expect(names(f)).toEqual(["github.push_branch", "github.comment"]); // push, then the review comment
+    // Push, the same PR's body rebuilt for the branch as it is now (issue #229), then the review comment.
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
     expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });
-    expect(names(f)).not.toContain("github.open_pr");
+    const refreshed = f.broker.calls[1]!.args as { branch: string; body: string };
+    expect(refreshed.branch).toBe(`factory/${f.item.id}`);
+    expect(refreshed.body).toContain("## Before you merge");
+    expect(refreshed.body).toContain("Checked before push: `npm test` passed");
 
     // Back to REVIEW with the same PR; a review ran under a new key and passed.
     item = (await f.store.getWorkItem(f.item.id))!;

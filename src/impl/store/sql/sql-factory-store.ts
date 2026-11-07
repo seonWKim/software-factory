@@ -471,11 +471,12 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
-      // implement-type claims only (design §5 Restarts). Both are rows of claim_pauses, read under the lock.
+      // implement-type claims only, and so does a failed push_access or pr_api preflight check (design §5
+      // Restarts). All are rows of claim_pauses, read under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, MODEL_STALL, MODEL_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
@@ -486,7 +487,7 @@ export class SqlFactoryStore implements FactoryStore {
       // `workers pause`: this loop's own row or the all-flag stops its claims (design §5 Pause), read under the lock.
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
-      const forgePaused = active(FORGE_AUTH_PAUSE);
+      const forgePaused = active(FORGE_AUTH_PAUSE) || active(PREFLIGHT_ACCESS_PAUSE);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -692,7 +693,7 @@ export class SqlFactoryStore implements FactoryStore {
     resume_at: Timestamp,
     name: ClaimPauseName = RATE_LIMIT_PAUSE,
   ): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }> {
-    // `started` only for forge_auth: the rate-limit pause's result stays exactly as it was (out of this change).
+    // `started` for every name but rate_limit: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
     if (name === MODEL_STALL) return this.pauseForStall(resume_at);
@@ -1809,6 +1810,11 @@ const RATE_LIMIT_PAUSE: ClaimPauseName = "rate_limit";
  * both backends), so no schema change.
  */
 const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
+/**
+ * The claim pause for a push_access or pr_api preflight check that failed other than with a 401/403 (issue #216):
+ * no implement-type claim, as for forge_auth. Its own row of the same table, so no schema change.
+ */
+const PREFLIGHT_ACCESS_PAUSE: ClaimPauseName = "preflight_access";
 
 /** A stall pause is in effect while its next probe time is after the last answered probe (none: always). */
 function stallInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {

@@ -61,11 +61,11 @@ async function factory(runner: FakeRunner, opts: { repeated?: boolean } = {}) {
 
 describe("needs_human output validation", () => {
   it("implement: with needs_human, summary and next_steps may be left out; without it, both are required as before", () => {
-    expect(parseImplement({ needs_human: ASK })).toEqual({ ok: true, value: { summary: "", next_steps: "", needs_human: ASK } });
+    expect(parseImplement({ needs_human: ASK })).toEqual({ ok: true, value: { summary: "", next_steps: "", missing: [], deviations: [], needs_human: ASK } });
     expect(parseImplement({ summary: "s", next_steps: "n", needs_human: ASK })).toMatchObject({ ok: true, value: { summary: "s", needs_human: ASK } });
-    expect(parseImplement({ summary: "s", next_steps: "n" })).toEqual({ ok: true, value: { summary: "s", next_steps: "n" } });
+    expect(parseImplement({ summary: "s", next_steps: "n" })).toEqual({ ok: true, value: { summary: "s", next_steps: "n", missing: [], deviations: [] } });
     expect(parseImplement({ summary: "s" }).ok).toBe(false);
-    expect(parseImplement({ summary: "s", next_steps: "n", needs_human: null })).toEqual({ ok: true, value: { summary: "s", next_steps: "n" } });
+    expect(parseImplement({ summary: "s", next_steps: "n", needs_human: null })).toEqual({ ok: true, value: { summary: "s", next_steps: "n", missing: [], deviations: [] } });
   });
 
   it("a missing, empty or over-500-character reason or question is invalid", () => {
