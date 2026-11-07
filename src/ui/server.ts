@@ -51,6 +51,11 @@ export function allowedHost(host: string | undefined): boolean {
   return m !== null && ALLOWED_HOSTS.has(m[1]!);
 }
 
+/** The server-rendered status page, kept beside the app until the app covers everything it shows. */
+export const CLASSIC_PATH = "/classic";
+/** Where `/` sends the browser. */
+export const APP_HOME = "/app/";
+
 function html(status: number, body: string, extra: Record<string, string> = {}): UiResponse {
   return { status, headers: { "content-type": "text/html; charset=utf-8", ...SECURITY_HEADERS, ...extra }, body };
 }
@@ -101,7 +106,9 @@ export async function respond(d: UiDeps, req: UiRequest): Promise<UiResponse> {
   }
   if (isAppPath(url.pathname)) return serveApp(d.appDir ?? DEFAULT_APP_DIR, url.pathname);
 
-  if (url.pathname === "/") {
+  // The app is the default UI (design §9, 2026-11-07); the server-rendered page stays at CLASSIC_PATH.
+  if (url.pathname === "/") return html(302, "", { location: APP_HOME });
+  if (url.pathname === CLASSIC_PATH) {
     const parsed = parseFilters(url.searchParams);
     if (!parsed.ok) return error(400, parsed.error);
     const healthRefresh = url.searchParams.get("health") === "refresh";

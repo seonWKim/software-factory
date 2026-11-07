@@ -143,7 +143,7 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(lines).toHaveLength(5);
 
     const { port } = await uiFor(loaded);
-    const health = section((await get(port, "/")).body, "health");
+    const health = section((await get(port, "/classic")).body, "health");
     expect(health).toContain(`setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
     expect(health).toContain(`setting for ${owner}/${name}: max_diff_lines = 5000 (defaults)`);
   });
@@ -168,10 +168,10 @@ describe("health: one implementation behind doctor and the page", () => {
   it("the Health panel lists each check with ok, warn or FAIL, its message and the last-run time", async () => {
     const { loaded } = await setupDoctor();
     const { port, clock } = await uiFor(loaded);
-    const panel = section((await get(port, "/")).body, "health");
+    const panel = section((await get(port, "/classic")).body, "health");
     expect(panel).toContain("<h2>Health</h2>");
     expect(panel).toContain(`Last run ${clock.now().toISOString()}`);
-    expect(panel).toContain('href="/?health=refresh#health"');
+    expect(panel).toContain('href="/classic?health=refresh#health"');
     expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>claude CLI: not found<\/td>/);
     expect(panel).toMatch(/<td>warn<\/td><td>GitHub token never expires/);
     expect(panel).toMatch(/<td>ok<\/td><td>MySQL factory@db\.invalid:3306\/sf reachable, schema up to date<\/td>/);
@@ -181,7 +181,7 @@ describe("health: one implementation behind doctor and the page", () => {
   it("a failing check shows as FAIL on the panel", async () => {
     const { loaded } = await setupDoctor({ version: new Error("connect ECONNREFUSED 10.0.0.1:3306"), labels: [] });
     const { port } = await uiFor(loaded);
-    const panel = section((await get(port, "/")).body, "health");
+    const panel = section((await get(port, "/classic")).body, "health");
     expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>MySQL factory@db\.invalid:3306\/sf: connect ECONNREFUSED 10\.0\.0\.1:3306<\/td>/);
     expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>label &quot;factory&quot; exists \(run: npm run setup\)<\/td>/);
   });
@@ -194,7 +194,7 @@ describe("health: one implementation behind doctor and the page", () => {
       throw new Error("no model call on the health path");
     });
     const { port } = await uiFor({ ...loaded, registry, plugins: { ...loaded.plugins, llm: "counting" } });
-    await get(port, "/");
+    await get(port, "/classic");
     await get(port, "/api/health");
     expect(calls).toBe(0);
   });
@@ -244,7 +244,7 @@ describe("health: messages pass through the Withholder", () => {
     const canary = `canary-${randomBytes(12).toString("hex")}`;
     const { loaded } = await setupDoctor({ fileExtra: `GITHUB_TOKEN=${canary}\n` });
     const { port } = await uiFor(loaded);
-    for (const path of ["/api/health", "/", "/?health=refresh"]) {
+    for (const path of ["/api/health", "/classic", "/classic?health=refresh"]) {
       const body = (await get(port, path)).body;
       expect(body, path).not.toContain(canary);
     }
@@ -264,7 +264,7 @@ describe("health: messages pass through the Withholder", () => {
     expect(api.body).not.toContain(password);
     const report = JSON.parse(api.body) as { checks: { status: string; msg: string }[] };
     expect(report.checks).toContainEqual({ status: "fail", msg: "[withheld: known_secret]" });
-    const page = await get(port, "/");
+    const page = await get(port, "/classic");
     expect(page.body).not.toContain(password);
     expect(section(page.body, "health")).toMatch(/<td><strong>FAIL<\/strong><\/td><td><strong>\[withheld: known_secret\]<\/strong><\/td>/);
   });
@@ -294,20 +294,20 @@ describe("health: at most one run per 60 seconds per UI process", () => {
   it("page loads, the refresh link and the API share one run per 60 s", async () => {
     let n = 0;
     const { port, clock } = await page(async () => [{ ok: true, msg: `run ${++n}` }]);
-    await get(port, "/");
-    await get(port, "/?health=refresh");
+    await get(port, "/classic");
+    await get(port, "/classic?health=refresh");
     await get(port, "/api/health");
-    await get(port, "/");
+    await get(port, "/classic");
     expect(n).toBe(1);
 
     clock.advance(HEALTH_MIN_INTERVAL_MS - 1);
-    const limited = section((await get(port, "/?health=refresh")).body, "health");
+    const limited = section((await get(port, "/classic?health=refresh")).body, "health");
     expect(n).toBe(1); // refresh does not bypass the limit
     expect(limited).toContain("run 1");
     expect(limited).toContain("next run possible in 1s");
 
     clock.advance(1);
-    const fresh = await get(port, "/?health=refresh");
+    const fresh = await get(port, "/classic?health=refresh");
     expect(n).toBe(2);
     expect(section(fresh.body, "health")).toContain("run 2");
     expect(section(fresh.body, "health")).toContain(`Last run ${clock.now().toISOString()}`);
@@ -318,7 +318,7 @@ describe("health: at most one run per 60 seconds per UI process", () => {
   it("requests that arrive during a run wait for it and start no other", async () => {
     const g = gated();
     const { port, clock } = await page(g.run);
-    const pending = [get(port, "/"), get(port, "/api/health"), get(port, "/?health=refresh")];
+    const pending = [get(port, "/classic"), get(port, "/api/health"), get(port, "/classic?health=refresh")];
     await vi.waitFor(() => expect(g.count()).toBe(1));
     clock.advance(2 * HEALTH_MIN_INTERVAL_MS); // even past the limit, a running check is shared
     pending.push(get(port, "/api/health"));
@@ -338,7 +338,7 @@ describe("health: at most one run per 60 seconds per UI process", () => {
     });
     const report = JSON.parse((await get(port, "/api/health")).body) as { checks: unknown[] };
     expect(report.checks).toEqual([{ status: "fail", msg: "health checks could not finish: GitHub GET /labels → 500" }]);
-    await get(port, "/");
+    await get(port, "/classic");
     expect(n).toBe(1);
   });
 });
