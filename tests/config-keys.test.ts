@@ -413,3 +413,23 @@ describe("github.budget_share (design §5 Sources, GitHub call budget)", () => {
     }
   });
 });
+
+describe("agent_stop_checks (design §4 Pre-push gates, issue #302)", () => {
+  it("is a top-level key; absent, it is 3", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("agent_stop_checks");
+    const { agent_stop_checks: _set, ...rest } = SQLITE as Record<string, unknown>;
+    expect((await loadConfig(root(rest))).config.agent_stop_checks).toBe(3);
+  });
+
+  it("a positive integer loads; the checked-in config sets it", async () => {
+    expect((await loadConfig(root({ ...SQLITE, agent_stop_checks: 7 }))).config.agent_stop_checks).toBe(7);
+    expect(typeof REAL.agent_stop_checks).toBe("number");
+  });
+
+  it("a value that is not a positive integer fails at startup, naming the key", async () => {
+    for (const agent_stop_checks of [0, -1, 1.5, "3", null, true]) {
+      const err = await loadError({ ...SQLITE, agent_stop_checks });
+      expect(err.message).toContain("agent_stop_checks must be a positive integer");
+    }
+  });
+});

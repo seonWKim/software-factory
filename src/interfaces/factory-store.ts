@@ -402,7 +402,8 @@ export interface FactoryStore {
    * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
    * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
-   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
+   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued; while the
+   * `github_rate_limit` pause is, implement-type and review runs are skipped and stay queued (triage and resolve claim).
    * Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
    * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not
    * satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an
@@ -440,8 +441,9 @@ export interface FactoryStore {
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
-   * refused the credentials). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
-   * when this call moved it, so exactly one caller logs it. For `forge_auth` only, `started` is true when this
+   * refused the credentials), `github_rate_limit` stops implement-type and review claims (GitHub's rate limit, until
+   * its reset). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
+   * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
    * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
    * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
    * The `rate_limit` result has no `started`.

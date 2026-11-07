@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
@@ -114,6 +114,8 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The gate hooks' Stop hook (design §4): the most times it sends an implement run's agent back. Absent: 3. */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -391,6 +393,7 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     workers,
     max_workers,
@@ -422,14 +425,19 @@ export async function loadConfig(
     implement: await readPrompt("implement"),
     review: await readPrompt("review"),
   };
-  // Optional prompts: a missing file leaves the field absent (resolve: `prompt_missing`; improve: no drafts).
-  for (const name of ["resolve", "improve"] as const) {
-    const text = await readPrompt(name).catch((err: NodeJS.ErrnoException) => {
+  // Optional prompt files: a missing one is not an error (resolve: `prompt_missing`; improve: no drafts).
+  const optional = (name: string) =>
+    readPrompt(name).catch((err: NodeJS.ErrnoException) => {
       if (err.code === "ENOENT") return undefined;
       throw err;
     });
+  for (const name of ["resolve", "improve"] as const) {
+    const text = await optional(name);
     if (text !== undefined) prompts[name] = text;
   }
+  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
+  const ownerDefaults = await optional("owner-defaults");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
@@ -983,6 +991,14 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/** `agent_stop_checks` (design §4 Pre-push gates): absent means 3, otherwise a positive integer or startup fails. */
+export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): number {
+  const v = file.agent_stop_checks;
+  if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
 }
 
 export const DEFAULT_INBOX_RETENTION_DAYS = 14;
