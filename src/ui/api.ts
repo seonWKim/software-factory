@@ -5,14 +5,16 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The write routes, POST
-// /api/v1/settings (settings-api.ts) and POST /api/v1/pauses/resume (pause-api.ts), are handled behind
-// server.ts's write guards; GET /api/v1/settings and GET /api/v1/pauses are here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The three write routes, POST
+// /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts) and POST
+// /api/v1/pauses/resume (pause-api.ts), are handled behind server.ts's write guards; GET /api/v1/settings,
+// GET /api/v1/session and GET /api/v1/pauses are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
@@ -59,6 +61,10 @@ export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
       return ok(await d.health.report(d.scanner));
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/session": {
+      const session = readSession(d, c.now);
+      return session ? ok(session) : apiError(404, "Not found.");
+    }
     case "/data/tables":
       return data(await dataTables(c.data()));
     case "/pauses":
@@ -294,6 +300,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
     },
     timeline,
     runs: runRows,
+    commands: itemCommands(it, runs),
+    replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
 }
 

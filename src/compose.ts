@@ -8,7 +8,7 @@ import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, ty
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProjectLabel } from "./core/project-labels.js";
-import type { Tier, VerdictSeverity } from "./core/types.js";
+import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { Controller } from "./core/controller.js";
@@ -34,6 +34,7 @@ import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
+import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -41,7 +42,7 @@ import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedRunners, selectedSources,
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
 } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
@@ -67,8 +68,11 @@ export interface FileConfig {
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
   /** Human floors (design §3). A per-project setting: may move into `defaults`, and a project may add to it. */
   floors?: { prefix: string; tier: number }[];
-  /** AuthProvider plugin name (docs/plugins.md). */
-  auth: string;
+  /**
+   * AuthProvider plugin name (docs/plugins.md) for GitHub comments, or one per command origin (issue #318):
+   * `{ "github_issue": "github", "local": "local" }`. Local commands use `local` unless `auth.local` says otherwise.
+   */
+  auth: unknown;
   /**
    * Who may act (design 2026-11-01): `grants`, the grant plugins whose union decides (absent: github-permission),
    * and grant settings such as `static` (docs/plugins.md, GrantSource). Checked by selectGrants and each grant.
@@ -120,8 +124,11 @@ export interface FileConfig {
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
-  /** The read-only status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. */
-  ui?: { port?: number };
+  /**
+   * The status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. `user_id`: the factory
+   * user ID the page's commands act as (issue #227); absent, the page cannot send commands.
+   */
+  ui?: { port?: number; user_id?: string };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
   updater?: { auto_migrate?: unknown };
   /** The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the reset. */
@@ -210,6 +217,7 @@ export async function loadConfig(
   }
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
+  uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
   const workers = workerCount(file.workers);
@@ -412,6 +420,8 @@ export async function build(
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
+  const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
   // Suggests a command for a plain-language comment; never changes state (design §4).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
@@ -450,6 +460,7 @@ export async function build(
     store,
     sources,
     auth,
+    local_auth,
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),
@@ -523,12 +534,25 @@ export function uiPort(ui: FileConfig["ui"]): number {
   return port;
 }
 
+/**
+ * `ui.user_id` from factory.config.json: absent means null (the page cannot send commands), otherwise a
+ * non-empty string (a factory user ID, never a display name) or startup fails naming the key.
+ */
+export function uiUserId(ui: FileConfig["ui"]): UserId | null {
+  const id: unknown = ui?.user_id;
+  if (id === undefined) return null;
+  if (typeof id !== "string" || id.trim() === "") throw new Error("ui.user_id must be a non-empty string (a factory user ID)");
+  return id.trim() as UserId;
+}
+
 export interface UiParts {
   clock: Clock;
   store: FactoryStore;
   scanner: EgressScanner;
   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
   settings: UiSettings;
+  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
+  commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
   close(): Promise<void>;
@@ -546,8 +570,9 @@ const NO_FORGE = new Proxy({}, {
  * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
- * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The pause
- * route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
+ * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
+ * commands route acts as `ui.user_id` (null: not configured) and takes the same token. The pause route's owner
+ * check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -558,13 +583,16 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
   await store.migrate();
   const scanner = await p.scanner(secrets);
   const { owner, name } = loaded.config.repo;
+  const token = newCsrfToken();
   const settings: UiSettings = {
     base: settingsBase(loaded),
     repo: { owner, name },
     actor: opts.actor,
     resolveProject: storeProjectResolver(store, { owner, name }),
-    csrfToken: newCsrfToken(),
+    csrfToken: token,
   };
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
+  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
   // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
   // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
   const base = p.base;
@@ -579,10 +607,10 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
       if (!project) return { allow: false, reason: "no project is stored yet" };
       return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
     },
-    csrfToken: settings.csrfToken,
+    csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  return { clock, store, scanner, settings, pauses, close: () => store.close() };
+  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

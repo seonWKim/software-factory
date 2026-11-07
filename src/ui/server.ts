@@ -1,9 +1,11 @@
 // `factory ui`: the status page over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
-// except two write routes: POST /api/v1/settings (design §8, issue #236) and POST /api/v1/pauses/resume (design
-// §5 Restarts, issue #291), each guarded in this order: Host, then an Origin equal to the Host's own http origin,
-// then Content-Type application/json, then the per-process CSRF token in x-csrf-token; the resume route then
-// checks the owner (approve_spec). Every other method on every other path answers 405. The Host header must name
+// except three write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
+// (design §9, issue #227; commands.ts) and POST /api/v1/pauses/resume (design §5 Restarts, issue #291), each
+// guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// application/json, then the per-process CSRF token in x-csrf-token; the resume route then checks the owner
+// (approve_spec). A POST to any other path answers 405 as JSON; every other method answers 405 in its area's
+// format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
@@ -14,6 +16,7 @@ import type { AddressInfo } from "node:net";
 import type { WorkItemId } from "../core/types.js";
 import { api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
+import { MAX_COMMAND_BODY, commandsPathId, commandsPost } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { type PauseDeps, RESUME_PATH, resumePause } from "./pause-api.js";
 import { parseFilters } from "./filters.js";
@@ -41,12 +44,12 @@ export interface UiRequest {
   method: string | undefined;
   url: string | undefined;
   host: string | undefined;
-  /** A write route's headers and body; read only for POST /api/v1/settings and POST /api/v1/pauses/resume. */
+  /** A write route's headers and body; read only for POST /api/v1/settings, /api/v1/items/:id/commands and /api/v1/pauses/resume. */
   origin?: string | undefined;
   contentType?: string | undefined;
   csrfToken?: string | undefined;
   body?: string | undefined;
-  /** The body was longer than MAX_BODY bytes and was not read. */
+  /** The body was longer than the route's limit (MAX_BODY, or MAX_COMMAND_BODY for commands) and was not read. */
   bodyTooLarge?: boolean;
 }
 
@@ -145,12 +148,24 @@ async function writePost(d: PauseDeps, req: UiRequest, route: "settings" | "resu
   return json(r.status, r.value);
 }
 
-/** The whole request handling, without the socket. Writes only through the two write routes. */
+/** The commands path's raw item id for a POST to it, else null. */
+function commandsWrite(req: Pick<UiRequest, "method" | "url">): string | null {
+  return req.method === "POST" ? commandsPathId(req.url) : null;
+}
+
+/** The whole request handling, without the socket. Writes only through the three write routes. */
 export async function respond(d: PauseDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
   const route = writeRoute(d, req);
   if (route !== null) return writePost(d, req, route);
+  const commandsId = commandsWrite(req);
+  if (commandsId !== null) {
+    const r = await commandsPost(d, commandsId, req);
+    return json(r.status, r.value);
+  }
+  // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands and pause resume routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -203,10 +218,10 @@ export interface UiServer {
 export async function startUi(d: PauseDeps, port: number): Promise<UiServer> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host };
-    const write = writeRoute(d, base) !== null;
+    const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
     (write
-      ? readBody(req).then((b) =>
+      ? readBody(req, commandsWrite(base) !== null ? MAX_COMMAND_BODY : MAX_BODY).then((b) =>
           respond(d, {
             ...base,
             origin: one(req.headers.origin),
@@ -243,15 +258,15 @@ export async function startUi(d: PauseDeps, port: number): Promise<UiServer> {
   };
 }
 
-/** The request body, up to MAX_BODY bytes; past that the rest is drained and `bodyTooLarge` is set. */
-function readBody(req: IncomingMessage): Promise<{ body: string; bodyTooLarge: boolean }> {
+/** The request body, up to `max` bytes; past that the rest is drained and `bodyTooLarge` is set. */
+function readBody(req: IncomingMessage, max: number): Promise<{ body: string; bodyTooLarge: boolean }> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     let tooLarge = false;
     req.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > MAX_BODY) tooLarge = true;
+      if (size > max) tooLarge = true;
       else chunks.push(c);
     });
     req.on("end", () => resolve({ body: tooLarge ? "" : Buffer.concat(chunks).toString("utf8"), bodyTooLarge: tooLarge }));

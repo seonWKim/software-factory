@@ -1835,6 +1835,26 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const stored = (await store.getAppCommandRequest(request.seq))!;
       expect(stored.refusal).toBe(r[0] ? "a" : "b");
     });
+
+    it("the per-item read lists one item's requests, handled or not, oldest first, the newest `limit`", async () => {
+      const { store } = await make();
+      const a = (await store.recordAppCommandRequest(req("a", { args: { work_item_id: "wi_1", note: "n" } }))).request;
+      await store.recordAppCommandRequest(req("other", { args: { work_item_id: "wi_10" } }));
+      // `_` and `%` in an id are matched literally, not as LIKE wildcards.
+      await store.recordAppCommandRequest(req("wild", { args: { work_item_id: "wiX1" } }));
+      await store.recordAppCommandRequest(req("pct", { args: { work_item_id: "%" } }));
+      const b = (await store.recordAppCommandRequest(req("b", { command: "reject", args: { note: "x", work_item_id: "wi_1" } }))).request;
+      await store.markAppCommandRequest(a.seq, "no");
+      const c = (await store.recordAppCommandRequest(req("c"))).request;
+      const got = await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 10);
+      expect(got.map((r) => r.key)).toEqual(["a", "b", "c"]);
+      expect(got[0]).toMatchObject({ seq: a.seq, refusal: "no" });
+      expect(got[0]!.handled_at).not.toBeNull();
+      expect((await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 2)).map((r) => r.seq)).toEqual([b.seq, c.seq]);
+      expect(await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 0)).toEqual([]);
+      expect(await store.listAppCommandRequestsForItem("wi_nope" as WorkItemId, 10)).toEqual([]);
+      expect((await store.listAppCommandRequestsForItem("%" as WorkItemId, 10)).map((r) => r.key)).toEqual(["pct"]);
+    });
   });
 
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
