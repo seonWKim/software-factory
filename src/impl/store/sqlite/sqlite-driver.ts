@@ -4,6 +4,8 @@ import { MIGRATIONS } from "./schema.js";
 
 const SQLITE_CONSTRAINT_UNIQUE = 2067;
 const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
+/** One `ALTER TABLE <t> ADD COLUMN <c> ...;` statement at the start of a line, up to its `;`. */
+const ADD_COLUMN = /^[ \t]*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)[^;]*;/gim;
 
 /**
  * One SQLite file, one machine. Transactions are `BEGIN IMMEDIATE`, which takes the write lock up front,
@@ -37,10 +39,19 @@ export class SqliteDriver implements SqlDriver {
       this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)");
       const row = this.db.prepare("SELECT MAX(version) AS v FROM schema_migrations").get() as { v: number | null };
       for (let v = (row.v ?? 0) + 1; v <= MIGRATIONS.length; v++) {
-        this.db.exec(MIGRATIONS[v - 1]!);
+        this.db.exec(this.withoutExistingColumns(MIGRATIONS[v - 1]!));
         this.db.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
       }
     });
+  }
+
+  /**
+   * `sql` without its ADD COLUMN statements whose column the table already has: SQLite has no ADD COLUMN IF NOT
+   * EXISTS, and a migration must be safe to run again on a database whose recorded version was set back.
+   */
+  private withoutExistingColumns(sql: string): string {
+    const has = this.db.prepare("SELECT 1 FROM pragma_table_info(?) WHERE name = ?");
+    return sql.replace(ADD_COLUMN, (stmt, table: string, column: string) => (has.get(table, column) ? "" : stmt));
   }
 
   /** Reads sqlite_master first, so a database without the table stays untouched. */

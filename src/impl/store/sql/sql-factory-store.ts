@@ -59,6 +59,7 @@ import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
   AbandonedAttempt,
+  AppCommandRequest,
   AppendInboxResult,
   AnswerBudgetCheckpointInput,
   ApproveClaimHoldInput,
@@ -72,6 +73,7 @@ import type {
   LeaseResult,
   ListenerLease,
   ListenerLeaseResult,
+  NewAppCommandRequest,
   NewCliCommand,
   NewInboxEvent,
   NewItemMessage,
@@ -1541,6 +1543,42 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToCliCommand);
   }
 
+  // App command requests (issue #245)
+
+  async recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }> {
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectAppCommandRequest(tx, input.key);
+      if (existing) return { created: false, request: existing };
+      const created = await this.insertOnce(
+        tx,
+        "INSERT INTO app_command_requests (request_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
+        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+      );
+      return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
+    });
+  }
+
+  async listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM app_command_requests WHERE handled_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+    );
+    return rows.map(rowToAppCommandRequest);
+  }
+
+  async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
+    const n = await this.db.run("UPDATE app_command_requests SET handled_at = ?, refusal = ? WHERE seq = ? AND handled_at IS NULL", [
+      this.now(),
+      refusal,
+      seq,
+    ]);
+    return n > 0;
+  }
+
+  async getAppCommandRequest(seq: number): Promise<AppCommandRequest | null> {
+    const [row] = await this.db.all("SELECT * FROM app_command_requests WHERE seq = ?", [seq]);
+    return row ? rowToAppCommandRequest(row) : null;
+  }
+
   // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
 
   async listTables(): Promise<StoreTable[]> {
@@ -1620,6 +1658,11 @@ export class SqlFactoryStore implements FactoryStore {
   private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
     const [row] = await q.all("SELECT * FROM item_messages WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
     return row ? rowToItemMessage(row) : null;
+  }
+
+  private async selectAppCommandRequest(q: SqlExecutor, key: string): Promise<AppCommandRequest | null> {
+    const [row] = await q.all("SELECT * FROM app_command_requests WHERE request_key = ?", [key]);
+    return row ? rowToAppCommandRequest(row) : null;
   }
 
   private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
@@ -1871,6 +1914,19 @@ function rowToCliCommand(row: Row): CliCommand {
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,
     created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToAppCommandRequest(row: Row): AppCommandRequest {
+  return {
+    seq: Number(row.seq),
+    key: row.request_key as string,
+    actor: row.actor as UserId,
+    command: row.command as string,
+    args: JSON.parse(row.args as string) as Record<string, unknown>,
+    created_at: row.created_at as Timestamp,
+    handled_at: (row.handled_at ?? null) as Timestamp | null,
+    refusal: (row.refusal ?? null) as string | null,
   };
 }
 

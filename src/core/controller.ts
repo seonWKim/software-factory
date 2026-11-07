@@ -9,7 +9,7 @@ import {
   tierBudget,
 } from "./budget.js";
 import {
-  commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply,
+  COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply,
 } from "./commands.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
@@ -75,7 +75,7 @@ import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
+import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -216,6 +216,12 @@ const COORDINATION_BATCH = 50;
 /** blocked_reason prefixes (with `blocked_on: human`) of a dependency closed unmerged, and of a dependency cycle. */
 const DEPENDENCY_CLOSED = "dependency_closed";
 const DEPENDENCY_CYCLE = "dependency_cycle";
+/** Pending app command requests read per tick (design §4, app requests). */
+const APP_COMMAND_BATCH = 20;
+/** The state change detail key that names the app request a transition applied, so a second apply finds it. */
+const APP_REQUEST = "app_request";
+/** A command name safe to quote in a reply: anything else is called "the command". */
+const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
@@ -304,6 +310,8 @@ export class Controller {
       if (due) await this.guard("checks", () => this.checksStep());
       // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
       if (due) await this.guard("coordination", () => this.coordinationStep());
+      // App requests are a store read, so every tick, like an inbox.
+      await this.guard("app commands", () => this.appCommandsStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
@@ -408,6 +416,66 @@ export class Controller {
   async tickRuns(): Promise<void> {
     await this.live.refresh();
     await this.runsStep();
+  }
+
+  /** One app command step: the pending requests, oldest first (design §4, app requests). */
+  async tickAppCommands(): Promise<void> {
+    await this.live.refresh();
+    await this.appCommandsStep();
+  }
+
+  private async appCommandsStep(): Promise<void> {
+    for (const r of await this.d.store.listPendingAppCommandRequests(APP_COMMAND_BATCH)) {
+      await this.guard("app command", () => this.applyAppRequest(r));
+    }
+  }
+
+  /**
+   * One app command request, through the comment command path (design §4, app requests): `approve` gets the
+   * `/approve` permission check, note scan and transition, with the request's seq on the state change; any other
+   * command is refused. A refusal is posted once on the item's source, keyed on the request, then stored on the
+   * row by the conditional mark. A failed post leaves the request pending for the next tick. Safe to run twice:
+   * a request whose transition is already stored (an earlier try, another replica) is marked applied.
+   */
+  private async applyAppRequest(r: AppCommandRequest): Promise<void> {
+    const known = COMMANDS.some((c) => c.name === r.command);
+    const name = r.command === "approve" ? "/approve" : QUOTABLE_COMMAND.test(r.command) ? r.command : null;
+    const say = (reason: string) => (name ? `\`${name}\` was not applied: ${reason}.` : `The command was not applied: ${reason}.`);
+    const raw = r.args.work_item_id;
+    const id = typeof raw === "string" && raw !== "" ? (raw as WorkItemId) : null;
+    const item = id ? await this.d.store.getWorkItem(id) : null;
+    if (!item) return this.finishAppRequest(r, null, say(id ? "the work item was not found" : "the request names no work item"));
+    const applied = async () => (await this.d.store.listStateChanges(item.id)).some((c) => c.detail?.[APP_REQUEST] === r.seq);
+    if (await applied()) return this.finishAppRequest(r, item, null);
+
+    let refusal: string | null;
+    if (r.command !== "approve") {
+      refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+    } else {
+      const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id);
+      if ("refuse" in principal) refusal = principal.refuse;
+      else {
+        const note = await this.approvalNote(item.id, typeof r.args.note === "string" ? r.args.note : undefined);
+        const e: CommandEvent = {
+          kind: "spec_approved", source: item.source, comment_id: `app-${r.seq}`, approver: { provider: "local", subject: r.actor },
+        };
+        refusal = "refuse" in note
+          ? note.refuse
+          : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, note.note, { [APP_REQUEST]: r.seq });
+      }
+    }
+    // Refused here, but applied by a concurrent try of the same request: that one stands.
+    if (refusal !== null && (await applied())) refusal = null;
+    await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
+  }
+
+  /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
+  private async finishAppRequest(r: AppCommandRequest, item: WorkItem | null, text: string | null): Promise<void> {
+    if (text !== null) {
+      this.d.log.info("app command refused", { request_seq: r.seq, work_item_id: item?.id ?? null, command: r.command.slice(0, 64) });
+      if (item) await this.post(item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
+    }
+    await this.d.store.markAppCommandRequest(r.seq, text);
   }
 
   private async runsStep(): Promise<void> {
@@ -880,6 +948,7 @@ export class Controller {
     e: CommandEvent,
     actor: Extract<Actor, { kind: "user" }>,
     note: string | null,
+    tag: StateChangeDetail | null = null,
   ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const it = await this.d.store.getWorkItem(id);
@@ -899,7 +968,7 @@ export class Controller {
         if (r === RETRY) continue;
         return r;
       }
-      return this.decide(id, async (x) => this.command(e, x, actor, await this.floorTierNeeded(x), note));
+      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -2687,6 +2756,11 @@ export class Controller {
     if (!principal) {
       return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
     }
+    return this.allowed(principal, action, resource);
+  }
+
+  /** The permission half of `authorize`, for a principal already known (an app request names its user). */
+  private async allowed(principal: Principal, action: AuthAction, resource: string): Promise<Principal | Refusal> {
     const decision = await this.d.auth.authorize(principal, action, { kind: "work_item", id: resource });
     if (!decision.allow) {
       this.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });
@@ -2932,6 +3006,12 @@ function conflictPending(it: WorkItem): boolean {
  * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
  * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
  */
+/** `d` with `tag` added to its state change detail; a refusal or no-op as it is. */
+function withTag(d: Decision | Refusal, tag: StateChangeDetail | null): Decision | Refusal {
+  if (!tag || !d || "refuse" in d) return d;
+  return { ...d, detail: { ...d.detail, ...tag } };
+}
+
 function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null): Decision | Refusal {
   if (e.kind === "retry_requested") {
     return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
