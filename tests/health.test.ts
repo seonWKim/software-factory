@@ -210,11 +210,11 @@ describe("health: the MySQL check is read-only", () => {
     expect(storeCalls).not.toContain("migrate");
   });
 
-  it("a schema behind the code is a warning, not a FAIL, and is not migrated", async () => {
+  it("a pending schema step is a FAIL naming npm run migrate, and is not migrated", async () => {
     const { loaded, storeCalls } = await setupDoctor({ version: { applied: 3, latest: 8 } });
     const c = (await doctorChecks(loaded)).find((x) => x.msg.startsWith("MySQL"))!;
-    expect(checkStatus(c)).toBe("warn");
-    expect(c.msg).toBe("MySQL factory@db.invalid:3306/sf reachable, schema at version 3 of 8 (the factory migrates it when it starts)");
+    expect(checkStatus(c)).toBe("fail");
+    expect(c.msg).toBe("MySQL factory@db.invalid:3306/sf reachable, schema at version 3 of 8 (run: npm run migrate)");
     expect(storeCalls).toEqual(["schemaVersion", "close"]);
   });
 
