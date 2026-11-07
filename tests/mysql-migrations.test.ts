@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import mysql from "mysql2/promise";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -11,7 +12,12 @@ import { BASELINE_STATE, MysqlMigrations, type Queryable, pendingMessage } from 
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { BASELINE } from "../src/impl/store/mysql/schema.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
-import { MYSQL_URL, newEmptyMysqlDatabase, newStore } from "./helpers/store.js";
+import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import { failureClass } from "../src/core/policy.js";
+import { type Run, type RunUsage, type WorkerId, outcomeTokens } from "../src/core/types.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { MYSQL_URL, issue, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
 
 const REPO = process.cwd();
@@ -41,6 +47,42 @@ describe("SQLite behaves as before", () => {
     const { store } = await newStore();
     const v = await store.schemaVersion();
     expect(v.applied).toBe(v.latest);
+  });
+
+  it("run attempts (migration 18) backfill one record per claimed run from the run row, none for unclaimed runs", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sf-sqlite-attempts-")), "factory.db");
+    const clock = new FakeClock();
+    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
+    await seed.migrate();
+    const ids = await seedRuns(seed, clock);
+    await seed.close();
+    // Back to state 17, as a database from before this change: no run_attempts table, its runs as they were.
+    const raw = new DatabaseSync(path);
+    raw.exec(`DROP TABLE run_attempts; DELETE FROM schema_migrations WHERE version > 17;`);
+    raw.close();
+    expect(MIGRATIONS.length).toBe(18);
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    await store.migrate();
+    expect(await store.schemaVersion()).toEqual({ applied: 18, latest: 18 });
+    const runs = (await Promise.all(ids.map((id) => store.listRuns(id)))).flat();
+    const attempts = (await Promise.all(ids.map((id) => store.listRunAttempts(id)))).flat();
+    expect(attempts.map((a) => a.run_id).sort()).toEqual(runs.filter((r) => r.attempt >= 1).map((r) => r.id).sort());
+    for (const r of runs.filter((x) => x.attempt >= 1)) expect(attempts.find((a) => a.run_id === r.id), r.id).toEqual(expectedBackfill(r));
+    expect(attempts.map((a) => a.status).sort()).toEqual(["cancelled", "failed", "failed", "failed", "lease_expired", "paused", "running", "succeeded"]);
+    // A backfilled open record is closed by the claim that holds it, and the next claim numbers after it.
+    const running = runs.find((r) => r.status === "running")!;
+    await store.completeRun(running.id, running.lease!.token, { status: "succeeded", summary: "", data: { tokens: 3 } });
+    expect((await store.listRunAttempts(running.work_item_id)).find((a) => a.run_id === running.id)).toMatchObject({ status: "succeeded", tokens: 3 });
+    const reaped = runs.find((r) => r.status === "queued" && r.attempt >= 1 && r.paused_at === null)!;
+    clock.advance(600_000);
+    const again = (await store.claimRun({ worker_id: "w-9" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+    expect(again.id).toBe(reaped.id);
+    expect((await store.listRunAttempts(reaped.work_item_id)).map((a) => [a.attempt, a.status])).toEqual([
+      [reaped.attempt, "lease_expired"],
+      [reaped.attempt + 1, "running"],
+    ]);
+    await store.close();
   });
 
   it("npm run migrate on a SQLite config runs no schema scripts, only the project-key data step", async () => {
@@ -263,6 +305,67 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
 });
 
 // --- helpers --------------------------------------------------------------------------------------------
+
+/**
+ * Runs in every state a run row can be in before migration 18, one item each: queued (never claimed), succeeded,
+ * failed (task with usage, rate-limited, infra), running, paused, reaped and requeued, cancelled while running, and
+ * a manual run (attempt 0). Returns the item ids.
+ */
+async function seedRuns(store: FactoryStore, clock: FakeClock) {
+  const usage: RunUsage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 3, cache_write_tokens: 2, cost_usd: null, model: null };
+  const ids = [];
+  let n = 100;
+  const next = async () => {
+    const { item } = await store.createWorkItem(issue(++n), system, { enqueue: { kind: "triage", idempotency_key: `k${n}` } });
+    ids.push(item.id);
+    clock.advance(1_000);
+    return { item, run: (await store.claimRun({ worker_id: `w-${n}` as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))! };
+  };
+  // Never claimed: a kind no claim below asks for.
+  await store.createWorkItem(issue(++n), system, { enqueue: { kind: "review", idempotency_key: `k${n}` } }).then((r) => ids.push(r.item.id));
+  for (const outcome of [
+    { status: "succeeded" as const, summary: "", data: { tokens: 1234 } },
+    { status: "failed" as const, error_code: "agent_error", detail: "", infra: false, usage },
+    { status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage },
+    { status: "failed" as const, error_code: "push_failed", detail: "", infra: true },
+  ]) {
+    const { run } = await next();
+    clock.advance(500);
+    await store.completeRun(run.id, run.lease!.token, outcome);
+  }
+  const { item: cancelItem } = await next();
+  await store.transition({
+    id: cancelItem.id, expected_version: 1, actor: system, reason: "source_closed", cancel_running_runs: true,
+    patch: { stage: "CLOSED", close_reason: "wont_do" },
+  });
+  await next();
+  clock.advance(61_000);
+  // Requeued with a backoff, so no claim below takes it.
+  await store.expireLeases(3, () => 600_000);
+  await next(); // left running
+  // Last: a paused run is claimable at once.
+  const { run: paused } = await next();
+  const resume = { host: "h", folder: "sbx_1", base_sha: null, start_sha: null, head: null, bundle: null };
+  await store.pauseRun(paused.id, paused.lease!.token, { paused_by: "github:1", session_id: null, resume });
+  return ids;
+}
+
+/** The record the backfill must write for run `r`: status, times, worker, error, failureClass() and outcomeTokens() of the row. */
+function expectedBackfill(r: Run) {
+  const failed = r.outcome?.status === "failed" ? r.outcome : null;
+  const reaped = r.status === "queued" && r.paused_at === null;
+  return {
+    run_id: r.id,
+    attempt: r.attempt,
+    worker_id: r.lease?.owner ?? null,
+    status: r.status === "queued" ? (reaped ? "lease_expired" : "paused") : r.status,
+    started_at: r.started_at,
+    finished_at: r.status === "running" ? null : (r.finished_at ?? r.paused_at ?? r.updated_at),
+    error_code: failed ? failed.error_code : reaped ? "lease_expired" : null,
+    failure_class: failed ? failureClass(failed) : reaped ? "infra" : null,
+    tokens: outcomeTokens(r.outcome),
+  };
+}
 
 const TS_STEP = `import type { DataStep } from "../step.js";
 

@@ -242,6 +242,63 @@ describe("ui api: items", () => {
     expect(body.runs[1]!.error).toEqual({ code: "agent_error", detail: "[withheld: github_token]" });
     expect(JSON.stringify(body)).not.toMatch(/token"?\s*:\s*\d|"lease"/);
   });
+
+  it("each run has its attempts in attempt order, with worker, status, times, error code, failure class and tokens", async () => {
+    const { d, items } = await seeded();
+    const body = await json<{ runs: { id: string; attempt: number; attempts: Record<string, unknown>[] }[] }>(
+      d, `/api/v1/items/${encodeURIComponent(items.done.id)}`,
+    );
+    // The run fields as before, plus attempts.
+    for (const r of body.runs) {
+      expect(Object.keys(r)).toEqual(["id", "kind", "status", "attempt", "started_at", "finished_at", "created_at", "tokens", "error", "attempts"]);
+    }
+    const keys = ["attempt", "worker_id", "status", "started_at", "finished_at", "error_code", "failure_class", "tokens"];
+    for (const r of body.runs) for (const a of r.attempts) expect(Object.keys(a)).toEqual(keys);
+    expect(body.runs.map((r) => r.attempts.map((a) => [a.attempt, a.worker_id, a.status, a.error_code, a.failure_class, a.tokens]))).toEqual([
+      [[1, w1, "succeeded", null, null, 1234]],
+      [[1, w1, "failed", "agent_error", "task", 0]],
+    ]);
+    // A queued run that was never claimed has none; a running run has its open attempt.
+    const queued = await json<{ runs: { attempts: unknown[] }[] }>(d, `/api/v1/items/${encodeURIComponent(items.queued.id)}`);
+    expect(queued.runs[0]!.attempts).toEqual([]);
+    const running = await json<{ runs: { attempts: Record<string, unknown>[] }[] }>(d, `/api/v1/items/${encodeURIComponent(items.running2.id)}`);
+    expect(running.runs[0]!.attempts).toMatchObject([{ attempt: 1, worker_id: "[withheld: github_token]", status: "running", finished_at: null }]);
+  });
+
+  it("a step that fails twice and then succeeds shows three attempts across its three runs, each with its own start, end and tokens", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const it0 = await make(store, 50, "Retried");
+    const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, model: null };
+    const outcomes = [
+      { status: "failed" as const, error_code: "push_failed", detail: "", infra: true, usage },
+      { status: "failed" as const, error_code: "rate_limited", detail: "", infra: true },
+      { status: "succeeded" as const, summary: "ok", data: { tokens: 400 } },
+    ];
+    for (const [i, outcome] of outcomes.entries()) {
+      await enqueue(store, it0, "implement", `retried:i:${i}`);
+      clock.advance(1_000);
+      const r = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+      clock.advance(10_000 * (i + 1));
+      await store.completeRun(r.id, r.lease!.token, outcome);
+    }
+    const d: UiDeps = {
+      store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: () => "",
+      health: new HealthMonitor(async () => [], clock),
+    };
+    const body = await json<{ runs: { attempts: { started_at: string; finished_at: string; status: string; failure_class: string | null; tokens: number }[] }[] }>(
+      d, `/api/v1/items/${encodeURIComponent(it0.id)}`,
+    );
+    const attempts = body.runs.flatMap((r) => r.attempts);
+    expect(attempts.map((a) => [a.status, a.failure_class, a.tokens])).toEqual([
+      ["failed", "infra", 15],
+      ["failed", "rate_limited", 0],
+      ["succeeded", null, 400],
+    ]);
+    expect(new Set(attempts.map((a) => a.started_at)).size).toBe(3);
+    expect(new Set(attempts.map((a) => a.finished_at)).size).toBe(3);
+    for (const a of attempts) expect(a.finished_at > a.started_at).toBe(true);
+  });
 });
 
 describe("ui api: runs, queue, workers, overview, health", () => {
