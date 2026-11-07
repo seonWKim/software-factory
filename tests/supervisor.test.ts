@@ -135,7 +135,7 @@ class FakeChild implements ChildHandle {
 const RUN_TIMEOUT = 10_000;
 const POLL = 1000;
 
-function setup() {
+function setup(opts: { ui?: boolean } = {}) {
   const f = new Fake();
   const clock = new FakeClock();
   const log = recordingLog();
@@ -152,6 +152,7 @@ function setup() {
     runTimeoutMs: RUN_TIMEOUT,
     pidAlive: (pid) => f.live.some((c) => c.pid === pid),
   });
+  if (opts.ui) updater.serveUi(["ui"]);
   const signals = new EventEmitter();
   const running = supervise({ updater, clock, pollMs: POLL, log, signals, inPlace: async () => {} });
   return { f, clock, log, updater, signals, running };
@@ -254,6 +255,61 @@ describe("supervisor: start-then-drain", () => {
 
     signals.emit("SIGINT");
     expect(await running).toBe(0);
+  });
+});
+
+describe("supervisor: the status page child (issue #311)", () => {
+  const isUi = (c: FakeChild) => c.spec.args[0] === "ui";
+  const uiChildren = (f: Fake) => f.children.filter(isUi);
+
+  it("after a new revision lands, the UI serves the new code with no manual restart: the old one stops, then the new one starts", async () => {
+    const { f, clock, signals, running } = setup({ ui: true });
+    await waitFor(() => uiChildren(f).length === 1, "first ui child");
+    const first = uiChildren(f)[0]!;
+    expect(first.spec.entry).toBe(join(f.root, ".factory", "versions", "c1", "dist", "main.js"));
+    expect(first.spec.env.SOFTWARE_FACTORY_CODE_ROOT).toBe(join(f.root, ".factory", "versions", "c1"));
+    expect(first.spec.env.SOFTWARE_FACTORY_SUPERVISED).toBe("1");
+    expect(first.spec.env[WORKER_INDEX_BASE_ENV]).toBeUndefined();
+
+    f.drainMode = "hold";
+    f.commits.push("c2");
+    await nextPoll(clock, () => uiChildren(f).length === 2, "second ui child");
+    const second = uiChildren(f)[1]!;
+    // The new revision's build is what the new page runs (the fake build writes the revision into dist/main.js).
+    expect(readFileSync(second.spec.entry, "utf8")).toBe("c2");
+    expect(second.alive).toBe(true);
+    expect(first.alive).toBe(false);
+    // Drain-and-swap: the old page has exited (its port is free) before the new one launches.
+    const killOld = f.events.indexOf(`kill SIGTERM ${first.pid}`);
+    expect(killOld).toBeGreaterThan(f.events.indexOf("build c2"));
+    expect(f.events.indexOf(`exit ${first.pid}`)).toBeLessThan(f.events.findIndex((e) => e.startsWith(`launch ${second.pid}`)));
+    // The old dev child only drains; it is never signalled.
+    expect(f.events).not.toContain("kill SIGTERM 1");
+
+    signals.emit("SIGTERM");
+    expect(await running).toBe(0);
+    expect(second.alive).toBe(false);
+  });
+
+  it("a status page child that exits by itself starts again on the next poll, from the same folder", async () => {
+    const { f, clock, log, signals, running } = setup({ ui: true });
+    await waitFor(() => uiChildren(f).length === 1, "first ui child");
+    uiChildren(f)[0]!.exit(1);
+    await nextPoll(clock, () => uiChildren(f).length === 2, "restarted ui child");
+    expect(uiChildren(f)[1]!.spec.entry).toBe(uiChildren(f)[0]!.spec.entry);
+    expect(log.lines.some((l) => /status page child exited/.test(l.msg))).toBe(true);
+    signals.emit("SIGTERM");
+    await running;
+  });
+
+  it("without serveUi no status page child starts", async () => {
+    const { f, clock, signals, running } = setup();
+    await waitFor(() => f.children.length === 1, "first child");
+    await nextPoll(clock, () => true, "a poll");
+    await settle();
+    expect(uiChildren(f)).toEqual([]);
+    signals.emit("SIGTERM");
+    await running;
   });
 });
 
