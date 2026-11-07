@@ -2,12 +2,14 @@
 // from FactoryStore read methods, the same ones the HTML page uses, so for the same store both give the same
 // rows and numbers. Free text from the store (titles, blocked reasons, state-change values, run errors, owner
 // and actor ids) leaves only through the Withholder: clean text as is (JSON, not HTML-escaped), anything with
-// an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned.
+// an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
+// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached.
 
 import { conflictCounts } from "../core/resolve.js";
 import type { Run, RunAttempt, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
@@ -46,6 +48,18 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return ok(await workers(c));
     case "/health":
       return ok(await d.health.report(d.scanner));
+    case "/data/tables":
+      return data(await dataTables(c.data()));
+  }
+  const t = /^\/data\/tables\/([^/]+)$/.exec(path);
+  if (t) {
+    let name: string;
+    try {
+      name = decodeURIComponent(t[1]!);
+    } catch {
+      return apiError(404, "No such table.");
+    }
+    return data(await dataTable(c.data(), name, url.searchParams));
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
@@ -61,6 +75,10 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
   return apiError(404, "Not found.");
 }
 
+function data(r: DataResult): ApiResult {
+  return "error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value };
+}
+
 class ApiCtx {
   readonly w: Withholder;
   readonly now: Date;
@@ -74,6 +92,11 @@ class ApiCtx {
   async text(value: string | null | undefined, channel?: "run_outcome"): Promise<string | null> {
     if (value === null || value === undefined) return null;
     return (await this.w.plain(value, channel ? { channel } : {})).text;
+  }
+
+  /** The Data page's context: the same store, Withholder and channel as every other route. */
+  data(): DataCtx {
+    return { store: this.d.store, text: (v) => this.text(v), now: this.now };
   }
 
   prUrl(it: WorkItem): string | null {
