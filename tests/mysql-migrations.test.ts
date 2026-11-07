@@ -538,13 +538,15 @@ interface App {
 let built: App | undefined;
 
 /**
- * src/ compiled to a throwaway root with the repo's migrations/mysql (.sql steps), run as `node dist/main.js`.
+ * src/ compiled to a throwaway root with the repo's migrations/mysql, run as `node dist/main.js`. The `.ts` steps
+ * are compiled to dist/migrations/mysql/ as `npm run build` does: built code loads only the compiled file.
  * The shipped steps, not an empty folder: startup reads tables later steps add (unreviewed_merges, 0012).
  */
 async function compiledApp(): Promise<App> {
   if (built) return built;
   const root = mkdtempSync(join(tmpdir(), "sf-app-"));
   execFileSync(process.execPath, tscArgs("-p", join(REPO, "tsconfig.json"), "--outDir", join(root, "dist")), { stdio: "pipe" });
+  execFileSync(process.execPath, tscArgs("-p", join(REPO, "tsconfig.migrations.json"), "--outDir", join(root, "dist")), { stdio: "pipe" });
   writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
   symlinkSync(NODE_MODULES, join(root, "node_modules"));
   cpSync(join(REPO, "migrations", "mysql"), join(root, "migrations", "mysql"), { recursive: true });
