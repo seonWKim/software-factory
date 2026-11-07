@@ -549,7 +549,7 @@ const NO_FORGE = new Proxy({}, {
  * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The pause
  * route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
-export async function buildUiParts(loaded: Loaded, opts: { actor: string; login: string }): Promise<UiParts> {
+export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded);
   const clock = await p.clock();
@@ -573,7 +573,7 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string; login:
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
-    principal: async () => (await auth.resolve({ provider: "local", subject: opts.login }))?.user_id ?? cliUser,
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
     authorize: async (user_id) => {
       const project = await settings.resolveProject();
       if (!project) return { allow: false, reason: "no project is stored yet" };

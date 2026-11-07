@@ -251,8 +251,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     }
     case "ui": {
       // An ID, never a display name: the OS login of the local owner, as `factory settings` stores it.
-      const login = userInfo().username;
-      const parts = await buildUiParts(loaded, { actor: `local:${login}`, login });
+      const parts = await buildUiParts(loaded, { actor: `local:${userInfo().username}` });
       const ui = await startUi(
         {
           store: parts.store,
