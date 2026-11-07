@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { Logger } from "../../core/log.js";
+import { writeSupervisorStatus } from "../../supervisor-status.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import {
@@ -564,14 +565,7 @@ export class GitWorktreeUpdater implements Updater {
     };
     this.lastStatus = status;
     // One write at a time: a child's exit can report while a poll does.
-    const write = async () => {
-      try {
-        await writeFile(`${file}.tmp`, `${JSON.stringify(status)}\n`);
-        await rename(`${file}.tmp`, file);
-      } catch (err) {
-        this.o.log.warn("could not write the supervisor status", { error: err instanceof Error ? err.message.slice(0, 200) : "unknown" });
-      }
-    };
+    const write = () => writeSupervisorStatus(file, status, this.o.log);
     this.reporting = this.reporting.then(write, write);
     await this.reporting;
   }
