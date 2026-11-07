@@ -542,4 +542,9 @@ export const MIGRATIONS: readonly string[] = [
   WHERE r.handled_at IS NULL AND NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.command_key = 'app:' || r.seq)
   ORDER BY r.seq;
   `,
+  // 30: when a cost hold started (issue #314, design §5 Hold policy): kept while the run stays held, whichever
+  // holder the decision names, so a `run_after_minutes` timer does not restart. NULL on older rows.
+  `
+  ALTER TABLE claim_decisions ADD COLUMN held_since TEXT;
+  `,
 ];
