@@ -17,12 +17,12 @@ Plugins:
   - Your checkout is fast-forwarded (`git merge --ff-only origin/<base_branch>`, i.e. `git pull --ff-only` after the fetch) only when it is on the base branch and `git status --porcelain` is empty; otherwise the log says why it was skipped (not on base, dirty, or ff failed). The updater never checks out, stashes, resets or switches branches in it.
   - Enable: `"plugins": { "updater": "git-worktree", ... }`, or no `plugins` object. Secrets: none (git uses your usual credentials for `fetch`). Settings: `repo.base_branch`, `state_dir`, `poll_interval_ms`, `run_timeout_ms`; `git` and `npm` on `PATH`.
   - Behaviour change: `dev` runs `origin/<base_branch>`, not your working tree. Uncommitted edits, local branches and commits merged locally but not pushed never run under `dev` until they are pushed and merged.
-- `none`: `NoneUpdater`. `dev` runs controller + worker in place, from the checkout it was started in, exactly as before the updater existed. No git or process calls.
+- `none`: `NoneUpdater`. `dev` runs controller + worker in place, from the checkout it was started in. One `git rev-parse HEAD` at start (for `rev`, null when it fails); no other git or process calls.
   - Enable: `"plugins": { "updater": "none", ... }`. Secrets: none.
 
 Switch back / turn it off: `"plugins": { "updater": "none" }` (add the guards too if you write a `plugins` object, see [selection.md](selection.md)). The supervisor itself reads `plugins.updater`, `repo.base_branch`, `poll_interval_ms` and `run_timeout_ms` from the checkout it was started in; restart `dev` after changing them.
 
-The `git-worktree` updater also writes `<state_dir>/supervisor.json` (what it is doing: running, building, draining, restarting, build_failed, crashed with the child's error, migration_pending with the pending steps, migration_draining, migration_ready, stopped) for the status page's banner. `none` writes nothing, and the page then shows no banner state beyond "stopped".
+Both updaters write `<state_dir>/supervisor.json` for the status page's banner, through one writer (`src/supervisor-status.ts`: a temp file, then rename). `git-worktree` writes what it is doing: running, building, draining, restarting, build_failed, crashed with the child's error, migration_pending with the pending steps, migration_draining, migration_ready, stopped. `none` writes `running` at start (`child_pid` is the `dev` process itself) and `stopped` with `child_pid: null` when the in-place run returns, also after an error; the file is kept. Its status has no `supervisor_pid`, so `npm run migrate` does not ask an in-place factory to drain. Two `dev` processes on one state dir: the last writer wins, as with `git-worktree`.
 
 ## History
 

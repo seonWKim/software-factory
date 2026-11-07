@@ -294,7 +294,7 @@ function checkout(config: Record<string, unknown>, tag: string, dir = mkdtempSyn
 }
 
 describe("updater: none", () => {
-  it("runs dev in place: zero git or process calls", async () => {
+  it("runs dev in place: one HEAD read, no other git or process calls", async () => {
     const world = new World();
     const launcher = new FakeLauncher(world);
     vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(world.root, "secrets.env"));
@@ -315,7 +315,7 @@ describe("updater: none", () => {
     });
     expect(code).toBe(0);
     expect(inPlace).toBe(1);
-    expect(world.calls).toEqual([]);
+    expect(world.calls).toEqual([`${relative(world.root, root)}: git rev-parse HEAD`]);
     expect(launcher.children).toEqual([]);
   });
 });
