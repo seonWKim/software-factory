@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -16,6 +18,11 @@ import { BACKENDS, MYSQL_URL, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlD
 const STEP = 21;
 const STEP_FILE = "0021-local-items.sql";
 const TABLES = ["cli_commands", "item_messages"];
+
+/** The MySQL step and SQLite migration that add the app command request table (issue #244). */
+const COMMANDS_STEP = 22;
+const COMMANDS_STEP_FILE = "0022-app-commands.sql";
+const COMMANDS_TABLE = "app_command_requests";
 
 function localItem(n: number): NewWorkItem {
   return {
@@ -103,8 +110,8 @@ for (const b of BACKENDS) {
 }
 
 describe("SQLite migration 21: local item tables", () => {
-  it("is the latest migration, and migrate() on a fresh database creates both tables", async () => {
-    expect(MIGRATIONS).toHaveLength(STEP);
+  it("is followed only by migration 22, and migrate() on a fresh database creates both tables", async () => {
+    expect(MIGRATIONS).toHaveLength(COMMANDS_STEP);
     const driver = new SqliteDriver(":memory:");
     const store = new SqlFactoryStore(driver, new FakeClock());
     await store.migrate();
@@ -121,7 +128,7 @@ describe("MySQL step 0021: local item tables", () => {
   it("is a .sql file step after 0020 that creates both tables", () => {
     const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "local-items")!;
     expect(step).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).at(-1)?.number).toBe(STEP);
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).at(-1)?.number).toBe(COMMANDS_STEP);
   });
 });
 
@@ -131,7 +138,8 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0021 on MySQL", () => {
     const c = await db.connect();
     await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
 
-    const status = await new MysqlMigrations(c).status();
+    // Steps up to 21 only: step 0022 is pending too, and has its own test below.
+    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).status();
     expect(status.state).toBe(STEP - 1);
     expect(status.pending.map((p) => p.label)).toEqual([STEP_FILE]);
     const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
@@ -147,5 +155,83 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0021 on MySQL", () => {
     await store.migrate();
     const r = await store.appendCliCommand({ key: "k1", actor: "local:owner", command: "c", args: {} });
     expect(r.created).toBe(true);
+  });
+});
+
+async function sqliteHasCommandsTable(driver: SqliteDriver): Promise<boolean> {
+  const rows = await driver.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [COMMANDS_TABLE]);
+  return rows.length === 1;
+}
+
+describe("SQLite migration 22: app command requests", () => {
+  it("is the latest migration; migrate() on a fresh database reaches 22 and creates the table", async () => {
+    expect(MIGRATIONS).toHaveLength(COMMANDS_STEP);
+    const driver = new SqliteDriver(":memory:");
+    const store = new SqlFactoryStore(driver, new FakeClock());
+    await store.migrate();
+    expect(await driver.schemaVersion()).toEqual({ applied: COMMANDS_STEP, latest: COMMANDS_STEP });
+    expect(await sqliteHasCommandsTable(driver)).toBe(true);
+    const cols = await driver.all(`SELECT name, type, "notnull" AS nn, pk FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`);
+    expect(cols).toEqual([
+      { name: "seq", type: "INTEGER", nn: 0, pk: 1 },
+      { name: "request_key", type: "TEXT", nn: 1, pk: 0 },
+      { name: "actor", type: "TEXT", nn: 1, pk: 0 },
+      { name: "command", type: "TEXT", nn: 1, pk: 0 },
+      { name: "args", type: "TEXT", nn: 1, pk: 0 },
+      { name: "created_at", type: "TEXT", nn: 1, pk: 0 },
+    ]);
+    const insert = `INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES (?, 'local:owner', 'c', '{}', 't')`;
+    await driver.run(insert, ["k1"]);
+    await expect(driver.run(insert, ["k1"])).rejects.toThrow(/UNIQUE/);
+    await store.close();
+  });
+
+  it("a database recorded at version 21 reaches 22 after migrate() and has the table", async () => {
+    const driver = new SqliteDriver(":memory:");
+    const store = new SqlFactoryStore(driver, new FakeClock());
+    await store.migrate();
+    await driver.run(`DROP TABLE ${COMMANDS_TABLE}`);
+    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
+    expect(await driver.schemaVersion()).toEqual({ applied: STEP, latest: COMMANDS_STEP });
+    expect(await sqliteHasCommandsTable(driver)).toBe(false);
+
+    await store.migrate();
+    expect(await driver.schemaVersion()).toEqual({ applied: COMMANDS_STEP, latest: COMMANDS_STEP });
+    expect(await sqliteHasCommandsTable(driver)).toBe(true);
+    await store.close();
+  });
+});
+
+describe("MySQL step 0022: app command requests", () => {
+  it("is the last step, a .sql file after 0021, with CREATE TABLE IF NOT EXISTS", () => {
+    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
+    const step = steps.find((s) => s.name === "app-commands")!;
+    expect(step).toMatchObject({ number: COMMANDS_STEP, from: STEP, kind: "sql", file: COMMANDS_STEP_FILE });
+    expect(steps.at(-1)?.number).toBe(COMMANDS_STEP);
+    expect(steps.filter((s) => s.number === 20).map((s) => s.file)).toEqual(["0020-run-attempts.sql"]);
+    expect(readFileSync(join(STEPS_DIR, COMMANDS_STEP_FILE), "utf8")).toMatch(new RegExp(`CREATE TABLE IF NOT EXISTS ${COMMANDS_TABLE} \\(`));
+  });
+});
+
+describe.skipIf(!MYSQL_URL)("MySQL step 0022 on MySQL", () => {
+  it("pending alone at state 21; after npm run migrate the table exists with a unique request_key", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const c = await db.connect();
+    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
+
+    const status = await new MysqlMigrations(c).status();
+    expect(status.state).toBe(STEP);
+    expect(status.pending.map((p) => p.label)).toEqual([COMMANDS_STEP_FILE]);
+
+    await new MysqlMigrations(c).apply(() => undefined);
+    expect((await new MysqlMigrations(c).status()).pending).toEqual([]);
+    const [cols] = await c.query(
+      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
+      [COMMANDS_TABLE],
+    );
+    expect((cols as { name: string }[]).map((r) => r.name)).toEqual(["seq", "request_key", "actor", "command", "args", "created_at"]);
+    const insert = `INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES ('k1', 'local:owner', 'c', '{}', 't')`;
+    await c.query(insert);
+    await expect(c.query(insert)).rejects.toThrow(/Duplicate/);
   });
 });
