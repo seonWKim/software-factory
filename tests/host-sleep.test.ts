@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { HOST_SLEEP_MS, Worker } from "../src/core/worker.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -11,7 +12,7 @@ import {
   config, prompts, recordingLog, silent, triageSpec, waitFor, cleanScanner,
 } from "./helpers/fakes.js";
 
-const { lease_ms, heartbeat_ms } = config;
+const { lease_ms, heartbeat_ms, tick_ms } = config;
 
 describe("host sleep: worker", () => {
   it("renews at once after a clock jump past lease_ms and completes the run on its first attempt", async () => {
@@ -103,5 +104,159 @@ describe("host sleep: controller reaper grace", () => {
     clock.advance(lease_ms + 1);
     await controller.tickReaper();
     expect(await status()).toBe("queued");
+  });
+});
+
+/** A FakeClock that counts the waits it was asked for, so a test advances only once a loop is waiting. */
+class CountingClock extends FakeClock {
+  waits = 0;
+  /** Set: every read moves time on by this many ms, as real time does, so two loops never wake at the same instant. */
+  drift_ms = 0;
+  override now(): Date {
+    if (this.drift_ms > 0) this.advance(this.drift_ms);
+    return super.now();
+  }
+  override sleep(ms: number, signal?: AbortSignal): Promise<void> {
+    this.waits++;
+    return super.sleep(ms, signal);
+  }
+}
+
+/** The store, counting the calls to each method. */
+function counted(store: FactoryStore): { store: FactoryStore; calls: Map<string, number> } {
+  const calls = new Map<string, number>();
+  const proxy = new Proxy(store, {
+    get(target, key, receiver) {
+      const v = Reflect.get(target, key, receiver) as unknown;
+      if (typeof v !== "function" || typeof key !== "string") return v;
+      return (...args: unknown[]) => {
+        calls.set(key, (calls.get(key) ?? 0) + 1);
+        return (v as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  });
+  return { store: proxy, calls };
+}
+
+async function sleepWorld() {
+  const clock = new CountingClock();
+  const { store: inner } = await newStore(clock);
+  const { store, calls } = counted(inner);
+  const log = recordingLog();
+  const worker = (runner: FakeRunner = new FakeRunner({})) =>
+    new Worker({
+      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
+      clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
+    });
+  const sleeps = () => inner.listHostSleeps({ limit: 100 });
+  return { clock, store: inner, calls, log, worker, sleeps };
+}
+
+describe("host sleep: recorded by the worker (issue #218)", () => {
+  it("a clock jump during an idle tick records one host_slept row with the worker id, wake time and gap", async () => {
+    const { clock, worker, sleeps } = await sleepWorld();
+    const stop = new AbortController();
+    const loop = worker().run(stop.signal);
+    try {
+      await waitFor(() => clock.waits >= 1, "the idle wait");
+      clock.advance(tick_ms + 5 * 60_000);
+      const woke = clock.now().toISOString();
+      await waitFor(async () => (await sleeps()).length > 0, "the host sleep row");
+      await waitFor(() => clock.waits >= 2, "the next idle wait");
+      expect(await sleeps()).toEqual([{ worker_id: "w1", woke_at: woke, gap_ms: 5 * 60_000, run_id: null }]);
+    } finally {
+      stop.abort();
+      await loop;
+    }
+  });
+
+  it("a wait late by HOST_SLEEP_MS (60 000 ms) records nothing; late by 60 001 ms records one row", async () => {
+    expect(HOST_SLEEP_MS).toBe(60_000);
+    const { clock, worker, sleeps } = await sleepWorld();
+    const stop = new AbortController();
+    const loop = worker().run(stop.signal);
+    try {
+      await waitFor(() => clock.waits >= 1, "the idle wait");
+      clock.advance(tick_ms + 60_000);
+      await waitFor(() => clock.waits >= 2, "the next idle wait");
+      expect(await sleeps()).toEqual([]);
+      clock.advance(tick_ms + 60_001);
+      await waitFor(() => clock.waits >= 3, "the third idle wait");
+      expect((await sleeps()).map((h) => h.gap_ms)).toEqual([60_001]);
+    } finally {
+      stop.abort();
+      await loop;
+    }
+  });
+
+  it("a clock jump during a run records one row with run_id set to that run; the late-heartbeat warning is unchanged", async () => {
+    const { clock, store, log, worker, sleeps } = await sleepWorld();
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+    const jump = 5 * 60_000;
+    let woke = "";
+    const runner = new FakeRunner({
+      triage: async () => {
+        clock.advance(jump);
+        woke = clock.now().toISOString();
+        await waitFor(async () => (await sleeps()).length > 0, "the host sleep row");
+        return { output: triageSpec };
+      },
+    });
+    expect(await worker(runner).tick()).toBe(true);
+    const [run] = await store.listRuns(item.id);
+    expect(run).toMatchObject({ status: "succeeded" });
+    // The heartbeat asked for heartbeat_ms and woke `jump` after it started: late by jump - heartbeat_ms.
+    expect(await sleeps()).toEqual([{ worker_id: "w1", woke_at: woke, gap_ms: jump - heartbeat_ms, run_id: run!.id }]);
+    expect(log.lines.find((l) => l.msg === "heartbeat late; renewing now")?.fields).toEqual({ run_id: run!.id, gap_ms: jump, lease_ms });
+  });
+
+  it("one clock jump seen by the heartbeat and the pause watch of one run records one row", async () => {
+    const { clock, store, calls, worker, sleeps } = await sleepWorld();
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "i" } });
+    const runner = new FakeRunner({
+      implement: async () => {
+        const pauseReads = calls.get("workerPause") ?? 0;
+        const heartbeats = calls.get("heartbeat") ?? 0;
+        clock.advance(5 * 60_000);
+        clock.drift_ms = 1;
+        // Both loops woke from the one jump and went on to their store call.
+        await waitFor(() => (calls.get("workerPause") ?? 0) > pauseReads && (calls.get("heartbeat") ?? 0) > heartbeats, "both loops");
+        await waitFor(async () => (await sleeps()).length > 0, "the host sleep row");
+        for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+        clock.drift_ms = 0;
+        return { output: { summary: "s", next_steps: "n" } };
+      },
+    });
+    await worker(runner).tick();
+    const [run] = await store.listRuns(item.id);
+    const rows = await sleeps();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ worker_id: "w1", run_id: run!.id });
+  });
+
+  it("a failed sleep write is logged and the run goes on", async () => {
+    const { clock, store, log, sleeps } = await sleepWorld();
+    const failing = new Proxy(store, {
+      get(target, key, receiver) {
+        if (key === "recordHostSleep") return async () => { throw new Error("store down"); };
+        const v = Reflect.get(target, key, receiver) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+    const runner = new FakeRunner({
+      triage: async () => {
+        clock.advance(5 * 60_000);
+        await waitFor(() => log.lines.some((l) => l.msg === "host sleep record failed"), "the failure line");
+        return { output: triageSpec };
+      },
+    });
+    const w = new Worker({
+      id: "w1" as WorkerId, store: failing, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
+      clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
+    });
+    expect(await w.tick()).toBe(true);
+    expect((await store.listRuns(item.id))[0]).toMatchObject({ status: "succeeded" });
+    expect(await sleeps()).toEqual([]);
   });
 });
