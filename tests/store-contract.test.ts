@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,16 +6,20 @@ import { describe, expect, it } from "vitest";
 import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, inlineStepName, readSteps, stepProblems } from "../src/impl/store/mysql/migrations.js";
+import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { WORKER_PROCESSES_STEP } from "../src/impl/store/mysql/schema.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
-import { BACKENDS, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
+import { BACKENDS, MYSQL_URL, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
 
-describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
+describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
+  const make = makeBackend;
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
       const { store } = await make();
@@ -1406,6 +1410,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
   });
 
   describe("worker processes (migration 18)", () => {
+    // MySQL: `npm run migrate` does not run step 18 yet (not in INLINE_STEPS), so these build the database
+    // through the same MysqlMigrations path with a steps dir that adds 0018 (mysqlAtStep18, below).
+    const make = name === "mysql" ? async (clock = new FakeClock()) => (await mysqlAtStep18(clock)).ready() : makeBackend;
     const report = (over: Partial<WorkerProcessReport> = {}): WorkerProcessReport => ({
       process_id: "host-a:42", pid: 42, host: "host-a", slots: 2, max_slots: 4, busy: 1, index_base: 0,
       started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ...over,
@@ -1484,5 +1491,71 @@ describe("migration 18 on an existing SQLite database", () => {
     } finally {
       await store.close();
     }
+  });
+});
+
+/** The repo's MySQL step files plus INLINE_STEPS as files, in a fresh dir: what `npm run migrate` reads. */
+function mysqlStepsDir(withStep18: boolean): string {
+  const dir = mkdtempSync(join(tmpdir(), "sf-mysql-steps-"));
+  for (const f of readdirSync(STEPS_DIR)) if (f !== "README.md") copyFileSync(join(STEPS_DIR, f), join(dir, f));
+  for (const st of INLINE_STEPS) writeFileSync(join(dir, inlineStepName(st)), st.sql);
+  if (withStep18) writeFileSync(join(dir, inlineStepName(WORKER_PROCESSES_STEP)), WORKER_PROCESSES_STEP.sql);
+  return dir;
+}
+
+/**
+ * A throwaway MySQL database at state 17 (every step before 18, through MysqlMigrations.apply). `ready()` then
+ * applies step 18 the same way and opens a store on it.
+ */
+async function mysqlAtStep18(clock: FakeClock) {
+  const db = await newEmptyMysqlDatabase();
+  const conn = await db.connect();
+  await new MysqlMigrations(conn, { dir: mysqlStepsDir(false) }).apply(() => undefined);
+  return {
+    conn,
+    async ready() {
+      const s = await new MysqlMigrations(conn, { dir: mysqlStepsDir(true) }).apply(() => undefined);
+      expect(s.pending.map((p) => p.number)).toEqual([18]);
+      const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+      db.onCleanup(() => store.close());
+      return { store, clock };
+    },
+  };
+}
+
+describe("MySQL step 18 (worker-processes)", () => {
+  it("is the next step after the repo's files and INLINE_STEPS, and its name is valid", () => {
+    const names = [...readdirSync(STEPS_DIR), ...INLINE_STEPS.map(inlineStepName)];
+    const latest = readSteps(STEPS_DIR, INLINE_STEPS).at(-1)!.number;
+    expect(WORKER_PROCESSES_STEP.number).toBe(latest + 1);
+    expect(stepProblems([...names, inlineStepName(WORKER_PROCESSES_STEP)])).toEqual([]);
+    expect(inlineStepName(WORKER_PROCESSES_STEP)).toBe("0018-worker-processes.sql");
+  });
+
+  it("creates the same columns as SQLite migration 18, idempotently (IF NOT EXISTS)", () => {
+    const columns = (sql: string) =>
+      [...sql.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|CHAR)/gm)].map((m) => m[1]).sort();
+    const sqlite = MIGRATIONS[17]!;
+    expect(sqlite).toContain("CREATE TABLE worker_processes");
+    expect(columns(WORKER_PROCESSES_STEP.sql)).toEqual(columns(sqlite));
+    expect(columns(sqlite)).toEqual(["busy", "host", "index_base", "max_slots", "pid", "process_id", "reported_at", "slots", "started_at"]);
+    expect(WORKER_PROCESSES_STEP.sql).toContain("CREATE TABLE IF NOT EXISTS worker_processes");
+  });
+
+  it.skipIf(!MYSQL_URL)("upgrades an existing state-17 database: worker_processes added, every earlier row kept", async () => {
+    const clock = new FakeClock();
+    const at17 = await mysqlAtStep18(clock);
+    await at17.conn.query(
+      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
+    );
+    await at17.conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    const { store } = await at17.ready();
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+    expect(await store.getCursor("poll")).toBe("c1");
+    await store.reportWorkerProcess({
+      process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+    });
+    expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
   });
 });
