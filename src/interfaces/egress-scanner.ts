@@ -1,5 +1,5 @@
 // G5: every agent output (commits, PR text, comments, handoff rows, run outcomes, logs)
-// is checked before it leaves. A hit fails the run.
+// is checked before it leaves. A hit fails the run; in a transcript, only a known secret or the canary does (docs/design/05-sandbox.md).
 
 export type EgressChannel = "commit" | "pr" | "comment" | "handoff" | "run_outcome" | "log" | "tool_result";
 

@@ -213,6 +213,9 @@ interface RunScratch {
 /** The handoff's next steps when the paused agent left no note. */
 const PAUSE_NEXT_STEPS = "continue the work item from the WIP commit; finished steps are in the commits above";
 
+/** Transcript scan rules that fail the run: a real secret value, or the canary a test agent was told to find (G6). */
+const TRANSCRIPT_FAIL_RULES: readonly string[] = ["known_secret", "factory_canary"];
+
 function tail(s: string): string {
   return s.length > TAIL_CHARS ? s.slice(-TAIL_CHARS) : s;
 }
@@ -1658,10 +1661,17 @@ export class Worker {
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
 
-    // G5 before the transcript is stored anywhere.
+    // G5 before the transcript is stored anywhere. A known secret value or the canary fails the run; a pattern hit
+    // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since
+    // the commit, PR and comment scans still stop that text from leaving.
     const scan = await this.d.scanner.scan("log", result.transcript);
-    if (!scan.clean) throw new RunFailure("egress_blocked", scan.findings.map((f) => f.rule).join(","));
-    await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
+    const rules = scan.clean ? [] : scan.findings.map((f) => f.rule);
+    if (rules.some((r) => TRANSCRIPT_FAIL_RULES.includes(r))) throw new RunFailure("egress_blocked", rules.join(","));
+    if (rules.length > 0) {
+      this.d.log.warn("transcript not stored: the egress scan flagged it", { run_id: run.id, step: step ?? "", rules: rules.join(",") });
+    } else {
+      await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
+    }
 
     if (result.status === "aborted") {
       // The lease wins over a pause that came at the same moment: the run is no longer ours to pause.
