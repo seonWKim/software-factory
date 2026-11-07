@@ -146,8 +146,8 @@ interface SourceAdapterBase {
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
   /**
    * Shows the work item's status on the source (GitHub: one status label). `pr_number` null means the item
-   * itself (the issue); non-null means the item's PR, which the controller sends here only when no forge is
-   * selected (the forge shows PR status, `Forge.setPrStatus`). Afterwards the target carries exactly one of the factory's status markers; markers the
+   * itself (the issue); non-null means the item's PR: PR status goes to the forge when one is selected
+   * (`Forge.setPrStatus`, which may call this to write the label); the source does not route it. Afterwards the target carries exactly one of the factory's status markers; markers the
    * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
    * failures are the caller's to log and must not block a transition. Sources with no such surface may
    * do nothing.

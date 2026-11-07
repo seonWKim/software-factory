@@ -34,7 +34,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
+import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
@@ -136,9 +136,9 @@ export interface FileConfig {
   updater?: { auto_migrate?: unknown };
   /**
    * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
-   * reset. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
+   * reset; `budget_share` (default 1), the part of the hourly core limit this process may count. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
    */
-  github?: { min_remaining?: unknown; history_since?: unknown };
+  github?: { min_remaining?: unknown; budget_share?: unknown; history_since?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -328,6 +328,7 @@ export async function loadConfig(
   uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
+  githubBudgetShare(file.github);
   githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
@@ -668,6 +669,8 @@ export async function build(
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
+    github_budget: () => github.status(),
   });
 
   const worker = new WorkerPool({
@@ -820,7 +823,7 @@ export interface SessionParts {
 
 /** The GitHub client's settings from factory.config.json (`github`), with its log lines under "github". */
 function githubClientOptions(loaded: Loaded, clock: Clock): GitHubClientOptions {
-  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github) };
+  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github), budget_share: githubBudgetShare(loaded.file.github) };
 }
 
 /** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */
