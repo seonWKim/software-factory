@@ -202,6 +202,17 @@ describe("GitHubIssueSource", () => {
   });
 });
 
+describe("GitHubIssueSource: intake events carry the issue's updated_at (issue #254)", () => {
+  it("item_requested has the open issue's updated_at as GitHub gave it", async () => {
+    const { client, source } = setup();
+    client.responses["/repos/o/r/issues"] = [{ number: 7, title: "t", body: "b", user, updated_at: "2026-11-07T09:00:00Z" }];
+    const { events } = await source.poll(null);
+    expect(events.find((e) => e.kind === "item_requested")).toMatchObject({
+      kind: "item_requested", source: issueRef(7), title: "t", body: "b", updated_at: "2026-11-07T09:00:00Z",
+    });
+  });
+});
+
 describe("GitHubIssueSource: closed issues", () => {
   /** Answers the closed-issue list from `closed`, single-issue GETs from `issues`; everything else as FakeClient. */
   class ClosedClient extends FakeClient {
