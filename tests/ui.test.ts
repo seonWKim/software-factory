@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { uiPort } from "../src/compose.js";
+import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -859,5 +860,47 @@ describe("ui: item commands over the real socket (issue #227)", () => {
     const ui = main.slice(main.indexOf('case "ui": {'), main.indexOf('case "migrate": {'));
     expect(ui).toContain("commands: parts.commands");
     expect(ui).not.toMatch(/console\.\w+\([^)]*(token|parts\.commands)/);
+  });
+});
+
+describe("classic page: open alarms (design 09-status-page)", () => {
+  const ALARM = "Alarm: checks_failed failed 4 runs on several items";
+
+  it("Needs you lists an open alarm, the affected item's row and page name it, and all of it is gone once resolved", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const hit = await setTitle(store, 1, "Failing item");
+    let cur = (await store.transition({ id: hit.id, expected_version: hit.version, patch: { stage: "RUNNING" }, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "hit:i" } }));
+    if (!cur.ok) throw new Error(cur.reason);
+    const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "checks_failed", detail: "npm test exited 1", infra: false });
+    cur = await store.transition({ id: hit.id, expected_version: cur.item.version, patch: { blocked_on: "human", blocked_reason: "run_failed:implement:checks_failed" }, actor: system, reason: "x" });
+    if (!cur.ok) throw new Error(cur.reason);
+    const other = await setTitle(store, 2, "Other item");
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:x", error_code: "checks_failed", count: 4, detail: "npm test exited #" }, ALERT_DEDUPE_MS);
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const parsed = parseFilters(new URLSearchParams());
+    if (!parsed.ok) throw new Error(parsed.error);
+    const rowOf = (page: string, id: WorkItemId) => {
+      const items = section(page, "items");
+      const start = items.indexOf(`data-key="${id}"`);
+      return items.slice(start, items.indexOf("</tr>", start));
+    };
+
+    let page = await renderIndex(deps, parsed.filters);
+    const alarms = section(page, "alarms");
+    expect(alarms).toContain("Needs you: open alarms (1)");
+    expect(alarms).toContain(`${ALARM}: npm test exited #`);
+    expect(alarms).toContain("<code>Failures page (/app/failures)</code>");
+    expect(rowOf(page, hit.id)).toContain(ALARM);
+    expect(rowOf(page, other.id)).not.toContain("Alarm");
+    expect(section((await renderItem(deps, hit.id))!, "facts")).toContain(ALARM);
+    expect(section((await renderItem(deps, other.id))!, "facts")).not.toContain("Alarm");
+
+    clock.advance(ALERT_DEDUPE_MS);
+    page = await renderIndex(deps, parsed.filters);
+    expect(page).not.toContain(`<section id="alarms">`);
+    expect(rowOf(page, hit.id)).not.toContain("Alarm");
+    expect(section((await renderItem(deps, hit.id))!, "facts")).not.toContain("Alarm");
   });
 });

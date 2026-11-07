@@ -1,7 +1,7 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
 // besides a work item. A pending migration, a GitHub token that expires within 3 days, a claim pause or a
-// worker pause in effect, a claim deadlock, and a dashboard or UI server that runs another revision than it
-// should. Each names the command that clears it. Store reads and in-process values only: the overview poll
+// worker pause in effect, a claim deadlock, an open alarm, and a dashboard or UI server that runs another
+// revision than it should. Each names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
 
 import { execFile } from "node:child_process";
@@ -11,10 +11,11 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
 import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
 import type { FactoryStatus } from "./factory-status.js";
+import { alarmCommand, alarmText, alarmUntil, openAlarms } from "./alarms.js";
 import { activePauses } from "./pause-api.js";
 import { deadlocked } from "./why.js";
 
-export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "revision_mismatch";
+export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "alarm" | "revision_mismatch";
 
 export interface SystemAction {
   code: SystemActionCode;
@@ -22,7 +23,7 @@ export interface SystemAction {
   text: string;
   /** What clears it, as the operator types it. */
   command: string;
-  /** When it ends by itself (a claim pause's end, model_stall's next probe), else null. */
+  /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
   /** The item it is about (a deadlock), else null. */
   work_item_id: WorkItemId | null;
@@ -84,11 +85,13 @@ export interface SystemInput {
   /** The supervisor's status; absent or null: none. */
   factory: FactoryStatus | null | undefined;
   deps: SystemDeps;
+  /** The overview's now: an alarm is open inside its window before it. */
+  now: Date;
   /** The revision built into the dashboard that polls, when it sent one. */
   dashboardRev: string | null;
 }
 
-/** Every system action in effect, in a fixed order: migration, token, pauses, deadlocks, revisions. */
+/** Every system action in effect, in a fixed order: migration, token, pauses, deadlocks, alarms, revisions. */
 export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const out: SystemAction[] = [];
   const add = (code: SystemActionCode, text: string, command: string, until: string | null = null, work_item_id: WorkItemId | null = null) =>
@@ -113,6 +116,10 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
 
   for (const d of await deadlocks(x.store, x.active)) {
     add("claim_deadlock", `Started past a deadlock with ${d.holder_ref}: a person checks the overlap`, `factory status ${d.id}`, null, d.id);
+  }
+
+  for (const a of await openAlarms(x.store, x.now)) {
+    add("alarm", a.detail === null ? alarmText(a) : `${alarmText(a)}: ${a.detail}`, alarmCommand(a), alarmUntil(a));
   }
 
   const server = x.deps.revision ?? null;
