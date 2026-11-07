@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveReportId,
   Run,
   RunAttempt,
   RunAttemptStatus,
@@ -84,6 +86,7 @@ import type {
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
+  NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
   NewRun,
@@ -1123,6 +1126,44 @@ export class SqlFactoryStore implements FactoryStore {
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
+  }
+
+  async listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
+      [start, end],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const run = await this.insertRun(tx, input);
+      if (run) return { run, created: true };
+      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      return { run: rowToRun(row!), created: false };
+    });
+  }
+
+  // Improve reports (design §7)
+
+  async recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
+    const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        report.id, report.run_id, report.project, report.window_start, report.window_end,
+        JSON.stringify(report.groups), JSON.stringify(report.patterns), report.created_at,
+      ],
+    );
+    return created ? { report, created } : { report: (await this.getImproveReport(input.run_id))!, created };
+  }
+
+  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
+    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    return row ? rowToImproveReport(row) : null;
   }
 
   // Coordination (design §5, 2026-11-03)
@@ -2465,6 +2506,19 @@ function rowToMergeCheck(row: Row): MergeCheck {
     head_sha: row.head_sha as string,
     base_sha: row.base_sha as string,
     checked_at: row.checked_at as Timestamp,
+  };
+}
+
+function rowToImproveReport(row: Row): ImproveReport {
+  return {
+    id: row.id as ImproveReportId,
+    run_id: row.run_id as RunId,
+    project: row.project_key as string,
+    window_start: row.window_start as Timestamp,
+    window_end: row.window_end as Timestamp,
+    groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
+    patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
   };
 }
 

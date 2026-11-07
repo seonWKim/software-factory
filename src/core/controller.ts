@@ -65,6 +65,7 @@ import {
 import { commandEvent } from "./command-inbox.js";
 import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
 import { localIdentity } from "./local-cli.js";
+import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -332,6 +333,8 @@ export class Controller {
    */
   private readonly edgesReadAt = new Map<string, number>();
   private readonly stateReadAt = new Map<string, number>();
+  /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
+  private improveDay: string | null = null;
 
   constructor(private readonly d: ControllerDeps) {
     this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
@@ -372,6 +375,8 @@ export class Controller {
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
+      // A store read until the day changes: the day's improve run is queued once (design §7).
+      await this.guard("improve", () => this.improveStep());
       // Last, so the messages this tick wrote go out in it.
       await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
@@ -716,6 +721,25 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
+  async tickImprove(): Promise<void> {
+    await this.live.refresh();
+    await this.improveStep();
+  }
+
+  /**
+   * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
+   * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
+   * process the store write once the day's run is there.
+   */
+  private async improveStep(): Promise<void> {
+    const day = utcDay(this.d.clock.now());
+    if (this.improveDay === day) return;
+    const { run, created } = await enqueueImprove(this.d, this.project(), "daily");
+    if (created) this.d.log.info("improve run queued", { run_id: run.id, day });
+    this.improveDay = day;
   }
 
   async tickReaper(): Promise<void> {
@@ -2309,6 +2333,8 @@ export class Controller {
   private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
+      // An improve run changes nothing on its system item (design §7): its report is already stored.
+      if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
       if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);

@@ -14,6 +14,7 @@ import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { cliUserConfig } from "./core/config.js";
 import { CLI_COMMANDS, CLI_TOP_WORDS, type CliEnvironment, cliIdentity, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
+import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -87,6 +88,8 @@ const USAGE = `factory [--config <path>] <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  improve      queue one improve run now: groups the failed runs of the last 24 hours into one stored report
+               (design §7); no model, nothing filed. The controller also queues one each UTC day
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
 ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
@@ -437,6 +440,17 @@ async function main(argv: readonly string[]): Promise<number> {
     case "merge":
     case "users":
       return localCli(loaded, cmd, args);
+    case "improve": {
+      // The same enqueue as the controller's daily step, with a key of its own (design §7); a worker runs it.
+      const app = await build(loaded);
+      try {
+        const { run } = await enqueueImprove(app, app.project.key, "manual");
+        console.log(`improve run ${run.id} queued (window ${run.input?.improve?.window_start} to ${run.input?.improve?.window_end})`);
+      } finally {
+        await app.close();
+      }
+      return 0;
+    }
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));

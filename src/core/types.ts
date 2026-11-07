@@ -159,8 +159,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
+ * `improve` runs no agent and calls no model (design §7): it groups the failed runs of a time window into one
+ * stored report. It belongs to its project's system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -171,6 +173,40 @@ export interface RunInput {
   wip?: WipRef;
   /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
   session?: SessionRecord;
+  /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
+  improve?: ImproveWindow;
+}
+
+/** The finished runs an improve report covers: finished_at in [window_start, window_end). */
+export interface ImproveWindow {
+  window_start: Timestamp;
+  window_end: Timestamp;
+}
+
+/**
+ * Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text,
+ * never the raw detail. Run IDs in finish order; item IDs distinct, in the order their first run finished.
+ */
+export interface FailureGroup {
+  error_code: string;
+  detail: string;
+  run_ids: RunId[];
+  work_item_ids: WorkItemId[];
+}
+
+export type ImproveReportId = Brand<string, "ImproveReportId">;
+
+/**
+ * One improve run's report (design §7): `groups` hold two or more runs, `patterns` exactly one. Both sorted the
+ * same way every time, so the same failed runs give the same report. One row per run.
+ */
+export interface ImproveReport extends ImproveWindow {
+  id: ImproveReportId;
+  run_id: RunId;
+  project: string;
+  groups: FailureGroup[];
+  patterns: FailureGroup[];
+  created_at: Timestamp;
 }
 
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
