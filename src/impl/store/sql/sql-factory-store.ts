@@ -23,6 +23,10 @@ import type {
   SourceRef,
   SourceType,
   Stage,
+  StandingGate,
+  StandingProposal,
+  StandingProposalId,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   StateChangeId,
@@ -56,7 +60,7 @@ import {
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
+  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -90,6 +94,8 @@ import type {
   NewInboxEvent,
   NewItemMessage,
   NewRun,
+  NewStandingProposal,
+  NewStandingRule,
   NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
@@ -500,12 +506,13 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
-      // implement-type claims only, and so does a failed push_access or pr_api preflight check (design §5
-      // Restarts). All are rows of claim_pauses, read under the lock.
+      // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
+      // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
+      // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
@@ -517,6 +524,7 @@ export class SqlFactoryStore implements FactoryStore {
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
       const forgePaused = active(FORGE_AUTH_PAUSE) || active(PREFLIGHT_ACCESS_PAUSE);
+      const githubPaused = active(GITHUB_RATE_LIMIT);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -553,6 +561,9 @@ export class SqlFactoryStore implements FactoryStore {
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // A GitHub rate limit holds every kind that calls GitHub on its way (implement, update, review) until the
+        // reset; triage and resolve still claim.
+        if (githubPaused && (writer || next.kind === "review")) continue;
         if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
@@ -816,7 +827,10 @@ export class SqlFactoryStore implements FactoryStore {
     return { ended: ended === 1 };
   }
 
-  /** Ends a stall pause as an answered probe would: model_answered moves to the probe time, under the claim lock. */
+  /**
+   * Ends a stall pause as an answered probe would, under the claim lock: model_answered and the probe time both
+   * move to the earlier of the probe time and now. Never a future answer, so a stall right after starts a pause.
+   */
   private async endStall(): Promise<{ ended: boolean }> {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx) => {
@@ -827,10 +841,25 @@ export class SqlFactoryStore implements FactoryStore {
       );
       const probeAt = rows.get(MODEL_STALL);
       if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, probeAt]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [probeAt, MODEL_ANSWERED, probeAt]);
+      const now = this.now();
+      const at = probeAt < now ? probeAt : now;
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, at]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_ANSWERED]);
       }
+      await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_STALL]);
       return { ended: true };
+    });
+  }
+
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    // Under the claim lock, as every stall write: a pause ended meanwhile is never moved back into effect.
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const [answered] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [MODEL_ANSWERED]);
+      if (!stallInEffect(due, answered?.resume_at as Timestamp | undefined) || next <= due) return { taken: false };
+      const taken = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, MODEL_STALL, due]);
+      return { taken: taken === 1 };
     });
   }
 
@@ -1166,9 +1195,52 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToImproveReport(row) : null;
   }
 
+  // Standing approvals (design 05-standing-approvals)
+
+  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const enabled = input.enabled ? 1 : 0;
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.gate, input.tier, enabled, input.set_by, now, now],
+      );
+      if (!inserted) {
+        await tx.run("UPDATE standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
+          enabled, input.set_by, now, input.gate, input.tier,
+        ]);
+      }
+      const [row] = await tx.all("SELECT * FROM standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
+      return rowToStandingRule(row!);
+    });
+  }
+
+  async listStandingRules(): Promise<StandingRule[]> {
+    return (await this.db.all("SELECT * FROM standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
+  }
+
+  async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
+    const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      "INSERT INTO standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [proposal.id, proposal.gate, proposal.tier, proposal.run_length, proposal.threshold, proposal.created_at],
+    );
+    if (created) return { proposal, created };
+    const [row] = await this.db.all("SELECT * FROM standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
+      input.gate, input.tier, input.run_length,
+    ]);
+    return { proposal: rowToStandingProposal(row!), created };
+  }
+
+  async listStandingProposals(): Promise<StandingProposal[]> {
+    return (await this.db.all("SELECT * FROM standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
+  }
+
   // Coordination (design §5, 2026-11-03)
 
-  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
+  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const wanted = new Map<string, DependencyLink>();
@@ -1184,9 +1256,22 @@ export class SqlFactoryStore implements FactoryStore {
           [id, l.depends_on, l.kind, now, now],
         );
       }
+      if (read_at !== undefined) {
+        await tx.run("UPDATE dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
+        await tx.run("UPDATE work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
+      }
       const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
       return rows.map(rowToDependencyEdge);
     });
+  }
+
+  async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT edges_source_updated_at FROM work_items WHERE id = ?", [id]);
+    return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
+  }
+
+  async markDependencyLinksStale(id: WorkItemId): Promise<void> {
+    await this.db.run("UPDATE work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
   }
 
   async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {
@@ -2518,6 +2603,28 @@ function rowToImproveReport(row: Row): ImproveReport {
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToStandingRule(row: Row): StandingRule {
+  return {
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    enabled: Number(row.enabled) === 1,
+    set_by: row.set_by as UserId,
+    created_at: row.created_at as Timestamp,
+    updated_at: row.updated_at as Timestamp,
+  };
+}
+
+function rowToStandingProposal(row: Row): StandingProposal {
+  return {
+    id: row.id as StandingProposalId,
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    run_length: Number(row.run_length),
+    threshold: Number(row.threshold),
     created_at: row.created_at as Timestamp,
   };
 }

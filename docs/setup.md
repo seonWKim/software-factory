@@ -73,6 +73,15 @@ Create a **fine-grained personal access token** (GitHub → Settings → Develop
 GITHUB_TOKEN=<token>
 ```
 
+### One GitHub budget per installation
+
+GitHub gives each App installation (or each token's account) one hourly budget of core API calls (5,000 or more), and every factory using that installation draws from it. A factory that uses most of it leaves the others waiting for the reset; a first start, which reads the repository's whole backlog, is the most likely to.
+
+- **Solo (default):** one App (or one token), one factory, `"github": { "budget_share": 1.0 }` or no key. Nothing to set.
+- **Enterprise:** when several factories run at once, give **each factory its own GitHub App** (recommended); each keeps `budget_share` 1.0. If factories must share one App, give each a `budget_share` so the shares sum to at most 1.0 (e.g. two factories at 0.5). That sum is a manual agreement between the owners: nothing checks it across factories.
+- The share is counted **per process**: replicas of one factory on one App split its share between them (two replicas of a factory with a share of 0.5 at 0.25 each).
+- Once a factory has used its share, optional reads (PR mergeable, review, base-commit and check reads) wait for the reset; the intake lists still run. With no calls left at all, GitHub work waits for the reset (the status page shows the reset time) and local work goes on. Details: [`docs/plugins/github-credentials.md`](plugins/github-credentials.md).
+
 ## 4b. MySQL (only with `"store": { "type": "mysql" }`)
 
 Connection settings and the password live together in the secret file. Empty settings fall back to `store` in `factory.config.json`. Only `MYSQL_PASSWORD` is treated as a secret (scanned by G5); the others are plain settings.
@@ -116,6 +125,10 @@ npm run factory -- settings history                    # who changed what, newes
 Applied live: `max_attempts`, `max_loops`, `max_restart`, `retry_base_ms`, `retry_max_ms` at the controller's next decision; `max_diff_lines`, `max_diff_files`, `run_timeout_ms`, `first_output_ms`, `models`, `model_by` at the next run that starts; `poll_interval_ms`, `tick_ms` at the next tick; `heartbeat_ms`, `lease_ms` at the next lease renewal; `workers` at the worker pool's next tick, never above the `workers` in `factory.config.json` (raise that by PR, then restart).
 
 Not applied live: every other key, which changes only by a PR to `factory.config.json` and a restart (`plugins`, `repo`, `store`, `floors`, `dials`, `auth`, the guards and secrets are refused outright). The update run's own timeout in the updater keeps the file value until the next restart. On MySQL, run `npm run migrate` first (step 0015 adds the settings tables).
+
+### Gate hooks (`agent_stop_checks`)
+
+Implement runs on the `claude-code` runner get two Claude Code hooks (design `04-pre-push-gates.md`): one refuses an Edit or Write outside the item's `allowed_paths`, and one sends the agent back when it tries to stop with no commits, a diff over the size limits or a failing check. `agent_stop_checks` in `factory.config.json` is how many times per run the stop hook may send it back (default 3; a value that is not a positive integer fails at startup). It is not settable live: change it by PR and restart. The hooks are advisory: the worker's gates still decide. The hook folder is `<state_dir>/agents/claude-config/gate-hooks/<run id>/` while the step runs and holds no secret value.
 
 ## Why agents can't read it
 

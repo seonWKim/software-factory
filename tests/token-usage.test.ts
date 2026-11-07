@@ -292,6 +292,31 @@ describe("controller: failed runs add their usage once, in the ack transaction",
   });
 });
 
+// A run that finishes after its item moved on (closed by a merge while a review or a draining implement ran) is
+// acknowledged as `run_ignored`. Its usage was still spent: it lands in token_cost with the ack, as for a failed run.
+describe("controller: a succeeded run the item no longer expects still adds its usage", () => {
+  for (const kind of ["triage", "implement", "review", "resolve", "update"] as const) {
+    it(`${kind}: ignored on a closed item, its full count is added to token_cost in the ack transition`, async () => {
+      const clock = new FakeClock();
+      const { store } = await newStore(clock);
+      const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: baseConfig, log: silent, scanner: cleanScanner });
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind, idempotency_key: `ignored:${kind}` } });
+      const run = (await store.claimRun({ worker_id: w1, kinds: [kind], lease_ms: 60_000 }))!;
+      expect(run.kind).toBe(kind);
+      await store.transition({ id: item.id, expected_version: item.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { tokens: full(5), usage: usage(5, 0.05) } });
+
+      await controller.tickRuns();
+      await controller.tickRuns(); // applied once
+      const after = (await store.getWorkItem(item.id))!;
+      expect(after).toMatchObject({ stage: "CLOSED", token_cost: full(5) });
+      const last = (await store.listStateChanges(item.id)).at(-1)!;
+      expect(last).toMatchObject({ reason: "run_ignored", changes: { token_cost: { from: 0, to: full(5) } } });
+      expect((await store.getRun(run.id))!.acknowledged_at).not.toBeNull();
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // Several agent calls in one run: the sync step's conflict resolution (real git, NoOpSandbox).
 

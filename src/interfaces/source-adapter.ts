@@ -9,7 +9,12 @@ import type { ExternalIdentity } from "./auth-provider.js";
  * react to it (`markSeen`) and key a refusal reply on it. `item_requested` is identified by `source.id`.
  */
 export type SourceEvent =
-  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
+  /**
+   * An open source item, delivered when it is new and again after each edit (GitHub: the open-issue list since the
+   * cursor). `updated_at`: when the source item last changed, ISO time; the controller re-reads its dependency
+   * links only when it moved past the time they were read at (issue #254). Absent when the source gives none.
+   */
+  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string }
   /**
    * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
    * empty; untrusted. The controller splits a leading `+paths <path>...` line off it (parseCommandPaths), then
@@ -33,22 +38,6 @@ export type SourceEvent =
       pr?: { pr_number: number; head_branch: string } | null;
     }
   /**
-   * A "Request changes" review on an open PR (design §4), by a person (never a bot). `source` is the PR,
-   * `review_id` the forge's review id, delivered at most once per review by a poll that advanced the cursor;
-   * the controller still refuses a review it already applied. `body` and each line comment's `body` are
-   * untrusted; `line` is null when the forge gives none (a comment on a whole file or an outdated line).
-   */
-  | {
-      kind: "pr_changes_requested";
-      source: SourceRef;
-      pr_number: number;
-      head_branch: string;
-      review_id: string;
-      reviewer: ExternalIdentity;
-      body: string;
-      comments: PrLineComment[];
-    }
-  /**
    * `/retry [notes]`. `note`: the trimmed text after the command, as for `spec_approved` (a leading `+paths`
    * line included); untrusted. Absent or empty means no note.
    */
@@ -66,8 +55,8 @@ export type SourceEvent =
    * The source item itself was closed (GitHub: a factory-labelled issue). `closer` is who closed it, null
    * when the source does not say. `state_reason` is how it was closed (GitHub's `state_reason`):
    * `completed`, `not_planned`, or null when the source gives none or one the factory does not know. May
-   * be delivered again (same close, later poll); handling is idempotent. Delivered after any PR events of
-   * the same poll, so a merge that closed the issue is seen first.
+   * be delivered again (same close, later poll); handling is idempotent. The controller handles it after the
+   * forge's PR events of the same tick, so a merge that closed the issue is seen first.
    */
   | { kind: "source_closed"; source: SourceRef; closer: ExternalIdentity | null; state_reason: SourceCloseReason | null }
   /**
@@ -94,48 +83,10 @@ export type SourceEvent =
    */
   | { kind: "verdict_submitted"; target: VerdictEventTarget; comment_id: string; approver: ExternalIdentity; args: string }
   /**
-   * PR events name the head branch; the controller maps a factory branch back to a work item, and any other PR
-   * to its adopted item by number. Every merged or closed PR is reported, not only factory ones (design
-   * 2026-11-01), so a merge with no item is recorded as an unreviewed merge. `fork`: present and true when the
-   * head is in another repository; such a PR is never a factory or adopted PR.
-   */
-  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; fork?: true }
-  | { kind: "pr_closed"; pr_number: number; head_branch: string; fork?: true }
-  /**
-   * An open PR against the base branch, from this repository (no forks), delivered on every poll while it is
-   * open (design 2026-11-01): every factory-branch PR, and every other PR that is not a draft. `source` is the
-   * PR itself (its comments and status label go there). The controller adopts a PR it does not know, and
-   * compares `head_sha` with the head it recorded for one it does. `title`, `body` and `author` are
-   * untrusted; `author` is null when the forge does not name one.
-   */
-  | {
-      kind: "pr_open";
-      source: SourceRef;
-      pr_number: number;
-      head_branch: string;
-      head_sha: string;
-      title: string;
-      body: string;
-      author: ExternalIdentity | null;
-      labels: string[];
-    }
-  /**
-   * An open factory PR the forge reports as not mergeable into its base (GitHub: `mergeable === false`).
-   * Delivered on every poll while it stays so; the shas let the controller key one update per (head, base).
-   */
-  | { kind: "pr_unmergeable"; pr_number: number; head_branch: string; head_sha: string; base_sha: string }
-  /**
    * A commit that landed on the base branch, with its full message. The controller matches reverts of
    * factory merges in it (design §6). A boundary commit may be delivered again; handling is idempotent.
    */
   | { kind: "base_commit"; sha: string; message: string };
-
-/** One line comment of a PR review: the file, the line in the PR's version of it, and the text. */
-export interface PrLineComment {
-  path: string;
-  line: number | null;
-  body: string;
-}
 
 /** How a person closed a source item: done, or not going to be done. */
 export type SourceCloseReason = "completed" | "not_planned";
@@ -149,17 +100,6 @@ export interface SubIssueInput {
   body: string;
   /** Unique per (parent, phase). Filing again finds the issue that carries it instead of filing another. */
   marker: string;
-}
-
-/** What `closePr` needs. */
-export interface ClosePrInput {
-  pr_number: number;
-  /** The source item that was closed; the adapter reads who closed it. */
-  closed: SourceRef;
-  /** The comment is posted at most once per marker, like postComment. */
-  marker: string;
-  /** The comment text, given who closed `closed` (null when the source does not say). */
-  body(closer: ExternalIdentity | null): string;
 }
 
 export type VerdictEventTarget =
@@ -185,38 +125,14 @@ export interface PushedEvent {
   ack(): Promise<void>;
 }
 
-/**
- * The automated checks on a PR's head commit (GitHub: check runs). `pending` while any check has not
- * finished and none failed; `failed` as soon as one finished without success, with the names of the failed
- * ones (untrusted text: check names come from files in the repository); `passed` when every check passed,
- * and also when the head commit has no checks at all, so a repository without CI is not held forever.
- */
-export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[] };
-
 /** What every source offers, whichever way its events arrive. */
 interface SourceAdapterBase {
   readonly type: SourceType;
   /**
-   * The checks on PR `pr_number`'s current head commit, read before a reviewed PR is offered for a human
-   * merge (design §5 CI gate). Read-only, safe to call any number of times. Absent on sources with no
-   * PRs: the controller then treats the checks as passed.
+   * True when a refused intake (the requester may not submit work) gets no reply: GitHub, whose intake label is
+   * the gate. Absent: the source replies once in the thread, so the person who asked knows why (a chat source).
    */
-  prChecks?(pr_number: number): Promise<PrChecks>;
-  /**
-   * The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only.
-   * Absent on sources with no PRs.
-   */
-  prFiles?(pr_number: number): Promise<string[]>;
-  /**
-   * Who last added label `label` to PR or issue `number` (GitHub: the issue timeline), or null when nobody
-   * did or the forge does not say. Read-only.
-   */
-  labelAddedBy?(number: number, label: string): Promise<ExternalIdentity | null>;
-  /**
-   * The forge account that authored commit `sha`, or null when it is not linked to one. The forge does not
-   * name who pushed a commit; its author is the closest record (design 2026-11-01). Read-only.
-   */
-  commitAuthor?(sha: string): Promise<ExternalIdentity | null>;
+  readonly silent_intake_refusal?: true;
   /**
    * Control-plane messages (e.g. the spec, "merge requested"). Idempotent: a comment carrying `marker`
    * is posted at most once. Returns the comment's URL, both when it posts it and when a comment with the
@@ -230,8 +146,8 @@ interface SourceAdapterBase {
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
   /**
    * Shows the work item's status on the source (GitHub: one status label). `pr_number` null means the item
-   * itself (the issue); non-null means label that PR instead of the issue, so a caller that wants both
-   * calls twice. Afterwards the target carries exactly one of the factory's status markers; markers the
+   * itself (the issue); non-null means the item's PR: PR status goes to the forge when one is selected
+   * (`Forge.setPrStatus`, which may call this to write the label); the source does not route it. Afterwards the target carries exactly one of the factory's status markers; markers the
    * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
    * failures are the caller's to log and must not block a transition. Sources with no such surface may
    * do nothing.
@@ -251,13 +167,11 @@ interface SourceAdapterBase {
    */
   fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
   /**
-   * Closes factory PR `pr_number` without merging it, after one comment on it (`input.body`, carrying
-   * `input.marker`). Used when a person closes the source item (design §4). A PR that is already merged or
-   * closed is left alone with no comment: `not_open`. The comment goes first, so a failed close retried
-   * later still finds its comment and does not post another. Throws on a source failure; the caller retries.
-   * Agents never call this. Absent on sources with no PRs.
+   * True while the source's request budget is low (GitHub: under 10% or `min_remaining` of the hourly limit left,
+   * until the reset): the controller skips its optional reads (dependency state refreshes, status catch-up) until
+   * it is false again. Read-only, no request. Absent on sources without a budget.
    */
-  closePr?(input: ClosePrInput): Promise<"closed" | "not_open">;
+  lowBudget?(): boolean;
 }
 
 /** A source the controller polls on a timer (GitHub issues). */

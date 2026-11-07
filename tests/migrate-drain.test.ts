@@ -32,7 +32,9 @@ const deps = (dir: string, clock: FakeClock, lines: string[], alive = true) => (
   pidAlive: () => alive,
 });
 
-describe("migrate: drain handshake with factory dev", () => {
+// Real git or child-process work per test: fast alone, slower under a full parallel run. Above the global 5 s
+// testTimeout (vitest.config.ts, unchanged) so host load does not fail them.
+describe("migrate: drain handshake with factory dev", { timeout: 30_000 }, () => {
   it("no live supervisor (no status file, stopped, or a dead pid): applies at once, no request", async () => {
     for (const [status, alive] of [[null, true], [{ state: "stopped" }, true], [{ state: "running" }, false]] as const) {
       const s = stateDir(status);

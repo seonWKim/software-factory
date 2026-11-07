@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
+import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
 import { Controller } from "../src/core/controller.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
@@ -47,12 +48,15 @@ function removeFile(repo: string, path: string, msg: string): void {
   git(repo, "commit", "--quiet", "-m", msg);
 }
 
-/** Records every exec with its env, so tests can see which commands got the test database URL. */
+/** Records every exec with its env, folder and output, so tests can see which commands got the test database URL. */
 class RecordingSandbox extends NoOpSandbox {
-  execs: { cmd: string; env: Readonly<Record<string, string>> }[] = [];
-  override exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
-    this.execs.push({ cmd: cmd.join(" "), env: o.env });
-    return super.exec(h, cmd, o);
+  execs: { cmd: string; env: Readonly<Record<string, string>>; cwd?: string; stdout?: string }[] = [];
+  override async exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
+    const e: (typeof this.execs)[number] = { cmd: cmd.join(" "), env: o.env, ...(o.cwd === undefined ? {} : { cwd: o.cwd }) };
+    this.execs.push(e);
+    const r = await super.exec(h, cmd, o);
+    e.stdout = r.stdout;
+    return r;
   }
 }
 
@@ -231,8 +235,8 @@ async function setup(opts: {
 /** The fix step that removes `file` and commits. */
 const fixBy = (file: string): AgentStep => (wd) => removeFile(wd, file, `fix: remove ${file}`);
 
-// Real git clone/push work per test: 2–5s each alone, more under a full parallel run.
-describe("implement run: checks before push, one fix step", { timeout: 30_000 }, () => {
+// Real git clone/push work per test: 2–5s each alone, more under a full parallel run, so 60 s.
+describe("implement run: checks before push, one fix step", { timeout: 60_000 }, () => {
   for (const c of [
     { name: "a typecheck failure", file: "src/type-error.txt", cmd: TYPECHECK, say: "error TS2322", db: false },
     { name: "a SQLite test failure", file: "src/sqlite-fail.txt", cmd: SQLITE, say: "FAIL tests/store-contract.test.ts > sqlite", db: false },
@@ -310,6 +314,26 @@ describe("implement run: checks before push, one fix step", { timeout: 30_000 },
     expect(comments[0]!.marker).toBe(`<!-- factory:checks:${run.id} -->`);
     expect(comments[0]!.body).toContain(`\`${SQLITE.join(" ")}\``);
     expect(comments[0]!.number).toBe(5);
+    // The failing test file ran again on the base commit, where it passed.
+    expect(f.checkExecs().filter((e) => e.cwd === ".factory-base").map((e) => e.cmd)).toEqual([`${SQLITE.join(" ")} tests/store-contract.test.ts`]);
+  });
+
+  it("a test file that fails on the base commit too gives checks_env: rerun in a clean base worktree, removed after", async () => {
+    const FLAKY = ["sh", "-c", "echo ' FAIL  tests/flaky.test.ts > times out'; echo \"a is: $(cat src/a.txt)\"; exit 1", "flaky"];
+    const f = await setup({ checks: [FLAKY], fix: () => undefined });
+    const item = await f.approveAndImplement();
+    const run = (await f.implementRuns(item.id))[0]!;
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_env", wip: { branch: `factory/wip/${item.id}/${run.id}` } });
+    const onBase = f.checkExecs().filter((e) => e.cwd === ".factory-base");
+    expect(onBase.map((e) => e.cmd)).toEqual([`${FLAKY.join(" ")} tests/flaky.test.ts`]);
+    // The base commit's file, not the branch's edit.
+    expect(onBase[0]!.stdout).toContain("a is: a\n");
+    const gitCalls = f.sandbox.execs.map((e) => e.cmd);
+    const add = gitCalls.findIndex((c) => c.includes("worktree add --quiet --detach .factory-base"));
+    expect(gitCalls.slice(add).some((c) => c.includes("worktree remove --force .factory-base"))).toBe(true);
+    expect(f.broker.comments().map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
+    expect(f.broker.comments()[0]!.body).toContain("`tests/flaky.test.ts`");
+    expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
   });
 
   it("the checks_failed detail names the failing vitest tests as file > name, at most 10; the output tail keeps the FAIL lines", async () => {
@@ -463,7 +487,21 @@ describe("implement run: checks before push, one fix step", { timeout: 30_000 },
   });
 });
 
-describe("the test database's URL stays with the check commands", { timeout: 30_000 }, () => {
+describe("the base rerun's command", () => {
+  it("takes the failing test files from vitest's FAIL lines, each once, in order", () => {
+    const out = " FAIL  tests/b.test.ts > one\n FAIL  tests/a.test.ts > two\n FAIL  tests/b.test.ts > three\n Test Files  2 failed (9)\n";
+    expect(failingTestFiles(out)).toEqual(["tests/b.test.ts", "tests/a.test.ts"]);
+    expect(failingTestFiles("src/a.ts(1,7): error TS2322")).toEqual([]);
+  });
+
+  it("puts the files after `--` for npm, and as they are for a command with `--` or another runner", () => {
+    expect(withTestFiles(["npm", "test"], ["tests/a.test.ts"])).toEqual(["npm", "test", "--", "tests/a.test.ts"]);
+    expect(withTestFiles(["npm", "run", "t", "--", "--bail"], ["tests/a.test.ts"])).toEqual(["npm", "run", "t", "--", "--bail", "tests/a.test.ts"]);
+    expect(withTestFiles(["vitest", "run"], ["tests/a.test.ts"])).toEqual(["vitest", "run", "tests/a.test.ts"]);
+  });
+});
+
+describe("the test database's URL stays with the check commands", { timeout: 60_000 }, () => {
   it("SF_TEST_MYSQL_URL is in every check command's environment and in no agent run's environment", async () => {
     const f = await setup({
       testDatabase: new FakeTestDatabase(),
@@ -510,7 +548,7 @@ describe("the test database's URL stays with the check commands", { timeout: 30_
   });
 });
 
-describe("TestDatabase plugins", { timeout: 30_000 }, () => {
+describe("TestDatabase plugins", { timeout: 60_000 }, () => {
   /** An admin connection that records every statement. */
   const recorder = () => {
     const queries: string[] = [];
