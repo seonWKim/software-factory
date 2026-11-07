@@ -239,12 +239,14 @@ export class ClaudeCodeRunner implements AgentRunner {
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
     const g = spec.gate_hooks;
     if (!g || !GATE_HOOK_ROLES.includes(spec.role)) return this.runClaude(spec, bridge);
+    // Advisory: a host that cannot start (no folder, no socket) runs the step without hooks; the worker's gates decide.
     const hooks = await startGateHooks({
       dir: join(this.opts.claudeConfigDir, GATE_HOOKS_DIR, spec.run_id),
       spec: { ...spec, gate_hooks: g },
       sandbox: this.opts.sandbox,
       ...(this.opts.tools ? { scanner: this.opts.tools.scanner } : {}),
-    });
+    }).catch(() => null);
+    if (!hooks) return this.runClaude(spec, bridge);
     try {
       const result = await this.runClaude(spec, bridge, hooks);
       const blocks = await hooks.blocks();

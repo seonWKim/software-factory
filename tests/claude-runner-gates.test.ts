@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -54,13 +54,22 @@ interface HookCall {
   code: number | null;
 }
 
-/** Runs one hook command as Claude Code does: a shell line, the event JSON on stdin. */
+/**
+ * Runs one hook command as Claude Code does: a shell line, the event JSON on stdin. Its timeout kills the whole
+ * process group: a shell that does not exec its command (dash) would leave the node hook holding stdout open.
+ */
 function runHook(command: string, input: unknown, timeoutMs = 20_000): Promise<HookCall> {
   return new Promise((resolve) => {
-    const child = spawn("sh", ["-c", command], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("sh", ["-c", command], { stdio: ["pipe", "pipe", "pipe"], detached: true });
     let out = "";
     child.stdout.setEncoding("utf8").on("data", (c: string) => (out += c));
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
     child.on("close", (code) => {
       clearTimeout(timer);
       resolve({ out, code });
@@ -415,6 +424,19 @@ describe("gate hooks: coverage rule", () => {
     }
     expect(editCovered("/elsewhere/src/a.ts", ["/w"], allowed)).toBe(false);
     expect(editCovered("/w", ["/w"], ["/"])).toBe(false);
+  });
+});
+
+describe("gate hooks: failures never block (host)", () => {
+  it("a hook host that cannot start runs the step without hooks, and the run completes", async () => {
+    const f = setup();
+    mkdirSync(f.configDir, { recursive: true });
+    // A file where the hook folder's parent should be: the host cannot make its folder.
+    writeFileSync(join(f.configDir, GATE_HOOKS_DIR), "");
+    const result = await f.runner.run(f.spec);
+    expect(result.status).toBe("completed");
+    expect(result.gate_blocks).toBeUndefined();
+    expect(f.sandbox.claudeArgs).toEqual(buildClaudeArgs(f.spec, "s", BIN));
   });
 });
 
