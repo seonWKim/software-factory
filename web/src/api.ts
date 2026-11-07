@@ -131,11 +131,24 @@ export interface ItemDetail {
     tokens: number | null;
     error: { code: string | null; detail: string | null } | null;
   }[];
+  /** Host sleeps recorded during one of the item's runs, newest first. */
+  sleeps?: HostSleepRow[];
+}
+
+/** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */
+export interface HostSleepRow {
+  worker_id: string;
+  woke_at: string;
+  /** How late the wait ended, in ms. */
+  gap_ms: number;
+  run_id: string | null;
 }
 
 export interface Health {
   checked_at: string;
   checks: { status: string; msg: string }[];
+  /** The 10 newest host sleeps, newest first. */
+  sleeps?: HostSleepRow[];
 }
 
 /** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */

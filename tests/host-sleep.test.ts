@@ -260,3 +260,72 @@ describe("host sleep: recorded by the worker (issue #218)", () => {
     expect(await sleeps()).toEqual([]);
   });
 });
+
+// The app's pages (web/), rendered on the server from a filled query cache. The modules are loaded by a path held
+// in a variable: tsconfig.test.json has no JSX or DOM, and web/tsconfig.json typechecks them.
+const WEB_PAGES = "../web/src/views/pages.js";
+const WEB_API = "../web/src/api.js";
+
+async function renderPage(page: "HealthPage" | "ItemPage", data: Record<string, unknown>, props: Record<string, unknown> = {}): Promise<string> {
+  const { createElement } = await import("react");
+  const { renderToStaticMarkup } = await import("react-dom/server");
+  const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+  const pages = (await import(WEB_PAGES)) as Record<string, (p: Record<string, unknown>) => unknown>;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  for (const [url, body] of Object.entries(data)) client.setQueryData([url], body);
+  const el = createElement(QueryClientProvider, { client }, createElement(pages[page] as never, props as never));
+  return renderToStaticMarkup(el).replace(/<!-- -->/g, "");
+}
+
+describe("host sleep: the app's pages", () => {
+  const AT = "2026-11-07T08:30:00.000Z";
+  const health = (sleeps: unknown[]) => ({ checked_at: AT, checks: [{ status: "ok", msg: "fine" }], sleeps });
+
+  it("Health lists the recent sleeps as 'host slept N min' with the time", async () => {
+    const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
+    const html = await renderPage("HealthPage", {
+      [API.health]: health([
+        { worker_id: "host:1:0", woke_at: AT, gap_ms: 5 * 60_000, run_id: null },
+        { worker_id: "host:1:1", woke_at: "2026-11-07T07:00:00.000Z", gap_ms: 61_000, run_id: "run_1" },
+      ]),
+      [API.unreviewedMerges]: { as_of: AT, merges: [] },
+    });
+    expect(html).toContain("Host sleeps");
+    expect(html).toContain("host slept 5 min");
+    expect(html).toContain("2026-11-07 08:30 UTC");
+    expect(html).toContain("host slept 1 min");
+    expect(html).toContain("2026-11-07 07:00 UTC");
+    expect(html.indexOf("host slept 5 min")).toBeLessThan(html.indexOf("host slept 1 min"));
+    expect(html).not.toContain("No host sleep recorded.");
+  });
+
+  it("Health shows an empty state when there are no sleeps", async () => {
+    const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
+    const html = await renderPage("HealthPage", { [API.health]: health([]), [API.unreviewedMerges]: { as_of: AT, merges: [] } });
+    expect(html).toContain("No host sleep recorded.");
+    expect(html).not.toContain("host slept");
+  });
+
+  it("the item timeline shows 'host slept N min' for each sleep of the item's runs, in time order with the changes", async () => {
+    const { API } = (await import(WEB_API)) as { API: { item: (id: string) => string } };
+    const item = {
+      id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, title: "Item one", stage: "RUNNING",
+      close_reason: null, blocked_on: "none", blocked_reason: null, tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null,
+      pr_url: null, version: 2, created_at: "2026-11-07T06:00:00.000Z", updated_at: "2026-11-07T09:00:00.000Z",
+    };
+    const change = (version: number, at: string, reason: string) => ({ version, at, actor: { kind: "system", id: "system:x" }, reason, changes: {}, detail: null });
+    const html = await renderPage("ItemPage", {
+      [API.item("wi_1")]: {
+        as_of: AT, item, runs: [],
+        timeline: [change(1, "2026-11-07T06:00:00.000Z", "intake"), change(2, "2026-11-07T09:00:00.000Z", "approved")],
+        sleeps: [
+          { worker_id: "host:1:0", woke_at: "2026-11-07T08:00:00.000Z", gap_ms: 12 * 60_000, run_id: "run_1" },
+          { worker_id: "host:1:0", woke_at: "2026-11-07T07:00:00.000Z", gap_ms: 3 * 60_000, run_id: "run_1" },
+        ],
+      },
+    }, { id: "wi_1" });
+    const order = ["approved", "host slept 12 min", "host slept 3 min", "intake"].map((t) => html.indexOf(t));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+});
