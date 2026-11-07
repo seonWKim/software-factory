@@ -183,6 +183,9 @@ describe("one issue to one merged PR", () => {
     ]);
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
+    // Standing approvals (issue #298): the decision detail, IDs and codes only.
+    expect(approval.detail).toMatchObject({ gate: "spec", tier: item.tier, kind: "single", outcome: "approved", spec_changed: false, owner_id: "github:1" });
+    expect(JSON.stringify(approval.detail)).not.toContain(alice.login!);
     const merge = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "pr_merged")!;
     expect(merge.actor).toEqual({ kind: "user", id: "github:1" });
     expect(item.token_cost).toBe(15 * 5);
@@ -554,6 +557,10 @@ describe("one issue to one merged PR", () => {
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#6"))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    // The stored row holds the decision detail (issue #298) and no display name.
+    const reject = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_rejected")!;
+    expect(reject.detail).toEqual({ gate: "spec", tier: item.tier, kind: "single", outcome: "rejected", spec_changed: false, owner_id: "github:1" });
+    expect(JSON.stringify(reject)).not.toContain(alice.login!);
   });
 
   it("the PR title is the issue title, full length, with no prefix, not cut from the spec", async () => {
@@ -631,6 +638,8 @@ describe("spec gate: /revise and /reject", () => {
     expect(item).toMatchObject({ stage: "NEW", blocked_on: "none", close_reason: null, revision_count: 1 });
     const change = (await f.store.listStateChanges(f.item.id)).at(-1)!;
     expect(change).toMatchObject({ reason: "spec_revision_requested", actor: { kind: "user", id: "github:1" } });
+    expect(change.detail).toMatchObject({ gate: "spec", tier: f.item.tier, kind: "single", outcome: "revised", spec_changed: true, owner_id: "github:1" });
+    expect(JSON.stringify(change.detail)).not.toContain(alice.login!);
 
     await f.step();
     const prompt = f.runner.specs.filter((s) => s.role === "triage")[1]!.prompt;
