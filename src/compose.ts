@@ -4,9 +4,10 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -113,6 +114,8 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The gate hooks' Stop hook (design §4): the most times it sends an implement run's agent back. Absent: 3. */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -276,6 +279,18 @@ export interface Loaded {
   model_by: ModelTable;
 }
 
+/** The placeholder in prompts/*.md that names the project's pre-push checks. */
+export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+
+/**
+ * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
+ * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ */
+export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+  const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+}
+
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
 const GITHUB_SOURCE = "github-issues";
 const GITHUB_FORGE = "github";
@@ -378,6 +393,7 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     workers,
     max_workers,
@@ -403,16 +419,23 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
   const prompts: Prompts = {
-    triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
-    implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
-    review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
+    triage: await readPrompt("triage"),
+    implement: await readPrompt("implement"),
+    review: await readPrompt("review"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return undefined;
-    throw err;
-  });
+  // Optional prompt files: a missing one is not an error.
+  const optional = (name: string) =>
+    readPrompt(name).catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+  const resolvePrompt = await optional("resolve");
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
+  const ownerDefaults = await optional("owner-defaults");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
@@ -964,6 +987,14 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/** `agent_stop_checks` (design §4 Pre-push gates): absent means 3, otherwise a positive integer or startup fails. */
+export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): number {
+  const v = file.agent_stop_checks;
+  if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
 }
 
 export const DEFAULT_INBOX_RETENTION_DAYS = 14;

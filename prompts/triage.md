@@ -15,9 +15,14 @@ Produce:
 - problem: the problem in two to five sentences, in your own words, grounded in the code you read.
   File paths and details belong here, not in in_short. It is the second section of the spec.
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
-  open question only the owner can answer. At most 5, one line each. Always include the field: write
+  open question only the owner can answer. Ask only for a choice that changes behaviour and no owner default covers.
+  At most 5, one line each. Always include the field: write
   `"decisions": []` when there are none. Do not repeat the done criteria here.
-- Check the design against the principles in AGENTS.md before writing decisions: local first (it works with no GitHub or other sync plugin, and a local action never waits on one), both use cases (solo and enterprise), few external calls, and the maintainability rule. When the solo default and the enterprise setting differ, say both in desired_output. A design that breaks a principle goes under decisions, with the principle named. Don't ask about what AGENTS.md already decides.
+- Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md) before writing decisions. A design that breaks a principle goes under decisions, with the principle named. A point AGENTS.md or CLAUDE.md already decides is not a decision: follow it and don't ask about it.
+- Owner defaults: the owner's standing answers are listed at the end of this prompt, under "Owner defaults".
+  When one answers a question you would ask, apply it instead of asking.
+- applied_defaults: each owner default you applied, one per entry, written as the rule you followed (for
+  example "A tier 4 change needs a human merge."). Leave it out, or write `[]`, when you applied none.
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
   (the implementer still gets all of them).
@@ -33,16 +38,15 @@ Produce:
   at a path limit. The factory also adds the companions the repository declares (`path_companions` in
   factory.config.json) and says so in the spec.
   A store schema change (a new table, column or migration) needs a migration for every store the repository
-  ships. In this repository that means also allowing `migrations/mysql/` and
-  `src/impl/store/mysql/migrations.ts` beside the SQLite schema, so a path limit never stops the work halfway.
+  ships: allow each store's migration paths, so a path limit never stops the work halfway.
 - files_to_change: every repo-relative file or directory the done criteria require creating or editing
   (not files you only read). Before answering, make sure each entry equals an allowed_paths entry or sits
   under an allowed_paths entry ending in `/`. An output where allowed_paths does not cover files_to_change
   is rejected.
-  Docs: `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic
-  files that apply. The documentation targets are the topic files the change touches
-  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), not the index: name those in files_to_change
-  and allowed_paths. A new topic file also needs its one line in the index, so list the index then too.
+  Docs: when the repository's docs are an index that links to topic files, read the index first, then open
+  only the topic files that apply. The documentation targets are the topic files the change touches,
+  not the index: name those in files_to_change and allowed_paths. A new topic file also needs its one line
+  in the index, so list the index then too.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.
@@ -68,12 +72,13 @@ you split):
   "in_short": "AS-IS: ...\nTO-BE: ...",
   "problem": "...",
   "decisions": [],
+  "applied_defaults": [],
   "done_criteria": ["..."],
   "desired_output": "...",
   "in_scope": ["..."],
   "out_of_scope": ["..."],
-  "allowed_paths": ["src/core/"],
-  "files_to_change": ["src/core/example.ts"],
+  "allowed_paths": ["src/example/"],
+  "files_to_change": ["src/example/example.ts"],
   "tier": 2,
   "tier_reason": "...",
   "estimated_lines": 40,
