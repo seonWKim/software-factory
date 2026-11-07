@@ -47,6 +47,7 @@ export const TOP_LEVEL_KEYS = [
   "poll_interval_ms",
   "run_timeout_ms",
   "stall_ms",
+  "first_output_ms",
   "probe_interval_ms",
   "workers",
   "max_workers",
