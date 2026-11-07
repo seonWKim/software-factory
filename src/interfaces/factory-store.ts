@@ -651,6 +651,40 @@ export interface FactoryStore {
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
+  // GitHub sync records (design §5, GitHub call budget): the comments a source posted and the status labels it
+  // wrote, shared by every replica, so a restart or another replica needs no thread or label read to know them.
+  // Keyed by the item's source id. Only the GitHub source writes them, so a setup without it writes no rows.
+
+  /**
+   * The comment with `marker` on `source_id`, or a row of failed posts only (`comment_id` null). `same_body`
+   * says whether `body` hashes to the stored body hash (false when none is stored); `waiting`, whether its next
+   * attempt time is still ahead of the store clock. Read-only.
+   */
+  getPostedComment(source_id: string, marker: string, body: string): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null>;
+  /**
+   * Stores the posted comment (ID, URL and the hash of `body`) and clears its failed attempts. A marker already
+   * posted keeps its first record, so a second call changes nothing.
+   */
+  recordPostedComment(input: NewPostedComment): Promise<void>;
+  /**
+   * Records failed post number `attempts`; the next may be tried `delay_ms` after the store clock's now.
+   * Conditional: only when the stored count is `attempts - 1` (no row counts as 0), so two replicas recording the
+   * same failure count it once. Returns whether this call recorded it.
+   */
+  recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean>;
+
+  /**
+   * Claims the write of `status` on `target` of `source_id` for `ttl_ms`: a token, or null when the stored label
+   * state is already `status` or another unexpired claim is writing the same status. One claim per write.
+   */
+  claimLabelWrite(source_id: string, target: LabelTarget, status: string, ttl_ms: number): Promise<string | null>;
+  /** Stores `status` as written and ends claim `token`. A claim another write took over stores nothing. */
+  recordLabelState(source_id: string, target: LabelTarget, status: string, token: string): Promise<void>;
+  /** Ends claim `token` with nothing written (the write failed), so the next write need not wait for its expiry. */
+  releaseLabelClaim(source_id: string, target: LabelTarget, token: string): Promise<void>;
+  /** The stored label states of the given source ids, in no set order. Read-only. */
+  listLabelStates(source_ids: readonly string[]): Promise<LabelState[]>;
+
   // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
   // of commands the CLI sends. Store only: nothing calls these yet.
 
@@ -744,6 +778,44 @@ export interface TablePage {
   /** The limit applied, after the default and the cap. */
   limit: number;
   offset: number;
+}
+
+/** Where a status label goes: the item's own issue, or its PR. */
+export type LabelTarget = "issue" | `pr:${number}`;
+
+export function labelTarget(pr_number: number | null): LabelTarget {
+  return pr_number === null ? "issue" : `pr:${pr_number}`;
+}
+
+/** The status label last written on one target of one item. */
+export interface LabelState {
+  source_id: string;
+  target: LabelTarget;
+  /** Null while a first write is claimed but not done. */
+  status: string | null;
+  updated_at: Timestamp;
+}
+
+export interface NewPostedComment {
+  source_id: string;
+  marker: string;
+  comment_id: string;
+  url: string | null;
+  /** The body as posted; the store keeps only its hash. */
+  body: string;
+}
+
+export interface PostedComment {
+  source_id: string;
+  marker: string;
+  /** Null on a row that only counts failed posts. */
+  comment_id: string | null;
+  url: string | null;
+  body_hash: string | null;
+  /** Failed posts since the last one that went through. */
+  attempts: number;
+  /** When the next post may be tried; null with no failures. */
+  next_attempt_at: Timestamp | null;
 }
 
 export interface NewItemMessage {
