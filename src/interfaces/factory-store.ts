@@ -1027,7 +1027,7 @@ export interface NewItemMessage {
   marker: string;
   body: string;
   /**
-   * Who wrote it when it came from a source: the account's ID (e.g. `github:<numeric id>`), never a login or a
+   * Who wrote it when it came from a source: the account's ID (`<provider>:<numeric id>`), never a login or a
    * display name. Absent for the factory's own messages (and on entries stored before it existed).
    */
   actor?: string;
@@ -1266,7 +1266,8 @@ export interface SyncFence {
 }
 
 /**
- * The forge's rate limit as a response last reported it, for one project and forge plugin. `updated_at`: when the
+ * The forge's rate limit as a response last reported it, for one project (its key, column `project_key`) and forge
+ * plugin. `updated_at`: when the
  * writer read that response (its clock); a newer one replaces the row, an older one never does.
  */
 export interface ForgeBudget {

@@ -25,6 +25,7 @@ import {
 } from "./coordination.js";
 import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
+import { type SyncState, TickLease, syncLeaseName, syncLeaseOps } from "./lease.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import {
@@ -100,7 +101,7 @@ import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../i
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type {
-  AppCommandRequest, CliCommand, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, ThreadDelivery, ThreadLinkField, TransitionInput,
+  AppCommandRequest, CliCommand, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, SyncFence, ThreadDelivery, ThreadLinkField, TransitionInput,
 } from "../interfaces/factory-store.js";
 import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
@@ -166,8 +167,8 @@ export interface ControllerDeps {
   /** G5: the last-attempt comment carries run output, so it is scanned before it is posted. */
   scanner: EgressScanner;
   /**
-   * This replica's id, the owner of a stream source's listener lease while it holds it. Absent: a random
-   * id per Controller. Unused for poll sources.
+   * This replica's id, the owner of a stream source's listener lease and of the sync lease while it holds them.
+   * Absent: a random id per Controller for the listener lease, and SYNC_OWNER for the sync lease.
    */
   replica_id?: string;
   /**
@@ -209,6 +210,12 @@ export interface ControllerDeps {
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
    */
   github_budget?: () => GitHubBudgetStatus | null;
+  /**
+   * Reads the shared forge budget (`forge_budget`) into the forge client, at most once per tick (design 05-sources,
+   * call budget), so every replica's optional reads see the last response any replica got. Called before each
+   * tick's optional reads. Absent: the client's own responses only.
+   */
+  refresh_forge_budget?: () => Promise<void>;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -346,6 +353,11 @@ const STANDING_THRESHOLD = "standing_approvals.threshold";
 
 /** The forge's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
+/**
+ * The sync lease owner of a controller with no replica_id (tests, a solo process): one id, so such controllers in
+ * one process act as one replica and always hold the lease between them.
+ */
+const SYNC_OWNER = "controller";
 
 /** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
 function forgeCursorName(forge: Forge): string {
@@ -413,6 +425,11 @@ export class Controller {
   private catchUpPending = true;
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   private improveDay: string | null = null;
+  /**
+   * The sync lease (design 05-coordination): only its holder polls the forge's source and the forge and delivers
+   * their outbox rows. Null when config selects neither, so nothing is leased. Its in-process state is the token.
+   */
+  private readonly sync: TickLease | null;
 
   constructor(private readonly d: ControllerDeps) {
     this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
@@ -420,6 +437,13 @@ export class Controller {
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
     this.live = d.settings ?? LiveSettings.fixed(d.config);
+    const live = this.live;
+    const usesGithub = this.byType.has(GITHUB_SOURCE_TYPE) || this.forge?.ref_type === GITHUB_SOURCE_TYPE;
+    const name = syncLeaseName(GITHUB_SOURCE_TYPE, live.config().project.key);
+    this.sync = usesGithub
+      // Getters: a lease_ms or heartbeat_ms change applies at the next renew, as for the listener.
+      ? new TickLease(name, syncLeaseOps(d.store, name), d.clock, leaseTimings(live), d.replica_id ?? SYNC_OWNER, d.log, GITHUB_SOURCE_TYPE)
+      : null;
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */
@@ -436,6 +460,8 @@ export class Controller {
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       await this.live.refresh();
+      // The sync lease and the shared budget first: every step after them reads which replica syncs.
+      await this.guard("sync", () => this.syncStep());
       // Optional reads: while a source's request budget is low the catch-up waits, then runs (issue #254).
       if (this.catchUpPending) await this.guard("status catch-up", async () => void (await this.catchUpStatus()));
       const now = this.d.clock.now().getTime();
@@ -464,6 +490,8 @@ export class Controller {
       await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
+    // Shutting down: hand the sync lease over now instead of after lease_ms.
+    await this.sync?.release();
     await listening;
   }
 
@@ -475,7 +503,7 @@ export class Controller {
       source,
       clock: this.d.clock,
       // Getters: the listener's renewal reads the live values, so a lease change applies at its next renewal.
-      config: { get lease_ms() { return live.config().lease_ms; }, get heartbeat_ms() { return live.config().heartbeat_ms; } },
+      config: leaseTimings(live),
       log: this.d.log,
       owner: this.d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`,
     });
@@ -517,19 +545,24 @@ export class Controller {
    */
   private async intake(pollDue: boolean): Promise<void> {
     const polled: Polled[] = [];
-    const usesGithub = this.byType.has(GITHUB_SOURCE_TYPE) || this.forge?.ref_type === GITHUB_SOURCE_TYPE;
+    if (pollDue) await this.guard("sync", () => this.syncStep());
+    const usesGithub = this.sync !== null;
     const githubPaused = pollDue && usesGithub && (await this.d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null;
+    // Another replica holds the sync lease: it polls the forge's source and the forge, this one does not.
+    const skip = (type: SourceType) => type === GITHUB_SOURCE_TYPE && (githubPaused || this.syncedElsewhere());
     for (const s of this.sources) {
       if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue && !(githubPaused && s.type === GITHUB_SOURCE_TYPE)) {
+      else if (pollDue && !skip(s.type)) {
         await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
       }
     }
     const forge = this.forge;
-    if (pollDue && forge && !(githubPaused && forge.ref_type === GITHUB_SOURCE_TYPE)) await this.guard("forge", () => this.tickForge(forge));
+    if (pollDue && forge && !skip(forge.ref_type)) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
-    if (pollDue) await this.guard("forge budget", () => this.recordGitHubBudget());
+    if (pollDue && !this.syncedElsewhere()) await this.guard("forge budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
+    // The closes and phases write to the forge's source too: the sync holder finishes them.
+    if (this.syncedElsewhere()) return;
     await this.guard("source closes", () => this.tickSourceCloses());
     // Phases are sub-issues on their source, so their holds and parents move once per poll, after its closes are applied.
     await this.guard("phases", () => this.tickPhases());
@@ -543,7 +576,40 @@ export class Controller {
 
   private async applyPoll({ source, cursor, result }: Polled): Promise<void> {
     for (const e of result.events) await this.guard(`event:${e.kind}`, () => this.handle(e));
-    await this.d.store.advanceCursor(`intake:${source.type}`, cursor, result.next_cursor);
+    await this.moveCursor(source.type, `intake:${source.type}`, cursor, result.next_cursor);
+  }
+
+  /**
+   * One step of the sync lease (design 05-coordination): the holder renews, another replica takes it once it is
+   * free; at most one store call per heartbeat_ms. Then the shared forge budget is read, at most once per tick.
+   */
+  private async syncStep(): Promise<void> {
+    if (!this.sync) return;
+    await this.sync.tick();
+    await this.d.refresh_forge_budget?.();
+  }
+
+  /** The sync state as of the last sync step; null with no sync lease (or before the first step). */
+  private get syncState(): SyncState | null {
+    return this.sync?.current ?? null;
+  }
+
+  /** True while another replica holds the sync lease: this one makes none of the sync's forge calls. */
+  private syncedElsewhere(): boolean {
+    return this.syncState?.kind === "other";
+  }
+
+  /** The fence of a write for source type `type`: the held sync lease for the synced type, else none. */
+  private fenceFor(type: SourceType): SyncFence | null {
+    const st = this.syncState;
+    return type === GITHUB_SOURCE_TYPE && st?.kind === "held" ? st.fence : null;
+  }
+
+  /** Moves cursor `name`, fenced with the sync lease token for the synced type: a stale token moves nothing. */
+  private async moveCursor(type: SourceType, name: string, expected: string | null, next: string): Promise<void> {
+    const fence = this.fenceFor(type);
+    if (fence) await this.d.store.advanceSyncCursor(fence, name, expected, next);
+    else await this.d.store.advanceCursor(name, expected, next);
   }
 
   /** This process's forge budget, stored for the status page; the stored value is replaced, never merged. */
@@ -564,7 +630,7 @@ export class Controller {
     const first = cursor ?? (forge.handover_cursor ? await this.d.store.getCursor(forge.handover_cursor) : null);
     const { events, next_cursor } = await forge.poll(first);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handle(e));
-    await this.d.store.advanceCursor(name, cursor, next_cursor);
+    await this.moveCursor(forge.ref_type, name, cursor, next_cursor);
   }
 
   /**
@@ -855,9 +921,12 @@ export class Controller {
     return true;
   }
 
-  /** True while any source's request budget is low (e.g. `lowBudget`): optional reads wait (issue #254). */
+  /**
+   * True while optional forge reads wait: any source's request budget is low (`lowBudget`, the shared forge budget
+   * included; issue #254), or another replica holds the sync lease and makes them.
+   */
   private lowBudget(): boolean {
-    return this.sources.some((s) => s.lowBudget?.() === true);
+    return this.syncedElsewhere() || this.sources.some((s) => s.lowBudget?.() === true);
   }
 
   async tickModelProbe(): Promise<void> {
@@ -3229,6 +3298,9 @@ export class Controller {
   }
 
   private async checksStep(): Promise<void> {
+    await this.syncStep();
+    // Check reads are optional: with the budget low, or another replica syncing, they wait for a later tick.
+    if (this.lowBudget()) return;
     const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
     for (const w of waiting) {
       if (!waitingOnChecks(w)) continue;
@@ -3960,8 +4032,11 @@ export class Controller {
    * pending for a process that can.
    */
   private async outboxStep(): Promise<void> {
+    await this.guard("sync", () => this.syncStep());
     const types = new Set(this.byType.keys());
     if (this.forge) types.add(this.forge.ref_type);
+    // The synced type's rows are the sync holder's to deliver (design 05-coordination), whatever the budget.
+    if (this.syncedElsewhere()) types.delete(GITHUB_SOURCE_TYPE);
     for (const row of await this.d.store.listPendingDeliveries([...types], OUTBOX_BATCH)) {
       await this.guard("outbox delivery", () => this.deliver(row));
     }
@@ -3979,7 +4054,9 @@ export class Controller {
   private async deliver(row: ThreadDelivery): Promise<void> {
     const post = this.poster(row);
     if (!post) return;
-    const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms);
+    // Fenced: a replica whose sync lease was taken over claims nothing, so no comment goes out twice.
+    const fence = this.fenceFor(row.source_type);
+    const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms, ...(fence ? [fence] : []));
     if (token === null) return;
     // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
     // edited, only logged.
@@ -4317,6 +4394,11 @@ function parseFloorHits(v: unknown): { path: string; tier: number }[] {
       typeof h === "object" && h !== null && typeof h.path === "string" && Number.isInteger(h.tier) && h.tier >= 1 && h.tier <= 5,
   );
   return hits.length === v.length ? hits : [];
+}
+
+/** lease_ms and heartbeat_ms as getters over the live settings, so a change applies at the next renew. */
+function leaseTimings(live: LiveSettings): Pick<FactoryConfig, "lease_ms" | "heartbeat_ms"> {
+  return { get lease_ms() { return live.config().lease_ms; }, get heartbeat_ms() { return live.config().heartbeat_ms; } };
 }
 
 /** The seq an inbox cursor holds; no cursor means before the first row. */

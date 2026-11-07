@@ -1635,7 +1635,7 @@ export class SqlFactoryStore implements FactoryStore {
   // Forge budget (design 05-sources, call budget)
 
   async getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null> {
-    const [row] = await this.db.all("SELECT * FROM forge_budget WHERE project = ? AND plugin = ?", [project, plugin]);
+    const [row] = await this.db.all("SELECT * FROM forge_budget WHERE project_key = ? AND plugin = ?", [project, plugin]);
     return row ? rowToForgeBudget(row) : null;
   }
 
@@ -1644,13 +1644,13 @@ export class SqlFactoryStore implements FactoryStore {
       const values = [b.remaining, b.limit, b.reset_at, b.updated_at];
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO forge_budget (project, plugin, remaining, `limit`, reset_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO forge_budget (project_key, plugin, remaining, `limit`, reset_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         [b.project, b.plugin, ...values],
       );
       if (created) return true;
       // Conditional: only a newer reading replaces the row, so replicas writing out of order keep the latest.
       const n = await tx.run(
-        "UPDATE forge_budget SET remaining = ?, `limit` = ?, reset_at = ?, updated_at = ? WHERE project = ? AND plugin = ? AND updated_at < ?",
+        "UPDATE forge_budget SET remaining = ?, `limit` = ?, reset_at = ?, updated_at = ? WHERE project_key = ? AND plugin = ? AND updated_at < ?",
         [...values, b.project, b.plugin, b.updated_at],
       );
       return n === 1;
@@ -2606,7 +2606,7 @@ function rowToItemMessage(row: Row): ItemMessage {
 
 function rowToForgeBudget(row: Row): ForgeBudget {
   return {
-    project: row.project as string,
+    project: row.project_key as string,
     plugin: row.plugin as string,
     remaining: Number(row.remaining),
     limit: Number(row.limit),

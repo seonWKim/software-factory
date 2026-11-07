@@ -129,7 +129,7 @@ export type SyncState = { kind: "held"; fence: SyncFence } | { kind: "other"; ho
  * A lease held from a periodic loop instead of a background renewer (the sync lease): each `tick` makes at most
  * one store call per heartbeat_ms. The holder renews; any other replica tries to take it once the holder's
  * lease has expired or heartbeat_ms has passed, so a takeover comes within lease_ms of the holder's last renew.
- * Logs on a change of holder only.
+ * Logs on a change of holder only, naming the lease by `label` (the name holds the project key, which logs never show).
  */
 export class TickLease {
   private readonly lease: StoreLease;
@@ -137,6 +137,8 @@ export class TickLease {
   /** When the last holder seen elsewhere expires, ms; a take is tried at once from then. */
   private otherUntil = Infinity;
   private state: SyncState | null = null;
+  /** The holder another replica's lease names, as of the last refused take. */
+  private holder: string | null = null;
 
   constructor(
     private readonly name: string,
@@ -145,6 +147,7 @@ export class TickLease {
     private readonly config: Pick<FactoryConfig, "lease_ms" | "heartbeat_ms">,
     owner: string,
     private readonly log: Logger,
+    private readonly label: string,
   ) {
     this.lease = new StoreLease(ops, clock, config, owner);
   }
@@ -161,7 +164,7 @@ export class TickLease {
     this.lastCall = now;
     if (this.lease.held !== null) {
       const r = await this.lease.renew();
-      if (!r.ok) this.log.warn("sync lease lost", { lease: this.name, owner: this.lease.owner, ...r.fields });
+      if (!r.ok) this.log.warn("sync lease lost", { sync: this.label, owner: this.lease.owner, ...r.fields });
     }
     if (this.lease.held === null) await this.take();
     const token = this.lease.held;
@@ -179,11 +182,9 @@ export class TickLease {
     if (this.lease.held === null) return;
     this.lease.drop();
     this.lastCall = -Infinity;
-    this.log.warn("sync lease lost", { lease: this.name, owner: this.lease.owner, reason: "fenced_write_refused" });
+    this.log.warn("sync lease lost", { sync: this.label, owner: this.lease.owner, reason: "fenced_write_refused" });
     this.state = { kind: "other", holder: null };
   }
-
-  private holder: string | null = null;
 
   private async take(): Promise<void> {
     try {
@@ -195,7 +196,7 @@ export class TickLease {
     } catch (err) {
       this.holder = null;
       this.otherUntil = Infinity;
-      this.log.warn("sync lease check failed", { lease: this.name, error: errorMessage(err) });
+      this.log.warn("sync lease check failed", { sync: this.label, error: errorMessage(err) });
     }
   }
 
@@ -203,9 +204,9 @@ export class TickLease {
     const prev = this.state;
     this.state = next;
     if (next.kind === "held" && (prev?.kind !== "held" || prev.fence.token !== next.fence.token)) {
-      this.log.info("sync lease taken", { lease: this.name, owner: this.lease.owner, token: next.fence.token });
+      this.log.info("sync lease taken", { sync: this.label, owner: this.lease.owner, token: next.fence.token });
     } else if (next.kind === "other" && prev?.kind !== "other") {
-      this.log.info("sync waiting: another replica holds the lease", { lease: this.name, holder: next.holder });
+      this.log.info("sync waiting: another replica holds the lease", { sync: this.label, holder: next.holder });
     }
     return next;
   }
