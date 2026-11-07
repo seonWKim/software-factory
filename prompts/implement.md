@@ -33,6 +33,7 @@ When the spec cannot be met (spec_conflict):
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
 - Do not return it for ordinary bugs, failing tests or errors you can fix yourself: fix them.
+- When you return `needs_human` because the work needs files outside the allowed paths, list them in its `paths` (repo-relative, at most 10, no globs): the owner's comment then shows the exact `/retry +paths ...` reply. Listing them changes nothing by itself; only the owner's reply adds them.
 - With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no PR is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
 
 Finish with:

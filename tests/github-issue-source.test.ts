@@ -109,6 +109,8 @@ describe("GitHubIssueSource", () => {
       comment(47, "/", "2026-11-01T00:00:08Z"),
       comment(48, "/ approve", "2026-11-01T00:00:09Z"),
       comment(49, "/retry please", "2026-11-01T00:00:10Z"),
+      comment(50, "/retry +paths src/a.ts docs/b.md\nkeep it small", "2026-11-01T00:00:11Z"),
+      comment(51, "/approve +paths src/a.ts", "2026-11-01T00:00:12Z"),
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
@@ -122,7 +124,10 @@ describe("GitHubIssueSource", () => {
       { kind: "plain_comment", source: issueRef(7), comment_id: "46", author: alice, body: "thanks!" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "47", author: alice, body: "/" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "48", author: alice, body: "/ approve" },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice },
+      // /retry notes and +paths (issue #280) are passed on as typed; the controller splits and checks them.
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice, note: "please" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: alice, note: "+paths src/a.ts docs/b.md\nkeep it small" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: alice, note: "+paths src/a.ts" },
     ]);
   });
 

@@ -1999,3 +1999,226 @@ describe("approval notes, unknown commands, /help and footers", () => {
     expect(lastLines(big.body, 1)[0]).toMatch(/^- `\/help`/);
   });
 });
+
+describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
+  const SECRET = "known-secret-value-0123456789";
+  const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
+  async function atSpecGate(n: number, opts: { implement?: () => object; workerConfig?: FactoryConfig } = {}) {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: opts.implement ?? implementOk,
+      review: review("pass"),
+    });
+    const f = await factory(runner, [SECRET], silent, { workerConfig: opts.workerConfig });
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    return { ...f, runner, src, item };
+  }
+  type F = Awaited<ReturnType<typeof atSpecGate>>;
+  const current = (f: F) => f.store.getWorkItem(f.item.id).then((x) => x!);
+  const implementPrompts = (f: F) => f.runner.specs.filter((s) => s.role === "implement").map((s) => s.prompt);
+  const refusals = (f: F, id: string) => f.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
+  const ALLOWED = "## Allowed paths (do not change files outside these)";
+  const names = (f: F) => f.broker.calls.map((c) => c.name);
+  /** The allowed-paths list of a prompt, as its bullet lines. */
+  const allowedIn = (prompt: string) => prompt.slice(prompt.indexOf(ALLOWED)).split("\n").slice(1).filter((l) => l.startsWith("- ")).map((l) => l.slice(2));
+
+  /** Through /approve to an implement run that failed with scope_violation on `outside`. */
+  async function scopeViolation(n: number, outside: string[]) {
+    const f = await atSpecGate(n);
+    f.sandbox.changedFiles = [".github/workflows/scope.yml", ...outside];
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: `${n}00`, approver: alice });
+    await f.step();
+    expect(await current(f)).toMatchObject({ blocked_on: "human", blocked_reason: "run_failed:implement:scope_violation" });
+    return f;
+  }
+
+  it("a file refused as scope_violation is pushed after /retry +paths <that file>; the prompt and the gate use the widened paths", async () => {
+    const f = await scopeViolation(90, ["src/x.ts"]);
+    // The scope comment gives the exact reply.
+    const scope = f.broker.calls.filter((c) => c.name === "github.comment").map((c) => (c.args as { body: string }).body)
+      .find((b) => b.includes("Factory scope check"))!;
+    expect(scope).toContain("```\n/retry +paths src/x.ts\n```");
+    expect(names(f)).not.toContain("github.push_branch");
+
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9002", requester: alice, note: "+paths src/x.ts\nkeep it small" });
+    await f.step();
+    const item = await current(f);
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, tier: 2 });
+    expect(item.allowed_paths).toEqual([".github/workflows/", "src/x.ts"]);
+    expect(names(f)).toContain("github.push_branch");
+
+    // One state change queued the run, widened the paths and records who and what.
+    const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;
+    expect(row.actor).toEqual({ kind: "user", id: "github:1" });
+    expect(row.changes.allowed_paths).toEqual({ from: [".github/workflows/"], to: [".github/workflows/", "src/x.ts"] });
+    expect(row.detail).toMatchObject({ added_paths: JSON.stringify(["src/x.ts"]), note: "keep it small" });
+    const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    expect(runs.map((r) => r.status)).toEqual(["failed", "succeeded"]);
+
+    const [first, second] = implementPrompts(f);
+    expect(allowedIn(first!)).toEqual([".github/workflows/"]);
+    expect(allowedIn(second!)).toEqual([".github/workflows/", "src/x.ts"]);
+    expect(refusals(f, "9002")).toEqual([]);
+  });
+
+  it("/retry notes are stored on retry_requested and put in the next prompt under the approver-notes section", async () => {
+    const f = await scopeViolation(91, ["src/y.ts"]);
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9101", requester: alice, note: "Mind the CLI flag." });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).filter((c) => c.reason === "retry_requested").at(-1)!;
+    expect(row.detail).toMatchObject({ note: "Mind the CLI flag." });
+    expect(row.detail?.added_paths).toBeUndefined();
+    const p = implementPrompts(f).at(-1)!;
+    const section = p.slice(p.indexOf("## Notes from the approver"));
+    expect(section).toContain("Mind the CLI flag.");
+    expect(section.split("\n").slice(0, 4).join("\n")).toMatch(/untrusted/i);
+  });
+
+  it("a /retry note is egress-scanned (refused once, nothing stored) and capped at 2000 characters", async () => {
+    const f = await scopeViolation(92, ["src/x.ts"]);
+    const before = await current(f);
+    const e = { kind: "retry_requested" as const, source: f.src, comment_id: "9201", requester: alice, note: `+paths src/x.ts\nuse ${SECRET}` };
+    f.source.queue.push(e, e);
+    await f.step();
+    expect(await current(f)).toEqual(before);
+    expect(refusals(f, "9201")).toHaveLength(1);
+    expect(refusals(f, "9201")[0]!.body).toContain("`/retry` was not applied");
+    expect(refusals(f, "9201")[0]!.body).not.toContain(SECRET);
+    expect(JSON.stringify(await f.store.listStateChanges(f.item.id))).not.toContain(SECRET);
+
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9202", requester: alice, note: "x".repeat(5000) });
+    await f.step();
+    const row = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "retry_requested")!;
+    expect(row.detail?.note).toBe("x".repeat(2000));
+  });
+
+  it("a widened path under a higher floor raises the tier to the floor's; one under no floor keeps it", async () => {
+    const f = await scopeViolation(93, ["src/impl/broker/x.ts"]);
+    expect((await current(f)).tier).toBe(2);
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9301", requester: alice, note: "+paths src/impl/broker/x.ts" });
+    await f.step();
+    const item = await current(f);
+    expect(item.tier).toBe(4);
+    expect(item.allowed_paths).toContain("src/impl/broker/x.ts");
+    const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;
+    expect(row.changes.tier).toEqual({ from: 2, to: 4 });
+    // The floor check then passes at the raised tier: the branch is pushed.
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+  });
+
+  it("/approve +paths on a waiting spec widens the paths once each, skipping covered ones, and the prompt lists them", async () => {
+    const f = await atSpecGate(94);
+    f.source.queue.push({
+      kind: "spec_approved", source: f.src, comment_id: "9401", approver: alice,
+      note: "+paths .github/workflows/new.yml src/a.ts ./src/a.ts `docs/b.md`\nship it",
+    });
+    await f.step();
+    const item = await current(f);
+    expect(item.allowed_paths).toEqual([".github/workflows/", "src/a.ts", "docs/b.md"]);
+    const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(row.actor).toEqual({ kind: "user", id: "github:1" });
+    expect(row.detail).toMatchObject({ note: "ship it", added_paths: JSON.stringify(["src/a.ts", "docs/b.md"]) });
+    expect(allowedIn(implementPrompts(f)[0]!)).toEqual([".github/workflows/", "src/a.ts", "docs/b.md"]);
+    // Every path already covered: nothing added, nothing recorded.
+    const g = await atSpecGate(95);
+    g.source.queue.push({ kind: "spec_approved", source: g.src, comment_id: "9501", approver: alice, note: "+paths .github/workflows/x.yml" });
+    await g.step();
+    expect((await g.store.getWorkItem(g.item.id))!.allowed_paths).toEqual([".github/workflows/"]);
+    expect((await g.store.listStateChanges(g.item.id)).find((c) => c.reason === "spec_approved")!.detail?.added_paths).toBeUndefined();
+  });
+
+  it("/approve +paths is accepted at the revision limit", async () => {
+    const f = await atSpecGate(96);
+    const it0 = await current(f);
+    const r = await f.store.transition({
+      id: it0.id, expected_version: it0.version, actor: { kind: "system", id: "test" }, reason: "max_revisions",
+      patch: { blocked_on: "human", blocked_reason: "max_revisions" },
+    });
+    expect(r.ok).toBe(true);
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "9601", approver: alice, note: "+paths src/a.ts" });
+    await f.step();
+    const item = await current(f);
+    expect(item.allowed_paths).toEqual([".github/workflows/", "src/a.ts"]);
+    expect(item).toMatchObject({ stage: "REVIEW" });
+    expect(refusals(f, "9601")).toEqual([]);
+  });
+
+  it("/approve +paths on a floor block widens the paths and raises the tier past the block's to a higher floor's", async () => {
+    const raised: FactoryConfig = { ...config, settings: settingsWith({ floors: [...gates().floors, { prefix: ".github/workflows/", tier: 3 }] }) };
+    const f = await atSpecGate(97, { workerConfig: raised });
+    f.sandbox.changedFiles = [".github/workflows/scope.yml"];
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "9701", approver: alice });
+    await f.step();
+    expect(await current(f)).toMatchObject({ blocked_reason: "floor_tier", tier: 2 });
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "9702", approver: alice, note: "+paths src/impl/broker/y.ts" });
+    await f.step();
+    const item = await current(f);
+    expect(item.allowed_paths).toEqual([".github/workflows/", "src/impl/broker/y.ts"]);
+    expect(item.tier).toBe(4);
+    const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
+    expect(row.detail).toMatchObject({ previous_tier: 2, tier: 4, added_paths: JSON.stringify(["src/impl/broker/y.ts"]) });
+    expect(allowedIn(implementPrompts(f).at(-1)!)).toEqual([".github/workflows/", "src/impl/broker/y.ts"]);
+  });
+
+  it("/retry +paths on a failed triage run is refused with one reply and nothing changes", async () => {
+    const runner = new FakeRunner({ triage: () => ({ status: "failed", error: "boom" }) });
+    const f = await factory(runner);
+    const src = issueRef(98);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    for (let i = 0; i < 2; i++) {
+      f.clock.advance(config.retry_max_ms);
+      await f.step();
+    }
+    const before = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(before.blocked_on).toBe("human");
+    const e = { kind: "retry_requested" as const, source: src, comment_id: "9801", requester: alice, note: "+paths src/a.ts" };
+    f.source.queue.push(e, e);
+    await f.step();
+    expect(await f.store.getWorkItem(before.id)).toEqual(before);
+    const replies = f.source.comments.filter((c) => c.marker === "<!-- factory:refused:9801 -->");
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.body).toContain("applies only to a failed implement run");
+  });
+
+  it("bad paths and more than 10 are refused with one reply each, and nothing changes", async () => {
+    const f = await scopeViolation(99, ["src/x.ts"]);
+    const before = await current(f);
+    const bad = ["+paths", "+paths /etc/passwd", "+paths src/../x.ts", "+paths src/*.ts", "+paths ``",
+      `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
+    bad.forEach((note, i) => f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: `99b${i}`, requester: alice, note }));
+    await f.step();
+    expect(await current(f)).toEqual(before);
+    bad.forEach((_, i) => expect(refusals(f, `99b${i}`)).toHaveLength(1));
+    expect(refusals(f, "99b5")[0]!.body).toContain("at most 10");
+    // Exactly 10 is accepted.
+    const ten = Array.from({ length: 9 }, (_, i) => `f${i}.ts`).concat("src/x.ts");
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "99ok", requester: alice, note: `+paths ${ten.join(" ")}` });
+    await f.step();
+    expect((await current(f)).allowed_paths).toEqual([".github/workflows/", ...ten]);
+  });
+
+  it("needs_human paths give the exact /retry +paths reply in the comment and never change allowed_paths", async () => {
+    let asks = 0;
+    const f = await atSpecGate(100, {
+      implement: () => (asks++ === 0
+        ? { output: { needs_human: { reason: "needs the loader", question: "may I change it?", paths: ["src/loader.ts", ".github/workflows/a.yml"] } } }
+        : implementOk()),
+    });
+    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "10001", approver: alice });
+    await f.step();
+    const item = await current(f);
+    expect(item).toMatchObject({ blocked_reason: "agent_needs_human", allowed_paths: [".github/workflows/"] });
+    const ask = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:needs-human:"))!;
+    // Paths already covered are left out of the reply.
+    expect(ask.body).toContain("```\n/retry +paths src/loader.ts\n```");
+    expect(JSON.stringify(await f.store.listStateChanges(item.id))).not.toContain("src/loader.ts");
+
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
+    await f.step();
+    expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+  });
+});
