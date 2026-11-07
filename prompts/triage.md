@@ -15,8 +15,8 @@ Produce:
 - problem: the problem in two to five sentences, in your own words, grounded in the code you read.
   File paths and details belong here, not in in_short. It is the second section of the spec.
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
-  open question only the owner can answer. At most 5, one line each; an empty list when there are none.
-  Do not repeat the done criteria here.
+  open question only the owner can answer. At most 5, one line each. Always include the field: write
+  `"decisions": []` when there are none. Do not repeat the done criteria here.
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
   (the implementer still gets all of them).
@@ -58,6 +58,27 @@ Produce:
   least one, checkable by a reviewer) and its own allowed_paths (at least one, as narrow as allowed_paths).
   On approval each phase becomes its own issue with its own spec; the top-level fields still describe the
   whole change.
+
+Output shape (values are placeholders; include `decisions` even when it is empty, leave `phases` out unless
+you split):
+
+```json
+{
+  "in_short": "AS-IS: ...\nTO-BE: ...",
+  "problem": "...",
+  "decisions": [],
+  "done_criteria": ["..."],
+  "desired_output": "...",
+  "in_scope": ["..."],
+  "out_of_scope": ["..."],
+  "allowed_paths": ["src/core/"],
+  "files_to_change": ["src/core/example.ts"],
+  "tier": 2,
+  "tier_reason": "...",
+  "estimated_lines": 40,
+  "estimated_files": 2
+}
+```
 
 Revisions: when the input has "Original issue", "Previous spec" and "Revision feedback (untrusted text)"
 sections, a human read the previous spec and asked for changes. Write a complete new spec from the original
