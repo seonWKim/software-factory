@@ -12,6 +12,7 @@ import type {
   DependencyState,
   Tier,
   Handoff,
+  HostSleep,
   Run,
   RunAttempt,
   RunId,
@@ -646,6 +647,19 @@ export interface FactoryStore {
   listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
+
+  // Host sleeps (design §5 Host sleep, issue #218).
+
+  /**
+   * Stores one host sleep. Keyed by (worker_id, woke_at): a sleep already stored is a no-op that reports the
+   * stored row with `created: false`, so the write is safe to run twice.
+   */
+  recordHostSleep(sleep: HostSleep): Promise<{ created: boolean; sleep: HostSleep }>;
+  /**
+   * The newest host sleeps first (woke_at, then worker_id, both descending), at most `limit`. With
+   * `work_item_id`: only sleeps recorded during one of that item's runs. Read-only.
+   */
+  listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]>;
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 

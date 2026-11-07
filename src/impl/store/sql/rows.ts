@@ -9,6 +9,7 @@ import type {
   DependencyEdge,
   Handoff,
   HandoffId,
+  HostSleep,
   Run,
   RunAttempt,
   RunId,
@@ -280,6 +281,15 @@ export function rowToHandoff(r: Row): Handoff {
     worked_on: r.worked_on as string,
     next_steps: r.next_steps as string,
     at: r.at as Timestamp,
+  };
+}
+
+export function rowToHostSleep(r: Row): HostSleep {
+  return {
+    worker_id: r.worker_id as WorkerId,
+    woke_at: r.woke_at as Timestamp,
+    gap_ms: Number(r.gap_ms),
+    run_id: (r.run_id as RunId | null) ?? null,
   };
 }
 

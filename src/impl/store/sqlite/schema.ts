@@ -499,11 +499,25 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (source_id, target)
   );
   `,
-  // 28: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
+  // 28: host sleeps (design §5 Host sleep, issue #218). One row per sleep a worker saw: one of its waits ended more
+  // than 60 s late. Keyed by (worker_id, woke_at), so recording one again keeps one row. `run_id`: the run the
+  // worker held, null for an idle tick. Ids, a timestamp and a number only. IF NOT EXISTS: safe to run again below 28.
+  `
+  CREATE TABLE IF NOT EXISTS host_sleeps (
+    worker_id  TEXT NOT NULL,
+    woke_at    TEXT NOT NULL,
+    gap_ms     INTEGER NOT NULL,
+    run_id     TEXT,
+    PRIMARY KEY (worker_id, woke_at)
+  );
+  CREATE INDEX IF NOT EXISTS host_sleeps_woke ON host_sleeps (woke_at);
+  CREATE INDEX IF NOT EXISTS host_sleeps_run ON host_sleeps (run_id);
+  `,
+  // 29: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
   // must get: its source type, the target (JSON SourceRef), the item field its URL fills, the attempts, the next
   // try, a claim (token and expiry) so one replica posts it, and the delivery. Pending app command requests are
   // copied into `command_inbox` (key `app:<seq>`, args {"app_request": seq}), where the controller now
-  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 28.
+  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 29.
   `
   CREATE TABLE IF NOT EXISTS thread_outbox (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,

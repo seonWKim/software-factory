@@ -111,6 +111,12 @@ export interface WorkerDeps {
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
 export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];
 
+/**
+ * A wait that ends more than this late means the host slept (design §5 Host sleep): the worker records one
+ * host_slept row. Timers fire a little late anyway; 60 s is far past that.
+ */
+export const HOST_SLEEP_MS = 60_000;
+
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
 
@@ -318,6 +324,8 @@ export class Worker {
   private readonly live: LiveSettings;
   /** The settings of the run being executed, read once at its claim. Scratch for one run, like `meters`. */
   private cfg: FactoryConfig;
+  /** The span [due, woke] of the last host sleep this worker recorded (checkWake). */
+  private lastSleep: { due: number; woke: number } | null = null;
   private runModels: { table: ModelTable; names?: ModelNames } | undefined;
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   private readonly scratch = new WeakMap<Run, RunScratch>();
@@ -342,8 +350,33 @@ export class Worker {
         this.d.log.error("worker tick failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
         return false;
       });
-      if (!worked) await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
+      if (!worked) {
+        const tick_ms = this.live.config().tick_ms;
+        const started = this.d.clock.now().getTime();
+        const waited = await this.d.clock.sleep(tick_ms, signal).then(() => true, () => false);
+        if (waited) await this.checkWake(started + tick_ms, this.d.clock.now().getTime(), null);
+      }
     }
+  }
+
+  /**
+   * The one late-wake check after a wait of the idle tick, the pause watch or the heartbeat (design §5 Host
+   * sleep). A wait that ended more than HOST_SLEEP_MS after it was due records one host_slept row: this worker's
+   * id, the wake time, how late it was, and the run it held (null when idle). Several loops of this worker wake
+   * from the same sleep; a late wait whose span [due, woke] overlaps the last recorded one is that same sleep and
+   * records nothing. The check and the mark are synchronous, so two loops cannot both pass it. In-process on
+   * purpose: it only dedupes this worker's own loops; the store row's key (worker_id, woke_at) makes a repeat
+   * write a no-op. A failed write is logged and never stops the loop or the run.
+   */
+  private async checkWake(due: number, woke: number, run: Run | null): Promise<void> {
+    const late = woke - due;
+    if (late <= HOST_SLEEP_MS) return;
+    const last = this.lastSleep;
+    if (last && due <= last.woke && woke >= last.due) return;
+    this.lastSleep = { due, woke };
+    const sleep = { worker_id: this.d.id, woke_at: new Date(woke).toISOString() as Timestamp, gap_ms: late, run_id: run?.id ?? null };
+    await this.d.store.recordHostSleep(sleep).catch((err: unknown) =>
+      this.d.log.warn("host sleep record failed", { worker_id: this.d.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }));
   }
 
   /** Claims and executes at most one run. Returns whether it found one. */
@@ -385,7 +418,7 @@ export class Worker {
     const scratch: RunScratch = { pause: new AbortController(), paused_by: null, sessions: new Set(run.session_id ? [run.session_id] : []) };
     this.scratch.set(run, scratch);
     const stopWatch = new AbortController();
-    const watch = PAUSABLE_KINDS.includes(run.kind) ? this.watchPause(scratch, stopWatch.signal) : Promise.resolve();
+    const watch = PAUSABLE_KINDS.includes(run.kind) ? this.watchPause(run, scratch, stopWatch.signal) : Promise.resolve();
 
     // Every outcome carries what the run's agent calls used, failed or not (design §6 Measurement).
     // A resumed pause starts from what the run used before it (design §5 Pause), so token_cost misses nothing.
@@ -503,13 +536,16 @@ export class Worker {
    * the agent (sync, gates, push) finish as usual and the worker stops claiming afterwards. A failed read is
    * retried on the next tick.
    */
-  private async watchPause(s: RunScratch, stop: AbortSignal): Promise<void> {
+  private async watchPause(run: Run, s: RunScratch, stop: AbortSignal): Promise<void> {
     while (!stop.aborted) {
+      const { tick_ms } = this.cfg;
+      const started = this.d.clock.now().getTime();
       try {
-        await this.d.clock.sleep(this.cfg.tick_ms, stop);
+        await this.d.clock.sleep(tick_ms, stop);
       } catch {
         return;
       }
+      await this.checkWake(started + tick_ms, this.d.clock.now().getTime(), run);
       const p = await this.d.store.workerPause(this.d.id).catch(() => null);
       if (p) {
         s.paused_by = p.paused_by;
@@ -566,11 +602,14 @@ export class Worker {
       } catch {
         return;
       }
-      const gap = this.d.clock.now().getTime() - slept;
+      const woke = this.d.clock.now().getTime();
+      const gap = woke - slept;
       await this.live.refresh();
       const { lease_ms } = this.live.values();
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
       const r = await this.d.store.heartbeat(run.id, token, lease_ms);
+      // Recorded after the renewal, so a late wake renews first (design §5 Host sleep).
+      await this.checkWake(slept + heartbeat_ms, woke, run);
       if (!r.ok) {
         this.d.log.warn("lease lost; aborting run", { run_id: run.id });
         lease.abort(new Error("lease_lost"));

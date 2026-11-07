@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
-  API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
+  API, type FactoryState, type Health, type HostSleepRow, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type UnreviewedMerges, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -15,6 +15,9 @@ import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { transcriptPath } from "./transcript.js";
+
+/** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
+export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, Math.round(gap_ms / 60_000))} min`;
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
@@ -245,6 +248,12 @@ export function ItemPage({ id }: { id: string }) {
   if (q.isError) return <ErrorNote error={q.error} />;
   if (!q.data) return <Loading rows={6} />;
   const { item, runs, timeline } = q.data;
+  // State changes and host sleeps of the item's runs, newest first.
+  const entries: ({ kind: "change"; at: string; t: ItemDetail["timeline"][number] } | { kind: "sleep"; at: string; h: HostSleepRow })[] = [
+    ...timeline.map((t) => ({ kind: "change" as const, at: t.at, t })),
+    ...(q.data.sleeps ?? []).map((h) => ({ kind: "sleep" as const, at: h.woke_at, h })),
+  ];
+  entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
   return (
     <>
@@ -327,9 +336,20 @@ export function ItemPage({ id }: { id: string }) {
           </Table>
         )}
       </Section>
-      <Section title="Timeline" count={timeline.length}>
+      <Section title="Timeline" count={entries.length}>
         <ol className="space-y-1 text-sm">
-          {[...timeline].reverse().map((t) => <TimelineRow key={t.version} entry={t} now={now} />)}
+          {entries.map((e) => {
+            if (e.kind === "sleep") return (
+              <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
+                <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(e.h.woke_at, now)}</span>
+                <span className="min-w-0">
+                  <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
+                  <span className="text-zinc-500"> on {e.h.worker_id}</span>
+                </span>
+              </li>
+            );
+            return <TimelineRow key={e.t.version} entry={e.t} now={now} />;
+          })}
         </ol>
       </Section>
     </>
@@ -489,6 +509,7 @@ export function HealthPage() {
   if (!health.data) return <Loading rows={6} />;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  const sleeps = health.data.sleeps ?? [];
   return (
     <>
       <ClaimPauses now={now} />
@@ -501,6 +522,21 @@ export function HealthPage() {
             </li>
           ))}
         </ul>
+      </Section>
+      <Section title="Host sleeps" count={sleeps.length}>
+        {sleeps.length === 0 ? (
+          <Empty>No host sleep recorded.</Empty>
+        ) : (
+          <ul className="space-y-1 text-sm">
+            {sleeps.map((h) => (
+              <li key={`${h.worker_id}:${h.woke_at}`} className="flex items-baseline gap-3" data-testid="host-sleep">
+                <span className="font-medium">{sleptText(h.gap_ms)}</span>
+                <span className="tabular-nums text-zinc-600 dark:text-zinc-400">{h.woke_at.slice(0, 16).replace("T", " ")} UTC ({ago(h.woke_at, now)} ago)</span>
+                <span className="min-w-0 font-mono text-xs break-words text-zinc-500">{h.worker_id}</span>
+              </li>
+            ))}
+          </ul>
+        )}
       </Section>
       <div id="unreviewed-merges">
         <Section title="Merged without review" count={merges.data?.merges.length}>

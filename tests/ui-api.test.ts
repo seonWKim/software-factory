@@ -462,13 +462,65 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     const { d, healthRuns } = await seeded();
     const v1 = await get(d, "/api/v1/health");
     const old = await get(d, "/api/health");
-    expect(v1.body).toBe(old.body);
+    // /api/v1/health is /api/health plus the host sleeps (issue #218); none are seeded here.
+    expect(JSON.parse(v1.body)).toEqual({ ...JSON.parse(old.body), sleeps: [] });
     expect(healthRuns()).toBe(1);
     expect(JSON.parse(old.body)).toEqual({
       checked_at: d.clock.now().toISOString(),
       checks: [{ status: "ok", msg: "secret file is outside the repository" }, { status: "fail", msg: "[withheld: github_token]" }],
     });
     expect(old.headers["content-type"]).toBe("application/json; charset=utf-8");
+  });
+});
+
+describe("ui api: host sleeps (issue #218)", () => {
+  const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
+
+  it("/health lists the 10 newest host sleeps, newest first, as ids, times and numbers only; /api/health keeps its shape", async () => {
+    const { d, store, claimed } = await seeded();
+    for (let i = 0; i < 12; i++) {
+      await store.recordHostSleep({ worker_id: w1, woke_at: at(i * 1000), gap_ms: 60_001 + i, run_id: i === 11 ? claimed.id : null });
+    }
+    const v1 = await json<{ sleeps: Record<string, unknown>[] }>(d, "/api/v1/health");
+    expect(v1.sleeps.map((s) => s.woke_at)).toEqual(Array.from({ length: 10 }, (_, i) => at((11 - i) * 1000)));
+    expect(v1.sleeps[0]).toEqual({ worker_id: w1, woke_at: at(11_000), gap_ms: 60_012, run_id: claimed.id });
+    expect(v1.sleeps[1]).toEqual({ worker_id: w1, woke_at: at(10_000), gap_ms: 60_011, run_id: null });
+    for (const s of v1.sleeps) {
+      expect(Object.keys(s).sort()).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
+      expect(typeof s.gap_ms).toBe("number");
+    }
+    const old = JSON.parse((await get(d, "/api/health")).body) as Record<string, unknown>;
+    expect(Object.keys(old).sort()).toEqual(["checked_at", "checks"]);
+  });
+
+  it("/health answers with an empty sleeps list when the sleeps read fails", async () => {
+    const { d } = await seeded({
+      store: (s) => new Proxy(s, {
+        get(target, prop, receiver) {
+          if (prop === "listHostSleeps") return async () => { throw new Error("no such table: host_sleeps"); };
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+        },
+      }),
+    });
+    const v1 = await json<{ sleeps: unknown[]; checks: unknown[] }>(d, "/api/v1/health");
+    expect(v1.sleeps).toEqual([]);
+    expect(v1.checks).toHaveLength(2);
+    expect(JSON.stringify(v1)).not.toContain("no such table");
+  });
+
+  it("item detail lists the sleeps recorded during that item's runs only, newest first", async () => {
+    const { d, store, items, claimed, claimed2 } = await seeded();
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(2000), gap_ms: 180_000, run_id: claimed.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(3000), gap_ms: 240_000, run_id: claimed2.id });
+    await store.recordHostSleep({ worker_id: w1, woke_at: at(4000), gap_ms: 300_000, run_id: null });
+    const body = await json<{ sleeps: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.running.id)}`);
+    expect(body.sleeps).toEqual([
+      { worker_id: w1, woke_at: at(2000), gap_ms: 180_000, run_id: claimed.id },
+      { worker_id: w1, woke_at: at(1000), gap_ms: 120_000, run_id: claimed.id },
+    ]);
+    expect((await json<{ sleeps: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).sleeps).toEqual([]);
   });
 });
 

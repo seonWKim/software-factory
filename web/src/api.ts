@@ -193,12 +193,23 @@ export interface ItemDetail {
     /** One record per claim, in attempt order; the last one's worker is the run's worker. */
     attempts?: { attempt: number; worker_id: string | null }[];
   }[];
+  /** Host sleeps recorded during one of the item's runs, newest first. */
+  sleeps?: HostSleepRow[];
   /** The commands that apply in the item's current state, in the order to show them. */
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
+}
+
+/** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */
+export interface HostSleepRow {
+  worker_id: string;
+  woke_at: string;
+  /** How late the wait ended, in ms. */
+  gap_ms: number;
+  run_id: string | null;
 }
 
 /** Which steps the transcript filter keeps (tool calls of that kind). */
@@ -268,6 +279,8 @@ export type CommandResult = { ok: true; seq: number } | { ok: false; error: stri
 export interface Health {
   checked_at: string;
   checks: { status: string; msg: string }[];
+  /** The 10 newest host sleeps, newest first. */
+  sleeps?: HostSleepRow[];
 }
 
 /** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */

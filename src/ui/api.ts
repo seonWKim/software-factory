@@ -13,7 +13,7 @@
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
-import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
+import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
@@ -27,6 +27,10 @@ import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+/** Host sleeps on /health (design §9): the newest ten. */
+export const HEALTH_SLEEPS = 10;
+/** Host sleeps on an item's detail: those of its runs, newest first, at most this many. */
+const ITEM_SLEEPS = 100;
 
 /** Status and JSON value; server.ts adds the headers. */
 export interface ApiResult {
@@ -60,7 +64,7 @@ export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
     case "/unreviewed-merges":
       return unreviewedMerges(c, url.searchParams);
     case "/health":
-      return ok(await d.health.report(d.scanner));
+      return ok(await health(c));
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
@@ -180,6 +184,29 @@ class ApiCtx {
     const waiting = waitingOn(it, await readPhases(s, [it]));
     return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now), it);
   }
+}
+
+/**
+ * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
+ * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a MySQL
+ * database without step 0025) the list is empty and the checks still answer.
+ */
+async function health(c: ApiCtx) {
+  const report = await c.d.health.report(c.d.scanner);
+  let rows: HostSleep[] = [];
+  try {
+    rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS });
+  } catch {
+    rows = [];
+  }
+  return { ...report, sleeps: await sleepRows(c, rows) };
+}
+
+/** Host sleeps as the API returns them: ids, a timestamp and a number, never free text. */
+async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
+  const out = [];
+  for (const h of rows) out.push({ worker_id: (await c.text(h.worker_id))!, woke_at: h.woke_at, gap_ms: h.gap_ms, run_id: h.run_id });
+  return out;
 }
 
 async function overview(c: ApiCtx) {
@@ -378,6 +405,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
     },
     timeline,
     runs: runRows,
+    // Host sleeps recorded during one of this item's runs (design §5 Host sleep), newest first.
+    sleeps: await sleepRows(c, await s.listHostSleeps({ limit: ITEM_SLEEPS, work_item_id: id }).catch(() => [])),
     /** Run id → its stored transcript parts ("" is the main step), for runs with a stored transcript only. */
     transcripts: Object.fromEntries(runs.flatMap((r) => {
       const parts = runParts(stored, id, r.id);
