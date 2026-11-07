@@ -813,7 +813,10 @@ export class SqlFactoryStore implements FactoryStore {
     return { ended: ended === 1 };
   }
 
-  /** Ends a stall pause as an answered probe would: model_answered moves to the probe time, under the claim lock. */
+  /**
+   * Ends a stall pause as an answered probe would, under the claim lock: model_answered and the probe time both
+   * move to the earlier of the probe time and now. Never a future answer, so a stall right after starts a pause.
+   */
   private async endStall(): Promise<{ ended: boolean }> {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx) => {
@@ -824,10 +827,25 @@ export class SqlFactoryStore implements FactoryStore {
       );
       const probeAt = rows.get(MODEL_STALL);
       if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, probeAt]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [probeAt, MODEL_ANSWERED, probeAt]);
+      const now = this.now();
+      const at = probeAt < now ? probeAt : now;
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, at]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_ANSWERED]);
       }
+      await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, MODEL_STALL]);
       return { ended: true };
+    });
+  }
+
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    // Under the claim lock, as every stall write: a pause ended meanwhile is never moved back into effect.
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const [answered] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [MODEL_ANSWERED]);
+      if (!stallInEffect(due, answered?.resume_at as Timestamp | undefined) || next <= due) return { taken: false };
+      const taken = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, MODEL_STALL, due]);
+      return { taken: taken === 1 };
     });
   }
 

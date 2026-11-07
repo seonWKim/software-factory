@@ -428,11 +428,18 @@ export interface FactoryStore {
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
    * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
-   * `model_answered` row moves to the probe time, as an answered probe would, so `model_stall_since` reads null too.
+   * `model_answered` row and its probe time move to the earlier of the probe time and now, as an answered probe
+   * would, so `model_stall_since` reads null too and a stall right after starts a new pause.
    * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
    * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Takes the probe of a due `model_stall` pause (design §5 Restarts): while the pause is in effect with probe
+   * time `due`, moves it to `next` and returns `taken`. Conditional, so among replicas that read the same due
+   * time exactly one probes it; a moved, ended or missing pause changes no row and is never started again.
+   */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
