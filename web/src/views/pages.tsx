@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type QueueRow, type RunRow, useApi } from "../api.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td } from "../components/ui/parts.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -89,7 +90,7 @@ export function FloorPage() {
       <Section
         title="Queue"
         count={queue.data?.queue.length}
-        action={<Link href={`${BASE}queue`} className="text-sm text-blue-700 hover:underline dark:text-blue-400">All queued runs</Link>}
+        action={<Link href={`${BASE}queue`} className={cn("text-sm", LINK_CLASS)}>All queued runs</Link>}
       >
         {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={2} /> : <QueueTable queue={queue.data.queue} items={map} now={now} limit={10} />}
       </Section>
@@ -172,9 +173,9 @@ export function ItemPage({ id }: { id: string }) {
   return (
     <>
       <p className="mb-1 text-sm">
-        <Link href={`${BASE}items`} className="text-blue-700 hover:underline dark:text-blue-400">Work items</Link>
+        <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
         <span className="text-zinc-500"> / </span>
-        <a href={item.source.link} target="_blank" rel="noreferrer" className="tabular-nums hover:underline">{shortSource(item.source.id)}</a>
+        <a href={item.source.link} target="_blank" rel="noreferrer" className={cn("tabular-nums", LINK_CLASS)}>{shortSource(item.source.id)}</a>
       </p>
       <h2 className="text-balance text-base font-semibold">{item.title ?? item.source.id}</h2>
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
@@ -191,7 +192,7 @@ export function ItemPage({ id }: { id: string }) {
           <div key={String(k)} className="min-w-0">
             <dt className="text-xs text-zinc-600 dark:text-zinc-400">{k}</dt>
             <dd className="truncate tabular-nums">
-              {k === "PR" && item.pr_url ? <a href={item.pr_url} target="_blank" rel="noreferrer" className="hover:underline">#{item.pr_number}</a> : String(v)}
+              {k === "PR" && item.pr_url ? <a href={item.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{item.pr_number}</a> : String(v)}
             </dd>
           </div>
         ))}
