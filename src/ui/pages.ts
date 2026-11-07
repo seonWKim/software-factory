@@ -51,6 +51,8 @@ const COST_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolv
  * run's data.tokens, a failed run's usage. Null when the run stored none (unfinished, or an older failed row).
  */
 export function runTokens(run: Run): number | null {
+  // A person's session reports its own total (design §5, 2026-11-01).
+  if (run.kind === "interactive") return run.session_tokens;
   if (run.outcome?.status === "succeeded") {
     const t = Number(run.outcome.data.tokens);
     return Number.isFinite(t) && t >= 0 ? t : null;
@@ -329,7 +331,7 @@ async function runningSection(c: Ctx): Promise<string> {
         esc(r.kind),
         await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
         esc(r.attempt),
-        r.lease ? await c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`,
+        await workerCell(c, r),
         c.ago(r.started_at),
         esc(c.ago(r.updated_at)) + (stale ? " <strong>(past lease)</strong>" : ""),
       ],
@@ -340,6 +342,15 @@ async function runningSection(c: Ctx): Promise<string> {
     rows,
     "no runs in progress",
   )}</section>`;
+}
+
+/**
+ * Who holds a running run: the worker's lease owner, or for an interactive session the person's user ID (design §5,
+ * 2026-11-01), never a display name.
+ */
+async function workerCell(c: Ctx, r: Run): Promise<string> {
+  if (r.kind === "interactive") return `session: ${r.actor_id ? await c.w.text(r.actor_id) : `<span class="muted">unknown</span>`}`;
+  return r.lease ? await c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`;
 }
 
 async function queueSection(c: Ctx): Promise<string> {
@@ -500,7 +511,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     }
     runRows.push({
       cells: [
-        esc(r.kind),
+        esc(r.kind) + (r.actor_id ? ` <span class="muted">(${await c.w.text(r.actor_id)})</span>` : ""),
         esc(r.status),
         esc(r.attempt),
         r.started_at ? esc(r.started_at) : `<span class="muted">unknown</span>`,

@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { uiPort } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
-import type { WorkItem, WorkItemId } from "../src/core/types.js";
+import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -14,6 +14,8 @@ import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
+import { parseFilters } from "../src/ui/filters.js";
+import { renderIndex, renderItem } from "../src/ui/pages.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
@@ -706,5 +708,40 @@ describe("ui: split phases wait, never stuck", () => {
     expect(badge("Parent")).toContain("waits on 2 issues");
     expect(badge("Phase 2")).not.toContain("stuck");
     expect(badge("Parent")).not.toContain("stuck");
+  });
+});
+
+describe("ui: interactive sessions (design §5, 2026-11-01)", () => {
+  it("shows an interactive run in Running now and in the item timeline with the actor's user ID, never a display name", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const item = await setTitle(store, 9, "Owner session");
+    const ready = await patch(store, item, { stage: "RUNNING", allowed_paths: ["src/a/"], blocked_on: "human", blocked_reason: "session_released" });
+    const r = await store.startSession({
+      id: ready.id, expected_version: ready.version, actor: { kind: "user", id: "github:1" as UserId },
+      patch: { blocked_on: "none", blocked_reason: null }, reason: "session_started", detail: { spec_source: "triage" },
+      owner: "session:host:1", lease_ms: LEASE, transcript_url: null,
+    });
+    if (!r.ok) throw new Error(r.reason);
+    await store.updateSession(r.run.id, 1, { tokens: 777 });
+    // The page functions themselves, without a server.
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const parsed = parseFilters(new URLSearchParams());
+    if (!parsed.ok) throw new Error(parsed.error);
+
+    const running = section(await renderIndex(deps, parsed.filters), "running");
+    expect(running).toContain("interactive");
+    expect(running).toContain("session: github:1");
+    expect(running).not.toContain(alice.login!);
+
+    const page = (await renderItem(deps, item.id))!;
+    const timeline = section(page, "timeline");
+    expect(timeline).toContain("session_started");
+    expect(timeline).toContain("github:1");
+    expect(timeline).not.toContain(alice.login!);
+    const runs = section(page, "runs");
+    expect(runs).toContain("interactive");
+    expect(runs).toContain("(github:1)");
+    expect(runs).toContain("777");
   });
 });
