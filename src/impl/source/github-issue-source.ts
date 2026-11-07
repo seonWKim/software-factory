@@ -93,6 +93,11 @@ interface Cursor {
    */
   closed?: string | null;
   closed_numbers?: number[];
+  /**
+   * True while a first start's closed-issue backlog is still being read: each issue's full read takes the client's
+   * catch-up allowance (GitHubClient.takeCatchUp), and the cursor stops at the last one read. Absent: caught up.
+   */
+  closed_catch_up?: boolean;
 }
 
 /** What the GitHub forge's poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
@@ -222,6 +227,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         requester: identity(i.user),
         title: i.title,
         body: i.body ?? "",
+        updated_at: i.updated_at,
       });
     }
 
@@ -299,10 +305,12 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
-    // Under the budget threshold the cursor stays put, so the next poll reads them.
-    const commits = this.client.lowBudget() ? [] : await this.client.list<GhCommit>(
+    // Under the budget threshold the cursor stays put, so the next poll reads them. With no cursor yet (a first
+    // start) the pages are catch-up reads: as many as this minute's allowance grants, none when it is used.
+    const pages = this.client.lowBudget() ? 0 : c.commits ? COMMIT_PAGES : this.client.takeCatchUp(COMMIT_PAGES);
+    const commits = pages === 0 ? [] : await this.client.list<GhCommit>(
       `${base}/commits?sha=${encodeURIComponent(this.baseBranch)}` + (c.commits ? `&since=${c.commits}` : ""),
-      COMMIT_PAGES,
+      pages,
     );
     const already = new Set(c.commits ? (c.commit_shas ?? []) : []);
     next.commits = c.commits ?? null;
@@ -353,19 +361,29 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
   }
 
-  /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */
+  /**
+   * source_closed for each closed factory issue updated since the cursor; pull requests are skipped. A first start
+   * (no cursor) is a catch-up: each issue's full read takes the client's catch-up allowance, and when it runs out the
+   * cursor stops at the last issue read, so the backlog is spread over several polls (design §5, GitHub call budget).
+   */
   private async closedIssues(c: Cursor, next: Cursor): Promise<SourceEvent[]> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issues = await this.client.list<GhIssue>(
       `${base}/issues?state=closed&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
         (c.closed ? `&since=${c.closed}` : ""),
     );
+    const catchUp = c.closed == null || c.closed_catch_up === true;
     const already = new Set(c.closed ? (c.closed_numbers ?? []) : []);
     next.closed = c.closed ?? null;
     next.closed_numbers = [...already];
+    delete next.closed_catch_up;
     const events: SourceEvent[] = [];
     for (const i of issues) {
       if (i.updated_at === c.closed && already.has(i.number)) continue;
+      if (!i.pull_request && catchUp && this.client.takeCatchUp(1) === 0) {
+        next.closed_catch_up = true;
+        break;
+      }
       if (next.closed === null || i.updated_at > next.closed) {
         next.closed = i.updated_at;
         next.closed_numbers = [i.number];
@@ -552,6 +570,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         if (!(err instanceof GitHubError && err.status === 404)) throw err;
       }
     }
+  }
+
+  /** The client's rate-limit budget (`GitHubClient.lowBudget`): true while optional reads should wait. */
+  lowBudget(): boolean {
+    return this.client.lowBudget();
   }
 
   /**

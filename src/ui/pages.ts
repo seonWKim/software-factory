@@ -14,6 +14,7 @@ import {
 } from "./filters.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
 import type { FactoryStatus } from "./factory-status.js";
+import { githubBudgetSection, readGitHubBudget } from "./github-budget.js";
 import type { HealthMonitor } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { needOf } from "./need.js";
@@ -151,6 +152,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     // What the operator acts on first (design §9): the process, what runs and waits, the ranked list, health.
     // Totals and cost are background and go last.
     await factorySection(c),
+    githubBudgetSection(await readGitHubBudget(d.store, c.now)),
     await runningSection(c),
     await queueSection(c),
     await pausedSection(c),

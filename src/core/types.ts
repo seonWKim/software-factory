@@ -357,7 +357,7 @@ export interface RunAttempt {
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
   /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
-  failure_class: "task" | "infra" | "rate_limited" | "stalled" | null;
+  failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
 }
@@ -605,6 +605,11 @@ export interface DependencyEdge {
   depends_on: string;
   kind: DependencyKind;
   state: DependencyState;
+  /**
+   * The source issue's `updated_at` when this edge was read from it (issue #254), or the store time of a read made
+   * without one. Null on edges stored before it was kept.
+   */
+  source_updated_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }

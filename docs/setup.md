@@ -73,6 +73,15 @@ Create a **fine-grained personal access token** (GitHub → Settings → Develop
 GITHUB_TOKEN=<token>
 ```
 
+### One GitHub budget per installation
+
+GitHub gives each App installation (or each token's account) one hourly budget of core API calls (5,000 or more), and every factory using that installation draws from it. A factory that uses most of it leaves the others waiting for the reset; a first start, which reads the repository's whole backlog, is the most likely to.
+
+- **Solo (default):** one App (or one token), one factory, `"github": { "budget_share": 1.0 }` or no key. Nothing to set.
+- **Enterprise:** when several factories run at once, give **each factory its own GitHub App** (recommended); each keeps `budget_share` 1.0. If factories must share one App, give each a `budget_share` so the shares sum to at most 1.0 (e.g. two factories at 0.5). That sum is a manual agreement between the owners: nothing checks it across factories.
+- The share is counted **per process**: replicas of one factory on one App split its share between them (two replicas of a factory with a share of 0.5 at 0.25 each).
+- Once a factory has used its share, optional reads (PR mergeable, review, base-commit and check reads) wait for the reset; the intake lists still run. With no calls left at all, GitHub work waits for the reset (the status page shows the reset time) and local work goes on. Details: [`docs/plugins/github-credentials.md`](plugins/github-credentials.md).
+
 ## 4b. MySQL (only with `"store": { "type": "mysql" }`)
 
 Connection settings and the password live together in the secret file. Empty settings fall back to `store` in `factory.config.json`. Only `MYSQL_PASSWORD` is treated as a secret (scanned by G5); the others are plain settings.
