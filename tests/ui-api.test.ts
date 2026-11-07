@@ -318,6 +318,20 @@ describe("ui api: runs, queue, workers, overview, health", () => {
     }
   });
 
+  it("/workers still answers when the processes read fails (e.g. the table is missing): workers as before, processes empty, the error named", async () => {
+    const { d, store } = await seeded();
+    store.listWorkerProcesses = async () => {
+      throw new Error("Table 'sf.worker_processes' doesn't exist");
+    };
+    const body = await json<{ workers: unknown[]; processes: unknown[]; processes_error?: string }>(d, "/api/v1/workers");
+    expect(body.workers).toEqual([
+      { owner: "[withheld: github_token]", running: 1 },
+      { owner: "host:11:1", running: 2 },
+    ]);
+    expect(body.processes).toEqual([]);
+    expect(body.processes_error).toBe("Table 'sf.worker_processes' doesn't exist");
+  });
+
   it("/overview gives the numbers the page shows for the same store", async () => {
     const { d } = await seeded();
     const o = await json<{

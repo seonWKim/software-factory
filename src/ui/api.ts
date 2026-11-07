@@ -259,7 +259,9 @@ async function queue(c: ApiCtx) {
 /**
  * `workers`: each current lease owner of a running run once, by id, with how many runs it holds. `processes`:
  * one entry per live worker process (its store row is at most lease_ms old), idle ones included, with its slot
- * counts and the running runs its worker loops hold (lease owner `<process_id>:<n>`).
+ * counts and the running runs its worker loops hold (lease owner `<process_id>:<n>`). The processes read is a
+ * report, never a gate: when it fails (e.g. a MySQL database without the worker_processes step) the endpoint
+ * still answers, with `processes: []` and the error text in `processes_error`.
  */
 async function workers(c: ApiCtx) {
   const running = await c.d.store.listRunsByStatus(["running"], LIST_LIMIT);
@@ -271,8 +273,15 @@ async function workers(c: ApiCtx) {
   for (const [owner, running] of count) out.push({ owner: (await c.text(owner))!, running });
   out.sort((a, b) => (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0));
 
+  let live: Awaited<ReturnType<typeof c.d.store.listWorkerProcesses>>;
+  try {
+    live = await c.d.store.listWorkerProcesses(c.d.lease_ms);
+  } catch (err) {
+    const processes_error = await c.text(err instanceof Error ? err.message : String(err));
+    return { as_of: c.now.toISOString(), workers: out, processes: [], processes_error };
+  }
   const processes = [];
-  for (const p of await c.d.store.listWorkerProcesses(c.d.lease_ms)) {
+  for (const p of live) {
     const runs = [];
     for (const r of running) {
       const owner = r.lease?.owner;
