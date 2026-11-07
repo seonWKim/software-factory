@@ -1,13 +1,29 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
-import { baseEnv, runProcess } from "../process/run-process.js";
+import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
+
+/** Runs one process; `runProcess` unless a test injects a fake. */
+export type ProcessRunner = (cmd: readonly string[], opts: RunProcessOptions) => Promise<ExecResult>;
+/** Waits `ms` before a retry; a real timer unless a test injects one. */
+export type Wait = (ms: number) => Promise<void>;
 
 /** Name of the empty hooks folder under the worktrees dir: beside the run folders, never inside one. */
 export const EMPTY_HOOKS_DIR = ".empty-hooks";
 /** The ids `create` makes; `reattach` takes no other, so a stored id can never name a path outside the worktrees dir. */
 const SANDBOX_ID = /^sbx_[0-9a-f]{8}$/;
+/** Git's messages when another fetch in the same checkout holds or moved a ref this one is updating. */
+const REF_LOCK = /incorrect old value|cannot lock ref|unable to update local ref/;
+/** Retries after the first attempt of a fetch that lost a ref-lock race. */
+const REF_LOCK_RETRIES = 3;
+const RETRY_BASE_MS = 200;
+const realWait: Wait = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * The tail of each factory checkout's fetch chain, by repo path. Process-wide, so every sandbox instance on this
+ * host shares it; it only orders fetches and holds nothing another replica would need.
+ */
+const fetchChains = new Map<string, Promise<unknown>>();
 
 /**
  * One clone of the factory repo per run, on the host. No isolation: the agent has the host user's access, so
@@ -20,7 +36,11 @@ const SANDBOX_ID = /^sbx_[0-9a-f]{8}$/;
  * `base_sha` is the factory repo's `origin/<base>`, resolved before any agent runs.
  */
 export class NoOpSandbox implements Sandbox {
-  constructor(private readonly worktreesDir: string) {}
+  constructor(
+    private readonly worktreesDir: string,
+    private readonly run: ProcessRunner = runProcess,
+    private readonly wait: Wait = realWait,
+  ) {}
 
   async create(spec: SandboxSpec): Promise<SandboxHandle> {
     const id = `sbx_${randomUUID().slice(0, 8)}`;
@@ -28,8 +48,9 @@ export class NoOpSandbox implements Sandbox {
     await mkdir(this.worktreesDir, { recursive: true });
     const hooks = await this.emptyHooks();
 
-    // Trusted: the factory repo's own refs and config, never anything an agent wrote.
-    await this.git(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
+    // Trusted: the factory repo's own refs and config, never anything an agent wrote. All of origin/*, so an
+    // existing factory/<id> branch can be resumed.
+    await this.fetch(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
     const common = (await this.git(spec.repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).stdout.trim();
     const base_sha = (
       await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])
@@ -113,14 +134,52 @@ export class NoOpSandbox implements Sandbox {
     return dir;
   }
 
+  /** Fetches only the base branch, so it touches no other ref in the shared checkout. */
   async updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string> {
-    await this.git(spec.repo, ["fetch", "--quiet", "--prune", "origin"]);
-    return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
+    const ref = `refs/heads/${spec.base_ref}`;
+    return this.serialized(spec.repo, async () => {
+      await this.fetchWithRetry(spec.repo, ["fetch", "--quiet", "--no-tags", "origin", `+${ref}:refs/remotes/origin/${spec.base_ref}`]);
+      return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
+    });
+  }
+
+  /** A fetch in the factory checkout: one at a time per repo path, a lost ref-lock race retried. */
+  private fetch(repo: string, args: string[]): Promise<ExecResult> {
+    return this.serialized(repo, () => this.fetchWithRetry(repo, args));
+  }
+
+  /** Runs `fn` after every earlier call for `repo` on this host has settled, whatever their outcome. */
+  private serialized<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+    const key = resolve(repo);
+    const next = (fetchChains.get(key) ?? Promise.resolve()).catch(() => {}).then(fn);
+    const tail = next.catch(() => {});
+    fetchChains.set(key, tail);
+    void tail.then(() => {
+      if (fetchChains.get(key) === tail) fetchChains.delete(key);
+    });
+    return next;
+  }
+
+  /**
+   * A fetch whose failure names a ref lock is retried up to REF_LOCK_RETRIES times: another git process on the
+   * checkout (the owner's, or another host process) moved the ref under it. Any other failure throws at once.
+   */
+  private async fetchWithRetry(repo: string, args: string[]): Promise<ExecResult> {
+    for (let attempt = 0; ; attempt++) {
+      const r = await this.git(repo, args, false);
+      if (r.exit_code === 0) return r;
+      if (attempt >= REF_LOCK_RETRIES || !REF_LOCK.test(r.stderr)) throw gitError(args, r);
+      await this.wait(RETRY_BASE_MS * 2 ** attempt);
+    }
   }
 
   private async git(cwd: string, args: string[], check = true): Promise<ExecResult> {
-    const r = await runProcess(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
-    if (check && r.exit_code !== 0) throw new Error(`git ${args[0]} failed: ${r.stderr.trim()}`);
+    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
+    if (check && r.exit_code !== 0) throw gitError(args, r);
     return r;
   }
+}
+
+function gitError(args: readonly string[], r: ExecResult): Error {
+  return new Error(`git ${args[0]} failed: ${r.stderr.trim()}`);
 }
