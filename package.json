@@ -7,7 +7,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('web/dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.migrations.json && vite build --config web/vite.config.ts --logLevel warn",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p web/tsconfig.json",
     "test": "vitest run --configLoader runner",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run --configLoader runner",
