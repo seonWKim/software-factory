@@ -40,6 +40,7 @@ import type {
   VerdictSeverity,
   WorkItem,
   WorkItemId,
+  WorkItemPatch,
   ClaimPauseName,
   RunInput,
   RunResume,
@@ -134,8 +135,8 @@ import { migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
+import { changeAssignments, changeFields } from "./change-fields.js";
 import {
-  WORK_ITEM_COLUMNS,
   diffPatch,
   newId,
   newWorkItem,
@@ -150,7 +151,7 @@ import {
   rowToUnreviewedMerge,
   rowToVerdict,
   rowToWorkItem,
-  workItemValues,
+  workItemInsert,
 } from "./rows.js";
 
 /**
@@ -197,10 +198,10 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { item: existing, created: false };
 
       const item = newWorkItem(input, this.now());
-      const values = workItemValues(item);
+      const { columns, values } = workItemInsert(item, await changeFields(tx, item.project, item.pr_number));
       const inserted = await this.insertOnce(
         tx,
-        `INSERT INTO work_items (${WORK_ITEM_COLUMNS}) VALUES (${placeholders(values.length)})`,
+        `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
         values,
       );
       // A concurrent intake of the same source committed first.
@@ -234,8 +235,10 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null> {
     const [row] = await this.db.all(
-      `SELECT * FROM work_items WHERE project = ? AND pr_number = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, pr_number],
+      // change_ref first; pr_number for a row an older controller wrote without it (change_ref NULL).
+      `SELECT * FROM work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
+         ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
+      [project, String(pr_number), pr_number],
     );
     return row ? rowToWorkItem(row) : null;
   }
@@ -301,7 +304,7 @@ export class SqlFactoryStore implements FactoryStore {
       }
     }
 
-    const { changes, sets, values } = diffPatch(current, input.patch);
+    const { changes, sets, values } = await this.patchSql(tx, current, input.patch);
     const now = this.now();
     const version = current.version + 1;
     const updated = await tx.run(
@@ -1076,7 +1079,7 @@ export class SqlFactoryStore implements FactoryStore {
       );
       // A session start is the run's one claim (design §6): it gets its attempt record like any claim.
       await this.openAttempt(tx, (await this.selectRun(tx, runId))!, now);
-      const { changes, sets, values } = diffPatch(current, input.patch);
+      const { changes, sets, values } = await this.patchSql(tx, current, input.patch);
       const version = current.version + 1;
       await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
         ...values, version, now, input.id, input.expected_version,
@@ -1427,10 +1430,11 @@ export class SqlFactoryStore implements FactoryStore {
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
     assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
+      const { change_ref } = await changeFields(tx, input.project, input.pr_number);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO unreviewed_merges (id, project, pr_number, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, change_ref, input.merge_sha, input.merger_id, this.now()],
       );
       const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, input.pr_number]);
       return { merge: rowToUnreviewedMerge(row!), created };
@@ -2268,6 +2272,13 @@ export class SqlFactoryStore implements FactoryStore {
       if (this.db.isDuplicateKey(err)) return false;
       throw err;
     }
+  }
+
+  /** A patch's diff as assignments, with the change columns when it sets pr_number (on the patched project). */
+  private async patchSql(tx: SqlExecutor, current: WorkItem, patch: WorkItemPatch): Promise<ReturnType<typeof diffPatch>> {
+    const diff = diffPatch(current, patch);
+    const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes);
+    return { changes: diff.changes, sets: [...diff.sets, ...change.sets], values: [...diff.values, ...change.values] };
   }
 
   private now(): Timestamp {

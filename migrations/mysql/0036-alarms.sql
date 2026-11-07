@@ -1,4 +1,4 @@
--- Alerts (design 05-alarms): the same tables as SQLite migration 35. `alerts`: one row per alert the alarm step
+-- Alerts (design 05-alarms): the same tables as SQLite migration 36. `alerts`: one row per alert the alarm step
 -- stored, its code, count and egress-scanned detail (NULL when the scanner flagged it). `alert_patterns`: one row
 -- per pattern, the time it last alerted; the conditional update on it is the 6-hour dedupe, so replicas that see
 -- one pattern at once store one alert.
