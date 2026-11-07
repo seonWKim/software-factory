@@ -80,8 +80,11 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         store.transition({ ...base, patch: { stage: "READY" } }),
         store.transition({ ...base, patch: { stage: "CLOSED", close_reason: "wont_do" } }),
       ]);
-      expect(first.ok).toBe(true);
-      expect(second).toMatchObject({ ok: false, reason: "version_conflict", current: { version: 2, stage: "READY" } });
+      // Either may win: SQLite runs them in order, a MySQL pool may not. Exactly one applies.
+      const winner = first.ok ? first : second;
+      const loser = first.ok ? second : first;
+      if (!winner.ok) throw new Error("neither transition applied");
+      expect(loser).toMatchObject({ ok: false, reason: "version_conflict", current: { version: 2, stage: winner.item.stage } });
     });
 
     it("records only changed fields, with from/to, in state_changes", async () => {

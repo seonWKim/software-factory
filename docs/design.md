@@ -57,6 +57,3 @@ the `05-*` files.
 ## Plans
 - [phase-2-backlog.md](design/phase-2-backlog.md): the design-side order of the Phase 2 work.
 - [first-build.md](design/first-build.md): the suggested build order for the first local version.
-
-## Changes not yet moved into a topic file
-- 2026-11-07 (#164): agent runs may receive granted read-only broker tools (`tool_grants`, architecture §5). This changes the decision of 2026-10-31 in `docs/design/04-agents.md` that agents get no broker tools; the worker still pushes, opens the PR and posts the review itself. To move into that topic file, with a History line, and then drop from here.

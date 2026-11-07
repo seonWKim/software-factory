@@ -52,7 +52,7 @@ export function toolGrantsConfig(raw: unknown, broker: Pick<ToolBroker, "allTool
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error(`tool_grants must be an object mapping a run kind (${GRANT_RUN_KINDS.join(", ")}) to a list of broker tool names`);
   }
-  const tools = broker.allTools?.() ?? [];
+  const tools = broker.allTools();
   const readOnly = tools.filter((t) => t.read_only).map((t) => t.name);
   const valid = `valid read-only tools of the ${brokerName} broker: ${readOnly.length > 0 ? readOnly.join(", ") : "(none)"}`;
   const problems: string[] = [];
