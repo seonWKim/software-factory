@@ -43,6 +43,8 @@ async function setup(source: SourceAdapter = new DepSource()) {
     for (const kind of kinds) {
       await store.transition({ id: item.id, expected_version: v++, patch: {}, actor: system, reason: "x", enqueue: { kind, idempotency_key: `${n}:${kind}` } });
     }
+    // The poll's delivery of the issue, which reads its dependency links (design §5, 2026-11-07).
+    await controller.handleEvent({ kind: "item_requested", source: issue(n).source, requester: alice, title: "t", body: "" });
     clock.advance(1_000);
     return item.id;
   };
@@ -98,6 +100,10 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     await f.controller.tickCoordination();
     expect((await f.get(a)).blocked_reason).toBe("waiting for other/repo#5 to merge");
     source.states.set("other/repo#5", "merged");
+    // Read again only once the last answer is 10 minutes old.
+    await f.controller.tickCoordination();
+    expect((await f.get(a)).blocked_on).toBe("dependency");
+    f.clock.advance(10 * 60_000);
     await f.controller.tickCoordination();
     expect(await f.store.listDependencyEdges({ work_item_id: a })).toMatchObject([{ depends_on: "other/repo#5", state: "merged" }]);
     expect((await f.get(a)).blocked_on).toBe("none");
@@ -305,6 +311,78 @@ describe("GitHub source: dependency links (fake GitHub client)", () => {
     expect(await Promise.all(["o/r#1", "o/r#2", "o/r#3", "x/y#4", "x/y#5"].map((d) => gh.dependencyState(d)))).toEqual([
       "open", "merged", "closed_unmerged", "merged", "closed_unmerged",
     ]);
+  });
+});
+
+describe("dependency reads from the forge only when the source changed (design §5, 2026-11-07)", () => {
+  const source = (client: FakeGitHub) => new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+  /** Ten queued implement items, each depending on #93, an issue outside the factory; delivered once by intake. */
+  async function tenQueued() {
+    const client = new FakeGitHub();
+    for (let n = 1; n <= 10; n++) client.answers[`/repos/o/r/issues/${n}`] = { body: "Depends on: #93" };
+    client.answers["/repos/o/r/issues/93"] = { number: 93, state: "open" };
+    const f = await setup(source(client));
+    const ids: WorkItemId[] = [];
+    for (let n = 1; n <= 10; n++) ids.push(await f.item(n));
+    return { ...f, client, ids };
+  }
+  const reads = (client: FakeGitHub) => client.calls.filter((c) => c.startsWith("GET "));
+
+  it("with ten queued items and nothing changed, a second poll makes no forge read; the outside state is read once", async () => {
+    const f = await tenQueued();
+    // Intake read each issue's links once.
+    expect(reads(f.client).filter((c) => /\/issues\/\d+$/.test(c))).toHaveLength(10);
+    f.client.calls = [];
+    await f.controller.tickCoordination();
+    // The stored edges apply: no issue body, sub_issues or blocked_by read; #93's state once for all ten. (The
+    // other reads are the hold comments' and status labels' own, made once when each item is held.)
+    expect(reads(f.client).filter((c) => /\/issues\/\d+(\/sub_issues|\/dependencies\/blocked_by)?$/.test(c)))
+      .toEqual(["GET /repos/o/r/issues/93"]);
+    for (const id of f.ids) expect(await f.get(id)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for #93 to merge" });
+    f.client.calls = [];
+    f.clock.advance(30_000);
+    await f.controller.tickCoordination();
+    expect(reads(f.client)).toEqual([]);
+  });
+
+  it("an edited issue (a new Depends on line) is read on its next delivery, and the next pass applies it", async () => {
+    const f = await tenQueued();
+    await f.controller.tickCoordination();
+    f.client.answers["/repos/o/r/issues/94"] = { number: 94, state: "open" };
+    f.client.answers["/repos/o/r/issues/1"] = { body: "Depends on: #93\nDepends on: #94" };
+    f.client.calls = [];
+    await f.controller.handleEvent({ kind: "item_requested", source: issue(1).source, requester: alice, title: "t", body: "" });
+    expect(reads(f.client).filter((c) => /\/issues\/1(\/|$)/.test(c))).toHaveLength(3);
+    await f.controller.tickCoordination();
+    expect((await f.get(f.ids[0]!)).blocked_reason).toBe("waiting for #93 and #94 to merge");
+    expect(reads(f.client).filter((c) => /\/issues\/([2-9]|10)(\/|$)/.test(c))).toEqual([]);
+  });
+
+  it("links are read again once 30 minutes old, so a sub-issue added without an issue update is found", async () => {
+    const f = await tenQueued();
+    await f.controller.tickCoordination();
+    f.client.answers["/repos/o/r/issues/1/sub_issues"] = [{ number: 95 }];
+    f.client.answers["/repos/o/r/issues/95"] = { number: 95, state: "open" };
+    f.clock.advance(29 * 60_000);
+    await f.controller.tickCoordination();
+    expect((await f.store.listDependencyEdges({ work_item_id: f.ids[0]! })).map((e) => e.depends_on)).toEqual(["o/r#93"]);
+    f.clock.advance(2 * 60_000);
+    await f.controller.tickCoordination();
+    expect((await f.store.listDependencyEdges({ work_item_id: f.ids[0]! })).map((e) => e.depends_on)).toEqual(["o/r#93", "o/r#95"]);
+  });
+
+  it("a forge outage stops no coordination: stored edges apply, and the failed read is not retried every poll", async () => {
+    const f = await tenQueued();
+    for (let n = 1; n <= 95; n++) f.client.errors[`/repos/o/r/issues/${n}`] = 403;
+    f.clock.advance(31 * 60_000);
+    f.client.calls = [];
+    await f.controller.tickCoordination();
+    for (const id of f.ids) expect(await f.get(id)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for #93 to merge" });
+    expect(reads(f.client).length).toBeGreaterThan(0);
+    f.client.calls = [];
+    f.clock.advance(30_000);
+    await f.controller.tickCoordination();
+    expect(reads(f.client)).toEqual([]);
   });
 });
 
