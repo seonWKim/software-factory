@@ -2,6 +2,8 @@
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
@@ -191,5 +193,84 @@ describe("app pages", () => {
     await screen.findByText("push access denied");
     const texts = [...document.querySelectorAll("main li")].map((li) => li.textContent);
     expect(texts[0]).toContain("push access denied");
+  });
+});
+
+// ---- ItemsTable (issue #240): title link, Issue and PR columns only with the GitHub plugin ----
+const GH = { issues: "github", prs: "github" } as const;
+const NONE = { issues: null, prs: null } as const;
+const trow = (n: number, extra: Partial<ItemRow> = {}): ItemRow => ({
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`,
+  level: "running", badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
+  run_status: null, pr_number: null, pr_url: null, issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, since: AT,
+  updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
+});
+const NOW_MS = Date.parse(AT);
+const itemsTable = (items: ItemRow[], plugins?: typeof GH | typeof NONE) =>
+  render(<ItemsTable items={items} now={NOW_MS} label="Work items" empty="none" plugins={plugins} />).container;
+const heads = (c: HTMLElement) => [...c.querySelectorAll("th")].map((h) => h.textContent);
+const cells = (c: HTMLElement) => [...c.querySelectorAll("tbody tr:first-child td")] as HTMLElement[];
+
+describe("ItemsTable columns and links (issue #240)", () => {
+  it("links the title to the item page and the Item cell not to GitHub", () => {
+    const c = itemsTable([trow(1)], GH);
+    const item = cells(c)[0]!;
+    expect(item.querySelectorAll("a")).toHaveLength(1);
+    expect(item.querySelector("a")!.getAttribute("href")).toBe("/app/items/wi_1");
+    expect(item.textContent).toBe("Title 1");
+  });
+
+  it("shows the item id as the link text when there is no title", () => {
+    const a = cells(itemsTable([trow(2, { title: null })], GH))[0]!.querySelector("a")!;
+    expect(a.textContent).toBe("wi_2");
+    expect(a.getAttribute("href")).toBe("/app/items/wi_2");
+  });
+
+  it("with GitHub: Issue links to the issue, PR to the PR, a dash when there is none", () => {
+    const c = itemsTable([trow(3, { pr_number: 9, pr_url: "https://github.com/o/r/pull/9" }), trow(4)], GH);
+    expect(heads(c)).toEqual(["Item", "State", "Why", "Since", "Issue", "PR"]);
+    const [r1, r2] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
+    const t1 = [...r1!.querySelectorAll("td")];
+    expect(t1[4]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/issues/3");
+    expect(t1[4]!.textContent).toBe("#3");
+    expect(t1[5]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
+    expect(t1[5]!.textContent).toBe("#9");
+    expect([...r2!.querySelectorAll("td")][5]!.textContent).toBe("–");
+  });
+
+  it("without GitHub: no Issue or PR column and no link to github.com", () => {
+    for (const plugins of [NONE, undefined]) {
+      const c = itemsTable([trow(5, { pr_number: 9, pr_url: "https://github.com/o/r/pull/9" })], plugins);
+      expect(heads(c)).toEqual(["Item", "State", "Why", "Since"]);
+      expect(c.innerHTML).not.toContain("github.com");
+      cleanup();
+    }
+  });
+
+  it("an adopted PR shows a dash under Issue and its number under PR", () => {
+    const c = itemsTable([trow(6, { issue: null, pr_number: 6, pr_url: "https://github.com/o/r/pull/6" })], GH);
+    const td = cells(c);
+    expect(td[4]!.textContent).toBe("–");
+    expect(td[5]!.textContent).toBe("#6");
+  });
+
+  it("a PR without a link (unknown project label) shows its number as text", () => {
+    const td = cells(itemsTable([trow(7, { pr_number: 7, pr_url: null })], GH));
+    expect(td[5]!.textContent).toBe("#7");
+    expect(td[5]!.querySelector("a")).toBeNull();
+  });
+});
+
+describe("Running now and Queue", () => {
+  it("keep the GitHub link on the source id beside the title", () => {
+    const items = new Map([["wi_1", trow(1)]]);
+    const run = { id: "run_a", status: "running", kind: "implement", work_item_id: "wi_1", attempt: 1, owner: "h:1:0", heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT };
+    const q = { position: 1, id: "run_b", kind: "implement", work_item_id: "wi_1", attempt: 0, created_at: AT, not_before: null };
+    const a = render(<RunningTable runs={[run] as never} items={items} now={NOW_MS} />).container;
+    const links = [...a.querySelectorAll("tbody tr td:first-child a")].map((x) => [x.getAttribute("href"), x.textContent]);
+    expect(links).toEqual([["https://github.com/o/r/issues/1", "#1"], ["/app/items/wi_1", "Title 1"]]);
+    cleanup();
+    const b = render(<QueueTable queue={[q] as never} items={items} now={NOW_MS} />).container;
+    expect([...b.querySelectorAll("tbody tr td:nth-child(2) a")].map((x) => x.getAttribute("href"))).toEqual(["https://github.com/o/r/issues/1", "/app/items/wi_1"]);
   });
 });

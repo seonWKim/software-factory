@@ -24,6 +24,8 @@ export interface Overview {
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
+  /** Which plugins are in use: the tables show Issue and PR columns only for "github". */
+  plugins?: { issues: "github" | null; prs: "github" | null };
   /** Absent when the server has no status function. */
   factory?: FactoryState | null;
 }
@@ -49,6 +51,8 @@ export interface ItemRow {
   run_status: string | null;
   pr_number: number | null;
   pr_url: string | null;
+  /** The source issue; null for an adopted PR. */
+  issue?: { number: number; url: string } | null;
   since: string;
   updated_at: string;
   version: number;
@@ -169,6 +173,31 @@ export type SettingsWrite = { action: "set"; key: string; value: string; project
 /** The answer to a write: the CLI's lines, or its refusal. */
 export type WriteResult = { ok: true; lines: string[] } | { ok: false; error: string };
 
+/** `/api/v1/data/tables`: every store table (design §9 Data page). */
+export interface DataTables {
+  as_of: string;
+  tables: { name: string; rows: number; columns: string[]; hidden: string[] }[];
+}
+
+/** A cell as the API returns it: hidden columns are "[hidden]", withheld text "[withheld: <rule>]". */
+export type DataCell = string | number | null;
+
+/** `/api/v1/data/tables/:name`: one page of a table's rows, newest first. */
+export interface DataPageBody {
+  as_of: string;
+  table: string;
+  columns: string[];
+  hidden: string[];
+  order_by: string[];
+  filter: { column: string; value: string | null } | null;
+  total: number;
+  page: number;
+  limit: number;
+  rows: Record<string, DataCell>[];
+  /** Run id → the work item that owns it, for the run ids in this page. */
+  run_items: Record<string, string>;
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -178,6 +207,11 @@ export const API = {
   workers: "/api/v1/workers",
   health: "/api/v1/health",
   settings: "/api/v1/settings",
+  dataTables: "/api/v1/data/tables",
+  dataTable: (name: string, params: URLSearchParams) => {
+    const q = params.toString();
+    return `/api/v1/data/tables/${encodeURIComponent(name)}${q ? `?${q}` : ""}`;
+  },
 } as const;
 
 /** Polling interval while the document is visible; TanStack Query stops it while the tab is hidden. */
@@ -214,4 +248,20 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
   }
   if (res.ok && value.ok) return { ok: true, lines: value.lines ?? [] };
   return { ok: false, error: value.error ?? `HTTP ${res.status}` };
+}
+
+/**
+ * One API read that never refetches on its own: no interval, no refetch on focus, mount or reconnect. Only the
+ * Refresh button (which invalidates every query) reads it again. For the Data page, whose reads are heavier.
+ */
+export function useManualApi<T>(url: string | null) {
+  return useQuery({
+    queryKey: [url],
+    queryFn: () => getJson<T>(url!),
+    enabled: url !== null,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
+  });
 }

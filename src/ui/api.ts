@@ -2,13 +2,17 @@
 // from FactoryStore read methods, the same ones the HTML page uses, so for the same store both give the same
 // rows and numbers. Free text from the store (titles, blocked reasons, state-change values, run errors, owner
 // and actor ids) leaves only through the Withholder: clean text as is (JSON, not HTML-escaped), anything with
-// an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned.
+// an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
+// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The one write route, POST
 // /api/v1/settings, is handled in settings-api.ts behind server.ts's write guards; GET /api/v1/settings is here.
 
+import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
+import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { Run, RunAttempt, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
@@ -50,6 +54,18 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return ok(await d.health.report(d.scanner));
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/data/tables":
+      return data(await dataTables(c.data()));
+  }
+  const t = /^\/data\/tables\/([^/]+)$/.exec(path);
+  if (t) {
+    let name: string;
+    try {
+      name = decodeURIComponent(t[1]!);
+    } catch {
+      return apiError(404, "No such table.");
+    }
+    return data(await dataTable(c.data(), name, url.searchParams));
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
@@ -63,6 +79,10 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
     return body === null ? apiError(404, "No such work item.") : ok(body);
   }
   return apiError(404, "Not found.");
+}
+
+function data(r: DataResult): ApiResult {
+  return "error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value };
 }
 
 class ApiCtx {
@@ -80,8 +100,27 @@ class ApiCtx {
     return (await this.w.plain(value, channel ? { channel } : {})).text;
   }
 
-  prUrl(it: WorkItem): string | null {
-    return it.pr_number === null ? null : this.d.prUrl(it.project, it.pr_number);
+  /** The Data page's context: the same store, Withholder and channel as every other route. */
+  data(): DataCtx {
+    return { store: this.d.store, text: (v) => this.text(v), now: this.now };
+  }
+
+  private readonly labels = new Map<string, Promise<string>>();
+
+  /** The PR's URL, built from the project's stored label (never its key); null with no PR or no stored label. */
+  async prUrl(it: WorkItem): Promise<string | null> {
+    if (it.pr_number === null) return null;
+    let p = this.labels.get(it.project);
+    if (!p) this.labels.set(it.project, (p = readProjectLabel(this.d.store, it.project)));
+    const label = await p;
+    return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, it.pr_number);
+  }
+
+  /** The issue the item came from; null for an adopted PR (its source link is a /pull/ URL) or an id without a number. */
+  issue(it: WorkItem): { number: number; url: string } | null {
+    if (/\/pull\/\d+/.test(it.source.link)) return null;
+    const n = /#(\d+)$/.exec(it.source.id)?.[1];
+    return n ? { number: Number(n), url: it.source.link } : null;
   }
 }
 
@@ -107,6 +146,7 @@ async function overview(c: ApiCtx) {
   };
   return {
     as_of: c.now.toISOString(),
+    plugins: c.d.plugins ?? { issues: null, prs: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
     needs_you,
@@ -143,7 +183,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       close_reason: it.close_reason,
       run_status: r.runStatus,
       pr_number: it.pr_number,
-      pr_url: c.prUrl(it),
+      pr_url: await c.prUrl(it),
+      issue: c.issue(it),
       since: r.input.since,
       updated_at: it.updated_at,
       version: it.version,
@@ -200,7 +241,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       restart_count: it.restart_count,
       token_cost: it.token_cost,
       pr_number: it.pr_number,
-      pr_url: c.prUrl(it),
+      pr_url: await c.prUrl(it),
       version: it.version,
       created_at: it.created_at,
       updated_at: it.updated_at,

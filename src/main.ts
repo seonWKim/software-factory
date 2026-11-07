@@ -17,6 +17,7 @@ import { linkCodeCommand } from "./impl/auth/link-code.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
+import { selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
@@ -227,6 +228,9 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           scanner: parts.scanner,
           clock: parts.clock,
           lease_ms: loaded.config.lease_ms,
+          plugins: selectedSources(loaded.plugins).includes("github-issues")
+            ? { issues: "github", prs: "github" }
+            : { issues: null, prs: null },
           // `label` is the stored project label (github.com/owner/name), never the key.
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).

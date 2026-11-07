@@ -80,7 +80,7 @@ export function FloorPage() {
       <FactoryBanner factory={o?.factory} now={now} />
       <Section title="Needs you" count={items.data ? needs.length : undefined}>
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
-          <ItemsTable items={needs} now={now} label="Needs you" empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
+          <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
       </Section>
       <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>
@@ -127,6 +127,7 @@ export function ItemsPage() {
   if (q.trim()) params.set("q", q.trim());
   const query = params.toString();
   const items = useApi<Items>(query ? `${API.items}?${query}` : API.items);
+  const overview = useApi<Overview>(API.overview);
   const facets = items.data?.facets.state ?? {};
   return (
     <>
@@ -155,7 +156,7 @@ export function ItemsPage() {
         ))}
       </div>
       {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : (
-        <ItemsTable items={items.data.items} now={now} label="Work items" empty="No work item matches this filter." />
+        <ItemsTable items={items.data.items} now={now} label="Work items" plugins={overview.data?.plugins} empty="No work item matches this filter." />
       )}
     </>
   );

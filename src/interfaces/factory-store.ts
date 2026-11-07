@@ -638,6 +638,77 @@ export interface FactoryStore {
   appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+
+  // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
+  // through the same path as a comment command. Nothing creates them yet but tests.
+
+  /**
+   * Records one request, pending (handled_at and refusal null). Its `seq` is greater than every request recorded
+   * before it. A `key` already stored is a no-op that reports the existing request with `created: false`.
+   */
+  recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }>;
+  /** Requests not yet handled, oldest (lowest seq) first, at most `limit`. Read-only. */
+  listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]>;
+  /**
+   * Marks request `seq` handled now, with `refusal` (null: applied). Conditional: only a pending request changes,
+   * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
+   */
+  markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
+  /** The request with `seq`, or null. Read-only. */
+  getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+
+  // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
+  // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
+  // SQL, and a filter value is always a bound parameter. Callers withhold secret columns themselves.
+
+  /** Every table of the backend's schema, by name, with its row count, columns and the order a page uses. */
+  listTables(): Promise<StoreTable[]>;
+  /**
+   * One page of `table`'s rows, newest first by its `order_by` columns, with the total row count (after the
+   * filter). `limit` defaults to TABLE_PAGE_DEFAULT and is capped at TABLE_PAGE_MAX; `offset` defaults to 0.
+   * Null, with no row read, when the table or the filter's column is not in the schema.
+   */
+  listTableRows(input: TablePageInput): Promise<TablePage | null>;
+}
+
+/** Rows a table page returns when no limit is given. */
+export const TABLE_PAGE_DEFAULT = 50;
+/** The most rows one table page returns. */
+export const TABLE_PAGE_MAX = 200;
+
+/** One table of the store's schema. */
+export interface StoreTable {
+  name: string;
+  rows: number;
+  /** Column names in schema order. */
+  columns: string[];
+  /** Primary-key columns in key order; empty when the table has none. */
+  primary_key: string[];
+  /**
+   * Columns a page sorts by, all descending: the first of created_at, at, started_at, updated_at the table
+   * has, then its primary key; empty for a table with neither (rows in the database's own order).
+   */
+  order_by: string[];
+}
+
+/** A cell as read: text, a number, or null. Other driver types (dates, big integers, bytes) become text. */
+export type TableCell = string | number | null;
+
+export interface TablePageInput {
+  table: string;
+  limit?: number;
+  offset?: number;
+  /** Exact-value match on one column, bound as a parameter. */
+  filter?: { column: string; value: string };
+}
+
+export interface TablePage {
+  rows: Record<string, TableCell>[];
+  /** Rows matching the filter (all rows without one). */
+  total: number;
+  /** The limit applied, after the default and the cap. */
+  limit: number;
+  offset: number;
 }
 
 export interface NewItemMessage {
@@ -668,6 +739,27 @@ export interface CliCommand extends NewCliCommand {
   seq: number;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
+}
+
+export interface NewAppCommandRequest {
+  /** Idempotency key, unique across all requests: a repeat with the same key stores nothing. */
+  key: string;
+  /** The factory user who sent the request, never a display name. */
+  actor: UserId;
+  /** The command's name, e.g. `approve`. Only `approve` is applied; any other gets a refusal. */
+  command: string;
+  /** The command's arguments, stored as JSON: `work_item_id`, and for `approve` an optional `note`. */
+  args: Record<string, unknown>;
+}
+
+export interface AppCommandRequest extends NewAppCommandRequest {
+  seq: number;
+  /** Store clock's now when the request was first recorded. */
+  created_at: Timestamp;
+  /** When the controller handled it (applied or refused); null while pending. */
+  handled_at: Timestamp | null;
+  /** The refusal text posted for it; null when applied or pending. */
+  refusal: string | null;
 }
 
 /** What a WorkerPool reports each tick. */

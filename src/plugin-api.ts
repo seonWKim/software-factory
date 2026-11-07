@@ -71,7 +71,8 @@ export interface Contexts {
   egress: BaseContext & { secrets: SecretStore };
   broker: BaseContext & { github: GitHubClient; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
   storage: BaseContext;
-  source: BaseContext & { github: GitHubClient };
+  /** `store`: what a source that keeps its intake in the store reads (the `local` source, issue #199). */
+  source: BaseContext & { github: GitHubClient; store: FactoryStore };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */

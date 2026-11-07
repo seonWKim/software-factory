@@ -650,7 +650,12 @@ export class Worker {
       // the run folder; none is kept on a wip branch.
       if (out.value.needs_human) return { needs_human: out.value.needs_human };
 
-      const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
+      let commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
+      // The run folder can start on the item's branch with an earlier run's work already on it (a run that pushed,
+      // then failed): an agent that only checks that work and adds nothing has not failed. Merges don't count.
+      if (commits.length === 0) {
+        commits = (await this.git(handle, ["rev-list", "--reverse", "--no-merges", `${baseSha}..HEAD`])).split("\n").filter(Boolean);
+      }
       if (commits.length === 0) {
         throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
       }
@@ -1768,6 +1773,7 @@ export class Worker {
       writable_paths: [],
       timeout_ms: this.cfg.run_timeout_ms,
       stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
+      first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },

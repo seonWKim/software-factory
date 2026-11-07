@@ -14,6 +14,15 @@ Plugins:
   - Enable: `"plugins": { "source": "github-issues", ... }`.
   - Secrets: none of its own (the shared client's `GitHubCredentials`). Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
 
+- `local`: `LocalSource` (issue #199). A poll source of type `local` that reads the store, never a forge, and makes no network call.
+  - `poll(cursor)` reads the CLI command log (`cli_commands`) after the cursor, at most 100 commands per poll; the rest come on the next poll. The cursor is the `seq` of the last command read, as a string (`intake:local`); none or empty means from the first command.
+  - Each command for a local item becomes one event. Its shape: `args.item` is the work item ID, `args.text` an optional string. The command is rebuilt as `/<command> <text>` and read by the same comment parser as GitHub comments, so the event kinds match (`/link` is a plain comment, an unknown word an `unknown_command`; `revise` has no `pr`, `resolve` has `pr: null`, `verdict` targets the item). The event's source is the item's own SourceRef, `comment_id` is the command's `key`, and the identity is provider `local` with subject the actor after `local:`. A command whose item is missing or not local gives no event; the cursor still moves past it.
+  - `postComment` stores one item message (`item_messages`) for the item with that source id, idempotent on the marker (a repeat stores nothing), and returns `url: null`. An id with no local item throws, naming the id. `markSeen`, `setStatus` and `closeIssue` do nothing: the store already holds the item's state.
+  - It does not write commands or create items, and emits no `item_requested`. Local identities go through the configured `AuthProvider` unchanged.
+  - Enable: `"plugins": { "source": "local", ... }`, or next to GitHub: `"source": ["github-issues", "local"]`.
+  - Secrets: none. Settings: none.
+  - Switch back: `"source": "github-issues"` (or drop `"local"` from the list).
+
 Other sources may implement `setStatus` as a no-op.
 
 **Several sources.** `plugins.source` takes one name or a list of names:

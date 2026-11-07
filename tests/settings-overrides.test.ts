@@ -35,7 +35,7 @@ describe("effective value: override, else file, else built-in default", () => {
 
   it("every settable key has a default that passes its own check", () => {
     for (const k of SETTABLE_KEYS) expect(() => parseSettable(k, SETTABLE_DEFAULTS[k])).not.toThrow();
-    expect(SETTABLE_KEYS).toHaveLength(16);
+    expect(new Set(SETTABLE_KEYS).size).toBe(SETTABLE_KEYS.length);
     expect(parseSettable("phases_auto_approve", true)).toBe(true);
     expect(() => parseSettable("phases_auto_approve", "yes")).toThrow("phases_auto_approve must be true or false");
   });

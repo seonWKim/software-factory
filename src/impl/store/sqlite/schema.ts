@@ -393,4 +393,26 @@ export const MIGRATIONS: readonly string[] = [
     created_at   TEXT NOT NULL
   );
   `,
+  // 22: app command requests (issue #244). One row per command request; read in `seq` order. `request_key` is the
+  // idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes. Table only: nothing
+  // reads or writes it yet.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 22.
+  `
+  CREATE TABLE IF NOT EXISTS app_command_requests (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  );
+  `,
+  // 23: app command request handling (issue #245). `handled_at`: when the controller applied or refused the
+  // request, NULL while pending. `refusal`: the refusal text posted for it, NULL when applied. Old rows stay pending.
+  // The index serves the pending read (handled_at IS NULL, seq order).
+  `
+  ALTER TABLE app_command_requests ADD COLUMN handled_at TEXT;
+  ALTER TABLE app_command_requests ADD COLUMN refusal TEXT;
+  CREATE INDEX IF NOT EXISTS app_command_requests_pending ON app_command_requests (handled_at, seq);
+  `,
 ];

@@ -1344,6 +1344,98 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("raw table reads (design §9 Data page)", () => {
+    // Every table the schema creates on both backends (MySQL adds its own step bookkeeping tables).
+    const DOMAIN_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
+
+    it("lists every table of the schema with its row count, columns, primary key and order", async () => {
+      const { store, clock } = await make();
+      const a = (await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t:1" } })).item;
+      clock.advance(1000);
+      await store.createWorkItem(issue(2), system);
+      await store.recordConflicts({ project: PROJECT_KEY, paths: ["src/a.ts", "src/b.ts"], event_key: "e1" });
+      const tables = await store.listTables();
+      const names = tables.map((t) => t.name);
+      expect(names).toEqual([...names].sort());
+      for (const t of DOMAIN_TABLES) expect(names, t).toContain(t);
+      if (name === "sqlite") expect(names).toEqual([...DOMAIN_TABLES, "schema_migrations"].sort());
+      else expect(names).toContain("schema_migrations");
+      const byName = new Map(tables.map((t) => [t.name, t]));
+      expect(byName.get("work_items")).toMatchObject({ rows: 2, primary_key: ["id"], order_by: ["created_at", "id"] });
+      expect(byName.get("work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at", "updated_at"]));
+      expect(byName.get("runs")).toMatchObject({ rows: 1 });
+      expect(byName.get("state_changes")).toMatchObject({ rows: 2, order_by: ["at", "id"] });
+      expect(byName.get("file_conflicts")).toMatchObject({ rows: 2, primary_key: ["project_key", "path", "event_key"], order_by: ["at", "project_key", "path", "event_key"] });
+      expect(byName.get("run_attempts")).toMatchObject({ rows: 0, primary_key: ["run_id", "attempt"], order_by: ["started_at", "run_id", "attempt"] });
+      expect(byName.get("cursors")).toMatchObject({ primary_key: ["name"], order_by: ["name"] });
+      expect(byName.get("claim_decisions")).toMatchObject({ rows: 0 });
+      expect(a.id).toMatch(/^wi_/);
+    });
+
+    it("a page is newest first by the order column, honours limit and offset, and returns the total", async () => {
+      const { store, clock } = await make();
+      const ids: string[] = [];
+      for (let n = 1; n <= 7; n++) {
+        ids.push((await store.createWorkItem(issue(n), system)).item.id);
+        clock.advance(1000);
+      }
+      const newest = [...ids].reverse();
+      const p1 = (await store.listTableRows({ table: "work_items", limit: 3 }))!;
+      expect(p1).toMatchObject({ total: 7, limit: 3, offset: 0 });
+      expect(p1.rows.map((r) => r.id)).toEqual(newest.slice(0, 3));
+      const p3 = (await store.listTableRows({ table: "work_items", limit: 3, offset: 6 }))!;
+      expect(p3.rows.map((r) => r.id)).toEqual(newest.slice(6));
+      expect(p3.total).toBe(7);
+      // Without a time column the primary key orders, descending.
+      for (const c of ["b", "c", "a"]) await store.advanceCursor(c, null, "v");
+      expect((await store.listTableRows({ table: "cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
+      // Every column comes back, numbers as numbers.
+      expect(p1.rows[0]).toMatchObject({ version: 1, title: null });
+    });
+
+    it("no limit gives 50 rows; a limit above 200 is capped at 200", async () => {
+      const { store } = await make();
+      // 205 one-row transactions, sent together: one after another they outlast the default timeout on MySQL
+      // (each commits on its own). The MySQL pool runs them side by side; SQLite queues them.
+      const created = await Promise.all(
+        Array.from({ length: 205 }, (_, n) => store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v")),
+      );
+      expect(created.every(Boolean)).toBe(true);
+      const def = (await store.listTableRows({ table: "cursors" }))!;
+      expect(def.rows).toHaveLength(50);
+      expect(def).toMatchObject({ limit: 50, total: 205 });
+      const big = (await store.listTableRows({ table: "cursors", limit: 1000 }))!;
+      expect(big.rows).toHaveLength(200);
+      expect(big.limit).toBe(200);
+    }, 30_000);
+
+    it("an exact-value filter returns only equal rows; a quote in the value is bound, not spliced", async () => {
+      const { store } = await make();
+      const quoted = `it's "quoted"; --`;
+      const q = (await store.createWorkItem({ ...issue(1), problem: quoted }, system)).item;
+      await store.createWorkItem(issue(2), system);
+      await store.createWorkItem({ ...issue(3), problem: "problem 2" }, system);
+      const hit = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: quoted } }))!;
+      expect(hit.total).toBe(1);
+      expect(hit.rows.map((r) => r.id)).toEqual([q.id]);
+      const two = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "problem 2" } }))!;
+      expect(two.total).toBe(2);
+      expect(two.rows.every((r) => r.problem === "problem 2")).toBe(true);
+      const inject = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
+      expect(inject).toMatchObject({ total: 0, rows: [] });
+      // A number column matches its text form.
+      expect((await store.listTableRows({ table: "work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
+    });
+
+    it("an unknown table or filter column is refused with null", async () => {
+      const { store } = await make();
+      expect(await store.listTableRows({ table: "nope" })).toBeNull();
+      expect(await store.listTableRows({ table: "work_items; DROP TABLE runs" })).toBeNull();
+      expect(await store.listTableRows({ table: "work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
+      expect((await store.listTables()).map((t) => t.name)).toContain("runs");
+    });
+  });
+
   describe("source inbox", () => {
     const slack = "slack_thread" as const;
     const ev = (n: number): SourceEvent => ({
@@ -1613,6 +1705,71 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
+  // App command requests (issue #245, migration 23 on both backends).
+  describe("app command requests (migration 23)", () => {
+    const owner = "github:1" as UserId;
+    const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({
+      key, actor: owner, command: over.command ?? "approve", args: over.args ?? { work_item_id: "wi_1" },
+    });
+
+    it("record stores a pending request; the same key again stores nothing and reports the first", async () => {
+      const { store, clock } = await make();
+      const first = await store.recordAppCommandRequest(req("k1", { args: { work_item_id: "wi_1", note: "small" } }));
+      expect(first).toEqual({
+        created: true,
+        request: {
+          seq: first.request.seq, key: "k1", actor: owner, command: "approve", args: { work_item_id: "wi_1", note: "small" },
+          created_at: clock.now().toISOString(), handled_at: null, refusal: null,
+        },
+      });
+      const again = await store.recordAppCommandRequest(req("k1", { command: "reject" }));
+      expect(again).toEqual({ created: false, request: first.request });
+      expect(await store.listPendingAppCommandRequests(10)).toEqual([first.request]);
+      expect(await store.getAppCommandRequest(first.request.seq)).toEqual(first.request);
+      expect(await store.getAppCommandRequest(first.request.seq + 1000)).toBeNull();
+    });
+
+    it("pending read is oldest first, at most `limit`, and leaves out handled requests", async () => {
+      const { store } = await make();
+      const seqs: number[] = [];
+      for (const k of ["a", "b", "c", "d"]) seqs.push((await store.recordAppCommandRequest(req(k))).request.seq);
+      expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+      expect((await store.listPendingAppCommandRequests(2)).map((r) => r.key)).toEqual(["a", "b"]);
+      expect(await store.listPendingAppCommandRequests(0)).toEqual([]);
+      await store.markAppCommandRequest(seqs[0]!, null);
+      await store.markAppCommandRequest(seqs[2]!, "no");
+      expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["b", "d"]);
+    });
+
+    it("a conditional mark sets handled_at and the refusal once; a second mark changes nothing", async () => {
+      const { store, clock } = await make();
+      const { request } = await store.recordAppCommandRequest(req("k1"));
+      clock.advance(1000);
+      const markedAt = clock.now().toISOString();
+      expect(await store.markAppCommandRequest(request.seq, "`approve` was not applied: no.")).toBe(true);
+      clock.advance(1000);
+      expect(await store.markAppCommandRequest(request.seq, null)).toBe(false);
+      expect(await store.markAppCommandRequest(request.seq, "other")).toBe(false);
+      expect(await store.getAppCommandRequest(request.seq)).toEqual({
+        ...request, handled_at: markedAt, refusal: "`approve` was not applied: no.",
+      });
+      // An applied request keeps a null refusal; an unknown seq marks nothing.
+      const applied = (await store.recordAppCommandRequest(req("k2"))).request;
+      expect(await store.markAppCommandRequest(applied.seq, null)).toBe(true);
+      expect(await store.getAppCommandRequest(applied.seq)).toMatchObject({ handled_at: clock.now().toISOString(), refusal: null });
+      expect(await store.markAppCommandRequest(applied.seq + 1000, null)).toBe(false);
+    });
+
+    it("two concurrent marks of one request: exactly one wins", async () => {
+      const { store } = await make();
+      const { request } = await store.recordAppCommandRequest(req("k1"));
+      const r = await Promise.all([store.markAppCommandRequest(request.seq, "a"), store.markAppCommandRequest(request.seq, "b")]);
+      expect(r.filter(Boolean)).toHaveLength(1);
+      const stored = (await store.getAppCommandRequest(request.seq))!;
+      expect(stored.refusal).toBe(r[0] ? "a" : "b");
+    });
+  });
+
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
   // 18 on both backends); notes and the last finish live in the run's input.
   describe("interactive sessions", () => {
