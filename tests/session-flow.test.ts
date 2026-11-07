@@ -34,6 +34,8 @@ const SPEC = {
   estimated_files: 1,
 };
 const SPEC_TEXT = JSON.stringify(SPEC);
+/** An access-key-shaped string the leak scanner flags, built here so no such literal sits in the repository. */
+const AWS_SHAPED = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
 
 async function harness(opts: { scanner?: EgressScanner; config?: Partial<FactoryConfig> } = {}) {
   const clock = new FakeClock();
@@ -284,7 +286,7 @@ describe("session note and status", () => {
     const it0 = await h.running(1);
     await h.start(it0.id);
     expect((await h.sessions.note({ text: "tried the parser first" })).ok).toBe(true);
-    const flagged = await h.sessions.note({ text: "key AKIAABCDEFGHIJKLMNOP leaked" });
+    const flagged = await h.sessions.note({ text: `key ${AWS_SHAPED} leaked` });
     expect(flagged.ok).toBe(false);
     expect(flagged.lines.join("\n")).toContain("aws_access_key");
     const [run] = await h.runs(it0.id, "interactive");
@@ -316,7 +318,7 @@ describe("session note and status", () => {
     expect((await h.runs(it0.id, "interactive"))[0]!.transcript_url).toBe("https://example.com/t/1");
     expect((await h.sessions.note({ transcript: "http://example.com/t/2" })).ok).toBe(true);
     expect((await h.runs(it0.id, "interactive"))[0]!.transcript_url).toBe("http://example.com/t/2");
-    const flagged = await h.sessions.note({ transcript: "https://example.com/?k=AKIAABCDEFGHIJKLMNOP" });
+    const flagged = await h.sessions.note({ transcript: `https://example.com/?k=${AWS_SHAPED}` });
     expect(flagged.ok).toBe(false);
     expect(flagged.lines.join("\n")).toContain("aws_access_key");
     expect((await h.runs(it0.id, "interactive"))[0]!.transcript_url).toBe("http://example.com/t/2");
