@@ -12,7 +12,7 @@ import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
 import { describeSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
-import { ensureLabel, prFlagLabels, statusLabels } from "./impl/source/github-issue-source.js";
+import { ensureLabel, prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { SchemaVersion } from "./interfaces/factory-store.js";
 import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";

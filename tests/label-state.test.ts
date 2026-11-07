@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";

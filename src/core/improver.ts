@@ -136,6 +136,7 @@ function cmp(a: string, b: string): number {
  */
 export const GATE_PATHS: readonly string[] = [
   "prompts/", "src/impl/broker/", "src/impl/egress/", "src/impl/secrets/", "src/impl/sandbox/", "src/impl/auth/",
+  "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
   "src/core/checks.ts", "src/core/policy.ts", ".claude/", "factory.config.json",
 ];
 

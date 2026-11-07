@@ -1,6 +1,6 @@
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../../src/impl/github/github-client.js";
-import type { PollContext } from "../../src/impl/source/github-issue-source.js";
+import type { PollContext } from "../../src/impl/github/github-issue-source.js";
 import type { GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { silent } from "./fakes.js";
 

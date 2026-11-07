@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ROLE_ACTIONS, authorize } from "../src/core/authorize.js";
 import { Controller } from "../src/core/controller.js";
 import type { Actor, UserId, WorkItem } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { newLinkCode } from "../src/impl/auth/link-code.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";

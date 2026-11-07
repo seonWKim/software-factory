@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { StaticGrant } from "../src/impl/grant/static.js";

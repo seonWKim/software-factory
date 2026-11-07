@@ -3,7 +3,7 @@ import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
