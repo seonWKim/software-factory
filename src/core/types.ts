@@ -271,6 +271,20 @@ export interface RunAttempt {
   tokens: number;
 }
 
+/**
+ * One host sleep a worker saw (design §5 Host sleep): one of its waits ended more than HOST_SLEEP_MS late.
+ * Ids, a timestamp and a number only. Keyed by (worker_id, woke_at), so recording it again keeps one row.
+ */
+export interface HostSleep {
+  worker_id: WorkerId;
+  /** When the worker's late wait ended (the worker's clock). */
+  woke_at: Timestamp;
+  /** How late the wait ended: the time since the wait started minus the time it asked for. */
+  gap_ms: number;
+  /** The run the worker held when it woke; null for an idle tick. */
+  run_id: RunId | null;
+}
+
 export interface Lease {
   owner: WorkerId;
   /** Fencing token. Strictly increases on every claim of the same run; stale holders are rejected by it. */

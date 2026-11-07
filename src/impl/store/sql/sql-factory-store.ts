@@ -10,6 +10,7 @@ import type {
   DependencyEdge,
   DependencyState,
   Handoff,
+  HostSleep,
   Run,
   RunAttempt,
   RunAttemptStatus,
@@ -127,6 +128,7 @@ import {
   rowToClaimDecision,
   rowToDependencyEdge,
   rowToHandoff,
+  rowToHostSleep,
   rowToRun,
   rowToRunAttempt,
   rowToStateChange,
@@ -1762,6 +1764,38 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
   }
 
+  // Host sleeps (design §5 Host sleep, issue #218): one row per (worker_id, woke_at).
+
+  async recordHostSleep(sleep: HostSleep): Promise<{ created: boolean; sleep: HostSleep }> {
+    const existing = await this.selectHostSleep(sleep.worker_id, sleep.woke_at);
+    if (existing) return { created: false, sleep: existing };
+    const created = await this.insertOnce(
+      this.db,
+      "INSERT INTO host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)",
+      [sleep.worker_id, sleep.woke_at, Math.round(sleep.gap_ms), sleep.run_id],
+    );
+    // A concurrent first write that lost the insert reports the row the other one stored.
+    return { created, sleep: (await this.selectHostSleep(sleep.worker_id, sleep.woke_at))! };
+  }
+
+  async listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]> {
+    const limit = Math.max(0, Math.floor(opts.limit));
+    // limit is an integer computed here, inlined as the other paged reads do.
+    const rows = opts.work_item_id === undefined
+      ? await this.db.all(`SELECT * FROM host_sleeps ORDER BY woke_at DESC, worker_id DESC LIMIT ${limit}`)
+      : await this.db.all(
+          `SELECT h.* FROM host_sleeps h JOIN runs r ON r.id = h.run_id WHERE r.work_item_id = ?
+           ORDER BY h.woke_at DESC, h.worker_id DESC LIMIT ${limit}`,
+          [opts.work_item_id],
+        );
+    return rows.map(rowToHostSleep);
+  }
+
+  private async selectHostSleep(worker_id: WorkerId, woke_at: Timestamp): Promise<HostSleep | null> {
+    const [row] = await this.db.all("SELECT * FROM host_sleeps WHERE worker_id = ? AND woke_at = ?", [worker_id, woke_at]);
+    return row ? rowToHostSleep(row) : null;
+  }
+
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
@@ -2331,7 +2365,7 @@ function rowToWorkerProcess(row: Row): WorkerProcess {
 }
 
 /** A table's order column is the first of these it has (design §9 Data page). */
-const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at"] as const;
+const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at", "woke_at"] as const;
 
 /**
  * A quoted identifier. Only names read from the database's catalog reach here; anything that is not a plain

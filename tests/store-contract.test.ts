@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
@@ -1772,6 +1772,54 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
+  describe("host sleeps (migration 28)", () => {
+    const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
+    const sleep = (over: Partial<HostSleep> = {}): HostSleep => ({ worker_id: w1, woke_at: at(0), gap_ms: 120_000, run_id: null, ...over });
+
+    it("stores a sleep with its ids, time and gap; recording it again keeps one row", async () => {
+      const { store } = await make();
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([]);
+      expect(await store.recordHostSleep(sleep())).toEqual({ created: true, sleep: sleep() });
+      // Same worker and wake time: the stored row, not a second one, even with another gap.
+      expect(await store.recordHostSleep(sleep({ gap_ms: 1 }))).toEqual({ created: false, sleep: sleep() });
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([sleep()]);
+    });
+
+    it("lists newest first, honours the limit, and keeps one row per worker for the same wake time", async () => {
+      const { store } = await make();
+      await store.recordHostSleep(sleep({ woke_at: at(1000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(3000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(2000) }));
+      await store.recordHostSleep(sleep({ worker_id: w2, woke_at: at(3000) }));
+      expect((await store.listHostSleeps({ limit: 10 })).map((h) => [h.worker_id, h.woke_at])).toEqual([
+        [w2, at(3000)], [w1, at(3000)], [w1, at(2000)], [w1, at(1000)],
+      ]);
+      expect((await store.listHostSleeps({ limit: 2 })).map((h) => h.woke_at)).toEqual([at(3000), at(3000)]);
+    });
+
+    it("concurrent writes of one sleep leave one row", async () => {
+      const { store } = await make();
+      const results = await Promise.all([store.recordHostSleep(sleep()), store.recordHostSleep(sleep())]);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([sleep()]);
+    });
+
+    it("by work item: only sleeps recorded during that item's runs", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } })).item;
+      const b = (await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "t2" } })).item;
+      const [ra] = await store.listRuns(a.id);
+      const [rb] = await store.listRuns(b.id);
+      await store.recordHostSleep(sleep({ woke_at: at(1000), run_id: ra!.id }));
+      await store.recordHostSleep(sleep({ woke_at: at(2000), run_id: rb!.id }));
+      await store.recordHostSleep(sleep({ woke_at: at(3000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(4000), run_id: ra!.id }));
+      expect((await store.listHostSleeps({ limit: 10, work_item_id: a.id })).map((h) => [h.woke_at, h.run_id])).toEqual([
+        [at(4000), ra!.id], [at(1000), ra!.id],
+      ]);
+      expect(await store.listHostSleeps({ limit: 10, work_item_id: "wi_none" as WorkItemId })).toEqual([]);
+    });
+  });
   // App command requests (issue #245, migration 23 on both backends).
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
@@ -2003,5 +2051,77 @@ describe("MySQL step 19 (worker-processes)", () => {
       process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
     });
     expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+  });
+});
+
+describe("migration 28 on an existing SQLite database", () => {
+  it("adds host_sleeps and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig28-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 27; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)").run(
+      "workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z",
+    );
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+      expect(await store.getCursor("poll")).toBe("c1");
+      const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
+      await store.recordHostSleep(s);
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 28 (host-sleeps)", () => {
+  const file = "0028-host-sleeps.sql";
+  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("is the repo's step after 27, a .sql file", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "host-sleeps")).toMatchObject({ number: 28, from: 27, kind: "sql", file });
+  });
+
+  it("creates the same columns as SQLite migration 28, idempotently (IF NOT EXISTS)", () => {
+    const columns = (text: string) =>
+      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
+    const sqlite = MIGRATIONS[27]!;
+    expect(sqlite).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
+    expect(columns(sql())).toEqual(columns(sqlite));
+    expect(columns(sqlite)).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
+    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-27 database: host_sleeps added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(27) }).apply(() => undefined);
+    await conn.query(
+      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
+    );
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+    expect(await store.getCursor("poll")).toBe("c1");
+    const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
+    await store.recordHostSleep(s);
+    expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
   });
 });
