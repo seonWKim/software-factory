@@ -37,10 +37,16 @@ export interface AgentRunSpec {
   model_class: "cheap" | "standard" | "strong";
   timeout_ms: number;
   /**
-   * Silence limit (design §5 Restarts): a run whose harness reports no progress for this long, while no tool
-   * call is in progress, ends `stalled`. Absent: the runner's default (300000). `timeout_ms` still bounds it.
+   * Silence limit (design §5 Restarts): a run whose model produces no output (system events do not count) for
+   * this long, while no tool call is in progress, ends `stalled`. Absent: the runner's default (300000).
+   * `timeout_ms` still bounds it.
    */
   stall_ms?: number;
+  /**
+   * First-output limit (design §5 Restarts, issue #215): a run whose model produces no output within this long
+   * of the start ends `stalled`. Absent: the runner's default (180000).
+   */
+  first_output_ms?: number;
   /** JSON Schema the final answer must match. */
   output_schema?: Record<string, unknown>;
   /** Abort when the worker loses its lease, or when `workers pause` stops the run (design §5 Pause). */

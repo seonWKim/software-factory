@@ -68,6 +68,7 @@ const spec = (): AgentRunSpec => ({
   model_class: "cheap",
   timeout_ms: TIMEOUT_MS,
   stall_ms: STALL_MS,
+  first_output_ms: STALL_MS,
   signal: new AbortController().signal,
 });
 
@@ -81,6 +82,7 @@ const RESULT = {
 };
 const text = (t: string) => ({ type: "assistant", message: { content: [{ type: "text", text: t }] } });
 const toolUse = (id: string) => ({ type: "assistant", message: { content: [{ type: "tool_use", id, name: "Bash", input: {} }] } });
+const retry = { type: "system", subtype: "api_retry", attempt: 1 };
 const toolResult = (id: string) => ({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] } });
 
 describe("ClaudeCodeRunner: stall detection", () => {
@@ -166,5 +168,77 @@ describe("ClaudeCodeRunner: stall detection", () => {
       return { exit_code: 1 };
     }).run(spec());
     expect(r).toMatchObject({ status: "rate_limited", reset_at: "2025-11-01T12:30:00.000Z" });
+  });
+});
+
+describe("ClaudeCodeRunner: only model output restarts the stall clock (issue #215)", () => {
+  /** Prints a system event every `every` ms until aborted. */
+  const systemOnly = (every: number) => async (opts: ExecOptions, out: (line: unknown) => void) => {
+    out({ type: "system", subtype: "init" });
+    while (!opts.signal?.aborted) {
+      await wait(every, opts.signal);
+      if (!opts.signal?.aborted) out(retry);
+    }
+    return { exit_code: 143 };
+  };
+
+  it("a CLI that prints only system events for longer than stall_ms ends `stalled`", async () => {
+    const started = Date.now();
+    const r = await runnerWith(systemOnly(STALL_MS / 4)).run({ ...spec(), first_output_ms: TIMEOUT_MS });
+    const took = Date.now() - started;
+    expect(r.status).toBe("stalled");
+    expect(r.error).toContain("stall_ms");
+    expect(took).toBeLessThan(TIMEOUT_MS / 3);
+  });
+
+  it("an assistant event before first_output_ms, then the result before stall_ms, ends `completed`", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      out({ type: "system", subtype: "init" });
+      await wait(STALL_MS * 2, opts.signal);
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(text("hello"));
+      await wait(STALL_MS * 0.5, opts.signal);
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run({ ...spec(), stall_ms: STALL_MS * 3, first_output_ms: STALL_MS * 3 });
+    expect(r.status).toBe("completed");
+  });
+
+  it("only system events, with first_output_ms shorter than stall_ms, end `stalled` at about first_output_ms", async () => {
+    const started = Date.now();
+    const r = await runnerWith(systemOnly(STALL_MS / 4)).run({ ...spec(), stall_ms: TIMEOUT_MS, first_output_ms: STALL_MS });
+    const took = Date.now() - started;
+    expect(r.status).toBe("stalled");
+    expect(r.error).toContain("first_output_ms");
+    expect(r.error).toContain(`${STALL_MS}`);
+    expect(took).toBeGreaterThanOrEqual(STALL_MS - 10);
+    expect(took).toBeLessThan(STALL_MS * 4);
+  });
+
+  it("system events after the last model output do not restart the stall clock", async () => {
+    const started = Date.now();
+    const r = await runnerWith(async (opts, out) => {
+      out(text("thinking"));
+      while (!opts.signal?.aborted) {
+        await wait(STALL_MS / 4, opts.signal);
+        if (!opts.signal?.aborted) out(retry);
+      }
+      return { exit_code: 143 };
+    }).run({ ...spec(), first_output_ms: TIMEOUT_MS });
+    expect(r.status).toBe("stalled");
+    expect(Date.now() - started).toBeLessThan(STALL_MS * 4);
+  });
+
+  it("a tool_result restarts the stall clock", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      out(toolUse("toolu_1"));
+      await wait(STALL_MS / 2, opts.signal);
+      out(toolResult("toolu_1"));
+      await wait(STALL_MS * 0.7, opts.signal);
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run(spec());
+    expect(r.status).toBe("completed");
   });
 });

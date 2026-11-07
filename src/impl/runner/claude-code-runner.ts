@@ -236,7 +236,8 @@ export class ClaudeCodeRunner implements AgentRunner {
     });
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
-    const watch = new StallWatch(stallMs);
+    const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
+    const watch = new StallWatch(stallMs, firstOutputMs);
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
       const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
@@ -256,7 +257,10 @@ export class ClaudeCodeRunner implements AgentRunner {
     const usage = usageOf(parsed);
     if (spec.signal.aborted) return { status: "aborted", output: null, transcript: result.stdout, usage };
     if (watch.stalled) {
-      return { status: "stalled", output: null, transcript: result.stdout, usage, error: `no output for ${stallMs} ms with no tool call open` };
+      const error = watch.stalled === "first_output"
+        ? `no model output within first_output_ms (${firstOutputMs} ms)`
+        : `no model output for stall_ms (${stallMs} ms) with no tool call open`;
+      return { status: "stalled", output: null, transcript: result.stdout, usage, error };
     }
     if (result.timed_out) return { status: "timed_out", output: null, transcript: result.stdout, usage };
 
@@ -360,11 +364,17 @@ function parseJsonResult(stdout: string): ClaudeJsonResult | null {
 /** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
 export const DEFAULT_STALL_MS = 300_000;
 
+/** The first-output limit when the spec gives none (design §5 Restarts; `first_output_ms`, issue #215). */
+export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
+
 /**
- * Stall detection over the CLI's streamed events (design §5 Restarts). Every stdout chunk is activity and
- * restarts the clock. Tool calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks
- * close it): while any is open the clock does not run, since a test run in Bash can be silent for minutes; a
- * hung tool is still bounded by the run timeout. When the clock runs out, `signal` aborts and `stalled` is set.
+ * Stall detection over the CLI's streamed events (design §5 Restarts). Only model output restarts the clock:
+ * an `assistant` event, or a `tool_result` block. System events (init, API retries) print before the model
+ * answers and are not activity (issue #215). Before the first model output the clock is the shorter of
+ * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
+ * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
+ * open the clock does not run, since a test run in Bash can be silent for minutes; a hung tool is still bounded
+ * by the run timeout. When the clock runs out, `signal` aborts and `stalled` names which limit ran out.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
@@ -372,9 +382,13 @@ class StallWatch {
   private readonly open = new Set<string>();
   private partial = "";
   private done = false;
-  stalled = false;
+  private seenModel = false;
+  stalled: false | "first_output" | "silence" = false;
 
-  constructor(private readonly ms: number) {
+  constructor(
+    private readonly ms: number,
+    private readonly firstOutputMs: number,
+  ) {
     this.arm();
   }
 
@@ -389,7 +403,10 @@ class StallWatch {
     // A line longer than any event we care about is not kept whole: only its tool blocks matter, and an event
     // that large is mostly a tool result's content.
     if (this.partial.length > PARTIAL_LIMIT) this.partial = "";
-    for (const line of lines) this.track(line);
+    let model = false;
+    for (const line of lines) if (this.track(line)) model = true;
+    if (!model) return;
+    this.seenModel = true;
     this.arm();
   }
 
@@ -399,14 +416,21 @@ class StallWatch {
     this.timer = null;
   }
 
-  private track(line: string): void {
+  /** Tracks the line's tool blocks; true when it is model output (an assistant event or a tool result). */
+  private track(line: string): boolean {
     const event = line.trim().startsWith("{") ? parseObject(line) : null;
-    const message = event?.message as { content?: unknown } | undefined;
-    if (!Array.isArray(message?.content)) return;
+    if (!event) return false;
+    let model = event.type === "assistant";
+    const message = event.message as { content?: unknown } | undefined;
+    if (!Array.isArray(message?.content)) return model;
     for (const block of message.content as { type?: unknown; id?: unknown; tool_use_id?: unknown }[]) {
       if (block?.type === "tool_use" && typeof block.id === "string") this.open.add(block.id);
-      if (block?.type === "tool_result" && typeof block.tool_use_id === "string") this.open.delete(block.tool_use_id);
+      if (block?.type === "tool_result") {
+        model = true;
+        if (typeof block.tool_use_id === "string") this.open.delete(block.tool_use_id);
+      }
     }
+    return model;
   }
 
   /** Restarts the clock when no tool call is open; stops it while one is. */
@@ -414,10 +438,11 @@ class StallWatch {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     if (this.done || this.open.size > 0) return;
+    const first = !this.seenModel && this.firstOutputMs <= this.ms;
     this.timer = setTimeout(() => {
-      this.stalled = true;
+      this.stalled = first ? "first_output" : "silence";
       this.ctl.abort();
-    }, this.ms);
+    }, first ? this.firstOutputMs : this.ms);
   }
 }
 
