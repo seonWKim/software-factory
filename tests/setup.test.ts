@@ -71,10 +71,12 @@ describe("setup and doctor: status labels", () => {
     const client = new LabelsClient();
     client.names.add("sf: triaging");
     const checks = await statusLabelChecks(client, repo, "sf: ");
-    expect(checks).toHaveLength(8);
+    // Eight status labels and the PR flag label `incomplete` (issue #229).
+    expect(checks).toHaveLength(9);
     expect(checks[0]).toEqual({ ok: true, msg: 'status label "sf: triaging" exists' });
     const missing = checks.filter((c) => !c.ok);
-    expect(missing).toHaveLength(7);
+    expect(missing).toHaveLength(8);
+    expect(missing.map((c) => c.msg)).toContain('status label "sf: incomplete" exists (run: npm run setup)');
     expect(missing.every((c) => c.warn === true)).toBe(true);
     expect(missing.map((c) => c.msg)).toContain('status label "sf: needs approval" exists (run: npm run setup)');
   });

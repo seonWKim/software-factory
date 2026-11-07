@@ -192,6 +192,9 @@ export interface WipRef {
   summary: string;
   next_steps: string;
   conflicts: string[];
+  /** The implementer's missing work and differences from the spec, for the retry's PR body. Absent on older rows. */
+  missing?: string[];
+  deviations?: string[];
 }
 
 /**

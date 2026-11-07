@@ -54,8 +54,19 @@ export interface ImplementOutput {
   summary: string;
   /** "" when the agent returned needs_human without it. */
   next_steps: string;
+  /**
+   * Work the spec asks for that this change does not do, one entry each (issue #229): a needed file outside
+   * the allowed paths, a step left for a follow-up. Non-empty marks the PR incomplete. [] when absent.
+   */
+  missing: string[];
+  /** Where the change differs from the spec on purpose, one entry each. [] when absent. */
+  deviations: string[];
   needs_human?: NeedsHuman;
 }
+
+/** Entries kept per `missing` / `deviations` list, and characters per entry. */
+export const PR_NOTE_MAX_ITEMS = 10;
+export const PR_NOTE_MAX_CHARS = 300;
 
 export interface ReviewOutput {
   verdict: "pass" | "bug";
@@ -128,6 +139,18 @@ export const IMPLEMENT_SCHEMA = {
   properties: {
     summary: { type: "string", description: "Required unless needs_human is set." },
     next_steps: { type: "string", description: "Required unless needs_human is set." },
+    missing: {
+      type: "array",
+      maxItems: PR_NOTE_MAX_ITEMS,
+      items: { type: "string", maxLength: PR_NOTE_MAX_CHARS },
+      description: "Work the spec asks for that this change does not do (for example a needed file outside the allowed paths). Empty or absent when the work is complete.",
+    },
+    deviations: {
+      type: "array",
+      maxItems: PR_NOTE_MAX_ITEMS,
+      items: { type: "string", maxLength: PR_NOTE_MAX_CHARS },
+      description: "Where the change differs from the spec on purpose. Empty or absent when it does not.",
+    },
     needs_human: NEEDS_HUMAN_SCHEMA,
   },
 };
@@ -234,18 +257,30 @@ export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> 
   return { ok: true, value: { reason: v.reason.trim(), question: v.question.trim() } };
 }
 
-/** An implement or resolve answer. With needs_human, summary and next_steps may be left out (they become ""). */
+/**
+ * An implement or resolve answer. With needs_human, summary and next_steps may be left out (they become "").
+ * `missing` and `deviations` are optional lists; absent is [].
+ */
 export function parseImplement(v: unknown): Validation<ImplementOutput> {
   if (!isObj(v)) return { ok: false, error: "summary/next_steps" };
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
+  const notes = (x: unknown) => x === undefined || (isStrs(x) && x.length <= PR_NOTE_MAX_ITEMS && x.every((e) => e.length <= PR_NOTE_MAX_CHARS));
+  if (!notes(v.missing) || !notes(v.deviations)) return { ok: false, error: "missing/deviations" };
+  const lists = {
+    missing: ((v.missing as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
+    deviations: ((v.deviations as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
+  };
   if (ask.value) {
     const optional = (x: unknown) => x === undefined || isStr(x);
     if (!optional(v.summary) || !optional(v.next_steps)) return { ok: false, error: "summary/next_steps" };
-    return { ok: true, value: { summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", needs_human: ask.value } };
+    return {
+      ok: true,
+      value: { summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", ...lists, needs_human: ask.value },
+    };
   }
   if (!isStr(v.summary) || !isStr(v.next_steps)) return { ok: false, error: "summary/next_steps" };
-  return { ok: true, value: { summary: v.summary, next_steps: v.next_steps } };
+  return { ok: true, value: { summary: v.summary, next_steps: v.next_steps, ...lists } };
 }
 
 export function parseReview(v: unknown): Validation<ReviewOutput> {
