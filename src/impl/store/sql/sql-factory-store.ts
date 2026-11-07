@@ -772,6 +772,33 @@ export class SqlFactoryStore implements FactoryStore {
     return at !== null && at > this.now() ? at : null;
   }
 
+  async endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }> {
+    if (name === MODEL_STALL_SINCE || name === MODEL_ANSWERED) throw new Error(`${name} is not a pause of its own; end model_stall`);
+    if (name === MODEL_STALL) return this.endStall();
+    // Conditional: only a row still in effect moves, so a second call, or one with no pause, writes nothing.
+    const now = this.now();
+    const ended = await this.db.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ?", [now, name, now]);
+    return { ended: ended === 1 };
+  }
+
+  /** Ends a stall pause as an answered probe would: model_answered moves to the probe time, under the claim lock. */
+  private async endStall(): Promise<{ ended: boolean }> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx) => {
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const rows = new Map(
+        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
+          .map((r) => [r.name as string, r.resume_at as Timestamp]),
+      );
+      const probeAt = rows.get(MODEL_STALL);
+      if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, probeAt]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [probeAt, MODEL_ANSWERED, probeAt]);
+      }
+      return { ended: true };
+    });
+  }
+
   // Worker pauses (design §5 Pause)
 
   async pauseWorkers(input: { count: number } | { all: true }, by: string): Promise<{ paused: (WorkerId | "*")[] }> {
