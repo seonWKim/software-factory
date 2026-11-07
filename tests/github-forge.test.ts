@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
-import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { PollContext } from "../src/impl/source/github-issue-source.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import { issueRef, recordingLog } from "./helpers/fakes.js";

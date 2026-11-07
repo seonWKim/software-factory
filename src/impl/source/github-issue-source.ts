@@ -194,7 +194,7 @@ export function githubHistorySince(github: { history_since?: unknown } | undefin
 
 /**
  * GitHub issues as a source: issues, their comments, base-branch commits and dependency links. Pull requests are
- * the GitHub forge's (src/impl/forge/github-forge.ts, issue #273), which posts PR comments and labels through this
+ * the GitHub forge's (src/impl/github/github-forge.ts, issue #273), which posts PR comments and labels through this
  * class's store-backed postComment and setStatus.
  */
 export class GitHubIssueSource implements PollSource, DependencySource {

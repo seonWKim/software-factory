@@ -12,7 +12,8 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { alarmStep } from "./alarms.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
   type DependencyVerdict,
@@ -104,6 +105,7 @@ import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
+import type { ChildRestart } from "../interfaces/updater.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -195,6 +197,11 @@ export interface ControllerDeps {
    * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
    */
   sandbox?: Sandbox;
+  /**
+   * The supervisor's restart list on this host (design 05-alarms), read by the alarm step each poll. Absent: no
+   * restart alarm (in-place or none updater, or a test).
+   */
+  restarts?: () => Promise<readonly ChildRestart[]>;
   /**
    * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
@@ -435,6 +442,8 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
+      // Store reads and the restart list, on the poll interval like the steps it looks across (design 05-alarms).
+      if (due) await this.guard("alarms", () => this.alarmsStep());
       // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
       await this.guard("commands", () => this.commandsStep());
       await this.guard("cli mirror", () => this.mirrorStep());
@@ -855,6 +864,26 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One alarm step (design 05-alarms) with the settings as of this tick. */
+  async tickAlarms(): Promise<void> {
+    await this.live.refresh();
+    await this.alarmsStep();
+  }
+
+  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  private async alarmsStep(): Promise<void> {
+    const c = this.cfg;
+    await alarmStep(
+      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      {
+        alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
+        alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
+        alarm_restart_count: c.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
+        probe_interval_ms: c.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      },
+    );
   }
 
   /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
