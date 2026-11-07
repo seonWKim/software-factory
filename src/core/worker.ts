@@ -1,7 +1,7 @@
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
-import { type FloorHit, requiredTier } from "./diff-gate.js";
+import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import type { Logger } from "./log.js";
 import {
@@ -137,6 +137,13 @@ const TAIL_CHARS = 2000;
 const MAX_CONFLICT_COMMITS = 30;
 /** Characters of the agent's summary and next steps kept on a wip ref, for the retry's PR body and handoffs. */
 const WIP_TEXT_CHARS = 4000;
+/**
+ * How often the worker reads the branch diff against the base while an implement run's agent step runs (design §4,
+ * issue #217). A constant, not a config key: over max_diff_lines or max_diff_files the agent is stopped.
+ */
+export const DIFF_CHECK_MS = 30_000;
+/** The wip ref's next steps of a run the mid-run diff check stopped. */
+const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
 
 /**
  * Env for every trusted git call (worker and broker) in a run folder. GIT_CONFIG_COUNT entries rank as command-line
@@ -214,6 +221,13 @@ interface ResumePlan {
   session: string | null;
   /** The reattached folder, or null: the run works in a new one. */
   folder: SandboxHandle | null;
+}
+
+/** The mid-run diff check of one implement agent step: `over` is the diff that went over budget, once it did. */
+interface DiffBudget {
+  limits: { max_diff_lines: number; max_diff_files: number };
+  stop: AbortController;
+  over: DiffStat | null;
 }
 
 /** Scratch for one execute() call: the pause request and every agent session the run started. */
@@ -623,14 +637,24 @@ export class Worker {
       const previous = await this.previousContext(item);
       const notes = await this.approverNotes(item);
       const feedback = await this.prFeedback(item, run);
+      // The item's project's limits, as the size gate reads them (design §4, issue #217).
+      const { max_diff_lines, max_diff_files } = settingValues(item.project, this.cfg.settings, this.d.learned);
+      const limits = { max_diff_lines, max_diff_files };
+      const budget = renderBudget(limits);
       const prompt = plan?.session
-        ? renderSessionResume(plan.state.head)
+        ? [renderSessionResume(plan.state.head), budget].join("\n\n")
         : await this.withIndex(
-          [renderWorkItem(item, { includeSpec: true }), notes, feedback, previous, plan ? renderNewSessionResume(restored ? plan.state.head : null) : ""]
-            .filter(Boolean).join("\n\n"),
+          [
+            renderWorkItem(item, { includeSpec: true }), budget, notes, feedback, previous,
+            plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
+          ].filter(Boolean).join("\n\n"),
           specQuery(item),
         );
-      const result = await this.agent(run, item, handle, signal, {
+      // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
+      const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
+      const stopWatch = new AbortController();
+      const watching = this.watchDiff(run, handle, baseSha, dirs, watch, stopWatch.signal);
+      const result = await this.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), {
         system_prompt: this.d.prompts.implement,
         prompt,
         tools: WRITE_TOOLS,
@@ -640,9 +664,18 @@ export class Worker {
         writable_paths: [],
         env_allowlist: gitIdentity(this.cfg.agent_git_identity),
       }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null }).catch(async (err: unknown) => {
+        stopWatch.abort();
+        await watching;
+        // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
+        // failure of the step (a flagged transcript, an agent error) keeps its own code.
+        const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
+        if (watch.over && stopped && !signal.aborted) throw await this.overBudget(run, item, handle, ctx, start, dirs, watch);
         if (err instanceof RunPaused) throw await this.pauseImplement(run, item, handle, ctx, start, dirs, err);
         throw err;
-      });
+      }).finally(() => stopWatch.abort());
+      await watching;
+      // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
+      if (watch.over) throw await this.overBudget(run, item, handle, ctx, start, dirs, watch);
       const out = parseImplement(result.output);
       if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
       await this.distrustAgentGit(handle, dirs);
@@ -753,6 +786,85 @@ export class Worker {
       deviations: work.deviations,
       ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}),
     };
+  }
+
+  /**
+   * The mid-run diff check (design §4, issue #217): every DIFF_CHECK_MS on the injected clock while the implement
+   * agent step runs, the committed branch diff against the base resolved before the run (three-dot, as the size
+   * gate). Over max_diff_lines or max_diff_files: `over` is set and the agent step is aborted. Exactly at a limit
+   * passes. A failed read is logged and tried again next interval; the post-sync size gate still runs.
+   */
+  private async watchDiff(run: Run, handle: SandboxHandle, baseSha: string, dirs: string, b: DiffBudget, stop: AbortSignal): Promise<void> {
+    while (!stop.aborted) {
+      try {
+        await this.d.clock.sleep(DIFF_CHECK_MS, stop);
+      } catch {
+        return;
+      }
+      if (stop.aborted) return;
+      const stat = await this.branchDiff(handle, baseSha, dirs).catch((err: unknown) => {
+        this.d.log.warn("mid-run diff check failed; trying again", { run_id: run.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+        return null;
+      });
+      if (stop.aborted) return;
+      if (stat && overSizeLimit(stat, b.limits)) {
+        b.over = stat;
+        this.d.log.warn("diff over budget; stopping the agent", { run_id: run.id, lines: stat.lines, files: stat.files });
+        b.stop.abort(new Error("diff_too_large"));
+        return;
+      }
+    }
+  }
+
+  /**
+   * The branch diff while the agent may still be writing its git folder: HEAD is read through the trusted env, then
+   * the diff runs in an empty git folder the worker makes for it, reading only the run's objects. No repository,
+   * global or system config is read there, and hooks are off, so nothing the agent wrote into its `.git` (diff
+   * drivers, textconv, includes, hooks) changes the counts. The folder is removed after the read.
+   */
+  private async branchDiff(handle: SandboxHandle, baseSha: string, dirs: string): Promise<DiffStat> {
+    const head = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"])).trim();
+    const made = await this.d.sandbox.exec(handle, ["mktemp", "-d"], { env: this.d.toolEnv });
+    const dir = made.stdout.trim();
+    if (made.exit_code !== 0 || dir === "") throw new Error(`mktemp: ${made.stderr.trim()}`);
+    const isolated = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+    try {
+      await this.gitWith(handle, ["init", "--bare", "--quiet", "--template=", dir], isolated);
+      const numstat = await this.gitWith(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...${head}`], {
+        ...isolated,
+        GIT_DIR: dir,
+        GIT_OBJECT_DIRECTORY: `${dirs.split("\n").at(-1)}/objects`,
+      });
+      return diffStat(numstat);
+    } finally {
+      await this.d.sandbox.exec(handle, ["rm", "-rf", "--", dir], { env: this.d.toolEnv }).catch(() => undefined);
+    }
+  }
+
+  /**
+   * A run the mid-run diff check stopped (design §4, issue #217): after the agent stopped, its git config is
+   * distrusted as after any agent step, its commits since `start` go to the run's wip branch (no PR branch push,
+   * no PR), and the run fails with `diff_too_large`, its detail giving both counts and both limits. No sync,
+   * gate, check or later agent step runs. No commits: nothing is pushed.
+   */
+  private async overBudget(
+    run: Run, item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, start: string, dirs: string, b: DiffBudget,
+  ): Promise<RunFailure> {
+    const failure = new RunFailure("diff_too_large", sizeDetail(b.over!, b.limits));
+    await this.distrustAgentGit(handle, dirs);
+    const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
+    const commits = (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
+    if (commits === 0) return failure;
+    return this.keepWip(run, ctx, handle, failure, {
+      branch: wipBranchFor(item, this.cfg.branch_prefix, run.id),
+      head,
+      commits,
+      summary: "",
+      next_steps: BUDGET_NEXT_STEPS,
+      conflicts: [],
+      missing: [],
+      deviations: [],
+    }, false);
   }
 
   /**
@@ -2077,6 +2189,16 @@ function renderSessionResume(wip: string | null): string {
     "",
     `The factory paused this run and has now resumed it in the same session and folder.${wip ? ` Your uncommitted changes, if there were any, were committed as one WIP commit; the branch head is \`${wip.slice(0, 8)}\`.` : ""}`,
     "Do not redo steps you already finished. Continue from where you stopped, then give your final answer in the required format.",
+  ].join("\n");
+}
+
+/** The implement prompt's diff budget (design §4, issue #217): the item's project's limits, and what going over does. */
+function renderBudget(limits: { max_diff_lines: number; max_diff_files: number }): string {
+  return [
+    "## Diff budget",
+    "",
+    `This run may change at most ${limits.max_diff_lines} lines (\`max_diff_lines\`, added plus deleted) in at most ${limits.max_diff_files} files (\`max_diff_files\`), counted on your committed branch diff against the base.`,
+    `While you work, the factory reads that diff every ${DIFF_CHECK_MS / 1000} seconds. A diff over either limit stops this run at once: it fails with \`diff_too_large\`, your commits are kept on a wip branch, and no pull request is opened. Exactly at a limit is fine.`,
   ].join("\n");
 }
 

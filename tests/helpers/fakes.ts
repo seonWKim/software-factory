@@ -404,6 +404,8 @@ export class FakeSandbox implements Sandbox {
   numstat: string | null = null;
   /** Every git command line the worker ran, for asserting on order and arguments. */
   gitCalls: string[] = [];
+  /** The env of each git command, in the same order as `gitCalls`. */
+  gitEnvs: Readonly<Record<string, string>>[] = [];
   /** Every non-git command (argv joined by spaces), e.g. the install and test gate commands. */
   commands: string[] = [];
 
@@ -450,17 +452,19 @@ export class FakeSandbox implements Sandbox {
   async reattach(id: string): Promise<SandboxHandle | null> {
     return this.live.has(id) ? { id, workdir: `/wt/${id.slice(3)}` } : null;
   }
-  async exec(_h: SandboxHandle, cmd: readonly string[], _o: ExecOptions): Promise<ExecResult> {
+  async exec(_h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
     const res = (exit_code: number, stdout = ""): ExecResult => ({ exit_code, signal: null, stdout, stderr: "", timed_out: false });
     const out = (stdout: string): ExecResult => res(0, stdout);
     if (cmd[0] !== "git") {
       const line = cmd.join(" ");
       this.commands.push(line);
       if (cmd[0] === "cat") return out(this.files[cmd.at(-1)!] ?? "");
+      if (cmd[0] === "mktemp") return this.exits[line] ? res(this.exits[line]!) : out(`/tmp/sf-fake.${this.commands.length}\n`);
       return res(this.exits[line] ?? 0);
     }
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
+    this.gitEnvs.push({ ...o.env });
     if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: `fatal: ${args.split(" ")[0]} failed` };
     if (args === "rev-parse HEAD") return out(this.head);
     const ref = args.match(/^rev-parse --verify --end-of-options (.+)\^\{commit\}$/)?.[1];
@@ -504,18 +508,22 @@ type Script = Partial<
 
 export class FakeRunner implements AgentRunner {
   specs: AgentRunSpec[] = [];
+  /** The steps whose signal was aborted when their script returned: what a real runner would have stopped. */
+  aborted: AgentRunSpec[] = [];
   constructor(public script: Script) {}
 
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
     this.specs.push(spec);
     const fn = this.script[spec.role];
     if (!fn) throw new Error(`no script for ${spec.role}`);
+    const scripted = await fn(spec);
+    if (spec.signal.aborted) this.aborted.push(spec);
     return {
       status: "completed",
       output: null,
       transcript: "{}",
       usage: { input_tokens: 10, output_tokens: 5, cost_usd: null },
-      ...(await fn(spec)),
+      ...scripted,
     };
   }
 }
@@ -666,7 +674,7 @@ export const triageSpec = {
  * auto-approved (spec_gate_min_tier 3, triageSpec is tier 2), so implement and review follow triage at once.
  */
 export async function pipeline(opts: {
-  implement?: (spec: AgentRunSpec) => Partial<AgentRunResult>;
+  implement?: (spec: AgentRunSpec) => Partial<AgentRunResult> | Promise<Partial<AgentRunResult>>;
   config?: Partial<FactoryConfig>;
   scanner?: EgressScanner;
 } = {}) {
