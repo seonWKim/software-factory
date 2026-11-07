@@ -46,6 +46,7 @@ export const TOP_LEVEL_KEYS = [
   "stall_ms",
   "probe_interval_ms",
   "workers",
+  "max_workers",
   "state_dir",
   "worktrees_dir",
   "agent_git_identity",

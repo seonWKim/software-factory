@@ -3,6 +3,7 @@
 // the same order for the same store and query. Reads only.
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
+import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
 import type { Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
@@ -44,6 +45,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   for (const r of await c.store.listRunsByStatus(["running"], LIST_LIMIT)) active.set(r.work_item_id, r); // running wins
 
   const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts })[] = [];
+  const phases = items.filter((it) => it.parent_id !== null);
   for (const it of items) {
     const run = active.get(it.id);
     const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
@@ -60,7 +62,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
         ? { kind: run.kind, status: run.status, heartbeat_at: run.updated_at, paused_at: run.paused_at }
         : null,
       dependents: 0,
-      waiting_on: 0,
+      ...waitingOn(it, phases),
       conflicts: conflictCounts(await c.store.listRuns(it.id), changes),
     });
   }
@@ -95,4 +97,26 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
 export function waitingSince(it: WorkItem, changes: readonly StateChange[]): string {
   const set = changes.filter((sc) => sc.changes.blocked_on !== undefined || sc.changes.blocked_reason !== undefined).at(-1);
   return set?.at ?? it.created_at;
+}
+
+/**
+ * What a split item waits on, from the listed items: a held phase (`phase_hold`) waits on the phase before it,
+ * a split parent (`phases_open`) on its open phases. Anything else: nothing.
+ */
+function waitingOn(it: WorkItem, phases: readonly WorkItem[]): { waiting_on: number; waiting_on_number: number | null } {
+  if (it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD && it.phase !== null) {
+    const before = phases.find((p) => p.parent_id === it.parent_id && p.phase === it.phase! - 1 && p.stage !== "CLOSED");
+    return before ? { waiting_on: 1, waiting_on_number: issueNumber(before) } : { waiting_on: 0, waiting_on_number: null };
+  }
+  if (it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN) {
+    const open = phases.filter((p) => p.parent_id === it.id && p.stage !== "CLOSED");
+    return { waiting_on: open.length, waiting_on_number: open.length === 1 ? issueNumber(open[0]!) : null };
+  }
+  return { waiting_on: 0, waiting_on_number: null };
+}
+
+/** The issue number at the end of a source id (`owner/name#12`), else null. */
+function issueNumber(it: WorkItem): number | null {
+  const m = /#(\d+)$/.exec(it.source.id);
+  return m ? Number(m[1]) : null;
 }

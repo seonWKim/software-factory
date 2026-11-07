@@ -48,10 +48,19 @@ describe("effective value: override, else file, else built-in default", () => {
     expect(settingValues("github:github.com:other", r.layers)).toMatchObject({ max_attempts: 2, max_diff_files: 40 });
   });
 
-  it("workers is capped at the file's value on read", () => {
+  it("workers is capped at the file's value on read when the file has no max_workers", () => {
     const r = resolveSettings(base, [row("workers", 9)]);
     expect(r.values.workers).toBe(5);
     expect(r.workers_cap).toBe(5);
+  });
+
+  it("with max_workers, a workers override goes above the file's workers up to max_workers", () => {
+    const wide = { ...base, max_workers: 8 };
+    expect(resolveSettings(wide, [row("workers", 7)]).values.workers).toBe(7);
+    const r = resolveSettings(wide, [row("workers", 9)]);
+    expect(r.values.workers).toBe(8);
+    expect(r.workers_cap).toBe(8);
+    expect(resolveSettings(wide, []).values.workers).toBe(5);
   });
 });
 

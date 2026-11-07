@@ -63,13 +63,23 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     expect(d.resolved).toBe(0);
   });
 
-  it("workers above the config file's workers is refused with the reason; nothing is written", async () => {
+  it("workers above the config file's max_workers (absent: its workers) is refused with the reason; nothing is written", async () => {
     const { store } = await make();
     const r = await run(deps(store), "set", "workers", "6");
     expect(r.ok).toBe(false);
-    expect(r.lines[0]).toContain("workers 6 is above the config file's workers (5)");
+    expect(r.lines[0]).toContain("workers 6 is above the config file's max_workers (5)");
     expect(await store.listSettingOverrides()).toEqual([]);
     expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("workers above the file's workers but within max_workers is stored: the pool raises it live", async () => {
+    const { store } = await make();
+    const d = { ...deps(store), base: { ...base, max_workers: 8 } };
+    const r = await run(d, "set", "workers", "8");
+    expect(r.ok).toBe(true);
+    expect(await store.listSettingOverrides()).toMatchObject([{ key: "workers", value: "8" }]);
+    const refused = await run(d, "set", "workers", "9");
+    expect(refused.lines[0]).toContain("workers 9 is above the config file's max_workers (8)");
   });
 
   it("heartbeat × 2 ≥ lease is refused, using the other key's effective value", async () => {

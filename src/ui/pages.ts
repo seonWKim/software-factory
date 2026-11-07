@@ -121,15 +121,17 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
   const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const rows = await listRows({ store: d.store, w: c.w, now: c.now, lease_ms: d.lease_ms }, f);
   const sections = [
+    // What the operator acts on first (design §9): the process, what runs and waits, the ranked list, health.
+    // Totals and cost are background and go last.
     await factorySection(c),
-    await totalsSection(c),
-    await costSection(c),
-    filtersSection(f, facetCounts(rows, f)),
-    await itemsSection(c, applyFilters(rows, f), f),
-    await d.health.section(d.scanner, { refresh: healthRefresh }),
     await runningSection(c),
     await queueSection(c),
     await pausedSection(c),
+    filtersSection(f, facetCounts(rows, f)),
+    await itemsSection(c, applyFilters(rows, f), f),
+    await d.health.section(d.scanner, { refresh: healthRefresh }),
+    await totalsSection(c),
+    await costSection(c),
   ];
   const body =
     `<h1>Status</h1><p class="muted">Read-only. As of <time>${esc(c.now.toISOString())}</time>.</p>` +

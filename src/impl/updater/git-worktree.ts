@@ -352,11 +352,16 @@ export class GitWorktreeUpdater implements Updater {
     }
   }
 
-  /** `workers` from the folder's factory.config.json, the file its child reads. Absent or invalid: 1. */
+  /**
+   * The child's slot count from the folder's factory.config.json, the file its child reads: `max_workers` when it
+   * is a valid integer of at least `workers`, else `workers`. Absent or invalid: 1.
+   */
   private async blockSize(dir: string): Promise<number> {
     try {
-      const w = (JSON.parse(await readFile(join(dir, "factory.config.json"), "utf8")) as { workers?: unknown }).workers;
-      return typeof w === "number" && Number.isInteger(w) && w >= 1 ? w : 1;
+      const file = JSON.parse(await readFile(join(dir, "factory.config.json"), "utf8")) as { workers?: unknown; max_workers?: unknown };
+      const ok = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1;
+      const workers = ok(file.workers) ? file.workers : 1;
+      return ok(file.max_workers) && file.max_workers >= workers ? file.max_workers : workers;
     } catch {
       return 1;
     }

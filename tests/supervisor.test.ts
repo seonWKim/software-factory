@@ -25,6 +25,8 @@ class Fake {
   drainMode: "ack" | "hold" | "ignore" = "ack";
   /** `workers` in each new folder's factory.config.json; 0: none (block size 1). */
   workers = 0;
+  /** `max_workers` in that file; 0: none (block size `workers`). */
+  maxWorkers = 0;
 
   get origin(): string {
     return this.commits[this.commits.length - 1]!;
@@ -56,7 +58,10 @@ class Fake {
           const path = rest[rest.length - 2]!;
           mkdirSync(path, { recursive: true });
           writeFileSync(join(path, ".git"), "");
-          if (this.workers) writeFileSync(join(path, "factory.config.json"), JSON.stringify({ workers: this.workers }));
+          if (this.workers) {
+            const file = { workers: this.workers, ...(this.maxWorkers ? { max_workers: this.maxWorkers } : {}) };
+            writeFileSync(join(path, "factory.config.json"), JSON.stringify(file));
+          }
           this.heads.set(relative(this.root, path), last);
         } else if (rest[0] === "remove") rmSync(last, { recursive: true, force: true });
         return ok();
@@ -271,6 +276,21 @@ describe("supervisor: worker index ranges", () => {
     await nextPoll(clock, () => f.children.length === 4, "fourth child");
     expect(f.children[3]!.base).toBe(0);
 
+    signals.emit("SIGTERM");
+    await running;
+  });
+});
+
+describe("supervisor: worker index ranges with max_workers", () => {
+  it("a child's block is max_workers wide, so a later rise in the live workers setting shares no index", async () => {
+    const { f, clock, signals, running } = setup();
+    f.workers = 1;
+    f.maxWorkers = 4;
+    await waitFor(() => f.children.length === 1, "first child");
+    f.drainMode = "hold";
+    f.commits.push("c2");
+    await nextPoll(clock, () => f.children.length === 2, "second child");
+    expect(f.children.map((c) => c.base)).toEqual([0, 4]);
     signals.emit("SIGTERM");
     await running;
   });
