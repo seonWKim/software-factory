@@ -125,13 +125,11 @@ describe("ui: read-only status page", () => {
     expect(page.body).not.toContain('http-equiv="refresh"');
     expect(page.body.match(/<script/gi)).toHaveLength(1);
 
-    const order = ["totals", "filters", "items", "running", "queue"].map((id) => page.body.indexOf(`<section id="${id}">`));
+    // What the operator acts on first, under the factory banner; totals and cost last.
+    const order = ["running", "queue", "paused", "filters", "items", "health", "totals", "cost"].map((id) => page.body.indexOf(`<section id="${id}">`));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(page.body).not.toContain('<section id="needs">');
-    // Health sits after the list, before the running runs.
-    expect(page.body.indexOf('<section id="health">')).toBeGreaterThan(order[2]!);
-    expect(page.body.indexOf('<section id="health">')).toBeLessThan(order[3]!);
 
     expect(page.body).toMatch(/<title>[^<]*\(2\)[^<]*<\/title>/);
     expect(section(page.body, "filters")).toContain("Needs you (2)");
@@ -679,5 +677,34 @@ describe("ui: factory status banner", () => {
     writeFileSync(file, JSON.stringify({ state: "draining", rev: "a", target_rev: "b", child_pid: 99, since: "x" }));
     expect(await readFactoryStatus(file, 3, () => true)).toMatchObject({ state: "draining", workers: 3 });
     expect(await readFactoryStatus(file, 3, () => false)).toMatchObject({ state: "stopped", child_pid: null });
+  });
+});
+
+describe("ui: split phases wait, never stuck", () => {
+  it("a held phase shows the phase it waits on; the parent shows its open phases", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const parent = await setTitle(store, 20, "Parent");
+    await patch(store, parent, { stage: "READY", blocked_on: "upstream", blocked_reason: "phases_open" });
+    const phase = (n: number, p: number, hold: boolean) =>
+      store.createWorkItem(
+        { ...issue(n), title: `Phase ${p}`, parent: { id: parent.id, phase: p }, ...(hold ? { hold: { blocked_on: "upstream" as const, blocked_reason: "phase_hold" } } : {}) },
+        system,
+      );
+    await phase(21, 1, false);
+    await phase(22, 2, true);
+    clock.advance(76 * 60_000);
+    await saveProjectLabel(store, PROJECT);
+    const ui = await startUi(
+      { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
+      0,
+    );
+    servers.push(ui);
+    const list = rows((await get(ui.port, "/")).body);
+    const badge = (title: string) => list.find((r) => r[2]!.includes(title))![0];
+    expect(badge("Phase 2")).toContain("waits on #21");
+    expect(badge("Parent")).toContain("waits on 2 issues");
+    expect(badge("Phase 2")).not.toContain("stuck");
+    expect(badge("Parent")).not.toContain("stuck");
   });
 });

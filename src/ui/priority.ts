@@ -46,8 +46,10 @@ export interface PriorityInput {
   run: { kind: RunKind; status: "queued" | "running"; heartbeat_at: string; paused_at?: string | null } | null;
   /** Open items that wait on this one. 0 until dependency data exists (issue #49). */
   dependents: number;
-  /** Open items this one waits on. 0 until dependency data exists (issue #49). */
+  /** Open items this one waits on: a split phase's previous phase, a split parent's open phases. */
   waiting_on: number;
+  /** The issue number this item waits on, when it is exactly one (a held phase's previous phase). */
+  waiting_on_number?: number | null;
 }
 
 export interface Ranked<T extends PriorityInput> {
@@ -69,8 +71,9 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
 }
 
 /**
- * The item's level. A running run past its lease is stuck; an open item that waits on nothing, is not
- * blocked on a person and has no queued or running run is stuck too (nothing moves it).
+ * The item's level. A running run past its lease is stuck; an open item that waits on nothing (no open item it
+ * waits on, not blocked on another item, a person or the budget) and has no queued or running run is stuck too
+ * (nothing moves it). An item blocked on `upstream` or `dependency` waits on another item, so it is never stuck.
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   if (i.stage === "CLOSED") return "closed";
@@ -80,7 +83,7 @@ export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   if (staleRun(i, now.getTime(), lease_ms)) return "stuck";
   if (i.run?.status === "running") return "running";
   if (i.run?.status === "queued") return "queued";
-  if (i.waiting_on > 0) return "waiting_on_issue";
+  if (i.waiting_on > 0 || i.blocked_on === "upstream" || i.blocked_on === "dependency") return "waiting_on_issue";
   return "stuck";
 }
 
@@ -117,7 +120,11 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       main = i.run!.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
       break;
     case "waiting_on_issue":
-      main = `waits on ${i.waiting_on}`;
+      main = i.waiting_on_number
+        ? `waits on #${i.waiting_on_number}`
+        : i.waiting_on > 0
+          ? `waits on ${i.waiting_on} ${i.waiting_on === 1 ? "issue" : "issues"}`
+          : "waits on another issue";
       break;
     case "closed":
       main = i.close_reason ? `closed: ${i.close_reason.replace(/_/g, " ")}` : "closed";

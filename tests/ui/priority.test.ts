@@ -55,7 +55,7 @@ const expected: [string, string[]][] = [
   ["stuck-idle", ["stuck 5 min"]], // minutes since it started waiting
   ["running", ["running implement"]],
   ["queued", ["queued triage"]],
-  ["waiting", ["waits on 2"]],
+  ["waiting", ["waits on 2 issues"]],
   ["closed", ["closed: wont do"]],
 ];
 
@@ -83,6 +83,19 @@ describe("ui priority", () => {
   it("a running run within its lease is running, past it is stuck", () => {
     expect(levelOf(item("a", { run: running("implement", 0.5) }), NOW, LEASE)).toBe("running");
     expect(levelOf(item("b", { run: running("implement", 2) }), NOW, LEASE)).toBe("stuck");
+  });
+
+  it("an item blocked on another item (upstream, dependency) waits, never stuck, and names the issue when it is one", () => {
+    const held = item("held", { stage: "NEW", blocked_on: "upstream", blocked_reason: "phase_hold", waiting_on: 1, waiting_on_number: 191, since: at(76) });
+    const parent = item("parent", { stage: "READY", blocked_on: "upstream", blocked_reason: "phases_open", waiting_on: 4, since: at(76) });
+    const unknown = item("unknown", { stage: "NEW", blocked_on: "dependency", since: at(76) });
+    const ranked = rank([held, parent, unknown], NOW, LEASE);
+    expect(ranked.map((r) => r.level)).toEqual(["waiting_on_issue", "waiting_on_issue", "waiting_on_issue"]);
+    expect(Object.fromEntries(ranked.map((r) => [r.input.name, r.badges[0]]))).toEqual({
+      held: "waits on #191",
+      parent: "waits on 4 issues",
+      unknown: "waits on another issue",
+    });
   });
 
   it("a human block outranks an active run", () => {
