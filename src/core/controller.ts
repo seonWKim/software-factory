@@ -2923,6 +2923,16 @@ export class Controller {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const item = await this.d.store.getWorkItem(id);
       if (!item) return null;
+      // No adapter for the item's source type here (a source left out of this process's `plugins.source`, e.g.
+      // an older version still draining): the item keeps its state for a process that has one, so its replies
+      // are not dropped (2026-11-07).
+      if (!this.byType.has(item.source.type)) {
+        this.d.log.warn("no source adapter for the item's source type; transition left to another process", {
+          work_item_id: id,
+          source_type: item.source.type,
+        });
+        return null;
+      }
       const wanted = await fn(item);
       if (!wanted) return null;
       if ("refuse" in wanted) return wanted.refuse;
