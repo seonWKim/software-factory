@@ -425,14 +425,16 @@ export async function loadConfig(
     implement: await readPrompt("implement"),
     review: await readPrompt("review"),
   };
-  // Optional prompt files: a missing one is not an error.
+  // Optional prompt files: a missing one is not an error (resolve: `prompt_missing`; improve: no drafts).
   const optional = (name: string) =>
     readPrompt(name).catch((err: NodeJS.ErrnoException) => {
       if (err.code === "ENOENT") return undefined;
       throw err;
     });
-  const resolvePrompt = await optional("resolve");
-  if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  for (const name of ["resolve", "improve"] as const) {
+    const text = await optional(name);
+    if (text !== undefined) prompts[name] = text;
+  }
   // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
   const ownerDefaults = await optional("owner-defaults");
   if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
@@ -641,7 +643,8 @@ export async function build(
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
   const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
-  // Suggests a command for a plain-language comment; never changes state (design §4).
+  // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
+  // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
@@ -658,6 +661,8 @@ export async function build(
   const testDatabase = await p.testDatabase(secrets);
   // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
+  // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
+  const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename).
@@ -687,6 +692,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
+    network_probe,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     settings,
@@ -706,6 +712,7 @@ export async function build(
     broker,
     scanner,
     storage,
+    llm,
     clock,
     config,
     prompts: loaded.prompts,

@@ -34,6 +34,8 @@ export function commentEvent(source: SourceRef, comment_id: string, who: Externa
       return { kind: "help_requested", source, comment_id, requester: who };
     case "verdict":
       return { kind: "verdict_submitted", target: { kind: "issue", source }, comment_id, approver: who, args: t };
+    case "standing":
+      return { kind: "standing_requested", source, comment_id, requester: who, args: t };
     default:
       return null;
   }

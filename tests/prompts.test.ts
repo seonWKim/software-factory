@@ -154,6 +154,28 @@ describe.each([
   });
 });
 
+describe("prompts/improve.md (issue #307)", () => {
+  const text = prompt("improve");
+  const produce = text.slice(text.indexOf("Produce:"));
+
+  it("asks for cause, fix and touches", () => {
+    const fields = [...produce.matchAll(/^- (\w+):/gm)].map((m) => m[1]);
+    expect(fields).toEqual(expect.arrayContaining(["cause", "fix", "touches"]));
+    expect(bullet(produce, "touches")).toMatch(/paths/);
+  });
+
+  it("grants no tools and names none", () => {
+    expect(text).toMatch(/You have no tools/);
+    expect(text).not.toMatch(/\b(Bash|Edit|Write|Read|Grep|Glob|WebFetch|tool_grants)\b/);
+  });
+
+  it("is loaded by compose as the improve prompt", async () => {
+    const { loadConfig } = await import("../src/compose.js");
+    const { prompts } = await loadConfig(join(import.meta.dirname, ".."));
+    expect(prompts.improve).toBe(text);
+  });
+});
+
 // The core prompts serve every project the factory works on (issue #335): no npm or repo-specific paths, and the
 // configured checks filled in at load.
 const CORE = ["triage", "implement", "review", "resolve"] as const;

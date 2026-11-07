@@ -159,8 +159,9 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
- * `improve` runs no agent and calls no model (design §7): it groups the failed runs of a time window into one
- * stored report. It belongs to its project's system work item, queued daily and by `factory improve`.
+ * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one
+ * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
+ * system work item, queued daily and by `factory improve`.
  */
 export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
 
@@ -192,7 +193,32 @@ export interface FailureGroup {
   detail: string;
   run_ids: RunId[];
   work_item_ids: WorkItemId[];
+  /** The transcript tails read for the group's model call (groups only), each scanned before the call. */
+  tails?: ImproveTail[];
+  /** The model's draft of cause and fix (groups only, design §7). Absent: the worker had no model to ask. */
+  draft?: ImproveDraft;
 }
+
+/**
+ * One run's transcript tail for an improve draft. `included`: in the prompt. `withheld`: the egress scan flagged
+ * it, so it was left out; `rules` name the rules, never the text. `missing`: no stored transcript (none, or one
+ * the scan kept out of storage).
+ */
+export type ImproveTail =
+  | { run_id: RunId; status: "included" | "missing" }
+  | { run_id: RunId; status: "withheld"; rules: string[] };
+
+/**
+ * A group's draft (design §7). `drafted`: the model's cause, fix and the paths the fix touches, scanned clean.
+ * `withheld`: the draft's scan flagged it, so only the rules are kept. `touches_prompts_or_gate`: set by the
+ * factory from the gate list, never by the model. `failed`: invalid output, a refusal, an error or a max-tokens
+ * stop. `skipped`: past the per-run call cap, no call made.
+ */
+export type ImproveDraft =
+  | { status: "drafted"; cause: string; fix: string; touches: string[]; touches_prompts_or_gate: boolean }
+  | { status: "withheld"; rules: string[]; touches_prompts_or_gate: boolean }
+  | { status: "failed"; reason: "invalid_output" | "refused" | "error" | "max_tokens" }
+  | { status: "skipped"; reason: "call_cap" };
 
 export type ImproveReportId = Brand<string, "ImproveReportId">;
 
@@ -301,13 +327,17 @@ the push_access or pr_api preflight check failed another way (issue #216), so no
  * GitHub poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
- * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
- * is not before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
+ * it ends only when `model_answered` (the last answered probe, written by `endClaimPause("model_stall")`) is not
+ * before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
+ * `network`: a git call, push, preflight or model request could not reach its host, so no claim of any kind until
+ * a network probe passes. A probe pause like `model_stall`, with `network_since` and `network_answered`.
  */
 export type ClaimPauseName =
-  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit" | "model_stall" | "model_stall_since" | "model_answered";
+  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit"
+  | "model_stall" | "model_stall_since" | "model_answered"
+  | "network" | "network_since" | "network_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**

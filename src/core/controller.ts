@@ -60,6 +60,10 @@ import {
   workItemIdFromBranch,
   FORGE_AUTH,
   MODEL_STALL,
+  NETWORK,
+  NETWORK_SINCE,
+  type ProbePause,
+  networkProbeDelayMs,
   NO_AUTO_RETRY,
   CHECKS_ENV,
   CHECKS_ENV_LIMIT,
@@ -71,7 +75,10 @@ import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
-import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
+import {
+  SPEC_DECISIONS, SPEC_GATE, STANDING_APPROVED, STANDING_TIER, dueProposal, findRule, gateEvents, parseRuleId, parseStanding, protectedCategory,
+  ruleId, specChanged, specDecisionDetail, specKind, standingActor,
+} from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -81,7 +88,7 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -94,6 +101,7 @@ import type {
 import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
@@ -162,6 +170,11 @@ export interface ControllerDeps {
    * controller's state decisions never use it.
    */
   llm?: LLMProvider;
+  /**
+   * The network pause's probe (design §5 Restarts). Absent: nothing can be asked, so the pause ends at its first
+   * probe time, as a stall pause does with no LLM provider.
+   */
+  network_probe?: NetworkProbe;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
   /**
@@ -205,6 +218,7 @@ type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
+type StandingEvent = Extract<SourceEvent, { kind: "standing_requested" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
 type PrOpenEvent = Extract<ForgeEvent, { kind: "pr_open" }>;
 type PrFinishedEvent = Extract<ForgeEvent, { kind: "pr_merged" | "pr_closed" }>;
@@ -307,6 +321,10 @@ const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 /** Inbox rows a stream intake step reads at most per tick. */
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
+/** Newest items whose spec decisions the standing-approval run check reads (design 05-standing-approvals). */
+const STANDING_WINDOW = 200;
+/** The settable key of the run length that proposes a standing rule. */
+const STANDING_THRESHOLD = "standing_approvals.threshold";
 
 /** GitHub's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
@@ -666,6 +684,7 @@ export class Controller {
         refusal = "refuse" in note
           ? note.refuse
           : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, note.note, { [APP_REQUEST]: r.seq });
+        if (refusal === null) await this.guard("standing", () => this.afterSpecCommand(item.id, e, principal.user_id));
       }
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
@@ -723,26 +742,61 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, any live controller may probe
-   * it, and the store's conditional move of the probe time (`takeStallProbe`) lets one replica ask per due time.
-   * One short prompt on the cheap model class through the LLM provider: an answer ends the pause as
-   * `endClaimPause("model_stall")` does (`model_answered`), so claims resume; no answer (an error, a refusal, a
-   * throw or no reply within stall_ms) keeps it and moves the probe probe_interval_ms after the failed probe.
-   * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
+   * The probe pauses (design §5 Restarts), one schedule for both: once a pause's probe time has passed, the replica
+   * whose conditional write moves it to the next probe time (claimProbe) probes, and no other one. A pass ends the
+   * pause (endClaimPause), so claims resume; a failure keeps the pause and moves the next probe the pause's delay
+   * after the failed probe. Any live controller may take a due probe, not only the one that set the pause.
+   * `model_stall`: one short prompt on the cheap model class; no answer within stall_ms (an error, a refusal, a
+   * throw) is a failure, the next probe probe_interval_ms later. With no LLM provider the pause ends at its probe.
+   * `network`: the NetworkProbe, the next probe 30 s later, backing off to 5 min (networkProbeDelayMs).
    */
   private async probeStep(): Promise<void> {
-    const due = await this.d.store.getClaimPause(MODEL_STALL);
-    const interval = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
-    if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
-    if (!(await this.d.store.takeStallProbe(due, iso(this.d.clock.now().getTime() + interval))).taken) return;
-    const answered = this.d.llm ? await this.probe(this.d.llm) : true;
-    if (answered) {
-      await this.d.store.endClaimPause(MODEL_STALL);
-      this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
+    const llm = this.d.llm;
+    await this.probePause(MODEL_STALL, {
+      delayMs: async () => this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      probe: llm ? async () => ((await this.probe(llm)) ? null : "no answer") : null,
+      passed: llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends",
+      failed: (next) => this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next}`, { resume_at: next }),
+    });
+    const net = this.d.network_probe;
+    await this.probePause(NETWORK, {
+      delayMs: async (now) => {
+        const since = await this.d.store.getClaimPause(NETWORK_SINCE);
+        return networkProbeDelayMs(since === null ? 0 : now - Date.parse(since));
+      },
+      probe: net ? async () => {
+        const r = await net.probe().catch(() => ({ ok: false as const, host: "unknown host" }));
+        return r.ok ? null : r.host;
+      } : null,
+      passed: "network reachable again: claims resume",
+      // Info, not warn: the pause's start was the one warning; the host is the only detail.
+      failed: (next, host) => this.d.log.info(`network still unreachable: runs stay paused, next probe at ${next}`, { host, resume_at: next }),
+    });
+  }
+
+  /** One probe pause's due probe; see probeStep. `probe` resolves null on a pass, else what failed. */
+  private async probePause(
+    name: ProbePause,
+    p: {
+      delayMs: (now: number) => Promise<number>;
+      probe: (() => Promise<string | null>) | null;
+      passed: string;
+      failed: (next: Timestamp, why: string) => void;
+    },
+  ): Promise<void> {
+    const due = await this.d.store.getClaimPause(name);
+    const now = this.d.clock.now().getTime();
+    if (due === null || Date.parse(due) > now) return;
+    const next = iso(now + (await p.delayMs(now)));
+    if (!(await this.d.store.claimProbe(name, due, next))) return;
+    const failure = p.probe ? await p.probe() : null;
+    if (failure === null) {
+      if ((await this.d.store.endClaimPause(name)).ended) this.d.log.info(p.passed, {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(this.d.clock.now().getTime() + interval), MODEL_STALL);
-    this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
+    const after = this.d.clock.now().getTime();
+    const moved = await this.d.store.pauseClaims(iso(after + (await p.delayMs(after))), name);
+    p.failed(moved.resume_at, failure);
   }
 
   /** One short prompt on the cheap model: true when it answered. Carries no work item data. */
@@ -885,6 +939,8 @@ export class Controller {
       case "help_requested":
       case "unknown_command":
         return this.handleInfo(e);
+      case "standing_requested":
+        return this.handleStanding(e);
       case "plain_comment":
         return this.handlePlainComment(e);
       case "pr_changes_requested":
@@ -1116,6 +1172,7 @@ export class Controller {
       refusal = "refuse" in input
         ? input.refuse
         : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, null, input.paths);
+      if (refusal === null) await this.guard("standing", () => this.afterSpecCommand(item.id, e, principal.user_id));
     }
     await this.markSeen(e.source, e.comment_id);
     if (e.kind === "spec_rejected" && refusal === null) {
@@ -1464,6 +1521,120 @@ export class Controller {
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * `/standing` on a work item (design 05-standing-approvals): the same permission check as `/approve`, 👀, then one
+   * reply keyed on the comment. Without arguments it shows the rule's state; `accept` turns the rule on, `decline`
+   * turns it off (and keeps its proposal quiet until the run resets). A rule already in the asked state is left
+   * alone with no reply, so a second accept or a redelivery posts nothing new. The user ID is recorded as `set_by`.
+   */
+  private async handleStanding(e: StandingEvent): Promise<void> {
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (!item) return;
+    const principal = await this.authorize(e.requester, "approve_spec", item.id);
+    await this.markSeen(e.source, e.comment_id);
+    const marker = `<!-- factory:standing:${e.comment_id} -->`;
+    const refuse = async (reason: string) => {
+      this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason });
+      await this.post(item, item.source, `\`/standing\` was not applied: ${reason}.`, `<!-- factory:refused:${e.comment_id} -->`);
+    };
+    if ("refuse" in principal) return refuse(principal.refuse);
+    const asked = parseStanding(e.args);
+    if ("refuse" in asked) return refuse(asked.refuse);
+    const rules = await this.d.store.listStandingRules();
+    const id = ruleId(SPEC_GATE, STANDING_TIER);
+    if (asked.action === "show") {
+      const rule = findRule(rules, SPEC_GATE, STANDING_TIER);
+      const state = rule?.enabled
+        ? `on, turned on by \`${rule.set_by}\`; reply \`/standing decline ${id}\` to turn it off`
+        : `off${rule ? `, turned off by \`${rule.set_by}\`` : ""}; reply \`/standing accept ${id}\` to turn it on`;
+      const threshold = this.live.values()[STANDING_THRESHOLD];
+      await this.post(item, item.source, [
+        "## Standing approvals",
+        "",
+        `- \`${id}\` (tier ${STANDING_TIER} specs that wait at the spec gate): ${state}.`,
+        "",
+        `A rule is proposed after ${threshold} tier ${STANDING_TIER} spec approvals in a row with the spec unchanged (\`${STANDING_THRESHOLD}\`).`,
+      ].join("\n"), marker);
+      return;
+    }
+    const enabled = asked.action === "accept";
+    const rule = findRule(rules, asked.gate, asked.tier);
+    if (rule && rule.enabled === enabled) return;
+    await this.d.store.putStandingRule({ gate: asked.gate, tier: asked.tier, enabled, set_by: principal.user_id });
+    this.d.log.info(enabled ? "standing rule on" : "standing rule off", { rule: id, user_id: principal.user_id });
+    await this.post(item, item.source, enabled
+      ? `The standing rule \`${id}\` is on: the next tier ${asked.tier} specs that wait at the spec gate are approved without a reply, as \`standing:${id}\`. ` +
+        `It never approves a spec whose allowed paths touch the factory's gates, prompts, permissions, tools, guard settings or floor paths. ` +
+        `To turn it off, reply \`/standing decline ${id}\`, or \`/revise\` or \`/reject\` on an item it approved.`
+      : `The standing rule \`${id}\` is off: tier ${asked.tier} specs wait for \`/approve\` again. It is not proposed again until the run of approvals resets and reaches the threshold again.`,
+      marker);
+  }
+
+  /**
+   * After a spec command was applied (design 05-standing-approvals): an `/approve` may bring the tier 1 run to the
+   * threshold, which posts one proposal on this item; a `/revise` or `/reject` on an item a rule approved turns
+   * that rule off, with one reply. Both are keyed, so running this twice posts once.
+   */
+  private async afterSpecCommand(id: WorkItemId, e: CommandEvent, user: UserId): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it) return;
+    if (e.kind === "spec_approved") return this.proposeStanding(it);
+    if (e.kind === "spec_rejected" || e.kind === "revise_requested") return this.turnOffStanding(it, e.kind, e.comment_id, user);
+  }
+
+  /** One proposal comment when this item's approval brought the run of tier 1 approvals to the threshold. */
+  private async proposeStanding(it: WorkItem): Promise<void> {
+    const threshold = this.live.values()[STANDING_THRESHOLD];
+    const own = gateEvents(await this.d.store.listStateChanges(it.id));
+    const items = await this.d.store.listWorkItems(Math.max(STANDING_WINDOW, threshold * 4));
+    const events = own.slice();
+    for (const x of items) if (x.id !== it.id) events.push(...gateEvents(await this.d.store.listStateChanges(x.id)));
+    const rule = findRule(await this.d.store.listStandingRules(), SPEC_GATE, STANDING_TIER);
+    const due = dueProposal(events, own, threshold, rule);
+    if (!due) return;
+    await this.d.store.recordStandingProposal({ gate: due.gate, tier: due.tier, run_length: due.run_length, threshold });
+    const id = ruleId(due.gate, due.tier);
+    await this.comment(it, `standing-proposal:${id}:${it.id}:${own.at(-1)!.at}`, [
+      `## Standing approval proposed: \`${id}\``,
+      "",
+      `The last ${due.run_length} tier ${due.tier} specs were approved in a row with the spec unchanged (\`${STANDING_THRESHOLD}\` = ${threshold}).`,
+      "",
+      `- Reply \`/standing accept ${id}\` to approve the next tier ${due.tier} specs that wait at the spec gate without a reply.`,
+      `- Reply \`/standing decline ${id}\` to keep approving each one; this is not proposed again until the run resets and reaches ${threshold} again.`,
+      "",
+      "A rule never approves a spec whose allowed paths touch the factory's gates, prompts, permissions, tools, guard settings or floor paths. " +
+        "A `/revise` or `/reject` on an item it approved turns it off.",
+    ].join("\n"));
+    this.d.log.info("standing proposal", { rule: id, run_length: due.run_length, work_item_id: it.id });
+  }
+
+  /** A `/revise` or `/reject` on an item a rule approved turns that rule off, if it is still on; one reply. */
+  private async turnOffStanding(it: WorkItem, kind: "spec_rejected" | "revise_requested", commentId: string, user: UserId): Promise<void> {
+    const approved = (await this.d.store.listStateChanges(it.id)).filter((c) => c.reason === STANDING_APPROVED).at(-1);
+    const named = typeof approved?.detail?.standing_rule === "string" ? parseRuleId(approved.detail.standing_rule) : null;
+    if (!named) return;
+    const rule = findRule(await this.d.store.listStandingRules(), named.gate, named.tier);
+    if (!rule?.enabled) return;
+    await this.d.store.putStandingRule({ gate: named.gate, tier: named.tier, enabled: false, set_by: user });
+    const id = ruleId(named.gate, named.tier);
+    this.d.log.info("standing rule off", { rule: id, user_id: user, work_item_id: it.id });
+    await this.post(it, it.source, [
+      `The standing rule \`${id}\` is off: \`${COMMAND[kind]}\` on an item it approved turned it off.`,
+      `Tier ${named.tier} specs wait for \`/approve\` again; reply \`/standing accept ${id}\` to turn it back on.`,
+    ].join(" "), `<!-- factory:standing-off:${commentId} -->`);
+  }
+
+  /** The rule that approves this spec at the gate: on, for its tier, and none of its allowed paths protected. */
+  private async standingRule(it: WorkItem, tier: Tier, paths: readonly string[]) {
+    if (tier !== STANDING_TIER) return null;
+    const rule = findRule(await this.d.store.listStandingRules(), SPEC_GATE, tier);
+    if (!rule?.enabled) return null;
+    const category = protectedCategory(paths, this.settings(it.project).floors);
+    if (category === null) return rule;
+    this.d.log.info("standing rule skipped: protected paths", { work_item_id: it.id, rule: ruleId(SPEC_GATE, tier), category });
+    return null;
   }
 
   /**
@@ -2473,6 +2644,28 @@ export class Controller {
               patch: { ...fields, stage: "RUNNING" },
               actor: SYSTEM,
               reason: "triaged_auto_approved",
+              ack_run: run.id,
+              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+            };
+          }
+          // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
+          const rule = spec.phases ? null : await this.standingRule(it, tier, spec.allowed_paths);
+          if (rule) {
+            const next = { ...it, ...fields };
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const id = ruleId(rule.gate, rule.tier);
+            const url = await this.comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [
+                `Approved by the standing rule \`${id}\` (turned on by \`${rule.set_by}\`): a tier ${rule.tier} spec that waits at the spec gate is approved without a reply.`,
+                `To turn the rule off, reply \`/standing decline ${id}\`, or \`/revise <feedback>\` or \`/reject <reason>\` on an item it approved.`,
+                "",
+                footerAfter(it, patch),
+              ].join("\n")), "spec_comment_url");
+            return {
+              patch: { ...patch, spec_comment_url: url },
+              actor: standingActor(rule.gate, rule.tier),
+              reason: STANDING_APPROVED,
+              detail: { standing_rule: id, gate: rule.gate, tier: rule.tier, kind: specKind(it, false), owner_id: rule.set_by },
               ack_run: run.id,
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };

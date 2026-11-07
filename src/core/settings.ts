@@ -273,6 +273,7 @@ export const SETTABLE_KEYS = [
   "workers",
   "phases_auto_approve",
   "hold_policy",
+  "standing_approvals.threshold",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -310,6 +311,7 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   workers: "Worker loops in each process that claim and run steps.",
   phases_auto_approve: "Whether a phase spec of an approved split needs no approval of its own.",
   hold_policy: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
+  "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -348,6 +350,7 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   workers: "the worker pool's next tick",
   phases_auto_approve: "the next phase spec triage writes",
   hold_policy: "the next claim",
+  "standing_approvals.threshold": "the controller's next spec approval",
 };
 
 export interface SettableValues {
@@ -369,6 +372,7 @@ export interface SettableValues {
   workers: number;
   phases_auto_approve: boolean;
   hold_policy: HoldPolicy;
+  "standing_approvals.threshold": number;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -391,6 +395,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   workers: 1,
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy,
+  "standing_approvals.threshold": 10,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
