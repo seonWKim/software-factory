@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { alarmConfig, loadConfig } from "../src/compose.js";
 import { ConfigKeyError, unknownConfigKeys } from "../src/config-keys.js";
 import {
   BUILT_IN_SETTINGS,
@@ -11,6 +11,7 @@ import {
   PR_ONLY_DESCRIPTIONS,
   PR_ONLY_KEYS,
   type PrOnlyKey,
+  SETTABLE_DEFAULTS,
   SETTABLE_KEYS,
   SETTING_APPLIES,
   SETTING_DESCRIPTIONS,
@@ -366,6 +367,27 @@ describe("settings: boundary", () => {
     ];
     expect(violations(bad.map((text, i) => ({ name: `x${i}.ts`, text })))).toHaveLength(bad.length);
     expect(violations([{ name: "core/settings.ts", text: bad[0]! }])).toEqual([]);
+  });
+});
+
+describe("settings: alarm keys (design 05-alarms)", () => {
+  const KEYS = ["alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count"] as const;
+
+  it("are settable, default to 3, 60 and 5, and take a positive integer override", () => {
+    for (const k of KEYS) expect(SETTABLE_KEYS).toContain(k);
+    expect(KEYS.map((k) => SETTABLE_DEFAULTS[k])).toEqual([3, 60, 5]);
+    const base = { file: {}, layers: { defaults: {}, projects: {} } };
+    expect(KEYS.map((k) => resolveSettings(base, []).values[k])).toEqual([3, 60, 5]);
+    const row = (key: string, value: string) => ({ key, project: "", value });
+    const r = resolveSettings(base, [row("alarm_repeat_count", "4"), row("alarm_window_minutes", "0")]);
+    expect(r.values).toMatchObject({ alarm_repeat_count: 4, alarm_window_minutes: 60 });
+    expect(r.ignored.map((i) => i.key)).toEqual(["alarm_window_minutes"]);
+  });
+
+  it("the file values are checked at load", () => {
+    expect(alarmConfig({})).toEqual({ alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 });
+    expect(alarmConfig({ alarm_restart_count: 8 }).alarm_restart_count).toBe(8);
+    expect(() => alarmConfig({ alarm_repeat_count: 0 })).toThrow("alarm_repeat_count must be a positive integer");
   });
 });
 

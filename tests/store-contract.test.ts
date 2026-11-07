@@ -11,7 +11,7 @@ import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
+import type { FactoryStore, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
@@ -1857,6 +1857,42 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const rows = await store.listWorkerProcesses(LEASE);
       expect(rows).toHaveLength(1);
       expect([0, 2]).toContain(rows[0]!.busy);
+    });
+  });
+  describe("alerts (migration 36)", () => {
+    const HOUR = 3_600_000;
+    const alert = (over: Partial<NewAlert> = {}): NewAlert => ({
+      pattern: "repeated_error", pattern_key: "repeated_error:abc", error_code: "checks_failed", count: 3, detail: "boom", ...over,
+    });
+
+    it("stores an alert with its fields; the same pattern inside the dedupe window stores none", async () => {
+      const { store, clock } = await make();
+      expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+      const first = await store.recordAlert(alert(), 6 * HOUR);
+      expect(first).toMatchObject({ created: true, alert: { ...alert(), created_at: clock.now().toISOString() } });
+      clock.advance(6 * HOUR - 1);
+      expect(await store.recordAlert(alert({ count: 4 }), 6 * HOUR)).toEqual({ created: false });
+      // Another pattern is its own; a null detail round-trips.
+      const other = await store.recordAlert(alert({ pattern: "zero_tokens", pattern_key: "zero_tokens", detail: null }), 6 * HOUR);
+      expect(other).toMatchObject({ created: true, alert: { pattern: "zero_tokens", detail: null } });
+      expect((await store.listAlerts({ limit: 10 })).map((a) => a.pattern_key)).toEqual(["zero_tokens", "repeated_error:abc"]);
+    });
+
+    it("the same pattern stores again once the window has passed; newest first, limit honoured", async () => {
+      const { store, clock } = await make();
+      await store.recordAlert(alert(), 6 * HOUR);
+      clock.advance(6 * HOUR);
+      const again = await store.recordAlert(alert({ count: 7 }), 6 * HOUR);
+      expect(again).toMatchObject({ created: true, alert: { count: 7 } });
+      expect((await store.listAlerts({ limit: 10 })).map((a) => a.count)).toEqual([7, 3]);
+      expect((await store.listAlerts({ limit: 1 })).map((a) => a.count)).toEqual([7]);
+    });
+
+    it("concurrent records of one pattern leave one alert", async () => {
+      const { store } = await make();
+      const results = await Promise.all([store.recordAlert(alert(), 6 * HOUR), store.recordAlert(alert(), 6 * HOUR)]);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
     });
   });
   describe("host sleeps (migration 28)", () => {
