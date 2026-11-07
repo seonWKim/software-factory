@@ -515,6 +515,12 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   ];
   const title = item.title ? await c.w.text(item.title) : esc(item.source.id);
 
+  // A split's sub-tasks (design 04), in phase order, each linked to its own page.
+  const subRows = [];
+  for (const p of await d.store.listPhases(id)) {
+    subRows.push({ cells: [esc(p.phase ?? ""), await c.itemLink(p, p.id), esc(p.stage), p.blocked_reason ? await c.w.text(p.blocked_reason) : ""] });
+  }
+
   const timeline = [];
   for (const sc of changes) {
     timeline.push({
@@ -556,6 +562,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   const body =
     `<p>${link("/", "← all items")}</p><h1>${title}</h1>` +
     `<section id="facts">${factsTable(facts)}</section>` +
+    `<section id="subtasks"><h2>Sub-tasks</h2>${table(["phase", "task", "stage", "blocked reason"], subRows, "(none)")}</section>` +
     `<section id="timeline"><h2>Timeline</h2>${table(["version", "at", "actor", "reason", "changes", "detail"], timeline)}</section>` +
     `<section id="runs"><h2>Runs</h2>${table(
       ["kind", "status", "attempt", "started", "finished", "duration", "tokens", "error"],

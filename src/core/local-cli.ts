@@ -261,6 +261,10 @@ async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
     out.push(`  problem: ${item.problem}`, "  done criteria:", ...item.done_criteria.map((c) => `    - ${c}`));
     out.push(`  desired output: ${item.desired_output ?? "-"}`, `  scope: ${item.scope ?? "-"}`, `  allowed paths: ${item.allowed_paths.join(", ")}`);
   }
+  out.push("", "Sub-tasks");
+  const subs = await d.store.listPhases(item.id);
+  if (subs.length === 0) out.push("  (none)");
+  for (const p of subs) out.push(`  ${p.phase ?? "-"}. ${p.id}\t${p.title ?? ""}\t${p.stage}\t${p.blocked_reason ?? "-"}`);
   out.push("", "Runs");
   const runs = await d.store.listRuns(item.id);
   if (runs.length === 0) out.push("  (none)");

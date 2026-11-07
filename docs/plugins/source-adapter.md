@@ -18,7 +18,8 @@ Plugins:
   - `poll(cursor)` reads the CLI command log (`command_inbox`, migration 24) after the cursor, at most 100 commands per poll; the rest come on the next poll. The cursor is the `seq` of the last command read, as a string (`intake:local`); none or empty means from the first command.
   - Each command for a local item becomes one event. Its shape: `args.item` is the work item ID, `args.text` an optional string. The command is rebuilt as `/<command> <text>` and read by the same comment parser as GitHub comments, so the event kinds match (`/link` is a plain comment, an unknown word an `unknown_command`; `revise` has no `pr`, `resolve` has `pr: null`, `verdict` targets the item). The event's source is the item's own SourceRef, `comment_id` is the command's `key`, and the identity is provider `local` with subject the actor after `local:`. A command whose item is missing or not local gives no event; the cursor still moves past it.
   - `postComment` stores one item message (`item_thread`, migration 24) for the item with that source id, idempotent on the marker (a repeat stores nothing), and returns `url: null`. An id with no local item throws, naming the id. `markSeen`, `setStatus` and `closeIssue` do nothing: the store already holds the item's state.
-  - It does not write commands or create items, and emits no `item_requested`. Local identities go through the configured `AuthProvider` unchanged.
+  - `fileSubIssue` files the sub-tasks of a split spec (design 04, changed 2026-11-07): it returns a ref derived from the parent's source id and the phase number in the marker, `local-<id>-phase-<n>` (link `local:<that id>`), with no store read and no network call, so the same input always gives the same ref. The controller then creates the sub-task as an ordinary local work item keyed on that source, with `parent_id` and `phase`; a second approval finds the same rows. A parent that is not local, or a marker without a phase number, throws.
+  - It does not write commands or create items itself, and emits no `item_requested`. Local identities go through the configured `AuthProvider` unchanged.
   - Enable: `"plugins": { "source": "local", ... }`, or next to GitHub: `"source": ["github-issues", "local"]`.
   - Secrets: none. Settings: none.
   - Switch back: `"source": "github-issues"` (or drop `"local"` from the list).
@@ -65,4 +66,5 @@ Switch back / disable: `"source": "github-issues"` (or drop the other names from
 ## History
 
 - **Several sources** (changed 2026-11-01). Before: `plugins.source` took one name and every comment, 👀, status and close went through that one adapter.
+- **`local` files sub-tasks** (changed 2026-11-07). Before: `LocalSource` had no `fileSubIssue`, so `/approve` on a split spec of a local task was refused.
 - **`local` tables** (changed 2026-11-07, issue #281). Before: `poll` and `postComment` read and wrote migration 21's local-only command and message tables; now they use `command_inbox` and `item_thread` through the same store methods.
