@@ -33,6 +33,8 @@ the `05-*` files.
 - [05-sources.md](design/05-sources.md): stream intake, several sources at once, and adopting PRs and pushes a person makes.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels and when the controller sets them.
 
+Interactive sessions (decided 2026-11-01; to move into its own §5 topic file, which this change could not add). A person's own LLM session on an item is a new run kind, `interactive`: written running with a lease by `factory session start`, with the person's user ID as its actor, never claimed by a worker, and counted as the item's branch writer, so implement and update runs wait while their item overlaps an open session and a session does not start over a running one. Gates at `session finish`: the scope gate, the size gate (the same `max_diff_lines` and `max_diff_files`), the floor check (a hit refuses the finish; no tier is raised) and `repo.test_command`; push and PR only through the broker. A finished session moves the item to REVIEW with a review run. An abandoned session (`abandoned`), or one whose lease expired (the reaper writes `session_lost` and never requeues it), releases the item: RUNNING, `blocked_on: human`, `blocked_reason: session_released`, nothing queued. Exception: the session's LLM runs as the owner with the owner's access, outside the run-folder rule (architecture §5); the gates at finish are the factory's check, not a sandbox.
+
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): the feedback rate, revert and fix-forward tracking, `factory stats`, and the reviewer's golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints, and what a run's tokens and cost count.

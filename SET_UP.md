@@ -135,6 +135,33 @@ Items whose allowed paths overlap still wait for each other, so their PRs do not
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
 
+### Your own LLM session (`factory session`)
+
+Work you do with an LLM in your own terminal can go through the factory too: it becomes one `interactive` run on a work item, with a lease, your user ID as its actor, your token count and notes, and the same gates as a worker before anything is pushed. A worker never claims an implement or update run whose item overlaps your open session, and a session does not start while a worker writes overlapping paths.
+
+```bash
+npm run --silent factory -- session start 12                 # issue #12, or a work item id (wi_…)
+npm run --silent factory -- session start 12 --spec spec.json --transcript https://example.com/t/1 --as <github login>
+npm run --silent factory -- session status [<work item id>]
+npm run --silent factory -- session note [<work item id>] "tried the parser first" --tokens 120000 --transcript <url>
+npm run --silent factory -- session finish [<work item id>] --tokens 250000
+npm run --silent factory -- session abandon [<work item id>] --tokens 250000
+```
+
+- `start <issue number | work item id>` takes the item: it creates the work item if the issue has none (only with `--spec`), records one `interactive` run with a lease, makes a run folder on the item's branch and prints its path. Work and commit there. `start` stays in the foreground and keeps the lease; leave it running while you work. Ctrl-C stops it: the lease expires, the reaper ends the run as `session_lost`, and the item is released.
+  - `--spec <file>`: your own spec for a NEW item, in the triage output format (JSON, checked by the same parser; no phases). It replaces triage: the queued triage run is cancelled. An invalid file is refused and nothing changes.
+  - `--transcript <url>`: an http or https link to the session's transcript, stored after the leak scan.
+  - `--as <login>`: your GitHub login (default `repo.owner`). It is mapped to your user ID as commands map commenters; you need write permission.
+  - Refused, with nothing changed, when the item is closed, in review, waiting for `/approve` on its spec, has no allowed paths, has a queued or running implement or update run, already has an open session, or when a running implement run of another item overlaps its allowed paths.
+- `status` prints the item, the run, the lease expiry and the result of the last `finish`.
+- `note <text>` stores a note on the run after the leak scan (a flagged note is refused with the rule name). `--tokens <n>` (a whole number of 0 or more) sets your latest total; `--transcript <url>` sets the transcript link.
+- `finish` runs, in order, the scope gate (only the allowed paths), the size gate (`max_diff_lines`, `max_diff_files`, the same limits as a worker), the floor check and `repo.test_command` in the run folder. Any failure lists the reasons, keeps the session open and pushes nothing; fix and run `finish` again. A floor hit is a refusal: a session cannot raise the tier. When every gate passes, the factory pushes the branch and opens the PR through its own broker, the item moves to review and the reviewer runs. Running `finish` again (after a failed push, say) never opens a second PR or review. `--tokens <n>` as for `note`.
+- `abandon` ends the run as failed (`abandoned`). The pushed branch and the run folder are kept. `--tokens <n>` as for `note`.
+- A session that ended without a PR leaves the item `RUNNING`, blocked on you with `session_released`, and nothing queued; `session start` takes it up again. The tokens you reported are added to the item's `token_cost` once, when the run ends.
+- With no work item id, `status`, `note`, `finish` and `abandon` use the only open session on this machine (recorded under `<state_dir>/sessions/`).
+
+Your LLM runs as you, with your access, not in the factory's sandbox; the gates at `finish` are what the factory checks. A `git push` you run yourself bypasses them; nothing stops it (out of scope for now).
+
 ### Per-project settings
 
 Five settings are gates that can differ per project: `max_attempts`, `max_diff_lines`, `max_diff_files`, `budgets` and `floors`. Put the global values either at top level (as the checked-in config does) or in `defaults`, not both: the same key in both places stops startup. Then tighten them for one project under `projects`, keyed by the configured repo's `owner/name`:
