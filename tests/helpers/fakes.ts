@@ -540,6 +540,54 @@ export function recordingLog(): Logger & { lines: { level: string; msg: string; 
   return { lines, info: at("info"), warn: at("warn"), error: at("error") };
 }
 
+const OBJECT_SCHEMA = { type: "object" } as const;
+/** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
+export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
+  { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
+  { name: "github.comment", description: "comment", input_schema: OBJECT_SCHEMA, read_only: false },
+];
+
+/**
+ * A broker with one read-only tool, `test.read_note` (returns `notes[args.key]`), and one that is not,
+ * `test.write_note`. Like the GitHub broker it fences every call on the lease when given the store: a run that
+ * lost its lease gets `lease_lost` and the tool's own code never runs. `ran` records each time that code ran.
+ */
+export class FakeNoteBroker implements ToolBroker {
+  calls: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  ran: { name: string; args: unknown }[] = [];
+  readonly tools: ToolDescriptor[] = [
+    { name: "test.read_note", description: "Read a note by key.", input_schema: { type: "object", properties: { key: { type: "string" } } }, read_only: true },
+    { name: "test.write_note", description: "Write a note.", input_schema: OBJECT_SCHEMA, read_only: false },
+  ];
+  constructor(
+    public notes: Record<string, string> = {},
+    private readonly store?: { getRun(id: Run["id"]): Promise<Run | null> },
+  ) {}
+  listTools(grants: readonly string[]): ToolDescriptor[] {
+    return this.tools.filter((t) => grants.includes(t.name));
+  }
+  allTools(): readonly ToolDescriptor[] {
+    return this.tools;
+  }
+  async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
+    this.calls.push({ ctx, name, args });
+    if (this.store) {
+      const run = await this.store.getRun(ctx.run_id);
+      const held = run !== null && run.work_item_id === ctx.work_item_id && run.status === "running" && run.lease?.token === ctx.lease_token;
+      if (!held) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    }
+    this.ran.push({ name, args });
+    if (name === "test.read_note") {
+      const key = String((args as { key?: unknown } | null)?.key ?? "");
+      return { ok: true, content: { key, note: this.notes[key] ?? null } };
+    }
+    if (name === "test.write_note") return { ok: true, content: {} };
+    return { ok: false, error_code: "unknown_tool", message: name };
+  }
+}
+
 export class FakeBroker implements ToolBroker {
   /** Every call that acts on the forge (push, PR, comment), in order. The read-only preflight is in `preflights`. */
   calls: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
@@ -550,8 +598,13 @@ export class FakeBroker implements ToolBroker {
    * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
    */
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
-  listTools(): ToolDescriptor[] {
-    return [];
+  /** The GitHub broker's tools, flagged as it flags them: only the preflight is read-only. */
+  tools: ToolDescriptor[] = FAKE_GITHUB_TOOLS.map((t) => ({ ...t }));
+  listTools(grants: readonly string[]): ToolDescriptor[] {
+    return this.tools.filter((t) => grants.includes(t.name));
+  }
+  allTools(): readonly ToolDescriptor[] {
+    return this.tools;
   }
   /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
   remote = new Map<string, string>();
