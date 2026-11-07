@@ -19,11 +19,19 @@ Plugins:
   - Limits and results: at most 25 tool rounds; a model still asking for tools after that ends `failed` (`agent_failed`). `timeout_ms` ends the run `timed_out` and the caller's AbortSignal ends it `aborted`; both cancel the in-flight request. HTTP 429 is `rate_limited`, with `reset_at` from Retry-After when it gives one; any other error is `failed`. No request is retried. A final answer that is not JSON (one surrounding code fence is allowed) or does not match `output_schema` is returned `completed` with no output, so the worker records `invalid_output`. `usage` sums input and output tokens over every call, `usage.model` is the model the response reports, `cost_usd` is null. No stall detection (`stall_ms` is ignored).
   - Switch back: `"runner": "claude-code"` (the default).
 
+Fallback chain (design 2026-11-07, `docs/design/08-plugins.md`): list several runners, tried in order.
+
+- Enable: `"plugins": { "runner": ["claude-code", "openai-compatible"], ... }` (Claude first, the OpenAI-style endpoint second; add more names to extend it). Every member needs its own settings and secrets as above (here the `openai_compatible` block and `OPENAI_COMPATIBLE_API_KEY`); `npm run setup` asks for and `doctor` checks each member's.
+- The next member takes a run only when the previous one did no work: a rate limit, or a stall or failure with no model output (a missing secret or config fails that way). A run that completed, timed out, was aborted, or failed after output is never retried on another member. A run with `tool_grants` skips members that cannot expose tools.
+- The result names its member in `served_by`; usage is summed over the members tried, the transcript joins each member's behind a `----- runner fallback: <name> -----` line, and the worker logs `runner fallback` (`from`, `to`, `reason`). If every member fails, the error lists each failure; a rate limit from the last one keeps the earliest `reset_at`.
+- Switch back: a single name again, e.g. `"runner": "claude-code"` (a list of one is the same).
+
 A new runner reuses the shared tools in `src/core/tools` (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `Bash` as `ToolSpec`s, with `guardPolicy`) instead of implementing its own file tools and deny rules, so it gets the file guards for free (architecture §5). `tests/helpers/scripted-runner.ts` is a test-only example, selected only with `withPlugin(REGISTRY, "runner", ...)` in tests and never in the registry.
 
 Switch back / disable: `"runner": "claude-code"`. There is no "off".
 
 ## History
 
+- **Fallback chain** (2026-11-07). Before: `plugins.runner` took one name only.
 - **Runners** (2026-11-07, issue #194): added `openai-compatible`, with Bash refused per call. Before: `claude-code` was the only runner.
 - **Granted tools** (2026-11-07, issue #164). Before: the runner threw on any run with grants.
