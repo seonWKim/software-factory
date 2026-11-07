@@ -6,7 +6,9 @@ import { Plugins, loadConfig } from "../src/compose.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
+import { OpenAICompatibleLLMProvider } from "../src/impl/llm/openai-compatible-llm-provider.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { SecretStore } from "../src/interfaces/secret-store.js";
 import {
   OUTPUT_SCHEMA,
   PLAIN_PROMPT,
@@ -17,6 +19,7 @@ import {
 } from "../src/llm-check.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { doctor } from "../src/setup.js";
+import { type FakeOpenAIServer, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
 
 const FAKE_KEY = `sk-ant-api03-${"A".repeat(40)}`;
 
@@ -182,6 +185,33 @@ describe("llm-check: the check function", () => {
       expect(scanner.calls.some((c) => c.channel === "log" && c.content === line)).toBe(true);
     }
     expect(scanner.calls.every((c) => c.channel === "log")).toBe(true);
+  });
+});
+
+describe("llm-check: a provider setup error", () => {
+  let server: FakeOpenAIServer | undefined;
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  it("against a fake 429 insufficient_quota, the FAIL line carries the provider's message", async () => {
+    const QUOTA = "You exceeded your current quota, please check your plan and billing details.";
+    const reply = { status: 429, body: { error: { message: QUOTA, type: "insufficient_quota", code: "insufficient_quota" } } };
+    server = await startFakeOpenAIServer([reply, reply]);
+    const secrets: SecretStore = {
+      get: async (name) => ({ name, reveal: () => "sk-llm-check-key-1", toString: () => "[secret]", toJSON: () => "[secret]" }),
+      valuesForScan: async () => ["sk-llm-check-key-1"],
+    };
+    const provider = new OpenAICompatibleLLMProvider({ secrets, config: { base_url: server.baseUrl, models: { cheap: "c", standard: "s", strong: "x" } } });
+    const { result, printed, scanner } = await check(provider);
+    expect(result.ok).toBe(false);
+    const fail = printed.at(-1)!;
+    expect(fail).toMatch(/^llm-check FAIL: /);
+    expect(fail).toContain("provider_setup");
+    expect(fail).toContain(QUOTA);
+    expect(fail).not.toContain("sk-llm-check-key-1");
+    expect(scanner.calls.some((c) => c.channel === "log" && c.content === fail)).toBe(true);
   });
 });
 
