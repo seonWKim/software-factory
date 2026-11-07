@@ -237,6 +237,35 @@ export interface WorkerPause {
 export type ClaimPauseName = "rate_limit" | "forge_auth" | "model_stall" | "model_stall_since" | "model_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
+/**
+ * How one claim of a run ended (design §6, run attempts). `running` while the claim holds the lease; then
+ * `succeeded` / `failed` (completeRun), `paused` (pauseRun), `cancelled` (a close that stops running runs) or
+ * `lease_expired` (the reaper). Not a run status: the run's own status values are unchanged.
+ */
+export type RunAttemptStatus = "running" | "succeeded" | "failed" | "cancelled" | "paused" | "lease_expired";
+
+/**
+ * One claim of a run (design §6): one record per claimRun, the claim that resumes a paused run included.
+ * `attempt` counts the run's claims (1, 2, 3 …); it is not `Run.attempt`, which a resume does not raise.
+ */
+export interface RunAttempt {
+  run_id: RunId;
+  attempt: number;
+  /** The claiming worker. Null only on records backfilled from a finished run, whose lease owner was cleared. */
+  worker_id: WorkerId | null;
+  status: RunAttemptStatus;
+  /** Null only on backfilled records of runs from before `started_at` existed. */
+  started_at: Timestamp | null;
+  /** Null while `running`. */
+  finished_at: Timestamp | null;
+  /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
+  error_code: string | null;
+  /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
+  failure_class: "task" | "infra" | "rate_limited" | "stalled" | null;
+  /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
+  tokens: number;
+}
+
 export interface Lease {
   owner: WorkerId;
   /** Fencing token. Strictly increases on every claim of the same run; stale holders are rejected by it. */
