@@ -193,6 +193,8 @@ const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
+/** A review with nothing to review: no commits ahead of the base, or an empty diff (issue #223). */
+const EMPTY_DIFF = "empty_diff";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
@@ -2336,6 +2338,7 @@ export class Controller {
             },
             actor: SYSTEM,
             reason: "implemented",
+            detail: await this.ciChecksDetail(it, pr),
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
           };
@@ -2343,6 +2346,10 @@ export class Controller {
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for.
+          if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, typeof data.head_sha === "string" ? data.head_sha : "", tokens);
+          // An unchanged head carries the last verdict; its comments keep that review's keys, so none is posted again.
+          const verdictRun = typeof data.reused_review === "string" ? (data.reused_review as RunId) : run.id;
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -2385,7 +2392,7 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
+          return this.checkGate(it, verdictRun, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
@@ -2403,7 +2410,7 @@ export class Controller {
             patch: { stage: "REVIEW", token_cost: tokens },
             actor: SYSTEM,
             reason: "resolved",
-            detail: { run_id: run.id },
+            detail: { run_id: run.id, ...(await this.ciChecksDetail(it, it.pr_number)) },
             ack_run: run.id,
             enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
           };
@@ -2414,7 +2421,9 @@ export class Controller {
         case "interactive": {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
-          const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+          const detail = {
+            run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}), ...(await this.ciChecksDetail(it, Number(data.pr_number))),
+          };
           return {
             patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
             ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
@@ -2485,6 +2494,23 @@ export class Controller {
       reason: "run_failed",
       ack_run: run.id,
     };
+  }
+
+  /**
+   * A review with nothing to review (issue #223): the PR branch has no commits ahead of the base (already merged)
+   * or its diff is empty. No agent ran. The item blocks on a human with `empty_diff`; the one comment is keyed on
+   * the head, so a repeated run at the same head posts nothing.
+   */
+  private async emptyDiff(it: WorkItem, run: Run, head: string, tokens: number): Promise<Decision> {
+    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
+    await this.comment(it, `${EMPTY_DIFF}:${head || "unknown"}`, [
+      `PR #${it.pr_number} has no changes against \`${this.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
+      "",
+      "Close the PR if its change is already on the base, or push the missing commits to its branch.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return { patch, actor: SYSTEM, reason: EMPTY_DIFF, detail: { run_id: run.id }, ack_run: run.id };
   }
 
   /**
@@ -2652,6 +2678,29 @@ export class Controller {
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
       return { state: "pending" };
+    }
+  }
+
+  /**
+   * The PR's checks for the review prompt (design §4, issue #223), as `ci_checks` (JSON: name and result per
+   * check) on the state change that queues a review. A PR source without them records an empty list (no checks
+   * ran); a read error records nothing (logged), and the prompt says the results were not read.
+   */
+  private async ciChecksDetail(it: WorkItem, pr_number: number | null): Promise<StateChangeDetail> {
+    const forge = this.byType.get(PR_SOURCE_TYPE);
+    if (pr_number === null) return {};
+    if (!forge?.prCheckResults) return { ci_checks: "[]" };
+    try {
+      const results = await forge.prCheckResults(pr_number);
+      const kept = results.slice(0, MAX_CHECK_NAMES).map((r) => ({ name: r.name.slice(0, MAX_CHECK_NAME_CHARS), result: r.result }));
+      return { ci_checks: JSON.stringify(kept) };
+    } catch (err) {
+      this.d.log.warn("reading PR check results failed", {
+        work_item_id: it.id,
+        pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return {};
     }
   }
 
