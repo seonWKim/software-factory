@@ -253,7 +253,22 @@ export interface RecordConflictsInput {
   event_key: string;
 }
 
-export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
+/**
+ * One attempt the reaper cut off (design §5 Restarts, issue #210). `ended_at` is the run's last heartbeat
+ * (`updated_at` before the reaper's write); `duration_ms` is `ended_at − started_at`, null without `started_at`.
+ */
+export interface AbandonedAttempt {
+  run_id: RunId;
+  work_item_id: WorkItemId;
+  attempt: number;
+  /** What the reaper moved the run to. */
+  outcome: "queued" | "failed" | "cancelled";
+  started_at: Timestamp | null;
+  ended_at: Timestamp | null;
+  duration_ms: number | null;
+}
+
+export type LeaseResult ={ ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
 /** `session start` (design §5, 2026-11-01): the item's transition plus one `interactive` run, written running. */
 /** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
@@ -428,8 +443,14 @@ export interface FactoryStore {
    * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01), and its attempt record
    * closes as `failed` with that code.
    * In every other case the claim's attempt record closes as `lease_expired`, failure class `infra`, tokens 0.
+   * `onAbandoned` is called once per run this call's conditional update actually changed, after the
+   * transaction commits (design §5 Restarts, issue #210). The returned ids are unchanged.
    */
-  expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
+  expireLeases(
+    max_attempts: number,
+    backoff_ms?: (attempt: number) => number,
+    onAbandoned?: (attempt: AbandonedAttempt) => void,
+  ): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
 
   /**
