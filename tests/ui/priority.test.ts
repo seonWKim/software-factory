@@ -98,6 +98,18 @@ describe("ui priority", () => {
     });
   });
 
+  it("a dependency blocker waits on another issue even while its run is queued", () => {
+    const dep = item("dep", { blocked_on: "dependency", blocked_reason: "waiting for #12 to merge", run: queued, waiting_on: 1, waiting_on_number: 12 });
+    expect(levelOf(dep, NOW, LEASE)).toBe("waiting_on_issue");
+    expect(rank([dep], NOW, LEASE)[0]!.badges).toEqual(["waits on #12"]);
+  });
+
+  it("a deadlock claim on the item's run needs a human", () => {
+    const d = item("d", { run: running("implement", 0), deadlock: true });
+    expect(levelOf(d, NOW, LEASE)).toBe("needs_human");
+    expect(rank([d], NOW, LEASE)[0]!.badges).toEqual(["deadlock"]);
+  });
+
   it("a human block outranks an active run", () => {
     expect(levelOf(item("a", { blocked_on: "human", blocked_reason: "x", run: queued }), NOW, LEASE)).toBe("needs_human");
   });

@@ -52,7 +52,7 @@ export interface WhyInput {
   /** The item's queued or running run (running wins), with its 1-based place in the queue when queued. */
   run: { id: string; kind: RunKind; status: "queued" | "running"; position: number | null } | null;
   /** The latest claim decision of the item's runs, if any. */
-  decision: Pick<ClaimDecision, "run_id" | "decision" | "holder_ref" | "holder_kind" | "approved_by"> | null;
+  decision: (Pick<ClaimDecision, "decision" | "holder_ref" | "holder_kind"> & { run_id: string; approved_by: string | null }) | null;
   pauses: ClaimPauses;
   /** The run's not_before when it is still ahead (the caller compares it with its now), else null. */
   not_before: string | null;

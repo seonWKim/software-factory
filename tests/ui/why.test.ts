@@ -58,7 +58,7 @@ describe("whyWaiting: every case", () => {
   });
 
   it("an approved hold, or a decision on an older run, is no hold", () => {
-    expect(whyWaiting(input({ run: queued(), decision: { ...held("pr"), approved_by: "u1" as never } })).code).toBe("queued");
+    expect(whyWaiting(input({ run: queued(), decision: { ...held("pr"), approved_by: "u1" } })).code).toBe("queued");
     expect(whyWaiting(input({ run: queued(), decision: held("pr", "run_old") })).code).toBe("queued");
   });
 
