@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseTriage } from "../src/core/outputs.js";
 import {
-  MAX_PHASES, MIN_PHASES, PHASE_MARKER, SPLIT_PERCENT, needsSplit, parseSizeDetail, phaseIssueBody, phaseMarker,
+  MAX_PHASES, MIN_PHASES, PHASE_MARKER, SPLIT_PERCENT, needsSplit, parseSizeDetail, phaseIssueBody, phaseMarker, phaseTitle,
   splitThresholds, suggestSplit,
 } from "../src/core/split.js";
 import { renderSpec } from "../src/core/spec-comment.js";
@@ -105,9 +105,10 @@ describe("split spec comment", () => {
 describe("phase issues", () => {
   it("the body names the parent and the phase it waits for, and the marker is unique per parent and phase", () => {
     const body = phaseIssueBody({ parent: issueRef(5), phase: phase(2), index: 2, total: 3, depends_on: issueRef(7) });
-    expect(body).toContain("Phase 2 of 3");
-    expect(body).toContain("o/r#5");
-    expect(body).toContain("o/r#7");
+    expect(body.startsWith("## In short\n\nPhase 2 of 3.")).toBe(true);
+    expect(body).toContain("Part of #5,");
+    expect(body).toContain("waits for #7:");
+    expect(body).not.toContain("https://");
     expect(body).toContain("- criterion 2");
     expect(body).toContain("- `src/p2/`");
     const first = phaseIssueBody({ parent: issueRef(5), phase: phase(1), index: 1, total: 3, depends_on: null });
@@ -115,6 +116,13 @@ describe("phase issues", () => {
     expect(phaseMarker("wi_a" as never, 1)).not.toBe(phaseMarker("wi_a" as never, 2));
     expect(PHASE_MARKER.test(phaseMarker("wi_a" as never, 2))).toBe(true);
     expect(PHASE_MARKER.test("an ordinary issue body")).toBe(false);
+  });
+
+  it("the title never repeats the phase number the model already wrote", () => {
+    expect(phaseTitle(2, 4, "Phase 2: openai_compatible config")).toBe("Phase 2/4: openai_compatible config");
+    expect(phaseTitle(2, 4, "phase 2/4 - config")).toBe("Phase 2/4: config");
+    expect(phaseTitle(1, 3, "Store and types")).toBe("Phase 1/3: Store and types");
+    expect(phaseTitle(1, 3, "Phases of the moon")).toBe("Phase 1/3: Phases of the moon");
   });
 });
 

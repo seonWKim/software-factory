@@ -4,7 +4,9 @@ import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable,
 import { type FloorHit, requiredTier } from "./diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import type { Logger } from "./log.js";
-import { CHECKS_FAILED_RUN, type CheckResult, type CheckRound, checkCommands, checkedLines, commandText, redact, runChecks } from "./checks.js";
+import {
+  CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, redact, runChecks, toolchainMissing,
+} from "./checks.js";
 import {
   IMPLEMENT_SCHEMA,
   REVIEW_SCHEMA,
@@ -16,6 +18,7 @@ import {
 import {
   AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, failureClass, wipBranchFor,
 } from "./policy.js";
+import { stripAnsi } from "./output-summary.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -223,7 +226,8 @@ const PAUSE_NEXT_STEPS = "continue the work item from the WIP commit; finished s
 const TRANSCRIPT_FAIL_RULES: readonly string[] = ["known_secret", "factory_canary"];
 
 function tail(s: string): string {
-  return s.length > TAIL_CHARS ? s.slice(-TAIL_CHARS) : s;
+  const clean = stripAnsi(s);
+  return clean.length > TAIL_CHARS ? clean.slice(-TAIL_CHARS) : clean;
 }
 
 /**
@@ -660,7 +664,8 @@ export class Worker {
     try {
       checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model });
     } catch (err) {
-      if (!(err instanceof RunFailure) || err.code !== CHECKS_FAILED_RUN) throw err;
+      // Both keep the commits on a wip branch, so the retry starts from them.
+      if (!(err instanceof RunFailure) || (err.code !== CHECKS_FAILED_RUN && err.code !== TOOLCHAIN_MISSING)) throw err;
       await countFixCommits();
       const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       throw await this.keepWip(run, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
@@ -1141,6 +1146,13 @@ export class Worker {
     await this.cleanTree(handle);
     const first = await this.runCheckList(run, handle, signal);
     if (!first.failed) return { results: first.results, fixed: false };
+    // A missing install is the host's, not the branch's: no fix step, and an infra failure (issue #229).
+    const missing = toolchainMissing(first.failed.tail);
+    if (missing) {
+      throw new RunFailure(TOOLCHAIN_MISSING, `\`${commandText(first.failed.command)}\` could not start its tools: ${missing}`.slice(0, 500), true, {
+        output_tail: first.failed.tail,
+      });
+    }
     await this.fixStep(run, item, handle, signal, s, first.failed);
     await this.cleanTree(handle);
     const second = await this.runCheckList(run, handle, signal);
@@ -2008,10 +2020,13 @@ function fenced(text: string): string {
   return `${fence}text\n${text}\n${fence}`;
 }
 
-/** `factory: <issue title>`, in full. Items from before titles were stored keep the old rule. */
-function prTitle(item: WorkItem): string {
+/**
+ * The issue title, in full, with no prefix (the bot author and the branch already say it is the factory's). Items
+ * from before titles were stored use the problem's first line.
+ */
+export function prTitle(item: WorkItem): string {
   const title = item.title?.replace(/\s+/g, " ").trim();
-  return title ? `factory: ${title}` : `factory: ${firstLine(item.problem).slice(0, 80)}`;
+  return title || firstLine(item.problem).slice(0, 80);
 }
 
 /** The search query for implement and review: the problem plus the done criteria. */

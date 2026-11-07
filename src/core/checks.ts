@@ -3,6 +3,7 @@
 // step, the update run on the merged branch, the resolve run after install.
 
 import type { FactoryConfig } from "./config.js";
+import { stripAnsi } from "./output-summary.js";
 import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 
 /**
@@ -11,6 +12,31 @@ import type { ExecResult, Sandbox, SandboxHandle } from "../interfaces/sandbox.j
  * same word, different thing; the two never meet in one table.
  */
 export const CHECKS_FAILED_RUN = "checks_failed";
+
+/**
+ * The run failure code of an implement run whose check could not start its tools: a module under node_modules
+ * or a tool binary is missing (issue #229). An infrastructure failure: the code cannot fix the host's install,
+ * so the fix step is skipped and the retry does not spend a task attempt.
+ */
+export const TOOLCHAIN_MISSING = "toolchain_missing";
+
+const SETUP_LINES = [
+  // Node: a dependency the check imports is not installed where it looks.
+  /Cannot find (?:module|package) ['"][^'"]*node_modules[^'"]*['"]/,
+  // A tool binary the check runs is not there.
+  /node_modules\/\.bin\/[\w.-]+[^\n]*(?:ENOENT|No such file|not found)/,
+  /(?:ENOENT|No such file)[^\n]*node_modules\/\.bin\//,
+  /(?:command not found|not found): (?:tsc|vitest|npx|node)\b/,
+  /\b(?:tsc|vitest): (?:command )?not found/,
+];
+
+/** The first line of `text` that shows the check's tools are missing (see TOOLCHAIN_MISSING); null otherwise. */
+export function toolchainMissing(text: string): string | null {
+  for (const line of stripAnsi(text).split("\n")) {
+    if (SETUP_LINES.some((re) => re.test(line))) return line.trim().slice(0, 300);
+  }
+  return null;
+}
 
 /** Characters of a failed check's output kept for the fix step's prompt and the outcome. */
 export const CHECK_TAIL_CHARS = 2000;
@@ -84,7 +110,7 @@ export async function runChecks(o: {
       continue;
     }
     // The whole output is redacted before it is cut, so a value cut in half at the tail's start cannot slip through.
-    const whole = redact(`${r.stdout}${r.stderr}`, o.redact);
+    const whole = redact(stripAnsi(`${r.stdout}${r.stderr}`), o.redact);
     const failed = { command: [...cmd], ok: false, how: exitText(r), tail: cutTail(whole, o.redact) };
     results.push(failed);
     return { results, failed };
