@@ -137,6 +137,13 @@ describe("POST /api/v1/standing", () => {
     ]);
   });
 
+  it("off, then on: a fresh GET (the page's reload) shows the last write", async () => {
+    const { d, real, pauses } = await setup();
+    await real.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: OWNER });
+    for (const enabled of [false, true]) expect((await respond(d, post(pauses, { rule: "spec-t1", enabled }))).status).toBe(200);
+    expect((await get(d)).rules.find((r: { rule: string }) => r.rule === "spec-t1").enabled).toBe(true);
+  });
+
   it("setting the state the rule already has writes nothing and answers changed: false", async () => {
     const { d, pauses, rows, writes } = await setup();
     // No rule stored is off.

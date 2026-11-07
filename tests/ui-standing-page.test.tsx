@@ -5,13 +5,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StandingRule, Timestamp, UserId } from "../src/core/types.js";
-import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { HealthMonitor } from "../src/ui/health.js";
-import { type ApiDeps, api } from "../src/ui/api.js";
-import { writeStanding } from "../src/ui/standing-api.js";
 import type { SettingsView, StandingView } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -28,10 +21,18 @@ const AT = "2026-11-07T00:00:00.000Z";
 const settings: SettingsView = {
   as_of: AT, csrf_token: TOKEN, repo: "o/r", project: null, project_keys: [], keys: [], pr_only: [], ignored: [], history: [],
 };
+const standing = (): StandingView => ({
+  as_of: AT,
+  csrf_token: TOKEN,
+  rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: "github:1", created_at: AT, updated_at: AT, last_used_at: null }],
+  proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 10, threshold: 10, created_at: AT }],
+});
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-// A write through the real store, then a refetch: on a loaded CI runner this takes longer than the 1 s default wait.
+// A write, then a refetch: on a loaded CI runner this takes longer than the 1 s default wait. Each test gets three
+// times this, so a slow wait fails on its own message, not on the test timeout.
 const SLOW = { timeout: 5_000 };
+const TEST_MS = 15_000;
 
 function show() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -46,7 +47,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Standing approvals section (stubbed API)", () => {
+describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () => {
   let view: StandingView;
   let posts: { url: string; init: RequestInit }[];
   let answer: { status: number; body: unknown };
@@ -56,12 +57,7 @@ describe("Standing approvals section (stubbed API)", () => {
 
   beforeEach(() => {
     posts = [];
-    view = {
-      as_of: AT,
-      csrf_token: TOKEN,
-      rules: [{ rule: "spec-t1", gate: "spec", tier: 1, threshold: 10, enabled: false, set_by: "github:1", created_at: AT, updated_at: AT, last_used_at: null }],
-      proposals: [{ id: "sp_1", rule: "spec-t1", run_length: 10, threshold: 10, created_at: AT }],
-    };
+    view = standing();
     answer = { status: 200, body: { changed: true } };
     hold = false;
     release = [];
@@ -133,56 +129,24 @@ describe("Standing approvals section (stubbed API)", () => {
   });
 });
 
-/**
- * The store methods the standing routes use, kept in memory. Not the SQLite store: this file runs under jsdom, whose
- * module resolution on Node 22 (CI) does not know `node:sqlite`. tests/ui-standing.test.ts covers the routes on the
- * real store.
- */
-function memoryStore(clock: FakeClock): FactoryStore {
-  const rules: StandingRule[] = [];
-  const methods: Pick<FactoryStore, "listStandingRules" | "putStandingRule" | "listStandingProposals" | "listSettingOverrides"> = {
-    listStandingRules: async () => rules.map((r) => ({ ...r })),
-    putStandingRule: async ({ gate, tier, enabled, set_by }) => {
-      const now = clock.now().toISOString() as Timestamp;
-      const i = rules.findIndex((r) => r.gate === gate && r.tier === tier);
-      const rule = { gate, tier, enabled, set_by, created_at: i < 0 ? now : rules[i]!.created_at, updated_at: now };
-      if (i < 0) rules.push(rule);
-      else rules[i] = rule;
-      return { ...rule };
-    },
-    listStandingProposals: async () => [],
-    listSettingOverrides: async () => [],
-  };
-  return methods as FactoryStore;
-}
-
-describe("Standing approvals section against the real routes", () => {
+describe("Standing approvals section against a server that keeps the rule", () => {
   it("turn the rule off, then on, reload the page: the state shown matches the last write", async () => {
-    const clock = new FakeClock();
-    const store = memoryStore(clock);
-    await store.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: "github:1" as UserId });
-    const d: ApiDeps = {
-      store,
-      scanner: new PatternEgressScanner(async () => []),
-      clock,
-      lease_ms: 300_000,
-      prUrl: (label, n) => `https://${label}/pull/${n}`,
-      health: new HealthMonitor(async () => [], clock),
-      pauses: {
-        principal: async () => "github:1" as UserId,
-        authorize: async () => ({ allow: true }),
-        csrfToken: TOKEN,
-        log: { info: () => {}, warn: () => {}, error: () => {} },
-      },
-    };
-    // The route functions behind server.ts (whose guards tests/ui-standing.test.ts covers; server.ts itself does not
-    // load under jsdom, which has no file: module URL for the app's directory).
+    // A server that stores what each POST writes and answers every GET from it, as the real routes do
+    // (tests/ui-standing.test.ts checks the routes on the real store). This file runs under jsdom, so it loads no
+    // server module: the routes' import tree (store, plugins, processes) is not the browser's.
+    let enabled = true;
+    const writes: boolean[] = [];
+    const current = (): StandingView => ({ ...standing(), rules: [{ ...standing().rules[0]!, enabled }] });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/v1/settings") return json(200, settings);
-      const r = init?.method === "POST"
-        ? await writeStanding(d, d.pauses!, JSON.parse(String(init.body)))
-        : await api(d, new URL(url, "http://127.0.0.1"));
-      return json(r.status, r.value);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { enabled: boolean };
+        const changed = body.enabled !== enabled;
+        enabled = body.enabled;
+        writes.push(body.enabled);
+        return json(200, { changed, ...current() });
+      }
+      return json(200, current());
     }));
     const switchOf = (list: HTMLElement) => within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "spec-t1" });
 
@@ -190,15 +154,14 @@ describe("Standing approvals section against the real routes", () => {
     expect(switchOf(list).getAttribute("aria-checked")).toBe("true");
     fireEvent.click(switchOf(list));
     await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("false"), SLOW);
-    clock.advance(1000);
     await waitFor(() => expect((switchOf(list) as HTMLButtonElement).disabled).toBe(false), SLOW);
     fireEvent.click(switchOf(list));
     await waitFor(() => expect(switchOf(list).getAttribute("aria-checked")).toBe("true"), SLOW);
+    expect(writes).toEqual([false, true]);
 
-    // Reload: a fresh page and query cache read the store again.
+    // Reload: a fresh page and query cache read the server again.
     cleanup();
     list = await show();
     expect(switchOf(list).getAttribute("aria-checked")).toBe("true");
-    expect((await store.listStandingRules()).find((r) => r.tier === 1)?.enabled).toBe(true);
-  }, 30_000);
+  }, TEST_MS);
 });
