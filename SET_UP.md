@@ -92,17 +92,17 @@ A command is the first line of a comment: `/` and the command name (any case), t
 
 | Command | What it does | Applies when |
 |---|---|---|
-| `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+| `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check |
 | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
 | `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice; on its PR: waiting for a human merge, blocked by a failed review run |
-| `/retry` | Run the failed run again | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
+| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
 | `/link <code>` | Link the account you post from to a factory user, with a code from `factory link-code <user_id>` | any time |
 | `/help` | List every command and which ones apply now | any time |
 
-Approval notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. Feedback on a PR (`/revise` there, or a "Request changes" review) is handled the same way, capped at 8000 characters. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. Generated from `src/core/commands.ts`; a test fails when this table differs.
+Approval and `/retry` notes are untrusted text: they are capped at 2000 characters and checked by the leak scanner before they are stored. Feedback on a PR (`/revise` there, or a "Request changes" review) is handled the same way, capped at 8000 characters. A note the scanner blocks refuses the approval with a reply; post `/approve` again without it. `+paths` (on the first line, right after `/approve` or `/retry`) takes up to 10 repo-relative paths with no `..` and no glob, and adds the ones the allowed paths do not cover yet; a path under a floor raises the item's tier to that floor's. When a run stops on files outside the allowed paths, its comment gives the exact `/retry +paths ...` reply. Generated from `src/core/commands.ts`; a test fails when this table differs.
 
 Who may act is decided by the grant plugins in `permissions.grants` (default: write access on the repository; docs/plugins.md, GrantSource). To act from another account as the same factory user (your GitHub user is `github:<numeric id>`), run `npm run --silent factory -- link-code github:<id>` and post the printed `/link <code>` as a comment on any issue from the other account. The code works once, for 10 minutes, and 5 wrong codes lock it. `/link` is the one command read on any issue, work item or not; it is never listed in an item's footer.
 
@@ -110,7 +110,21 @@ If you have write permission and reply in plain words on an open work item's iss
 
 ### Local tasks from the command line
 
-Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`) and set `cli_user` in `factory.config.json` to your factory user ID (e.g. `"cli_user": "github:12345"`); every command below acts as that user, and with no `cli_user` each one prints an error and exits with code 1. Run them as `npm run --silent factory -- <command>`. None of them calls GitHub.
+Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`). Run the commands as `npm run --silent factory -- <command>`. None of them calls GitHub, and they work the same whether GitHub is selected, unreachable or rate limited.
+
+Who you are: `cli_user` in `factory.config.json` if you set it (optional), else `local:<git user.email>`, else `local:<OS user name>`, else `local:anonymous`. The local UI uses the same identity. Git's `user.name` is not used, because it is a display name.
+
+Who may act: local commands (the CLI and the local UI) are checked by the local auth plugin, never by GitHub's. GitHub comments are still checked by the `auth` plugin for GitHub. The first identity to run a writing command (`task create`, `approve`, `retry`, `revise`, `reject`, `users add`/`remove`) becomes the local **owner**.
+
+| | Solo (default, zero setup) | Team (many developers on one shared store) |
+|---|---|---|
+| Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
+| Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
+| May approve, retry, revise, reject | The owner | The owner and every `approver` |
+| May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
+| `anonymous` | Read and create only: never the owner, never an approver | The same |
+
+A `permissions.static.deny` still refuses a local user. On a shared store the identity comes from each person's environment (git config, OS user), so anyone who can run the CLI against the store can set it: the store's credentials are the trust boundary.
 
 - `factory task create --title <t> --body-file <f>`: Create a local work item from a title and a body file; prints its work item ID.
 - `factory task list`: List local work items: ID, title, stage and blocked reason.
@@ -119,8 +133,11 @@ Work items can also come from your terminal instead of a GitHub issue. Add `"loc
 - `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+- `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
+- `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
+- `factory users remove <user_id>`: Owner only: remove a local user's role.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it as it applies the same comment on GitHub: the same permission check and the same refusal text. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. The controller resolves the CLI user as the local account (provider `local`, subject `<cli_user>`) through `auth`: with `"auth": "github"` that account must be linked to the factory user, and no CLI command links it yet, so until then the controller refuses CLI commands as not linked. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
 ### Status labels
 
@@ -269,12 +286,20 @@ For `npm run test:mysql` on your own machine, the same URL can go in `.factory/t
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
-| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
+| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
 
 `npm run factory -- ui` serves the factory app at <http://127.0.0.1:4310/> (it redirects to `/app/`; the port is `ui.port` in `factory.config.json`): Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue and Health. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+
+**Commands from the page (`ui.user_id`).** To let the page send item commands, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
+
+```json
+"ui": { "port": 4310, "user_id": "github:12345" }
+```
+
+Every command sent from the page acts as that user, with that user's permissions: the controller runs the same permission check as for a comment from that user, and refuses (with a reply on the issue and in the item's replies) what that user may not do. Anyone who can open the page on this machine acts as that user, so set it only on a machine you alone use. Without `ui.user_id` the page cannot send commands (the endpoint answers 503); it still shows everything. An empty or non-string value stops startup with an error naming `ui.user_id`. The checked-in config does not set it; keep your own ID out of the repository. Only `approve` is applied from the page today; any other command is recorded and answered with a refusal pointing at the issue.
 
 The list's order:
 1. Ready to merge

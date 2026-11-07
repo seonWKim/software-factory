@@ -9,10 +9,12 @@ import {
   tierBudget,
 } from "./budget.js";
 import {
-  COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseLink, phaseLabel, unknownCommandReply,
+  COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
+  retryPathsReply, unknownCommandReply,
 } from "./commands.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
+  type DependencyLink,
   type DependencyVerdict,
   dependencyReason,
   dependencyVerdict,
@@ -44,6 +46,7 @@ import {
   effectiveTier,
   failureClass,
   floorTier,
+  isCovered,
   needsSpecApproval,
   nextAutoResolveAttempt,
   parseAutoResolveKey,
@@ -58,6 +61,7 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
@@ -70,7 +74,7 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -79,6 +83,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
@@ -91,7 +96,13 @@ export interface ControllerDeps {
   sources?: readonly SourceAdapter[];
   /** One source: the same as `sources: [source]`. */
   source?: SourceAdapter;
+  /** Authorizes commands from GitHub (and every non-local origin). */
   auth: AuthProvider;
+  /**
+   * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
+   * #318: local commands never depend on the GitHub auth plugin. Absent: `auth`.
+   */
+  local_auth?: AuthProvider;
   clock: Clock;
   config: FactoryConfig;
   log: Logger;
@@ -121,6 +132,11 @@ export interface ControllerDeps {
    * retries up to max_attempts.
    */
   repeated_failure_rule?: boolean;
+  /**
+   * The sandbox the worker pool uses (design §5 Merge check): the controller only fetches through it and runs
+   * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
+   */
+  sandbox?: Sandbox;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -128,6 +144,9 @@ type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 type Hold = Omit<TransitionInput, "id" | "expected_version" | "enqueue"> & { checkpoint: NewBudgetCheckpoint };
 /** Why a human's command was not applied; posted back to them. Plain null stays a silent no-op. */
 type Refusal = { refuse: string };
+/** What a `+paths` adds to a transition (issue #280): the widened allowed_paths and a raised tier, and the added paths. */
+type Widening = { patch: Pick<WorkItemPatch, "allowed_paths" | "tier">; detail: StateChangeDetail };
+const NO_WIDENING: Widening = { patch: {}, detail: {} };
 type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejected" | "revise_requested" | "retry_requested" | "budget_continue" | "resolve_requested" }>;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
@@ -172,6 +191,8 @@ const CHANGES_REQUESTED = "changes_requested";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
+/** The refusal of an `/approve +paths` on a split spec (issue #280): the approval files sub-issues, it implements nothing. */
+const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` files one sub-issue per phase; reply `/approve` without `+paths`, then add paths on a phase's issue";
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
 /** Characters of PR feedback (a `/revise` on a PR, or a "Request changes" review) kept and sent to the implementer. */
@@ -215,6 +236,14 @@ const CLOSE_BATCH = 50;
 const PHASE_BATCH = 50;
 /** Queued implement runs and dependency-held items looked at per coordination tick (design §5, 2026-11-03). */
 const COORDINATION_BATCH = 50;
+/**
+ * How old this process's last forge read of an item's dependency links may get before a coordination pass reads
+ * them again (design §5, 2026-11-07). Edits reach the item on intake; this only catches link changes (sub-issues,
+ * blocked-by) that GitHub may not count as an issue update.
+ */
+const EDGES_REFRESH_MS = 30 * 60_000;
+/** How old the forge's answer for a dependency outside the factory may get before a pass reads it again. */
+const DEPENDENCY_STATE_REFRESH_MS = 10 * 60_000;
 /** blocked_reason prefixes (with `blocked_on: human`) of a dependency closed unmerged, and of a dependency cycle. */
 const DEPENDENCY_CLOSED = "dependency_closed";
 const DEPENDENCY_CYCLE = "dependency_cycle";
@@ -280,8 +309,18 @@ export class Controller {
   private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   private readonly live: LiveSettings;
+  /** The local merge check; its only in-process state is a fetch throttle no other replica needs. */
+  private readonly merges: MergeChecker | null;
+  /**
+   * When this process last read an item's dependency links, and an outside dependency's state, from the forge
+   * (ms). A cache only, like the GitHub ETag cache: another replica or a new process without it reads the stored
+   * edges and, at most once per refresh interval, the forge (design §5, 2026-11-07).
+   */
+  private readonly edgesReadAt = new Map<string, number>();
+  private readonly stateReadAt = new Map<string, number>();
 
   constructor(private readonly d: ControllerDeps) {
+    this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.live = d.settings ?? LiveSettings.fixed(d.config);
@@ -312,6 +351,8 @@ export class Controller {
       if (due) await this.guard("checks", () => this.checksStep());
       // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
       if (due) await this.guard("coordination", () => this.coordinationStep());
+      // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
+      if (due) await this.guard("merge check", () => this.mergeCheckStep());
       // App requests are a store read, so every tick, like an inbox.
       await this.guard("app commands", () => this.appCommandsStep());
       await this.guard("runs", () => this.runsStep());
@@ -454,7 +495,7 @@ export class Controller {
     if (r.command !== "approve") {
       refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
-      const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id);
+      const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
       if ("refuse" in principal) refusal = principal.refuse;
       else {
         const note = await this.approvalNote(item.id, typeof r.args.note === "string" ? r.args.note : undefined);
@@ -604,7 +645,10 @@ export class Controller {
         if (created) {
           this.d.log.info("intake", { work_item_id: item.id });
           await this.setStatus(item.source, "triaging", null);
-          // Edges first, so a claim holds the implement run even before the next coordination tick.
+        }
+        // Edges first, so a claim holds the implement run even before the next coordination tick. A poll delivers
+        // an issue again only when it changed, so this is where an edited `Depends on` line is read (design §5).
+        if (created || (item.stage !== "CLOSED" && item.pr_number === null)) {
           await this.guard("dependencies", async () => void (await this.refreshEdges(item)));
         }
         await this.markSeen(e.source, null);
@@ -640,18 +684,47 @@ export class Controller {
       case "pr_unmergeable": {
         const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
         if (!id) return;
-        const key = `${id}:update:${e.pr_number}:${e.head_sha}:${e.base_sha}`;
-        await this.decide(id as WorkItemId, async (it) => {
-          if (!awaitingMerge(it) || it.pr_number !== e.pr_number) return null;
-          // One update per (head, base), and none while another update of this item is still in flight.
-          // The event repeats on every poll, so a skipped one comes back.
-          const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
-          if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
-          return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
-        });
-        return;
+        return this.startUpdate(id as WorkItemId, e.pr_number, e.head_sha, e.base_sha);
       }
     }
+  }
+
+  /**
+   * One update run per (item, PR, head sha, base sha), from GitHub's unmergeable flag or the local merge check
+   * (design §5): both use this key, so either path finding the same conflict first enqueues the only run. None
+   * while another update of this item is still in flight; the event repeats on every poll, so a skipped one
+   * comes back.
+   */
+  private async startUpdate(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): Promise<void> {
+    const key = `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
+    await this.decide(id, async (it) => {
+      if (!awaitingMerge(it) || it.pr_number !== pr_number) return null;
+      const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
+      if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
+      return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
+    });
+  }
+
+  /**
+   * One local merge check step (design §5 Merge check): every factory PR waiting for a human merge is checked
+   * against the newest base, at most once per (head sha, base sha), and a conflict starts the update run at once.
+   * Off when the controller has no sandbox that can check. Safe on any replica and safe to repeat.
+   */
+  async tickMergeCheck(): Promise<void> {
+    await this.live.refresh();
+    await this.mergeCheckStep();
+  }
+
+  private async mergeCheckStep(): Promise<void> {
+    if (!this.merges) return;
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: MERGE_CHECK_BATCH });
+    // Factory branches only: an adopted PR's branch is a person's, which the factory never updates.
+    const ready = waiting.filter((it) => awaitingMerge(it) && it.pr_number !== null && it.head_branch === null);
+    const { repo, branch_prefix, poll_interval_ms } = this.cfg;
+    await this.merges.step(ready, { repo: repo.path, base_ref: repo.base_branch, branch_prefix, poll_interval_ms }, (it, c) => {
+      this.d.log.info("merge check conflict", { work_item_id: it.id, files: c.conflicts.length });
+      return this.startUpdate(it.id, it.pr_number!, c.head_sha, c.base_sha);
+    });
   }
 
   /**
@@ -826,10 +899,10 @@ export class Controller {
     if ("refuse" in principal) refusal = principal.refuse;
     else {
       // The note is untrusted text bound for the store and agent prompts: G5 before either.
-      const note = e.kind === "spec_approved" ? await this.approvalNote(item.id, e.note) : { note: null };
-      refusal = "refuse" in note
-        ? note.refuse
-        : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, note.note);
+      const input = await this.commandInput(item.id, e);
+      refusal = "refuse" in input
+        ? input.refuse
+        : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, null, input.paths);
     }
     await this.markSeen(e.source, e.comment_id);
     if (e.kind === "spec_rejected" && refusal === null) {
@@ -951,6 +1024,7 @@ export class Controller {
     actor: Extract<Actor, { kind: "user" }>,
     note: string | null,
     tag: StateChangeDetail | null = null,
+    paths: readonly string[] = [],
   ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const it = await this.d.store.getWorkItem(id);
@@ -966,11 +1040,13 @@ export class Controller {
       }
       // `/approve` while implementing: lifts a coordination-cost hold on the queued implement run (design §5).
       if (e.kind === "spec_approved" && it.stage === "RUNNING" && it.blocked_on === "none") {
+        // The held run is already queued with its paths; `+paths` does not change them (issue #280).
+        if (paths.length > 0) return "`+paths` does not apply to an implement run held by coordination cost, since that run is already queued; reply `/approve` without `+paths`";
         const r = await this.approveHold(it, actor);
         if (r === RETRY) continue;
         return r;
       }
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag), tag));
+      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -1107,18 +1183,45 @@ export class Controller {
    * The approval note to store: trimmed, capped at MAX_NOTE_CHARS, null when empty. The whole note is
    * egress-scanned first; a finding refuses the approval, and neither the note nor the rule's match is kept.
    */
-  private async approvalNote(id: WorkItemId, raw: string | undefined): Promise<{ note: string | null } | Refusal> {
+  private async approvalNote(id: WorkItemId, raw: string | undefined, command = "/approve"): Promise<{ note: string | null } | Refusal> {
     const text = (raw ?? "").trim();
     if (!text) return { note: null };
     const scan = await this.d.scanner.scan("comment", text);
     if (!scan.clean) {
       const rules = scan.findings.map((f) => f.rule).join(",");
-      this.d.log.warn("approval note blocked by the egress scan; approval refused", { work_item_id: id, rules });
+      this.d.log.warn("command note blocked by the egress scan; command refused", { work_item_id: id, command, rules });
       return {
-        refuse: `the note was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed; post \`/approve\` again without the secret`,
+        refuse: `the note was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed; post \`${command}\` again without the secret`,
       };
     }
     return { note: text.slice(0, MAX_NOTE_CHARS).trim() };
+  }
+
+  /**
+   * The note and the `+paths` of an `/approve` or `/retry` (design §4, issue #280); none for other commands. The
+   * whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is split off
+   * and checked; the note is what is left, capped. A finding or a bad path refuses the command.
+   */
+  private async commandInput(id: WorkItemId, e: CommandEvent): Promise<{ note: string | null; paths: string[] } | Refusal> {
+    if (e.kind !== "spec_approved" && e.kind !== "retry_requested") return { note: null, paths: [] };
+    const scanned = await this.approvalNote(id, e.note, COMMAND[e.kind]);
+    if ("refuse" in scanned) return scanned;
+    const split = parseCommandPaths(e.note ?? "");
+    if ("refuse" in split) return split;
+    const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
+    return { note: note || null, paths: split.paths };
+  }
+
+  /**
+   * The allowed paths a `+paths` widens to (issue #280): the paths no allowed path covers yet, added once each,
+   * and a tier raised to the highest floor they touch, as triage does; never lowered. No new path: no change.
+   */
+  private widen(it: WorkItem, paths: readonly string[]): Widening {
+    const added = [...new Set(paths)].filter((p) => !isCovered(p, it.allowed_paths));
+    if (added.length === 0) return NO_WIDENING;
+    const floor = floorTier(added, this.settings(it.project).floors);
+    const raised = floor !== null && (it.tier === null || floor > it.tier) ? { tier: floor } : {};
+    return { patch: { allowed_paths: [...it.allowed_paths, ...added], ...raised }, detail: { added_paths: JSON.stringify(added) } };
   }
 
   /**
@@ -1283,6 +1386,7 @@ export class Controller {
     floorNeed: number | null,
     note: string | null,
     tag: StateChangeDetail | null = null,
+    paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
     if (e.kind === "revise_requested" && e.pr) {
@@ -1292,11 +1396,12 @@ export class Controller {
     if (it.blocked_reason === BUDGET_CHECKPOINT) {
       return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
     }
-    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
-    if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it));
+    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
+    if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
     if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
       // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
       if ((await this.splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
+      if (splitFiling(it) && paths.length > 0) return { refuse: SPLIT_PATHS };
       if (splitFiling(it)) {
         const stale = this.d.clock.now().getTime() - Date.parse(it.updated_at) >= SPLIT_FILING_STALE_MS;
         const phases = stale ? await this.specPhases(it) : null;
@@ -1362,12 +1467,15 @@ export class Controller {
       }
       case "spec_approved": {
         const phases = await this.specPhases(it);
+        if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
         if (phases) return this.approveSplit(it, phases, actor, note, e.comment_id, tag);
+        const w = this.widen(it, paths);
+        const detail = { ...(note ? { note } : {}), ...w.detail };
         return {
-          patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
+          patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, ...w.patch },
           actor,
           reason: "spec_approved",
-          ...(note ? { detail: { note } } : {}),
+          ...(Object.keys(detail).length > 0 ? { detail } : {}),
           enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
         };
       }
@@ -1782,8 +1890,9 @@ export class Controller {
   // Coordination (design §5, decided 2026-11-03)
 
   /**
-   * Once per poll: for each item with a queued implement run and each item held by a dependency, refresh its
-   * dependency edges and their states from the store and the forge, then hold, release or block it; and post one
+   * Once per poll: for each item with a queued implement run and each item held by a dependency, apply its stored
+   * dependency edges and their states (re-read from the forge only past the refresh intervals), then hold,
+   * release or block it; and post one
    * comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
    * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
    */
@@ -1793,6 +1902,11 @@ export class Controller {
   }
 
   private async coordinationStep(): Promise<void> {
+    // Forget marks no pass has needed for two intervals; such an item is then treated as just read.
+    const now = this.d.clock.now().getTime();
+    for (const [marks, ttl] of [[this.edgesReadAt, EDGES_REFRESH_MS], [this.stateReadAt, DEPENDENCY_STATE_REFRESH_MS]] as const) {
+      for (const [k, at] of marks) if (now - at >= 2 * ttl) marks.delete(k);
+    }
     const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
       .filter((r) => r.kind === "implement")
       .slice(0, COORDINATION_BATCH);
@@ -1807,15 +1921,18 @@ export class Controller {
   }
 
   /**
-   * Re-reads the item's edges (from its source when `network`), records each edge's state, and applies what they
-   * mean: hold on `blocked_on: dependency`, release, or block on a human for a dependency closed unmerged or a
-   * cycle (queued runs cancelled, one comment). Only an implementing item without a PR is changed.
+   * Reads the item's edges (from its source when `network` and its last read is older than EDGES_REFRESH_MS, else
+   * the stored ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
+   * release, or block on a human for a dependency closed unmerged or a cycle (queued runs cancelled, one comment).
+   * Only an implementing item without a PR is changed. A forge that fails changes nothing: stored edges apply.
    */
   private async coordinateItem(id: WorkItemId, network: boolean): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || it.stage !== "RUNNING" || it.pr_number !== null) return;
     if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
-    const edges = network ? await this.refreshEdges(it) : await this.d.store.listDependencyEdges({ work_item_id: id });
+    const edges = network && this.readDue(this.edgesReadAt, id, EDGES_REFRESH_MS, false)
+      ? await this.refreshEdges(it)
+      : await this.d.store.listDependencyEdges({ work_item_id: id });
     for (const e of edges) {
       const state = await this.dependencyStateOf(e.depends_on, network);
       if (state !== null && state !== e.state) await this.d.store.setDependencyState(id, e.depends_on, state);
@@ -1824,17 +1941,41 @@ export class Controller {
     await this.applyDependencies(it.id, dependencyVerdict(it.source.id, fresh, await this.dependencyGraph()));
   }
 
-  /** The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored; else the stored ones. */
+  /**
+   * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored and marked read;
+   * else (no such source, or the source failed: logged, retried after EDGES_REFRESH_MS) the stored ones.
+   */
   private async refreshEdges(it: WorkItem): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
     const adapter = this.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return this.d.store.listDependencyEdges({ work_item_id: it.id });
-    const links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
+    this.edgesReadAt.set(it.id, this.d.clock.now().getTime());
+    let links: DependencyLink[];
+    try {
+      links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
+    } catch (err) {
+      this.d.log.warn("dependency links not read: stored edges apply", { work_item_id: it.id, error: (err as Error).message });
+      return this.d.store.listDependencyEdges({ work_item_id: it.id });
+    }
     return this.d.store.replaceDependencyEdges(it.id, links);
   }
 
   /**
+   * Whether `key`'s forge answer in `marks` is older than `ttl`; if so it is marked read now. A key with no mark
+   * is marked now and read only when `unseen` (edges: no, intake reads them; outside states: yes, only the forge
+   * knows them).
+   */
+  private readDue(marks: Map<string, number>, key: string, ttl: number, unseen: boolean): boolean {
+    const now = this.d.clock.now().getTime();
+    const at = marks.get(key);
+    if (at !== undefined && now - at < ttl) return false;
+    marks.set(key, now);
+    return at !== undefined || unseen;
+  }
+
+  /**
    * What a dependency's state is now: a work item's from the store (merged = closed `completed` with a merge
-   * sha), else, with `network`, the source's answer. Null when unknown (no item, no network or no capability).
+   * sha), else, with `network`, the source's answer at most once per DEPENDENCY_STATE_REFRESH_MS. Null when
+   * unknown or not read now (no item, no network, read recently, no capability, or the source failed: logged).
    */
   private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
     const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
@@ -1842,9 +1983,15 @@ export class Controller {
       if (dep.stage !== "CLOSED") return "open";
       return dep.close_reason === "completed" && dep.merge_sha !== null ? "merged" : "closed_unmerged";
     }
-    if (!network) return null;
     const adapter = this.byType.get(PR_SOURCE_TYPE);
-    return adapter && isDependencySource(adapter) ? adapter.dependencyState(dependsOn) : null;
+    if (!network || !adapter || !isDependencySource(adapter)) return null;
+    if (!this.readDue(this.stateReadAt, dependsOn, DEPENDENCY_STATE_REFRESH_MS, true)) return null;
+    try {
+      return await adapter.dependencyState(dependsOn);
+    } catch (err) {
+      this.d.log.warn("dependency state not read: stored state applies", { depends_on: dependsOn, error: (err as Error).message });
+      return null;
+    }
   }
 
   /** Source id → the source ids it waits for, over every edge not yet merged, for the cycle check. */
@@ -2616,13 +2763,18 @@ export class Controller {
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
+    // The paths an implementer names are shown as the exact reply only; they never change allowed_paths (issue #280).
+    const reply = run.kind === "implement" ? retryPathsReply((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths))) : null;
     const body = (withText: boolean) => [
       "## Factory: the agent needs a human",
       "",
       `The ${run.kind} run stopped and asked for a human instead of going on. Nothing was pushed.`,
       "",
       ...(withText
-        ? ["**Reason**", "", quote(ask.reason), "", "**Question**", "", quote(ask.question)]
+        ? [
+            "**Reason**", "", quote(ask.reason), "", "**Question**", "", quote(ask.question),
+            ...(reply ? ["", "It names paths outside the allowed paths. To allow them and run the implementer again, reply:", "", "```", reply, "```"] : []),
+          ]
         : ["The agent's reason and question were withheld by the leak scanner."]),
       "",
       answer,
@@ -2835,6 +2987,16 @@ export class Controller {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const item = await this.d.store.getWorkItem(id);
       if (!item) return null;
+      // No adapter for the item's source type here (a source left out of this process's `plugins.source`, e.g.
+      // an older version still draining): the item keeps its state for a process that has one, so its replies
+      // are not dropped (2026-11-07).
+      if (!this.byType.has(item.source.type)) {
+        this.d.log.warn("no source adapter for the item's source type; transition left to another process", {
+          work_item_id: id,
+          source_type: item.source.type,
+        });
+        return null;
+      }
       const wanted = await fn(item);
       if (!wanted) return null;
       if ("refuse" in wanted) return wanted.refuse;
@@ -2921,18 +3083,31 @@ export class Controller {
   }
 
   private async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
-    const principal = await this.d.auth.resolve(identity);
+    const local = identity.provider === "local";
+    const principal = await (local ? this.localAuth : this.d.auth).resolve(identity);
     if (!principal) {
+      if (local) return { refuse: "your local identity resolves to no factory user under the local auth plugin" };
       return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
     }
-    return this.allowed(principal, action, resource);
+    return this.allowed(principal, action, resource, local);
   }
 
-  /** The permission half of `authorize`, for a principal already known (an app request names its user). */
-  private async allowed(principal: Principal, action: AuthAction, resource: string): Promise<Principal | Refusal> {
-    const decision = await this.d.auth.authorize(principal, action, { kind: "work_item", id: resource });
+  /** The auth plugin for local commands: the CLI and the local UI (issue #318). */
+  private get localAuth(): AuthProvider {
+    return this.d.local_auth ?? this.d.auth;
+  }
+
+  /**
+   * The permission half of `authorize`, for a principal already known (an app request names its user). `local`:
+   * a command from the CLI or the local UI, checked by the local auth plugin.
+   */
+  private async allowed(principal: Principal, action: AuthAction, resource: string, local = false): Promise<Principal | Refusal> {
+    const decision = await (local ? this.localAuth : this.d.auth).authorize(principal, action, { kind: "work_item", id: resource });
     if (!decision.allow) {
       this.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });
+      if (local && this.d.local_auth) {
+        return { refuse: `${principal.user_id} has no role that allows it (\`${decision.reason}\`); the local owner can grant one with \`factory users add ${principal.user_id} --role approver\`` };
+      }
       return { refuse: `it needs write permission on this repository (\`${decision.reason}\`)` };
     }
     return principal;
@@ -3034,8 +3209,18 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
 }
 
-function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined): Decision | Refusal {
+/**
+ * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
+ * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
+ * (and is a resolve run's notes).
+ */
+function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
+  if (widen && kind !== "implement") {
+    return { refuse: `\`+paths\` applies only to a failed implement run, and this item's failed run is a ${kind} run; reply \`/retry\` without \`+paths\`` };
+  }
+  const w = widen ?? NO_WIDENING;
+  const detail = { ...(note ? { note } : {}), ...w.detail };
   const next = { ...it, restart_count: it.restart_count + 1 };
   // A retried update goes back to waiting for the merge, which is the state an update run expects.
   const unblocked = kind === "update"
@@ -3043,11 +3228,12 @@ function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined): Decision 
     : { blocked_on: "none" as const, blocked_reason: null };
   // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
   return {
-    patch: { ...unblocked, restart_count: next.restart_count },
+    patch: { ...unblocked, restart_count: next.restart_count, ...w.patch },
     actor,
     reason: "retry_requested",
-    // A resolve run reads its notes from its input; a plain /retry gives none.
-    enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: "" } } : {}) },
+    ...(Object.keys(detail).length > 0 ? { detail } : {}),
+    // A resolve run reads its notes from its input: the /retry note, or none.
+    enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: note ?? "" } } : {}) },
   };
 }
 
@@ -3186,7 +3372,9 @@ function withTag(d: Decision | Refusal, tag: StateChangeDetail | null): Decision
   return { ...d, detail: { ...d.detail, ...tag } };
 }
 
-function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null): Decision | Refusal {
+function floorCommand(
+  e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null, w: Widening,
+): Decision | Refusal {
   if (e.kind === "retry_requested") {
     return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
   }
@@ -3201,12 +3389,13 @@ function floorCommand(e: ItemCommandEvent, it: WorkItem, actor: Actor, need: num
     };
   }
   if (it.stage !== "RUNNING" || need === null) return { refuse: "the floor block has no recorded tier to approve" };
-  const next = { ...it, tier: effectiveTier(it.tier, need as Tier), restart_count: it.restart_count + 1 };
+  // A `+paths` under a higher floor raises the tier further (issue #280).
+  const next = { ...it, tier: effectiveTier(it.tier, need as Tier, w.patch.tier), restart_count: it.restart_count + 1 };
   return {
-    patch: { tier: next.tier, restart_count: next.restart_count, blocked_on: "none", blocked_reason: null },
+    patch: { ...w.patch, tier: next.tier, restart_count: next.restart_count, blocked_on: "none", blocked_reason: null },
     actor,
     reason: "floor_tier_approved",
-    detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}) },
+    detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}), ...w.detail },
     enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
   };
 }

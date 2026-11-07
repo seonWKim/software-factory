@@ -1719,7 +1719,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
-  describe("host sleeps (migration 25)", () => {
+  describe("host sleeps (migration 27)", () => {
     const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
     const sleep = (over: Partial<HostSleep> = {}): HostSleep => ({ worker_id: w1, woke_at: at(0), gap_ms: 120_000, run_id: null, ...over });
 
@@ -1829,6 +1829,26 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(r.filter(Boolean)).toHaveLength(1);
       const stored = (await store.getAppCommandRequest(request.seq))!;
       expect(stored.refusal).toBe(r[0] ? "a" : "b");
+    });
+
+    it("the per-item read lists one item's requests, handled or not, oldest first, the newest `limit`", async () => {
+      const { store } = await make();
+      const a = (await store.recordAppCommandRequest(req("a", { args: { work_item_id: "wi_1", note: "n" } }))).request;
+      await store.recordAppCommandRequest(req("other", { args: { work_item_id: "wi_10" } }));
+      // `_` and `%` in an id are matched literally, not as LIKE wildcards.
+      await store.recordAppCommandRequest(req("wild", { args: { work_item_id: "wiX1" } }));
+      await store.recordAppCommandRequest(req("pct", { args: { work_item_id: "%" } }));
+      const b = (await store.recordAppCommandRequest(req("b", { command: "reject", args: { note: "x", work_item_id: "wi_1" } }))).request;
+      await store.markAppCommandRequest(a.seq, "no");
+      const c = (await store.recordAppCommandRequest(req("c"))).request;
+      const got = await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 10);
+      expect(got.map((r) => r.key)).toEqual(["a", "b", "c"]);
+      expect(got[0]).toMatchObject({ seq: a.seq, refusal: "no" });
+      expect(got[0]!.handled_at).not.toBeNull();
+      expect((await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 2)).map((r) => r.seq)).toEqual([b.seq, c.seq]);
+      expect(await store.listAppCommandRequestsForItem("wi_1" as WorkItemId, 0)).toEqual([]);
+      expect(await store.listAppCommandRequestsForItem("wi_nope" as WorkItemId, 10)).toEqual([]);
+      expect((await store.listAppCommandRequestsForItem("%" as WorkItemId, 10)).map((r) => r.key)).toEqual(["pct"]);
     });
   });
 
@@ -1981,13 +2001,13 @@ describe("MySQL step 19 (worker-processes)", () => {
   });
 });
 
-describe("migration 25 on an existing SQLite database", () => {
+describe("migration 27 on an existing SQLite database", () => {
   it("adds host_sleeps and keeps every earlier row", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "sf-mig25-"));
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig27-"));
     const path = join(dir, "factory.db");
     const raw = new DatabaseSync(path);
     raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
-    for (let v = 1; v <= 24; v++) {
+    for (let v = 1; v <= 26; v++) {
       raw.exec(MIGRATIONS[v - 1]!);
       raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
     }
@@ -2013,28 +2033,28 @@ describe("migration 25 on an existing SQLite database", () => {
   });
 });
 
-describe("MySQL step 25 (host-sleeps)", () => {
-  const file = "0025-host-sleeps.sql";
+describe("MySQL step 27 (host-sleeps)", () => {
+  const file = "0027-host-sleeps.sql";
   const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
 
-  it("is the repo's step after 24, a .sql file", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "host-sleeps")).toMatchObject({ number: 25, from: 24, kind: "sql", file });
+  it("is the repo's step after 26, a .sql file", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "host-sleeps")).toMatchObject({ number: 27, from: 26, kind: "sql", file });
   });
 
-  it("creates the same columns as SQLite migration 25, idempotently (IF NOT EXISTS)", () => {
+  it("creates the same columns as SQLite migration 27, idempotently (IF NOT EXISTS)", () => {
     const columns = (text: string) =>
       [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
-    const sqlite = MIGRATIONS[24]!;
+    const sqlite = MIGRATIONS[26]!;
     expect(sqlite).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
     expect(columns(sql())).toEqual(columns(sqlite));
     expect(columns(sqlite)).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
     expect(sql()).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
   });
 
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-24 database: host_sleeps added, every earlier row kept", async () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-26 database: host_sleeps added, every earlier row kept", async () => {
     const db = await newEmptyMysqlDatabase();
     const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(24) }).apply(() => undefined);
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(26) }).apply(() => undefined);
     await conn.query(
       "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
       ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],

@@ -17,6 +17,8 @@ const SANDBOX_ID = /^sbx_[0-9a-f]{8}$/;
 const REF_LOCK = /incorrect old value|cannot lock ref|unable to update local ref/;
 /** Retries after the first attempt of a fetch that lost a ref-lock race. */
 const REF_LOCK_RETRIES = 3;
+/** A branch name fetchBranch takes: a plain ref path, never an option or a refspec. */
+const SAFE_BRANCH = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
 const RETRY_BASE_MS = 200;
 const realWait: Wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
@@ -141,6 +143,35 @@ export class NoOpSandbox implements Sandbox {
       await this.fetchWithRetry(spec.repo, ["fetch", "--quiet", "--no-tags", "origin", `+${ref}:refs/remotes/origin/${spec.base_ref}`]);
       return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
     });
+  }
+
+  /** Fetches only `branch` (a factory PR branch), like updateBase; null when origin has no such branch. */
+  async fetchBranch(spec: { repo: string; branch: string }): Promise<string | null> {
+    if (!SAFE_BRANCH.test(spec.branch) || spec.branch.includes("..")) throw new Error(`refusing to fetch branch ${JSON.stringify(spec.branch)}`);
+    return this.serialized(spec.repo, async () => {
+      const args = ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${spec.branch}:refs/remotes/origin/${spec.branch}`];
+      const first = await this.git(spec.repo, args, false);
+      if (first.exit_code !== 0) {
+        if (/couldn't find remote ref/i.test(first.stderr)) return null;
+        await this.fetchWithRetry(spec.repo, args);
+      }
+      return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `refs/remotes/origin/${spec.branch}^{commit}`])).stdout.trim();
+    });
+  }
+
+  /**
+   * `git merge-tree --write-tree` in the factory repo: it writes only objects (the merged tree), never HEAD, the
+   * index, the working tree or a ref. Exit 0 is clean, 1 is conflicts (their paths follow the tree id).
+   */
+  async mergeCheck(spec: { repo: string; head_sha: string; base_sha: string }): Promise<{ mergeable: boolean; conflicts: string[] }> {
+    for (const sha of [spec.head_sha, spec.base_sha]) {
+      if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
+    }
+    const r = await this.git(spec.repo, ["merge-tree", "--write-tree", "--name-only", "--no-messages", spec.base_sha, spec.head_sha], false);
+    if (r.exit_code === 0) return { mergeable: true, conflicts: [] };
+    if (r.exit_code !== 1) throw gitError(["merge-tree"], r);
+    const files = r.stdout.split("\n").slice(1).filter((l) => l.length > 0);
+    return { mergeable: false, conflicts: [...new Set(files)].sort() };
   }
 
   /** A fetch in the factory checkout: one at a time per repo path, a lost ref-lock race retried. */

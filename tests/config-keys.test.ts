@@ -1,8 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "../src/compose.js";
+import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
 import {
   ConfigKeyError,
   STORE_KEYS,
@@ -78,7 +78,7 @@ describe("config keys: unknown keys fail at load", () => {
     ["dials", "dials.zzzzzz", ["spec_gate_min_tier", "auto_merge_max_tier"]],
     ["models", "models.zzzzzz", ["cheap", "standard", "strong"]],
     ["agent_git_identity", "agent_git_identity.zzzzzz", ["name", "email"]],
-    ["ui", "ui.zzzzzz", ["port"]],
+    ["ui", "ui.zzzzzz", ["port", "user_id"]],
   ];
   for (const [block, path, keys] of nested) {
     it(`an unknown key inside ${block} fails against ${block}'s own keys`, async () => {
@@ -117,6 +117,54 @@ describe("config keys: unknown keys fail at load", () => {
     expect(loaded.file).toEqual(REAL);
     expect(loaded.store.type).toBe("mysql");
     expect(loaded.config.repo.owner).toBe("seonWKim");
+  });
+});
+
+describe("config keys: ui.user_id (issue #227)", () => {
+  it("is optional: the checked-in config does not set it, and without it the page's commands have no actor", async () => {
+    expect(REAL.ui === undefined || !Object.hasOwn(REAL.ui as object, "user_id")).toBe(true);
+    expect(uiUserId(undefined)).toBeNull();
+    expect(uiUserId({ port: 4310 })).toBeNull();
+  });
+
+  it("a non-empty string loads and is the commands actor", async () => {
+    const loaded = await loadConfig(root({ ...SQLITE, ui: { user_id: "github:7" } }));
+    expect(uiUserId(loaded.file.ui)).toBe("github:7");
+  });
+
+  it("an empty or non-string value stops startup with an error naming the key", async () => {
+    for (const user_id of ["", "   ", 7, true, null, [], {}]) {
+      const err = await loadError({ ...SQLITE, ui: { user_id } });
+      expect(err.message, JSON.stringify(user_id)).toContain("ui.user_id");
+    }
+  });
+
+  it("each UI process makes its own random token, shared by both write routes and not in the store or on disk", async () => {
+    const dir = root({ ...SQLITE, ui: { user_id: "github:7" } });
+    const loaded = await loadConfig(dir);
+    const first = await buildUiParts(loaded, { actor: "local:me" });
+    let second: Awaited<ReturnType<typeof buildUiParts>> | undefined;
+    try {
+      expect(first.commands.actor).toBe("github:7");
+      expect(first.commands.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      expect(first.commands.token).toBe(first.settings.csrfToken);
+      second = await buildUiParts(loaded, { actor: "local:me" });
+      expect(second.commands.token).not.toBe(first.commands.token);
+      const tables = await first.store.listTables();
+      for (const t of tables) {
+        const page = await first.store.listTableRows({ table: t.name, limit: 200 });
+        expect(JSON.stringify(page), t.name).not.toContain(first.commands.token);
+      }
+    } finally {
+      await first.close();
+      await second?.close();
+    }
+    const walk = (d: string): string[] =>
+      readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+    for (const f of walk(dir)) {
+      expect(readFileSync(f).includes(first.commands.token), f).toBe(false);
+      expect(readFileSync(f).includes(second!.commands.token), f).toBe(false);
+    }
   });
 });
 
@@ -207,6 +255,31 @@ describe("coordination config (design §5, 2026-11-03)", () => {
   it("hotspot_weight and hotspot_paths are checked at startup too", async () => {
     expect((await loadError({ ...SQLITE, hotspot_weight: 0 })).message).toContain("hotspot_weight must be a number above 0");
     expect((await loadError({ ...SQLITE, hotspot_paths: ["ok", ""] })).message).toContain("hotspot_paths must be a list of non-empty paths");
+  });
+
+  it("mechanical_paths and mechanical_weight load with their defaults, and compose passes them into the coordination config", async () => {
+    const { coordinationConfig } = await import("../src/core/config.js");
+    const { DEFAULT_MECHANICAL } = await import("../src/core/coordination.js");
+    const defaults = ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
+    expect(DEFAULT_MECHANICAL).toEqual(defaults);
+    expect(coordinationConfig({})).toMatchObject({ mechanical: defaults, mechanical_weight: 0.25 });
+    expect(REAL).toMatchObject({ mechanical_paths: defaults, mechanical_weight: 0.25 });
+    expect(TOP_LEVEL_KEYS).toEqual(expect.arrayContaining(["mechanical_paths", "mechanical_weight"]));
+    const loaded = await loadConfig(root(SQLITE));
+    expect(loaded.config.coordination).toMatchObject({ max_cost: 2.5, hotspot_weight: 3, mechanical: defaults, mechanical_weight: 0.25 });
+    const custom = await loadConfig(root({ ...SQLITE, mechanical_paths: ["gen/"], mechanical_weight: 0.5, max_coordination_cost: 4 }));
+    expect(custom.config.coordination).toMatchObject({ max_cost: 4, mechanical: ["gen/"], mechanical_weight: 0.5 });
+  });
+
+  it.each([0, 1, 1.5, -0.25, "0.25", null])("mechanical_weight %j fails at startup: it must be above 0 and below 1.0", async (value) => {
+    const err = await loadError({ ...SQLITE, mechanical_weight: value });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("mechanical_weight must be a number above 0 and below 1.0");
+  });
+
+  it("mechanical_paths must be a list of non-empty paths", async () => {
+    expect((await loadError({ ...SQLITE, mechanical_paths: ["ok", ""] })).message).toContain("mechanical_paths must be a list of non-empty paths");
+    expect((await loadError({ ...SQLITE, mechanical_paths: "docs/" })).message).toContain("mechanical_paths must be a list of non-empty paths");
   });
 
   it("the checked-in config loads with the coordination keys", async () => {

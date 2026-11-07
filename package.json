@@ -7,7 +7,7 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "build": "node -e \"const fs=require('node:fs'); fs.rmSync('dist',{recursive:true,force:true}); fs.rmSync('web/dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && tsc -p tsconfig.migrations.json && vite build --config web/vite.config.ts --logLevel warn",
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p web/tsconfig.json",
     "test": "vitest run --configLoader runner",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run --configLoader runner",
@@ -23,6 +23,7 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
+    "axe-core": "4.14.0",
     "jsdom": "^29.1.1",
     "lucide-react": "^1.70.0",
     "react": "^19.3.1",
@@ -36,6 +37,7 @@
     "factory": "dist/main.js"
   },
   "dependencies": {
-    "mysql2": "^3.24.6"
+    "mysql2": "^3.24.6",
+    "react-aria-components": "1.22.1"
   }
 }

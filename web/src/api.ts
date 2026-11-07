@@ -38,6 +38,30 @@ export interface SourceRef {
   link: string;
 }
 
+/**
+ * The local merge check of a ready-to-merge item (design §5 Merge check); null for any other item. `checking`:
+ * no result yet for its current head. The shas and time say which base it was checked against, and when.
+ */
+export interface MergeCheckView {
+  state: "mergeable" | "conflicts" | "checking";
+  conflicts: string[];
+  head_sha: string | null;
+  base_sha: string | null;
+  checked_at: string | null;
+}
+
+/** The short label shown next to a ready-to-merge item's state. */
+export function mergeCheckLabel(m: MergeCheckView): string {
+  if (m.state === "mergeable") return "Mergeable";
+  if (m.state === "checking") return "Checking…";
+  return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
+}
+
+/** Whether the Merge button (#246) is disabled: while the item has conflicts or is being checked. */
+export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
+  return !!m && m.state !== "mergeable";
+}
+
 export interface ItemRow {
   id: string;
   source: SourceRef;
@@ -60,6 +84,7 @@ export interface ItemRow {
   version: number;
   dependents: number;
   conflicts: { automatic: number; person: number };
+  merge_check?: MergeCheckView | null;
 }
 
 export interface Items {
@@ -111,6 +136,7 @@ export interface ItemDetail {
     version: number;
     created_at: string;
     updated_at: string;
+    merge_check?: MergeCheckView | null;
   };
   timeline: {
     version: number;
@@ -130,9 +156,13 @@ export interface ItemDetail {
     created_at: string;
     tokens: number | null;
     error: { code: string | null; detail: string | null } | null;
+    /** One record per claim, in attempt order; the last one's worker is the run's worker. */
+    attempts?: { attempt: number; worker_id: string | null }[];
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
+  /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
+  transcripts?: Record<string, string[]>;
 }
 
 /** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */
@@ -142,6 +172,46 @@ export interface HostSleepRow {
   /** How late the wait ended, in ms. */
   gap_ms: number;
   run_id: string | null;
+}
+
+/** Which steps the transcript filter keeps (tool calls of that kind). */
+export type StepFilter = "edits" | "commands" | "reads";
+
+/** One step of a stored transcript; withheld text is "[withheld: <rule>]" and its tool is null. */
+export interface TranscriptStep {
+  id: string;
+  kind: "text" | "tool_use" | "tool_result" | "result" | "system" | "error" | "plain" | "other" | "oversize";
+  tool: string | null;
+  text: string;
+  is_error: boolean;
+  withheld: boolean;
+  truncated?: boolean;
+}
+
+/** One page of a run's stored transcript (GET /api/v1/items/<id>/runs/<run>/transcript). */
+export interface TranscriptPage {
+  run: {
+    id: string;
+    kind: string;
+    status: string;
+    attempt: number;
+    started_at: string | null;
+    finished_at: string | null;
+    worker_id: string | null;
+    outcome: { status: string; error_code: string | null; detail: string | null; summary: string | null } | null;
+  };
+  parts: string[];
+  part: string;
+  format: "stream-json" | "plain";
+  size: number;
+  mode: "forward" | "tail";
+  filter: StepFilter | null;
+  start: number;
+  /** The next page's byte offset; null at the end (or for a tail page). */
+  next: number | null;
+  /** Steps before `start` exist (a tail page, or a later forward page). */
+  earlier: boolean;
+  steps: TranscriptStep[];
 }
 
 export interface Health {
@@ -225,6 +295,10 @@ export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
+  transcript: (id: string, run: string, params: URLSearchParams) => {
+    const q = params.toString();
+    return `/api/v1/items/${encodeURIComponent(id)}/runs/${encodeURIComponent(run)}/transcript${q ? `?${q}` : ""}`;
+  },
   runs: "/api/v1/runs",
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",

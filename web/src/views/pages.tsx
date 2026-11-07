@@ -6,7 +6,8 @@ import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
-import { ItemsTable, QueueTable, RunningTable, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, useNow } from "./common.js";
+import { transcriptPath } from "./transcript.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, Math.round(gap_ms / 60_000))} min`;
@@ -185,6 +186,7 @@ export function ItemPage({ id }: { id: string }) {
     ...(q.data.sleeps ?? []).map((h) => ({ kind: "sleep" as const, at: h.woke_at, h })),
   ];
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const transcripts = q.data.transcripts ?? {};
   return (
     <>
       <p className="mb-1 text-sm">
@@ -212,19 +214,42 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
+      {item.merge_check && (
+        <Section title="Merge check">
+          <p className="text-sm" data-merge-check-detail>
+            <MergeCheckNote check={item.merge_check} />
+            {item.merge_check.base_sha && item.merge_check.checked_at && (
+              <span className="ml-2 text-zinc-600 dark:text-zinc-400">
+                against base <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, checked {ago(item.merge_check.checked_at, now)} ago
+              </span>
+            )}
+          </p>
+          {item.merge_check.conflicts.length > 0 && (
+            <ul aria-label="Conflicting files" className="mt-1 list-disc pl-6 font-mono text-xs">
+              {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
+            </ul>
+          )}
+        </Section>
+      )}
       <Section title="Runs" count={runs.length}>
         {runs.length === 0 ? <Empty>No run yet.</Empty> : (
-          <Table label="Runs" head={["Run", "Status", "Attempt", "Started", "Took", "Tokens", "Error"]}>
+          <Table label="Runs" head={["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]}>
             {[...runs].reverse().map((r) => (
-              <tr key={r.id}>
+              <tr key={r.id} data-run={r.id}>
                 <Td>{r.kind}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
                 <Td className="tabular-nums">{r.attempt}</Td>
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
+                <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
+                  {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
+                </Td>
+                <Td className="font-mono text-xs whitespace-nowrap">{r.attempts?.at(-1)?.worker_id ?? "–"}</Td>
                 <Td className="tabular-nums whitespace-nowrap">{r.started_at ? `${ago(r.started_at, now)} ago` : "–"}</Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
-                <Td className="max-w-md text-xs break-words text-zinc-700 dark:text-zinc-300">
-                  {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
+                <Td className="whitespace-nowrap">
+                  {(transcripts[r.id]?.length ?? 0) > 0 ? (
+                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>Open</Link>
+                  ) : "–"}
                 </Td>
               </tr>
             ))}

@@ -13,3 +13,4 @@ export type * from "./clock.js";
 export type * from "./updater.js";
 export type * from "./keep-awake.js";
 export type * from "./test-database.js";
+export type * from "./forge.js";
