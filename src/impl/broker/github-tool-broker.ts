@@ -5,7 +5,7 @@ import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, PREFLIGHT_ACCESS } from "../../core/policy.js";
 import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
-import { branchAllowed, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "./trusted-git.js";
+import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "./trusted-git.js";
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
@@ -110,7 +110,7 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await this.holdsLease(ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
     switch (name) {
       case "github.push_branch":
         return this.push(args as PushArgs);
@@ -123,20 +123,6 @@ export class GitHubToolBroker implements ToolBroker {
       default:
         return { ok: false, error_code: "unknown_tool", message: name };
     }
-  }
-
-  /**
-   * Same rule as the store: status and token fence the caller, not the clock. A run whose lease ran out
-   * during a host sleep but was not reaped still holds it; after a requeue or reclaim it does not.
-   */
-  private async holdsLease(ctx: ToolCallContext): Promise<boolean> {
-    const run = await this.deps.store.getRun(ctx.run_id);
-    return (
-      run !== null &&
-      run.work_item_id === ctx.work_item_id &&
-      run.status === "running" &&
-      run.lease?.token === ctx.lease_token
-    );
   }
 
   /**

@@ -8,8 +8,9 @@ import { join } from "node:path";
 import { ENV_EXAMPLE } from "../../core/tools/guard.js";
 import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
+import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
-import type { ToolResult } from "../../interfaces/tool-broker.js";
+import type { ToolCallContext, ToolResult } from "../../interfaces/tool-broker.js";
 import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
@@ -18,6 +19,15 @@ export type ToolFailure = Extract<ToolResult, { ok: false }>;
 
 /** Git in a checked run folder: its own git folder, TRUSTED_GIT_ENV, `extra` env added (a push credential). */
 export type RunFolderGit = (args: string[], extra?: Record<string, string>) => Promise<ExecResult>;
+
+/**
+ * Lease fencing, the store's rule: status and token fence the caller, not the clock. A run whose lease ran out
+ * during a host sleep but was not reaped still holds it; after a requeue or reclaim it does not.
+ */
+export async function holdsLease(store: Pick<FactoryStore, "getRun">, ctx: ToolCallContext): Promise<boolean> {
+  const run = await store.getRun(ctx.run_id);
+  return run !== null && run.work_item_id === ctx.work_item_id && run.status === "running" && run.lease?.token === ctx.lease_token;
+}
 
 /** Refuses a branch outside the factory's prefix: brokers move factory branches only. */
 export function branchAllowed(branch: string, prefix: string): ToolFailure | null {
