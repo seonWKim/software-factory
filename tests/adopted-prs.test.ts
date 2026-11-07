@@ -6,6 +6,9 @@ import type { SourceRef, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { GitHubClient } from "../src/impl/github/github-client.js";
+import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -299,5 +302,61 @@ describe("merges of pull requests the factory did not open", () => {
     await f.poll({ kind: "pr_closed", pr_number: 62, head_branch: "feature/x", fork: true });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     expect(await f.store.listUnreviewedMerges(10)).toEqual([]);
+  });
+});
+
+describe("the first start on a repository with history (design §5, Merges)", () => {
+  /** Closed PRs on one page and the merger of each; counts the single-PR reads; every other list is empty. */
+  class Repo extends GitHubClient {
+    closed: unknown[] = [];
+    prReads = 0;
+    constructor() {
+      super({} as GitHubCredentials, "http://unused");
+    }
+    override async request<T>(method: string, path: string): Promise<T> {
+      if (method !== "GET") return {} as T;
+      if (path.startsWith("/repos/o/r/pulls?state=closed")) return (path.includes("page=1") ? this.closed : []) as T;
+      if (/^\/repos\/o\/r\/pulls\/\d+$/.test(path)) {
+        this.prReads++;
+        return { merged_by: { id: 2, login: "bob", type: "User" } } as T;
+      }
+      return [] as T;
+    }
+  }
+  const merged = (n: number, at: string) => ({
+    number: n, merged_at: at, merge_commit_sha: `m${n}`, updated_at: at,
+    head: { ref: `feature/${n}`, sha: `h${n}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: "b" },
+  });
+
+  async function start() {
+    const clock = new FakeClock("2026-11-07T00:00:00Z");
+    const { store } = await newStore(clock);
+    const log = recordingLog();
+    const repo = new Repo();
+    const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store, { clock, history_since: null, log });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
+    return { clock, store, repo, controller, unreviewed };
+  }
+
+  it("50 old merged PRs: no unreviewed merge warning, no row, no per-PR read", async () => {
+    const f = await start();
+    f.repo.closed = Array.from({ length: 50 }, (_, i) => merged(100 + i, `2026-10-01T00:${String(i).padStart(2, "0")}:00Z`));
+    await f.controller.tickIntake();
+    expect(f.unreviewed()).toEqual([]);
+    expect(await f.store.listUnreviewedMerges(100)).toEqual([]);
+    expect(f.repo.prReads).toBe(0);
+  });
+
+  it("a PR merged without review after the first start is recorded as an unreviewed merge with one warning", async () => {
+    const f = await start();
+    f.repo.closed = [merged(1, "2026-10-01T00:00:00Z")];
+    await f.controller.tickIntake();
+    f.clock.advance(60_000);
+    f.repo.closed = [merged(2, "2026-11-07T00:00:30Z"), merged(1, "2026-10-01T00:00:00Z")];
+    await f.controller.tickIntake();
+    await f.controller.tickIntake();
+    expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.pr_number, r.merge_sha])).toEqual([[2, "m2"]]);
+    expect(f.unreviewed().map((l) => l.fields?.pr_number)).toEqual([2]);
   });
 });

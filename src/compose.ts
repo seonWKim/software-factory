@@ -42,7 +42,7 @@ import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
+import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
@@ -134,8 +134,11 @@ export interface FileConfig {
   ui?: { port?: number; user_id?: string };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
   updater?: { auto_migrate?: unknown };
-  /** The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the reset. */
-  github?: { min_remaining?: unknown };
+  /**
+   * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
+   * reset. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
+   */
+  github?: { min_remaining?: unknown; history_since?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -303,6 +306,7 @@ export async function loadConfig(
   uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
+  githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
@@ -577,7 +581,7 @@ export async function build(
   const sources = [];
   const sourceLog = new ConsoleLogger(clock, "source");
   for (const name of selectedSources(sel)) {
-    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog }));
+    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });

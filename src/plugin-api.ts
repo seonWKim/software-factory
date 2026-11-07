@@ -85,7 +85,8 @@ export interface Contexts {
    * `scanner` and `log`: what a source with its own credentials and its own posts needs (the `slack` source,
    * issue #109: its tokens from the SecretStore, G5 on every message before it is posted).
    */
-  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger };
+  /** `clock`: build() always passes it; a polled source needs it (the GitHub source's starting point). */
+  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger; clock?: Clock };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */

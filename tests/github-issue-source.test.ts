@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { WORK_STATUSES } from "../src/core/status-label.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { type PollContext, GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
-import { issueRef } from "./helpers/fakes.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import { issueRef, recordingLog, silent } from "./helpers/fakes.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 /** Records every request; GET answers come from `responses` by path prefix (without query), else []. */
@@ -24,6 +26,11 @@ class FakeClient extends GitHubClient {
   }
 }
 
+/** A first start on 2026-01-01, before every fixture here: merges in the fixtures are after the starting point. */
+function pollContext(o: Partial<PollContext> = {}): PollContext {
+  return { clock: new FakeClock("2026-01-01T00:00:00Z"), history_since: null, log: silent, ...o };
+}
+
 const user = { id: 1, login: "alice", type: "User" };
 const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
   id,
@@ -35,7 +42,7 @@ const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
 
 function setup() {
   const client = new FakeClient();
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
   return { client, source };
 }
 
@@ -222,7 +229,7 @@ describe("GitHubIssueSource: closed issues", () => {
   }
   const make = () => {
     const client = new ClosedClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     return { client, source };
   };
   const closedIssue = (number: number, updated_at: string, pr = false) => ({
@@ -315,7 +322,7 @@ describe("GitHubIssueSource: closePr", () => {
   }
   const make = () => {
     const client = new PrClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     return { client, source };
   };
   const body = (closer: { login?: string } | null) => `closed by ${closer?.login ?? "nobody"}`;
@@ -385,7 +392,7 @@ describe("GitHubIssueSource: /verdict", () => {
   }
   const make = () => {
     const client = new VerdictClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     return { client, source };
   };
   const approver = { provider: "github", subject: "1", login: "alice" };
@@ -500,7 +507,7 @@ describe("GitHubIssueSource: unmergeable factory PRs", () => {
 
   it("emits pr_unmergeable only for open factory PRs whose mergeable is false", async () => {
     const client = new PrClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     client.open = [
       pull(1, "factory/wi_a"), pull(2, "factory/wi_b"), pull(3, "factory/wi_c"), pull(4, "feature/x"),
     ];
@@ -566,7 +573,7 @@ describe("GitHubIssueSource: /resolve", () => {
 
   it("a /resolve on a factory PR's conversation names the PR and its head branch, and its source is the PR", async () => {
     const client = new PullClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     client.pulls[42] = { number: 42, head: { ref: "factory/wi_a", sha: "h" } };
     client.pulls[43] = { number: 43, head: { ref: "feature/x", sha: "h" } };
     client.responses["/repos/o/r/issues/comments"] = [
@@ -634,7 +641,7 @@ describe("GitHubIssueSource: status labels", () => {
 
   const make = (prefix?: string) => {
     const client = new LabelClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", prefix);
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", prefix, null, pollContext());
     return { client, source };
   };
   const enc = encodeURIComponent;
@@ -751,7 +758,7 @@ describe("GitHubIssueSource.prChecks", () => {
   const run = (name: string, status: string, conclusion: string | null = null) => ({ name, status, conclusion });
   function make() {
     const client = new ChecksClient();
-    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
+    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext()) };
   }
 
   it("reads the check runs and statuses of the PR's head commit, read-only", async () => {
@@ -849,7 +856,7 @@ describe("GitHubIssueSource: pull requests the factory did not open (design 2026
   }
   const make = () => {
     const client = new PullsClient();
-    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
+    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext()) };
   };
   const prRef = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` });
   const bobId = { provider: "github", subject: "2", login: "bob" };
@@ -1042,7 +1049,7 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
   }
   const make = () => {
     const client = new SubIssueClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
     return { client, source };
   };
   const input = { parent: issueRef(5), title: "Phase 1/2: core", body: "the phase text", marker: "<!-- factory:phase:wi_p:1 -->" };
@@ -1090,5 +1097,137 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
     expect(client.calls).toEqual([
       { method: "PATCH", path: "/repos/o/r/issues/5", body: { state: "closed", state_reason: "completed" } },
     ]);
+  });
+});
+
+describe("GitHubIssueSource: the starting point for merges (design §5, Merges)", () => {
+  const bob = { id: 2, login: "bob", type: "User" };
+  /** A time `m` minutes after 2026-10-01T00:00:00Z, in GitHub's format. */
+  const t = (m: number) => new Date(Date.UTC(2026, 9, 1) + m * 60_000).toISOString().replace(".000Z", "Z");
+  const merged = (number: number, at: string) => ({
+    number, merged_at: at, merge_commit_sha: `m${number}`, updated_at: at,
+    head: { ref: `feature/${number}`, sha: `h${number}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: "b" },
+  });
+
+  /** Counts every request; answers the closed-PR list by page (newest-updated first) and each single PR. */
+  class HistoryClient extends FakeClient {
+    closed: ReturnType<typeof merged>[] = [];
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=closed")) {
+        this.calls.push({ method, path, body });
+        const page = Number(/[?&]page=(\d+)/.exec(path)![1]);
+        const desc = [...this.closed].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+        return desc.slice((page - 1) * 100, page * 100) as T;
+      }
+      if (method === "GET" && /^\/repos\/o\/r\/pulls\/\d+$/.test(path)) {
+        this.calls.push({ method, path, body });
+        return { merged_by: bob } as T;
+      }
+      return super.request<T>(method, path, body);
+    }
+    closedReads() {
+      return this.calls.filter((c) => c.path.startsWith("/repos/o/r/pulls?state=closed")).map((c) => c.path);
+    }
+    prReads() {
+      return this.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
+    }
+  }
+  function make(o: { now?: string; history_since?: string | null } = {}) {
+    const client = new HistoryClient();
+    const clock = new FakeClock(o.now ?? "2026-11-07T00:00:00Z");
+    const log = recordingLog();
+    const ctx = { clock, history_since: o.history_since ?? null, log };
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, ctx);
+    return { client, clock, log, source };
+  }
+  const merges = (events: SourceEvent[]) => events.flatMap((e) => (e.kind === "pr_merged" ? [e.pr_number] : []));
+
+  it("a first start with 50 old merged PRs reports no merge and makes no per-PR read, only the list read", async () => {
+    const { client, source } = make();
+    client.closed = Array.from({ length: 50 }, (_, i) => merged(100 + i, t(i)));
+    const { events, next_cursor } = await source.poll(null);
+    expect(merges(events)).toEqual([]);
+    expect(client.prReads()).toEqual([]);
+    expect(client.closedReads()).toEqual(["/repos/o/r/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1"]);
+    expect(JSON.parse(next_cursor)).toMatchObject({ start: "2026-11-07T00:00:00Z", pulls: t(49) });
+  });
+
+  it("the starting point comes from the Clock, in GitHub's UTC format, even with no closed PR", async () => {
+    const { source } = make({ now: "2026-11-07T08:09:10.123Z" });
+    const { next_cursor } = await source.poll(null);
+    expect(JSON.parse(next_cursor)).toMatchObject({ start: "2026-11-07T08:09:10Z", pulls: "2026-11-07T08:09:10Z" });
+  });
+
+  it("with no closed PR at the first start, a PR merged after it is reported on the next poll", async () => {
+    const { client, clock, source } = make();
+    const first = await source.poll(null);
+    clock.advance(60_000);
+    client.closed = [merged(7, "2026-11-07T00:00:30Z")];
+    const { events } = await source.poll(first.next_cursor);
+    expect(merges(events)).toEqual([7]);
+    expect(client.prReads()).toEqual(["/repos/o/r/pulls/7"]);
+  });
+
+  it("a later start continues from the stored starting point: one page, merges after it only", async () => {
+    const { client, source } = make();
+    client.closed = Array.from({ length: 150 }, (_, i) => merged(100 + i, t(i)));
+    const first = await source.poll(null);
+    client.calls = [];
+    client.closed.push(merged(300, "2026-11-07T00:05:00Z"));
+    // A restart: a new source on the stored cursor, the clock later.
+    const later = make({ now: "2026-11-08T00:00:00Z" });
+    later.client.closed = client.closed;
+    const { events, next_cursor } = await later.source.poll(first.next_cursor);
+    expect(merges(events)).toEqual([300]);
+    expect(later.client.prReads()).toEqual(["/repos/o/r/pulls/300"]);
+    expect(later.client.closedReads()).toEqual(["/repos/o/r/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1"]);
+    expect(JSON.parse(next_cursor).start).toBe("2026-11-07T00:00:00Z");
+  });
+
+  it("a cursor from before the starting point keeps its place: its closed-PR time becomes the start", async () => {
+    const { client, source } = make();
+    client.closed = [merged(1, t(10)), merged(2, t(20))];
+    const old = JSON.stringify({ issues: null, comments: null, pulls: t(15) });
+    const { events, next_cursor } = await source.poll(old);
+    expect(merges(events)).toEqual([2]);
+    expect(JSON.parse(next_cursor)).toMatchObject({ start: t(15), pulls: t(20) });
+  });
+
+  it("an older github.history_since checks merges after it, not before, once", async () => {
+    const first = make();
+    first.client.closed = [merged(1, t(10)), merged(2, t(20)), merged(3, t(30))];
+    const start = await first.source.poll(null);
+    const { client, source } = make({ history_since: t(15) });
+    client.closed = first.client.closed;
+    const { events, next_cursor } = await source.poll(start.next_cursor);
+    expect(merges(events).sort()).toEqual([2, 3]);
+    expect(JSON.parse(next_cursor)).toMatchObject({ start: t(15), history_since: t(15) });
+    // A restart does not read that history again.
+    client.calls = [];
+    const again = await make({ history_since: t(15) }).source.poll(next_cursor);
+    expect(merges(again.events)).toEqual([]);
+  });
+
+  it("the history read stops at 5 pages of closed PRs", async () => {
+    const first = make();
+    const start = await first.source.poll(null);
+    const { client, source } = make({ history_since: t(0) });
+    client.closed = Array.from({ length: 700 }, (_, i) => merged(1000 + i, t(1 + i)));
+    await source.poll(start.next_cursor);
+    expect(client.closedReads()).toEqual([1, 2, 3, 4, 5].map((p) => `/repos/o/r/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${p}`));
+  });
+
+  it("a github.history_since newer than the starting point does not move it and warns once, naming the setting", async () => {
+    const first = make();
+    const start = await first.source.poll(null);
+    const { client, log, source } = make({ history_since: "2026-11-07T12:00:00Z" });
+    client.closed = [merged(1, "2026-11-07T06:00:00Z")];
+    const { events, next_cursor } = await source.poll(start.next_cursor);
+    expect(merges(events)).toEqual([1]);
+    expect(JSON.parse(next_cursor).start).toBe("2026-11-07T00:00:00Z");
+    await source.poll(next_cursor);
+    const warnings = log.lines.filter((l) => l.level === "warn");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.msg).toContain("github.history_since");
   });
 });
