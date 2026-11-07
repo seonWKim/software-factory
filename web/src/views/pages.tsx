@@ -7,6 +7,7 @@ import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } fr
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { ItemsTable, QueueTable, RunningTable, useNow } from "./common.js";
+import { transcriptPath } from "./transcript.js";
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
@@ -205,17 +206,23 @@ export function ItemPage({ id }: { id: string }) {
       </dl>
       <Section title="Runs" count={runs.length}>
         {runs.length === 0 ? <Empty>No run yet.</Empty> : (
-          <Table label="Runs" head={["Run", "Status", "Attempt", "Started", "Took", "Tokens", "Error"]}>
+          <Table label="Runs" head={["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]}>
             {[...runs].reverse().map((r) => (
-              <tr key={r.id}>
+              <tr key={r.id} data-run={r.id}>
                 <Td>{r.kind}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
                 <Td className="tabular-nums">{r.attempt}</Td>
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
+                <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
+                  {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
+                </Td>
+                <Td className="font-mono text-xs whitespace-nowrap">{r.worker_id ?? "–"}</Td>
                 <Td className="tabular-nums whitespace-nowrap">{r.started_at ? `${ago(r.started_at, now)} ago` : "–"}</Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
-                <Td className="max-w-md text-xs break-words text-zinc-700 dark:text-zinc-300">
-                  {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
+                <Td className="whitespace-nowrap">
+                  {r.transcript_parts && r.transcript_parts.length > 0 ? (
+                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>Open</Link>
+                  ) : "–"}
                 </Td>
               </tr>
             ))}
