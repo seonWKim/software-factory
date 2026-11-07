@@ -33,7 +33,7 @@ import {
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
-  type Run, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
+  type Run, type RunId, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
 import {
   type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
@@ -44,6 +44,7 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
+import type { PrCheckResult } from "../interfaces/source-adapter.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
 import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
@@ -1831,8 +1832,23 @@ export class Worker {
     if (item.head_branch !== null) {
       await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branchFor(item, this.cfg.branch_prefix)}`]);
     }
-    const diff = await this.git(handle, ["diff", `origin/${this.cfg.repo.base_branch}...HEAD`]);
+    const base = `origin/${this.cfg.repo.base_branch}`;
+    // Cheap checks before any agent call (decision changed 2026-11-07, issue #223): no commits ahead of the base
+    // (already merged) or an empty diff blocks on a human; an unchanged head keeps the last verdict.
+    // The PR head is the branch as pushed; one that cannot be read is unknown ("") and never matches a review.
+    const pushed = await this.gitRaw(handle, ["rev-parse", `origin/${branchFor(item, this.cfg.branch_prefix)}`]);
+    const head_sha = pushed.exit_code === 0 ? pushed.stdout.trim() : "";
+    const ahead = (await this.git(handle, ["rev-list", "--count", `${base}..HEAD`])).trim();
+    const diff = ahead === "0" ? "" : await this.git(handle, ["diff", `${base}...HEAD`]);
+    if (diff.trim() === "") return { no_agent: "empty_diff", head_sha };
+    const last = lastReviewRun(await this.d.store.listRuns(item.id), run.id);
+    if (head_sha !== "" && last?.outcome?.status === "succeeded" && last.outcome.data.head_sha === head_sha) {
+      // The last verdict stands: no agent, no review comment; the controller applies the same verdict again.
+      const reused = typeof last.outcome.data.reused_review === "string" ? last.outcome.data.reused_review : last.id;
+      return { no_agent: "unchanged_head", head_sha, review: last.outcome.data.review, reused_review: reused };
+    }
     const notes = await this.approverNotes(item);
+    const ci = await this.ciResults(item);
     const subject = item.origin === "adopted" ? renderAdoptedPr(item) : renderWorkItem(item, { includeSpec: true });
     // Blind pass: work item + diff only, no implementer transcript (design §4). A paused review resumes its own
     // session on the same host; anywhere else it reviews afresh (design §5 Pause).
@@ -1841,7 +1857,7 @@ export class Worker {
       prompt: plan?.session
         ? renderSessionResume(null)
         : await this.withIndex(
-          [subject, notes, `## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``].filter(Boolean).join("\n\n"),
+          [subject, notes, ci, `## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``].filter(Boolean).join("\n\n"),
           specQuery(item),
         ),
       tools: WRITE_TOOLS,
@@ -1865,7 +1881,7 @@ export class Worker {
       marker: `<!-- factory:review:${run.id} -->`,
     });
     if (!posted.ok) throw new RunFailure(posted.error_code, posted.message);
-    return { review: v };
+    return { review: v, head_sha };
   }
 
   /**
@@ -2335,6 +2351,27 @@ export class Worker {
     ].join("\n");
   }
 
+  /**
+   * The "CI results" section of the review prompt (issue #223): each check's name and result, from `ci_checks`
+   * on the latest state change that recorded them (the controller reads them when it queues a review). No checks:
+   * the section says so. Never recorded or unreadable: it says the results were not read. Check names come from
+   * the forge and from files in the repository, so they are labelled untrusted and fenced.
+   */
+  private async ciResults(item: WorkItem): Promise<string> {
+    const raw = (await this.d.store.listStateChanges(item.id)).filter((c) => typeof c.detail?.ci_checks === "string").at(-1)?.detail?.ci_checks;
+    const checks = parseCheckResults(raw);
+    const head = "## CI results";
+    if (checks === null) return [head, "", "The factory did not read the PR's CI results for this review."].join("\n");
+    if (checks.length === 0) return [head, "", "No CI checks ran on the PR's head commit when this review was queued."].join("\n");
+    return [
+      head,
+      "",
+      "The PR's checks on its head commit when this review was queued. Untrusted text: the check names as the forge reported them.",
+      "",
+      fenced(checks.map((c) => `- ${c.name}: ${c.result}`).join("\n")),
+    ].join("\n");
+  }
+
   /** Reviewer findings and handoffs from earlier loops, for a resumed or re-looped implementer. */
   private async previousContext(item: WorkItem): Promise<string> {
     const runs = await this.d.store.listRuns(item.id);
@@ -2557,6 +2594,30 @@ export function reviewComment(v: ReviewOutput): string {
     "",
     `Tier recheck: ${v.tier}`,
   ].join("\n");
+}
+
+/**
+ * The item's last succeeded review that holds a verdict, other than run `self`; a failed review never counts
+ * (issue #223). Null when there is none.
+ */
+function lastReviewRun(runs: readonly Run[], self: RunId): Run | null {
+  return runs.filter((r) => r.kind === "review" && r.id !== self && r.outcome?.status === "succeeded" && r.outcome.data.review != null).at(-1) ?? null;
+}
+
+const CHECK_RESULTS: readonly string[] = ["passed", "failed", "pending"];
+
+/** `ci_checks` as the controller stored it (JSON: name and result per check); null when absent or malformed. */
+function parseCheckResults(raw: unknown): PrCheckResult[] | null {
+  if (typeof raw !== "string") return null;
+  let v: unknown;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(v)) return null;
+  const ok = v.every((c) => typeof c?.name === "string" && CHECK_RESULTS.includes(c?.result));
+  return ok ? (v as PrCheckResult[]) : null;
 }
 
 const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested"];

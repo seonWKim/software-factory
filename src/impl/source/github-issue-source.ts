@@ -6,7 +6,7 @@ import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import { type FactoryStore, labelTarget } from "../../interfaces/factory-store.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
+  ClosePrInput, PollResult, PollSource, PrCheckResult, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
@@ -745,6 +745,18 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   async prChecks(pr_number: number): Promise<PrChecks> {
     // Under the budget threshold the gate waits (pending) and a later pass reads the checks.
     if (this.client.lowBudget()) return { state: "pending" };
+    const results = await this.prCheckResults(pr_number);
+    const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
+    if (failed.length) return { state: "failed", failed };
+    return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
+  }
+
+  /**
+   * Each check prChecks reads (check runs, then commit statuses) with its result, by the same rules. Under the
+   * budget threshold it reads nothing and throws, so the caller records the results as not read.
+   */
+  async prCheckResults(pr_number: number): Promise<PrCheckResult[]> {
+    if (this.client.lowBudget()) throw new Error("GitHub request budget low: checks not read");
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${pr_number}`);
     const sha = encodeURIComponent(pull.head.sha);
@@ -757,18 +769,16 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
     const status = await this.client.request<{ statuses: GhStatus[] }>("GET", `${base}/commits/${sha}/status?per_page=100`);
 
-    const failed: string[] = [];
-    let pending = false;
-    for (const r of runs) {
-      if (r.status !== "completed") pending = true;
-      else if (!PASSING_CONCLUSIONS.has(r.conclusion ?? "")) failed.push(r.name);
-    }
-    for (const s of status.statuses) {
-      if (s.state === "pending") pending = true;
-      else if (s.state !== "success") failed.push(s.context);
-    }
-    if (failed.length) return { state: "failed", failed };
-    return pending ? { state: "pending" } : { state: "passed" };
+    return [
+      ...runs.map((r): PrCheckResult => ({
+        name: r.name,
+        result: r.status !== "completed" ? "pending" : PASSING_CONCLUSIONS.has(r.conclusion ?? "") ? "passed" : "failed",
+      })),
+      ...status.statuses.map((s): PrCheckResult => ({
+        name: s.context,
+        result: s.state === "pending" ? "pending" : s.state === "success" ? "passed" : "failed",
+      })),
+    ];
   }
 
   /**
