@@ -4,7 +4,7 @@ import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, gates, issueRef, silent, triageSpec } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
@@ -102,7 +102,7 @@ describe("controller: comment links", () => {
   it("stores the failure comment URL of a failed update run", async () => {
     const f = await setup();
     const item = await f.intake();
-    await seed(f, item, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 5 }, { kind: "update", idempotency_key: "upd" });
+    await seed(f, item, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "5" }, { kind: "update", idempotency_key: "upd" });
     await f.finish("update", failed("git_failed"));
     const url = f.urlOf("run-failed:");
     expect(url).toBeDefined();

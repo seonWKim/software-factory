@@ -8,7 +8,7 @@ import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSlackPollSource, MemoryStorage,
@@ -139,7 +139,7 @@ async function github(o: { withForge: boolean }) {
     );
     await store.transition({
       id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 42, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "42", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     return item.id;
   };

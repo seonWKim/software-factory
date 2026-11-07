@@ -66,6 +66,7 @@ import {
   GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
   SESSION_LOST, failureClass, pathsOverlap, probePauseOf,
 } from "../../../core/policy.js";
+import { prNumber } from "../../../core/change-ref.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
@@ -205,7 +206,7 @@ export class SqlFactoryStore implements FactoryStore {
       const existing = await this.selectItemBySource(tx, input.source.type, input.source.id);
       if (existing) return { item: existing, created: false };
 
-      const item = newWorkItem(input, await changeFields(tx, input.project, input.adopted?.pr_number ?? null), this.now());
+      const item = newWorkItem(input, await changeFields(tx, input.project, input.adopted?.change_ref ?? null), this.now());
       const { columns, values } = workItemInsert(item);
       const inserted = await this.insertOnce(
         tx,
@@ -218,7 +219,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (input.adopted) {
         await this.insertStateChange(tx, item.id, 1, actor, "pr_adopted", {
           stage: { from: null as never, to: "REVIEW" },
-          pr_number: { from: null, to: input.adopted.pr_number },
+          change_ref: { from: null, to: input.adopted.change_ref },
         });
       } else {
         const held = item.blocked_on !== "none"
@@ -241,12 +242,13 @@ export class SqlFactoryStore implements FactoryStore {
     return this.selectItemBySource(this.db, type, sourceId);
   }
 
-  async getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null> {
+  async getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null> {
+    const pr_number = prNumber({ change_ref });
     const [row] = await this.db.all(
       // change_ref first; pr_number for a row an older controller wrote without it (change_ref NULL).
       `SELECT * FROM work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
          ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, String(pr_number), pr_number],
+      [project, change_ref, pr_number],
     );
     return row ? rowToWorkItem(row) : null;
   }
@@ -366,6 +368,15 @@ export class SqlFactoryStore implements FactoryStore {
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
         if (existing) return { ok: false, reason: "duplicate", verdict: existing };
         if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+        // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
+        if (input.pr_head !== null) {
+          const [onHead] = await tx.all(
+            `SELECT * FROM verdicts WHERE work_item_id = ? AND pr_head = ? ORDER BY at, ${this.db.dialect.seq}`,
+            [input.id, input.pr_head],
+          );
+          if (onHead && input.implicit) return { ok: false, reason: "duplicate", verdict: rowToVerdict(onHead) };
+          if (onHead) await tx.run("DELETE FROM verdicts WHERE work_item_id = ? AND pr_head = ? AND implicit = 1", [input.id, input.pr_head]);
+        }
 
         const now = this.now();
         const version = current.version + 1;
@@ -374,7 +385,8 @@ export class SqlFactoryStore implements FactoryStore {
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, "human_verdict", {});
+        const reason = input.implicit ? "implicit_verdict" : "human_verdict";
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, reason, {});
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -384,15 +396,17 @@ export class SqlFactoryStore implements FactoryStore {
           reason: input.reason,
           comment_id: input.comment_id,
           target: input.target,
+          implicit: input.implicit,
+          pr_head: input.pr_head,
           at: now,
         };
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
-            verdict.reason, verdict.comment_id, verdict.target, verdict.at,
+            verdict.reason, verdict.comment_id, verdict.target, verdict.implicit ? 1 : 0, verdict.pr_head, verdict.at,
           ],
         );
         // A concurrent delivery of the same comment committed first: undo the version bump and state change.
@@ -487,6 +501,7 @@ export class SqlFactoryStore implements FactoryStore {
         token_cost: Number(r.token_cost),
         reasons: [],
         severities: [],
+        implicit: 0,
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
       });
     }
@@ -498,8 +513,13 @@ export class SqlFactoryStore implements FactoryStore {
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
-    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) {
+      const record = records.get(v.work_item_id as string);
+      if (!record) continue;
+      if (Number(v.implicit) === 1) record.implicit = (record.implicit ?? 0) + 1;
+      else record.severities.push(v.severity as VerdictSeverity);
+    }
     return [...records.values()];
   }
 
@@ -1474,7 +1494,7 @@ export class SqlFactoryStore implements FactoryStore {
         const outcome: RunOutcome = {
           status: "succeeded",
           summary: "a person pushed to the PR branch",
-          data: { actor: input.manual.actor, from_sha: input.expected_head, to_sha: input.head_sha, pr_number: input.manual.pr_number },
+          data: { actor: input.manual.actor, from_sha: input.expected_head, to_sha: input.head_sha, pr_number: prNumber({ change_ref: input.manual.change_ref }) },
         };
         const id = newId("run") as RunId;
         // Written finished and acknowledged: never queued, so no claim returns it and the controller applies nothing.
@@ -1496,13 +1516,15 @@ export class SqlFactoryStore implements FactoryStore {
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
     assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
-      const { change_ref } = await changeFields(tx, input.project, input.pr_number);
+      const { pr_number } = await changeFields(tx, input.project, input.change_ref);
+      // The pr_number column is NOT NULL: only a PR number is a change here.
+      if (pr_number === null) throw new Error(`unreviewed merge change_ref is not a PR number: ${input.change_ref}`);
       const created = await this.insertOnce(
         tx,
         "INSERT INTO unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, change_ref, input.merge_sha, input.merger_id, this.now()],
+        [newId("um") as UnreviewedMergeId, input.project, pr_number, input.change_ref, input.merge_sha, input.merger_id, this.now()],
       );
-      const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, input.pr_number]);
+      const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, pr_number]);
       return { merge: rowToUnreviewedMerge(row!), created };
     });
   }
@@ -2457,10 +2479,10 @@ export class SqlFactoryStore implements FactoryStore {
     }
   }
 
-  /** A patch's diff as assignments, with the change columns when it sets pr_number (on the patched project). */
+  /** A patch's diff as assignments, with pr_number and change_url when it sets change_ref (on the patched project). */
   private async patchSql(tx: SqlExecutor, current: WorkItem, patch: WorkItemPatch): Promise<ReturnType<typeof diffPatch>> {
     const diff = diffPatch(current, patch);
-    const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes);
+    const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes, patch.change_url ?? null);
     return { changes: diff.changes, sets: [...diff.sets, ...change.sets], values: [...diff.values, ...change.values] };
   }
 

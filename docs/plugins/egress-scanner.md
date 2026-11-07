@@ -1,6 +1,6 @@
 # EgressScanner
 
-What it does: guard **G5**. Scans every agent output (commits, PR text, comments, handoff rows, run outcomes, logs, tool results) for known secret values and secret patterns before it leaves. A hit fails the run.
+What it does: the egress scanner, guard **G5**. Scans every agent output (commits, PR text, comments, handoff rows, run outcomes, logs, tool results) for known secret values and secret patterns before it leaves. A hit fails the run.
 
 Plugins:
 

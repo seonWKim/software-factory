@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId } from "../src/core/types.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";
 

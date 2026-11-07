@@ -1,6 +1,6 @@
 import { FactoryAuth } from "../../core/authorize.js";
 import type { UserId } from "../../core/types.js";
-import type { AuthDecision, AuthProvider, ExternalIdentity, GrantSource, Principal } from "../../interfaces/auth-provider.js";
+import type { GrantSource } from "../../interfaces/auth-provider.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 
 /**
@@ -12,15 +12,5 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 export class GitHubAuthProvider extends FactoryAuth {
   constructor(store: Pick<FactoryStore, "resolveLink" | "listLinks" | "getWorkItem">, grants: readonly GrantSource[]) {
     super({ store, grants }, (identity) => (identity.provider === "github" ? (`github:${identity.subject}` as UserId) : null));
-  }
-}
-
-/** Local dev only, on a private repo. Allows everything. */
-export class NoAuthProvider implements AuthProvider {
-  async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    return { user_id: `${identity.provider}:${identity.subject}` as UserId, attributes: {} };
-  }
-  async authorize(): Promise<AuthDecision> {
-    return { allow: true };
   }
 }

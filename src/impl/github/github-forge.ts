@@ -2,8 +2,8 @@ import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
-import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
-import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "../source/github-issue-source.js";
+import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
   number: number;
@@ -307,6 +307,21 @@ export class GitHubForge implements Forge {
   async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
     const c = await this.client.request<{ author: GhUser | null }>("GET", `${this.base}/commits/${encodeURIComponent(sha)}`);
     return c.author ? identity(c.author) : null;
+  }
+
+  /**
+   * The compare endpoint's `ahead_by` (one GET). Null when GitHub cannot compare the two (404 or 422: a sha it does
+   * not know, e.g. after a force-push) or gives no count. Other failures throw.
+   */
+  async commitsBetween(from_sha: string, to_sha: string): Promise<number | null> {
+    const range = `${encodeURIComponent(from_sha)}...${encodeURIComponent(to_sha)}`;
+    try {
+      const c = await this.client.request<{ ahead_by?: unknown }>("GET", `${this.base}/compare/${range}`);
+      return typeof c?.ahead_by === "number" && Number.isInteger(c.ahead_by) && c.ahead_by >= 0 ? c.ahead_by : null;
+    } catch (err) {
+      if (err instanceof GitHubError && (err.status === 404 || err.status === 422)) return null;
+      throw err;
+    }
   }
 
   /**

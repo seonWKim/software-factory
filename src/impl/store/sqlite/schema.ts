@@ -665,7 +665,15 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX IF NOT EXISTS child_restarts_at ON child_restarts (at);
   `,
-  // 39: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
+  // 39: implicit verdicts (design §4 and §6, issue #316). `implicit`: 1 for a verdict the factory read from a PR event
+  // (merge, a person's push, a revert), 0 for a `/verdict` comment and on every older row. `pr_head`: the PR head
+  // commit the verdict is about, NULL on older rows and for a revert; the index serves the one-verdict-per-head read.
+  `
+  ALTER TABLE verdicts ADD COLUMN implicit INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE verdicts ADD COLUMN pr_head TEXT;
+  CREATE INDEX IF NOT EXISTS verdicts_head ON verdicts (work_item_id, pr_head);
+  `,
+  // 40: one sync per project and a shared forge budget (design 05-coordination, sync lease; 05-sources, call budget).
   // `sync_leases`: the lease `sync:<type>:<project>` whose holder polls a sync source and delivers its outbox, like
   // `listener_leases` but keyed by name. `forge_budget`: the forge's rate limit per (project_key, plugin), a newer
   // `updated_at` wins. `item_thread.actor`: the account ID of a message that came from a source, NULL otherwise.

@@ -71,7 +71,7 @@ export async function readPrRecord(
   project: string,
   pr: number,
 ): Promise<{ item: WorkItem; record: PrRecord } | null> {
-  const item = await store.getWorkItemByPr(project, pr);
+  const item = await store.getWorkItemByPr(project, String(pr));
   if (!item) return null;
   const changes = await store.listStateChanges(item.id);
   const human = changes.filter((c) => HUMAN_VERDICT_REASONS.has(c.reason)).at(-1) ?? null;

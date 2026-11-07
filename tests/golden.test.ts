@@ -95,7 +95,7 @@ async function seed(store: FactoryStore, pr: number, outcome: Outcome): Promise<
       allowed_paths: [".github/"],
       tier: 2,
       stage: "REVIEW",
-      pr_number: pr,
+      change_ref: String(pr),
       blocked_on: "human",
       blocked_reason: "merge_pending",
     },

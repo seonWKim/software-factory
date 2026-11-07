@@ -260,6 +260,10 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   private async comment(a: CommentArgs): Promise<ToolResult> {
+    // The boundary check: agent-supplied args reach this tool, and a non-number would become `issues/NaN/comments`.
+    if (!Number.isSafeInteger(a.number) || a.number <= 0) {
+      return { ok: false, error_code: "invalid_args", message: `comment: number must be a positive integer, got ${String(a.number).slice(0, 40)}` };
+    }
     const scan = await this.deps.scanner.scan("comment", a.body);
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
     try {

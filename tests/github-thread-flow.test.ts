@@ -8,13 +8,13 @@ import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { parseComment } from "../src/core/commands.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
@@ -319,7 +319,7 @@ describe("GitHub comments in the local store (issue #284)", () => {
     );
     await f.store.transition({
       id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 42, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "42", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     f.hub.pulls.set(42, { number: 42, head: { ref: `factory/${item.id}` } });
     f.hub.comment(42, 150, "/revise rename the flag", { onPr: true });

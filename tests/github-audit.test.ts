@@ -7,11 +7,11 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import {
   FakeBroker, FakeGitHubClient, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec,
 } from "./helpers/fakes.js";

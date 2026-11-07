@@ -222,15 +222,18 @@ describe("improve: the gate list", () => {
   it("holds the owner-only paths the merge check treats as gates", () => {
     expect(GATE_PATHS).toEqual(expect.arrayContaining([
       "prompts/", "src/impl/broker/", "src/impl/egress/", "src/impl/secrets/", "src/impl/sandbox/", "src/impl/auth/",
+      "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
       "src/core/checks.ts", "src/core/policy.ts", ".claude/", "factory.config.json",
     ]));
   });
 
   it("matches files under a gate folder and gate files exactly, nothing looser", () => {
-    for (const p of ["prompts/implement.md", "./src/impl/auth/x.ts", "/factory.config.json", "src/core/policy.ts", ".claude/settings.json", "prompts"]) {
+    for (const p of ["prompts/implement.md", "./src/impl/auth/x.ts", "/factory.config.json", "src/core/policy.ts", ".claude/settings.json", "prompts",
+      "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts"]) {
       expect(isGatePath(p), p).toBe(true);
     }
-    for (const p of ["src/core/worker.ts", "src/core/policy.test.ts", "docs/prompts/x.md", "src/impl/store/x.ts", "factory.config.json.bak"]) {
+    for (const p of ["src/core/worker.ts", "src/core/policy.test.ts", "docs/prompts/x.md", "src/impl/store/x.ts", "factory.config.json.bak",
+      "src/impl/github/github-issue-source.ts"]) {
       expect(isGatePath(p), p).toBe(false);
     }
   });

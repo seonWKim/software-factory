@@ -83,7 +83,8 @@ export interface NewWorkItem {
 }
 
 export interface AdoptedPr {
-  pr_number: number;
+  /** The PR number as text; the store writes pr_number and change_url from it. */
+  change_ref: string;
   head_branch: string;
   /** The PR's head at adoption: recorded as last_head_sha, so only later pushes count as a person's. */
   head_sha: string;
@@ -106,7 +107,7 @@ export interface RecordPrHeadInput {
    * actor and the range expected_head..head_sha in its outcome. Null: only records the head (a baseline for
    * an item that had none). Ignored when `expected_head` is null, as there is no range to name.
    */
-  manual: { actor: Actor; pr_number: number } | null;
+  manual: { actor: Actor; change_ref: string } | null;
 }
 
 export type RecordPrHeadResult =
@@ -118,7 +119,8 @@ export type RecordPrHeadResult =
 
 export interface NewUnreviewedMerge {
   project: string;
-  pr_number: number;
+  /** The PR number as text; the store writes the pr_number column from it. */
+  change_ref: string;
   merge_sha: string;
   merger_id: UserId | null;
 }
@@ -216,20 +218,26 @@ export interface RecordVerdictInput {
   id: WorkItemId;
   /** Applies only if the item's current version equals this. */
   expected_version: number;
-  /** The human who wrote the verdict. */
-  actor: Extract<Actor, { kind: "user" }>;
+  /** Explicit: the human who wrote it. Implicit: the person the event names, or a system actor when none resolves. */
+  actor: Actor;
   verdict: VerdictKind;
   severity: VerdictSeverity;
   reason: string | null;
+  /** The comment id, or an implicit verdict's event key. */
   comment_id: string;
   target: VerdictTarget;
+  implicit: boolean;
+  pr_head: string | null;
 }
 
 export type RecordVerdictResult =
   | { ok: true; item: WorkItem; state_change: StateChange; verdict: Verdict }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
-  /** A verdict from this comment is already stored (checked before the version). Nothing changed. */
+  /**
+   * A verdict from this comment is already stored (checked before the version), or, for an implicit verdict, one
+   * for its PR head. `verdict` is the stored one. Nothing changed.
+   */
   | { ok: false; reason: "duplicate"; verdict: Verdict };
 
 /** What a budget checkpoint records when it opens (design §6). The held run is kept here, not queued. */
@@ -369,8 +377,11 @@ export interface FactoryStore {
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
-  /** The item in `project` whose PR (factory or adopted) has this number (oldest if several). */
-  getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
+  /**
+   * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with
+   * change_ref NULL (written by an older controller) is found by its pr_number column.
+   */
+  getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
   /** The phases of split parent `parentId`, in phase order (design 2026-11-01). Empty for any other item. Read-only. */
@@ -391,16 +402,19 @@ export interface FactoryStore {
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
   /**
-   * Stores a human verdict: bumps the version and writes a state_changes row (reason `human_verdict`, the
-   * user as actor, `changes` = {}) and a linked verdicts row, in one transaction. No other field changes.
-   * Idempotent on `comment_id`.
+   * Stores a verdict: bumps the version and writes a state_changes row (reason `human_verdict`, or
+   * `implicit_verdict` when `implicit`; `actor` as actor, `changes` = {}) and a linked verdicts row, in one
+   * transaction. No other field changes. Idempotent on `comment_id`. One verdict per PR head: an implicit one is a
+   * `duplicate` when the item already has a verdict for `pr_head`; an explicit one deletes the item's implicit
+   * verdicts for `pr_head` (their state_changes rows stay) before it is stored.
    */
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
   /**
    * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
-   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * `reasons` (in version order), the severities of its explicit verdicts (oldest first) and the count of its
+   * implicit ones. For `factory stats`.
    * Read-only.
    */
   listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;

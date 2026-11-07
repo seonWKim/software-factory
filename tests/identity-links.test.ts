@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LINK_CODE_PATTERN, linkCodeCommand, newLinkCode } from "../src/impl/auth/link-code.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";

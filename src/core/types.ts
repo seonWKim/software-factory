@@ -63,11 +63,13 @@ export interface WorkItem {
   loop_count: number;
   restart_count: number;
   token_cost: number;
+  /** Kept in sync by the store from change_ref, for src/ui and the status pages. The core reads change_ref. */
   pr_number: number | null;
   /**
-   * The change columns the store writes with pr_number (migration 35): `change_ref` is the PR number as text,
-   * `change_url` the PR link when the project is a forge key with a stored label. Both null without a PR number,
-   * and on rows written before migration 35. Store-derived: never patched directly.
+   * The change columns (migration 35): `change_ref` is the PR number as text, the field a patch sets; the core
+   * converts it with prNumber (src/core/change-ref.ts) for a forge call. `change_url` is the PR link: the forge's
+   * open result when a patch gives one, else derived by the store from a forge key's stored label. Null without a
+   * PR. A read of a row an older controller wrote without change_ref returns its pr_number as text.
    */
   change_ref: string | null;
   change_url: string | null;
@@ -123,13 +125,15 @@ export interface WorkItem {
 
 /**
  * Fields a transition may change. id, source, title, issue_text, requester, origin, head_branch,
- * last_head_sha, parent_id, phase, version and timestamps are store-owned.
+ * last_head_sha, parent_id, phase, version and timestamps are store-owned. The PR field is `change_ref`: the
+ * store writes pr_number from it. `change_url` (the forge's open result) is written only with a new change_ref,
+ * and never over a stored URL.
  */
 export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "parent_id" | "phase" | "change_ref" | "change_url" | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "pr_number" | "created_at" | "updated_at"
   >
 >;
 
@@ -583,14 +587,16 @@ export interface Handoff {
 }
 
 export type VerdictId = Brand<string, "VerdictId">;
-export type VerdictKind = "accept" | "changes" | "reject";
+/** `reverted` is implicit only: a person cannot write it with `/verdict`. */
+export type VerdictKind = "accept" | "changes" | "reject" | "reverted";
 export type VerdictSeverity = "none" | "minor" | "major" | "critical";
 /** Where the `/verdict` comment was written: the item's issue or its PR. */
 export type VerdictTarget = "issue" | "pr";
 
 /**
- * A human's structured verdict on a work item (`/verdict`, design §4). Linked to the state_changes row
- * (reason `human_verdict`) that carries the actor; changes no work-item field.
+ * A verdict on a work item (design §4): a human's `/verdict` (explicit), or one the factory reads from a PR event
+ * (implicit: a merge, a person's push, a revert). Linked to the state_changes row (reason `human_verdict`, or
+ * `implicit_verdict`) that carries the actor; changes no work-item field.
  */
 export interface Verdict {
   id: VerdictId;
@@ -600,9 +606,16 @@ export interface Verdict {
   severity: VerdictSeverity;
   /** Null only for `accept` without a reason. */
   reason: string | null;
-  /** The comment that held the command. Unique: a redelivered comment records nothing. */
+  /**
+   * The comment that held the command, or for an implicit verdict the key of the event it came from. Unique: a
+   * redelivered comment or event records nothing.
+   */
   comment_id: string;
   target: VerdictTarget;
+  /** True when the factory recorded it from a PR event, false for a `/verdict` comment. */
+  implicit: boolean;
+  /** The PR head commit it is about; null when not known (older rows, a revert). One verdict per head is kept. */
+  pr_head: string | null;
   at: Timestamp;
 }
 

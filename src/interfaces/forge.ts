@@ -138,6 +138,12 @@ export interface Forge {
    */
   commitAuthor(sha: string): Promise<ExternalIdentity | null>;
   /**
+   * How many commits `to_sha` has that `from_sha` does not (the commits in a push from `from_sha` to `to_sha`), or
+   * null when the forge cannot say (e.g. `from_sha` is gone after a force-push). Read when a person's push to a
+   * factory PR is recorded as an implicit `changes` verdict (design §4). Read-only.
+   */
+  commitsBetween(from_sha: string, to_sha: string): Promise<number | null>;
+  /**
    * Closes factory PR `pr_number` without merging it, after one comment carrying `input.marker`. Used when a person
    * closes the source item (design §4). A PR that is already merged or closed is left alone with no comment:
    * `not_open`. The comment goes first, so a failed close retried later finds its comment and does not post

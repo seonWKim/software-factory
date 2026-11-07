@@ -208,7 +208,7 @@ describe("a local resolve command at the controller", () => {
     const it = (await store.getWorkItem(id))!;
     const r = await store.transition({
       id, expected_version: it.version, actor: system, reason: "test_setup",
-      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason, pr_number: 42 },
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason, change_ref: "42" },
     });
     if (!r.ok) throw new Error("setup");
     const resolve = async (text: string) => {
