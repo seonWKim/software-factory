@@ -399,3 +399,37 @@ describe("github.history_since (design §5, Merges)", () => {
     }
   });
 });
+
+describe("github.budget_share (design §5 Sources, GitHub call budget)", () => {
+  it("is accepted in the github block next to min_remaining", async () => {
+    await expect(loadConfig(root({ ...SQLITE, github: { min_remaining: 200, budget_share: 0.5 } }))).resolves.toBeTruthy();
+    await expect(loadConfig(root({ ...SQLITE, github: { budget_share: 1 } }))).resolves.toBeTruthy();
+  });
+
+  it("a value that is not a number greater than 0 and at most 1 fails at startup, naming the key", async () => {
+    for (const budget_share of [0, -0.5, 1.5, "0.5", null, true]) {
+      const err = await loadError({ ...SQLITE, github: { budget_share } });
+      expect(err.message).toContain("github.budget_share");
+    }
+  });
+});
+
+describe("agent_stop_checks (design §4 Pre-push gates, issue #302)", () => {
+  it("is a top-level key; absent, it is 3", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("agent_stop_checks");
+    const { agent_stop_checks: _set, ...rest } = SQLITE as Record<string, unknown>;
+    expect((await loadConfig(root(rest))).config.agent_stop_checks).toBe(3);
+  });
+
+  it("a positive integer loads; the checked-in config sets it", async () => {
+    expect((await loadConfig(root({ ...SQLITE, agent_stop_checks: 7 }))).config.agent_stop_checks).toBe(7);
+    expect(typeof REAL.agent_stop_checks).toBe("number");
+  });
+
+  it("a value that is not a positive integer fails at startup, naming the key", async () => {
+    for (const agent_stop_checks of [0, -1, 1.5, "3", null, true]) {
+      const err = await loadError({ ...SQLITE, agent_stop_checks });
+      expect(err.message).toContain("agent_stop_checks must be a positive integer");
+    }
+  });
+});

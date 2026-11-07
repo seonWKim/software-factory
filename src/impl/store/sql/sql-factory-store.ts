@@ -60,7 +60,7 @@ import {
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
+  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -506,12 +506,13 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
-      // implement-type claims only, and so does a failed push_access or pr_api preflight check (design §5
-      // Restarts). All are rows of claim_pauses, read under the lock.
+      // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
+      // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
+      // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
@@ -523,6 +524,7 @@ export class SqlFactoryStore implements FactoryStore {
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
       const forgePaused = active(FORGE_AUTH_PAUSE) || active(PREFLIGHT_ACCESS_PAUSE);
+      const githubPaused = active(GITHUB_RATE_LIMIT);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -559,6 +561,9 @@ export class SqlFactoryStore implements FactoryStore {
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // A GitHub rate limit holds every kind that calls GitHub on its way (implement, update, review) until the
+        // reset; triage and resolve still claim.
+        if (githubPaused && (writer || next.kind === "review")) continue;
         if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
@@ -1235,7 +1240,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   // Coordination (design §5, 2026-11-03)
 
-  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
+  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const wanted = new Map<string, DependencyLink>();
@@ -1251,9 +1256,22 @@ export class SqlFactoryStore implements FactoryStore {
           [id, l.depends_on, l.kind, now, now],
         );
       }
+      if (read_at !== undefined) {
+        await tx.run("UPDATE dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
+        await tx.run("UPDATE work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
+      }
       const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
       return rows.map(rowToDependencyEdge);
     });
+  }
+
+  async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT edges_source_updated_at FROM work_items WHERE id = ?", [id]);
+    return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
+  }
+
+  async markDependencyLinksStale(id: WorkItemId): Promise<void> {
+    await this.db.run("UPDATE work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
   }
 
   async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {

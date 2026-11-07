@@ -88,6 +88,7 @@ export interface SessionGitHub { request<T>(method: string, path: string, body?:
 /** The repo's issues, for `session start` on an issue with no work item. A pull request is not an issue here. */
 export function githubIssues(github: SessionGitHub, repo: { owner: string; name: string }): IssueLookup {
   return {
+    type: "github_issue",
     async issue(n) {
       type Issue = { title?: string; body?: string | null; html_url?: string; user?: { id?: number }; pull_request?: unknown };
       const r = await github.request<Issue>("GET", `/repos/${repo.owner}/${repo.name}/issues/${n}`).catch(() => null);

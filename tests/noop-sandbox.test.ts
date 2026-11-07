@@ -29,7 +29,9 @@ function repoWithOrigin() {
   return { root, repo, origin };
 }
 
-describe("NoOpSandbox", () => {
+// Real git or child-process work per test: fast alone, slower under a full parallel run. Above the global 5 s
+// testTimeout (vitest.config.ts, unchanged) so host load does not fail them.
+describe("NoOpSandbox", { timeout: 30_000 }, () => {
   it("creates its own clone on a new branch from base, runs commands with only the given env, and destroys it without a trace", async () => {
     const { root, repo } = repoWithOrigin();
     const sbx = new NoOpSandbox(join(root, "worktrees"));
@@ -274,7 +276,7 @@ describe("NoOpSandbox", () => {
   });
 });
 
-describe("NoOpSandbox run folder with a read-only node_modules", () => {
+describe("NoOpSandbox run folder with a read-only node_modules", { timeout: 30_000 }, () => {
   // Runs vitest on one small passing test in a NoOpSandbox run folder whose node_modules is read-only, with `extra`
   // appended to the run folder's own `npm test` command (package.json `scripts.test`). Restores write access before
   // the run folder is destroyed, so nothing the owner has is left read-only.

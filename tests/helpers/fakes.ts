@@ -792,6 +792,7 @@ export class MemorySessionFiles implements SessionFiles {
 
 /** The repo's issues by number, for `session start` on an issue with no work item. Records each number asked. */
 export class FakeIssues implements IssueLookup {
+  readonly type = "github_issue";
   asked: number[] = [];
   constructor(readonly issues: Record<number, SessionIssue> = {}) {}
   issue = async (n: number) => (this.asked.push(n), this.issues[n] ?? null);

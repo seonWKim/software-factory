@@ -43,3 +43,12 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
   - When a feature is replaced, deprecate it in its topic file with a removal plan, then remove it. Don't keep two ways of doing the same thing.
   - Prefer fewer settings, states and code paths. A new one needs a reason recorded in its topic file.
 - When the factory works on this repo: changes to its own gates, prompts, permissions or tools always need a human merge, whatever the tier.
+
+## Rules for agents working on this repo
+
+The factory's prompts in `prompts/` are generic, for any project. These are this repo's own rules on top of them.
+
+- Tests: run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs. Dependencies are already installed and the sandbox has no network: never run `npm install`, `npm ci`, or `npx` for a package that is not installed.
+- Merge conflicts in `docs/design.md` and `SET_UP.md`: keep both sides' sections. Each side's new or changed section stays, in order; never drop one side's section to keep the other's. If both sides edited the same paragraph, combine the two edits.
+- Migrations: when both sides added a migration with the same number, the base keeps its number and the branch's migration is renumbered to the next free number in both the SQLite and the MySQL schema lists (`migrations/mysql/`, `src/impl/store/mysql/migrations.ts`) and in tests that name the number.
+- Specs: a store schema change also allows `migrations/mysql/` and `src/impl/store/mysql/migrations.ts` beside the SQLite schema. When the solo default and the enterprise setting differ, the spec's desired output says both.
