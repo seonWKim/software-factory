@@ -1895,6 +1895,8 @@ export class Worker {
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
       ...(session ? { session } : {}),
     });
+    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next.
+    for (const f of result.fallbacks ?? []) this.d.log.warn("runner fallback", { run_id: run.id, step: step ?? "", ...f });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);

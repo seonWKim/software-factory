@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { runCanary } from "../src/canary.js";
-import { loadConfig } from "../src/compose.js";
+import { Plugins, loadConfig } from "../src/compose.js";
+import { FallbackLLM } from "../src/core/fallback-llm.js";
+import { FallbackRunner } from "../src/core/fallback-runner.js";
 import { Controller } from "../src/core/controller.js";
 import { TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import { Bash, Edit, Glob, Grep, Read, type ToolSpec, Write } from "../src/core/tools/index.js";
@@ -171,6 +173,23 @@ describe("registration", () => {
   it("a config with runner openai-compatible loads, selected by name", async () => {
     const loaded = await loadConfig(configRoot({ plugins: { runner: "openai-compatible" }, baseUrl: "http://127.0.0.1:1/v1" }).dir);
     expect(loaded.plugins.runner).toBe("openai-compatible");
+  });
+
+  it("a chain (claude primary, openai-compatible secondary) builds fallback composites and declares both members' secrets", async () => {
+    const plugins = { runner: ["claude-code", "openai-compatible"], llm: ["claude-cli", "openai-compatible"] };
+    const loaded = await loadConfig(configRoot({ plugins, baseUrl: "http://127.0.0.1:1/v1" }).dir);
+    expect(loaded.plugins.runners).toEqual(["claude-code", "openai-compatible"]);
+    const p = new Plugins(loaded);
+    const secrets = await p.secrets();
+    expect(await secrets.get("OPENAI_COMPATIBLE_API_KEY" as SecretName)).not.toBeNull();
+    expect(await p.runner(new NoOpSandbox(loaded.stateDir), secrets)).toBeInstanceOf(FallbackRunner);
+    expect(await p.llm(secrets)).toBeInstanceOf(FallbackLLM);
+  });
+
+  it("a single runner is built bare, without a chain", async () => {
+    const loaded = await loadConfig(configRoot({ plugins: { runner: ["openai-compatible"] }, baseUrl: "http://127.0.0.1:1/v1" }).dir);
+    const p = new Plugins(loaded);
+    expect(await p.runner(new NoOpSandbox(loaded.stateDir), await p.secrets())).toBeInstanceOf(OpenAICompatibleRunner);
   });
 });
 
@@ -527,7 +546,7 @@ function git(cwd: string, ...args: string[]) {
 }
 
 /** A throwaway repo root with its own config, prompts, a git repo with an origin, and a secret file. */
-function configRoot(opts: { plugins?: Record<string, string>; baseUrl?: string }): { dir: string; secretsFile: string } {
+function configRoot(opts: { plugins?: Record<string, unknown>; baseUrl?: string }): { dir: string; secretsFile: string } {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "sf-oc-root-")));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);

@@ -4,6 +4,7 @@
 // whole as `[withheld: <rule>]` (design, withhold-not-mask); its text is never printed.
 
 import type { Plugins } from "./compose.js";
+import { selectedLlms } from "./plugins.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "./interfaces/llm-provider.js";
@@ -134,7 +135,8 @@ export async function llmCheckFromPlugins(
   const secrets = await p.secrets();
   const scanner = await p.scanner(secrets);
   const clock = await p.clock();
-  const providerName = p.loaded.plugins.llm;
+  // A fallback chain (design 2026-11-07) is checked as one provider: the check passes if any member answers.
+  const providerName = selectedLlms(p.loaded.plugins).join(" -> ");
   let provider: LLMProvider;
   try {
     provider = await p.llm(secrets);
