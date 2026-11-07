@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { Children, Fragment, type ReactNode, createContext, useContext, useEffect, useState } from "react";
 import { cn } from "../../lib/cn.js";
 
 // Small shared pieces for the pages: a section with a heading, a data table, a level badge and the loading
@@ -17,7 +17,39 @@ export function Section({ title, count, children, action }: { title: string; cou
   );
 }
 
+/** Tailwind's `sm` breakpoint: below it every Table is a list of cards. */
+export const SM_PX = 640;
+
+/** True at `sm` and up; follows the window's width as it changes. */
+function useWide(): boolean {
+  const read = () => typeof window === "undefined" || window.innerWidth >= SM_PX;
+  const [wide, setWide] = useState(read);
+  useEffect(() => {
+    const on = () => setWide(read());
+    on();
+    addEventListener("resize", on);
+    return () => removeEventListener("resize", on);
+  }, []);
+  return wide;
+}
+
+const TableMode = createContext<{ head: readonly string[]; cards: boolean }>({ head: [], cards: false });
+
+/**
+ * A data table at `sm` and up; below it, one card per row with no horizontal scroll: the first cell is the
+ * card's title, the next two sit under it, the rest are listed with their column names. Rows are `Tr`, cells `Td`.
+ */
 export function Table({ head, children, label }: { head: readonly string[]; children: ReactNode; label: string }) {
+  const wide = useWide();
+  if (!wide) {
+    return (
+      <TableMode.Provider value={{ head, cards: true }}>
+        <ul aria-label={label} data-cards className="divide-y divide-zinc-200 rounded-md border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+          {children}
+        </ul>
+      </TableMode.Provider>
+    );
+  }
   return (
     <div className="overflow-x-auto rounded-md border border-zinc-200 dark:border-zinc-800">
       <table aria-label={label} className="w-full text-left text-sm">
@@ -36,9 +68,38 @@ export function Table({ head, children, label }: { head: readonly string[]; chil
   );
 }
 
-export const Td = ({ children, className }: { children: ReactNode; className?: string }) => (
-  <td className={cn("px-3 py-2 align-top", className)}>{children}</td>
-);
+/** One row of a Table: a `<tr>`, or a card below `sm`. Data attributes go on either. */
+export function Tr({ children, ...attrs }: { children: ReactNode } & { [data: `data-${string}`]: string | undefined }) {
+  const { head, cards } = useContext(TableMode);
+  if (!cards) return <tr {...attrs}>{children}</tr>;
+  // Cells left out with `cond && <Td>` are dropped here, as they are from `head`.
+  const [title, ...cells] = Children.toArray(children);
+  const under = cells.slice(0, 2);
+  const rest = cells.slice(2);
+  return (
+    <li {...attrs} className="min-w-0 px-3 py-2 text-sm">
+      <div className="min-w-0 font-medium break-words">{title}</div>
+      {under.length > 0 && <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">{under}</div>}
+      {rest.length > 0 && (
+        <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
+          {rest.map((cell, i) => (
+            <Fragment key={i}>
+              <dt className="text-zinc-600 dark:text-zinc-400">{head[i + 3] ?? ""}</dt>
+              <dd className="min-w-0">{cell}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      )}
+    </li>
+  );
+}
+
+export function Td({ children, className }: { children: ReactNode; className?: string }) {
+  const { cards } = useContext(TableMode);
+  // In a card the cell wraps: the table's column widths are dropped.
+  if (cards) return <div className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^(min-|max-)?w-/.test(c)).join(" "))}>{children}</div>;
+  return <td className={cn("px-3 py-2 align-top", className)}>{children}</td>;
+}
 
 const LEVEL_TONE: Record<string, string> = {
   ready_to_merge: "bg-emerald-100 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100",

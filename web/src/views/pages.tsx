@@ -1,16 +1,17 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import {
-  API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PausesView, type QueueRow, type RunRow,
+  API, type FactoryState, type Health, type ItemDetail, type ItemRow, type Items, type Overview, type PauseRow, type PhaseRow, type PausesView, type QueueRow, type RunRow,
   type UnreviewedMerges, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td } from "../components/ui/parts.js";
+import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
-import { BASE } from "../pages.js";
+import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { transcriptPath } from "./transcript.js";
@@ -258,25 +259,30 @@ export function ItemPage({ id }: { id: string }) {
           <WhyText why={item.why} />
         </p>
       )}
+      {item.parent_id && (
+        <p data-testid="parent" className="mt-1 text-sm">
+          Phase {item.phase ?? "?"} of <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>its split parent</Link>
+        </p>
+      )}
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
-        {[
+        {([
           ["Stage", item.stage + (item.close_reason ? ` (${item.close_reason})` : "")],
           ["Tier", item.tier ?? "–"],
-          ["PR", item.pr_number ?? "–"],
+          ["PR", item.pr_number === null ? "–" : <UrlOrText url={item.pr_url} text={`#${item.pr_number}`} />],
+          ["Spec comment", item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text="spec comment" /> : "–"],
           ["Review loops", item.loop_count],
           ["Restarts", item.restart_count],
           ["Tokens", tokens(item.token_cost)],
           ["Updated", `${ago(item.updated_at, now)} ago`],
-        ].map(([k, v]) => (
-          <div key={String(k)} className="min-w-0">
+        ] as const).map(([k, v]) => (
+          <div key={k} className="min-w-0">
             <dt className="text-xs text-zinc-600 dark:text-zinc-400">{k}</dt>
-            <dd className="truncate tabular-nums">
-              {k === "PR" && item.pr_url ? <a href={item.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{item.pr_number}</a> : String(v)}
-            </dd>
+            <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
           </div>
         ))}
       </dl>
       <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
+      <Phases phases={item.phases ?? []} />
       {item.merge_check && (
         <Section title="Merge check">
           <p className="text-sm" data-merge-check-detail>
@@ -298,9 +304,11 @@ export function ItemPage({ id }: { id: string }) {
         {runs.length === 0 ? <Empty>No run yet.</Empty> : (
           <Table label="Runs" head={["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]}>
             {[...runs].reverse().map((r) => (
-              <tr key={r.id} data-run={r.id}>
-                <Td>{r.kind}</Td>
-                <Td className="tabular-nums">{r.attempt}</Td>
+              <Tr key={r.id} data-run={r.id}>
+                <Td>
+                  {r.kind} <code className="font-mono text-xs break-all text-zinc-600 dark:text-zinc-400">{r.id}</code>
+                </Td>
+                <Td className="tabular-nums">attempt {r.attempt}</Td>
                 <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
@@ -314,30 +322,115 @@ export function ItemPage({ id }: { id: string }) {
                     <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>Open</Link>
                   ) : "–"}
                 </Td>
-              </tr>
+              </Tr>
             ))}
           </Table>
         )}
       </Section>
       <Section title="Timeline" count={timeline.length}>
         <ol className="space-y-1 text-sm">
-          {[...timeline].reverse().map((t) => (
-            <li key={t.version} className="flex gap-3">
-              <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(t.at, now)}</span>
-              <span className="min-w-0">
-                <span className="font-medium">{t.reason ?? "change"}</span>
-                <span className="text-zinc-500"> by {t.actor.kind === "system" ? "the factory" : (t.actor.id ?? t.actor.kind)}</span>
-                {Object.keys(t.changes).length > 0 && (
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    {" "}— {Object.entries(t.changes).map(([f, c]) => `${f}: ${c.from} → ${c.to}`).join(", ")}
-                  </span>
-                )}
-              </span>
-            </li>
-          ))}
+          {[...timeline].reverse().map((t) => <TimelineRow key={t.version} entry={t} now={now} />)}
         </ol>
       </Section>
     </>
+  );
+}
+
+/** A split parent's phases in merge order, each linking to its own item page. */
+function Phases({ phases }: { phases: readonly PhaseRow[] }) {
+  if (phases.length === 0) return null;
+  return (
+    <Section title="Phases" count={phases.length}>
+      <ol aria-label="Phases" className="space-y-1 text-sm">
+        {phases.map((p) => (
+          <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 text-zinc-500 tabular-nums">{p.phase}.</span>
+            <Link href={itemPath(p.id)} className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
+            <Badge>{p.stage}</Badge>
+          </li>
+        ))}
+      </ol>
+    </Section>
+  );
+}
+
+/** A link when the URL is http(s); the text alone otherwise (a withheld marker, a local path, anything else). */
+function UrlOrText({ url, text }: { url: string | null | undefined; text: string }) {
+  if (isHttpUrl(url)) return <a href={url} target="_blank" rel="noreferrer" className={LINK_CLASS}>{text}</a>;
+  return <span>{url && url !== text ? `${text} (${url})` : text}</span>;
+}
+
+type TimelineEntry = ItemDetail["timeline"][number];
+
+/** The spec fields triage writes: shown behind "spec written (show)" and rendered as markdown, never as JSON. */
+const SPEC_FIELDS: Record<string, string> = {
+  problem: "Problem",
+  scope: "Scope",
+  desired_output: "Desired output",
+  done_criteria: "Done criteria",
+  files_to_change: "Files to change",
+  allowed_paths: "Allowed paths",
+};
+
+/** A change value from the API's JSON text; text that is not JSON (a withheld marker) as it is. */
+function parseValue(text: string | null): unknown {
+  if (text === null) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+/** A short change value as words: strings unquoted, lists joined, none as a dash. */
+function shortValue(v: unknown): string {
+  if (v === null || v === undefined) return "–";
+  if (Array.isArray(v)) return v.map(shortValue).join(", ") || "–";
+  if (typeof v === "object") return Object.entries(v).map(([k, x]) => `${k}: ${shortValue(x)}`).join("; ");
+  return String(v);
+}
+
+/** A spec field's value as markdown: a list becomes a bullet list. */
+function specMarkdown(v: unknown): string {
+  if (Array.isArray(v)) return v.map((x) => `- ${shortValue(x)}`).join("\n");
+  return shortValue(v);
+}
+
+function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
+  const [open, setOpen] = useState(false);
+  const changes = Object.entries(t.changes);
+  const short = changes.filter(([f]) => !(f in SPEC_FIELDS));
+  const spec = changes.filter(([f]) => f in SPEC_FIELDS);
+  return (
+    <li className="flex gap-3">
+      <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(t.at, now)}</span>
+      <div className="min-w-0 flex-1 break-words">
+        <span className="font-medium">{t.reason ?? "change"}</span>
+        <span className="text-zinc-500"> by {t.actor.kind === "system" ? "the factory" : (t.actor.id ?? t.actor.kind)}</span>
+        {short.length > 0 && (
+          <span className="text-zinc-600 dark:text-zinc-400">
+            {" "}— {short.map(([f, c]) => `${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`).join(", ")}
+          </span>
+        )}
+        {spec.length > 0 && (
+          <div className="mt-1">
+            <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={cn("text-xs", LINK_CLASS)}>
+              spec written ({open ? "hide" : "show"})
+            </button>
+            {open && (
+              <div data-spec className="mt-2 space-y-3 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+                {spec.map(([f, c]) => (
+                  <div key={f}>
+                    <h3 className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-400">{SPEC_FIELDS[f]}</h3>
+                    <Markdown text={specMarkdown(parseValue(c.to))} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -358,10 +451,10 @@ export function WorkersPage() {
         ) : (
           <Table label="Workers" head={["Worker", "Runs"]}>
             {workers.data.workers.map((w) => (
-              <tr key={w.owner}>
+              <Tr key={w.owner}>
                 <Td className="font-mono text-xs">{w.owner}</Td>
                 <Td className="tabular-nums">{w.running}</Td>
-              </tr>
+              </Tr>
             ))}
           </Table>
         )}
@@ -416,14 +509,14 @@ export function HealthPage() {
           ) : (
             <Table label="Merged without review" head={["PR", "Merged by", "Merge commit", "When"]}>
               {merges.data.merges.map((m) => (
-                <tr key={`${m.project}#${m.pr_number}`}>
+                <Tr key={`${m.project}#${m.pr_number}`}>
                   <Td className="tabular-nums">
                     {m.pr_url ? <a href={m.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.pr_number}</a> : `#${m.pr_number}`}
                   </Td>
                   <Td className="text-xs break-words">{m.merged_by}</Td>
                   <Td className="font-mono text-xs">{m.merge_sha}</Td>
                   <Td className="tabular-nums whitespace-nowrap">{ago(m.recorded_at, now)} ago</Td>
-                </tr>
+                </Tr>
               ))}
             </Table>
           )}
