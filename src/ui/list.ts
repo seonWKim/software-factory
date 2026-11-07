@@ -39,10 +39,12 @@ export interface ListRow extends FilterRow {
   why: Why;
 }
 
+/** True when the filters may show closed items, so listRows reads them. */
+const showsClosed = (f: Filters) => f.closed || f.state === "closed" || f.stage === "CLOSED";
+
 /** Every listed item, ranked (closed items too when the filters may show them). */
 export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
-  const withClosed = f.closed || f.state === "closed" || f.stage === "CLOSED";
-  const items = await c.store.listWorkItemsWhere({ exclude_closed: !withClosed, limit: LIST_LIMIT });
+  const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), limit: LIST_LIMIT });
   const { active, position } = await activeRuns(c.store);
   const pauses = await readClaimPauses(c.store);
 
@@ -91,6 +93,21 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       conflicts: r.input.conflicts,
       why: r.input.why,
     });
+  }
+  return out;
+}
+
+/**
+ * The closed items as the facet counts read them, when listRows left them out: so the Closed option counts the
+ * closed items that match the other filters, as every other option does. One store read (at most LIST_LIMIT
+ * items), no per-item reads: a closed item's level is always `closed`, its kind comes from its blocked reason.
+ */
+export async function closedFacetRows(c: ListCtx, f: Filters): Promise<FilterRow[]> {
+  if (showsClosed(f)) return [];
+  const out: FilterRow[] = [];
+  for (const it of await c.store.listWorkItemsWhere({ stage: "CLOSED", limit: LIST_LIMIT })) {
+    const shown = it.title ? (await c.w.shown(it.title, { max: 120 })).plain : null;
+    out.push({ level: "closed", stage: it.stage, tier: it.tier, kind: runKindOf(it.blocked_reason, null), dependents: 0, search: searchKeys(it.source.id, shown) });
   }
   return out;
 }

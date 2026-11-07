@@ -2,10 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td } from "../components/ui/parts.js";
+import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 import { cn } from "../lib/cn.js";
-import { ago } from "../lib/format.js";
+import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
 
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
@@ -147,6 +147,12 @@ function ResetButton({ row, label, token, project }: { row: SettingRow; label: s
   );
 }
 
+/** A millisecond key's value as a duration with its unit ("1h 30m"), under its field; nothing for other keys. */
+function Duration({ settingKey, value }: { settingKey: string; value: string }) {
+  if (!settingKey.endsWith("_ms") || !/^\d+$/.test(value.trim())) return null;
+  return <p data-duration className="mt-1 text-xs tabular-nums text-zinc-600 dark:text-zinc-400">{duration(Number(value))}</p>;
+}
+
 /** What a key controls, under its name; always shown, narrow screens included. */
 function Description({ text }: { text: string }) {
   return <p className="mt-1 max-w-64 text-xs text-pretty text-zinc-600 dark:text-zinc-400">{text}</p>;
@@ -155,13 +161,14 @@ function Description({ text }: { text: string }) {
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   return (
-    <tr data-key={row.key}>
+    <Tr data-key={row.key}>
       <Td>
         <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
         <Description text={row.description} />
       </Td>
       <Td className="min-w-48">
         <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
           <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
             1 to {row.max} (max_workers){row.capped_at ? `; the stored value runs as ${row.capped_at}` : ""}
@@ -177,6 +184,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
               <Editor row={row} label={`${row.key} for ${view.repo}`} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
               {own?.source === "override" && <ResetButton row={row} label={`${row.key} for ${view.repo}`} token={view.csrf_token} project={view.repo} />}
             </div>
+            <Duration settingKey={row.key} value={own?.value ?? row.value} />
           </div>
         )}
       </Td>
@@ -186,7 +194,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       <Td className="font-mono text-xs break-all">{row.file_value ?? <span className="text-zinc-500">not set (default {row.default_value})</span>}</Td>
       <Td className="text-zinc-600 dark:text-zinc-400">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
-    </tr>
+    </Tr>
   );
 }
 
@@ -223,13 +231,13 @@ export function SettingsPage() {
       <Section title="Changes by PR only" count={v.pr_only.length}>
         <Table label="Changes by PR only" head={["Key", ""]}>
           {v.pr_only.map((p) => (
-            <tr key={p.key} data-key={p.key}>
+            <Tr key={p.key} data-key={p.key}>
               <Td>
                 <span className="font-mono text-xs">{p.key}</span>
                 <Description text={p.description} />
               </Td>
               <Td className="text-zinc-600 dark:text-zinc-400">{p.note}</Td>
-            </tr>
+            </Tr>
           ))}
         </Table>
       </Section>
@@ -239,7 +247,7 @@ export function SettingsPage() {
         ) : (
           <Table label="History" head={["When", "Who", "Key", "Change"]}>
             {v.history.map((c) => (
-              <tr key={c.seq}>
+              <Tr key={c.seq}>
                 <Td className="tabular-nums whitespace-nowrap">{ago(c.at, now)} ago</Td>
                 <Td className="font-mono text-xs">{c.actor}</Td>
                 <Td className="font-mono text-xs">
@@ -249,7 +257,7 @@ export function SettingsPage() {
                 <Td className="font-mono text-xs break-all">
                   {c.new_value === null ? `reset (was ${c.old_value})` : `${c.old_value ?? "(no override)"} → ${c.new_value}`}
                 </Td>
-              </tr>
+              </Tr>
             ))}
           </Table>
         )}

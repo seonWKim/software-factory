@@ -216,10 +216,34 @@ describe("ui api: items", () => {
     const { d } = await seeded();
     const api = await json<{ facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
     expect(api.facets.state.needs).toBe(3);
-    expect(api.facets.stage.CLOSED).toBe(0);
+    // The closed item counts under Closed though the default list leaves it out (same rule as every facet).
+    expect(api.facets.stage.CLOSED).toBe(1);
+    expect(api.facets.state.closed).toBe(1);
     const page = (await get(d, "/classic")).body;
     expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
     expect(page).toContain(`>All (${api.facets.allStates})</option>`);
+  });
+
+  it("the Closed facet counts the closed items that match the other filters (148 closed items)", async () => {
+    const { store } = await newStore(new FakeClock());
+    for (let n = 1; n <= 148; n++) {
+      const it = await make(store, 1000 + n, n % 4 === 0 ? `Old cleanup ${n}` : `Closed work ${n}`);
+      await patch(store, it, { stage: "CLOSED", close_reason: "completed", tier: n % 2 === 0 ? 2 : 3 });
+    }
+    await make(store, 1, "Open work");
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock: new FakeClock(), lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => [], new FakeClock()) };
+    const all = await json<{ items: { id: string }[]; facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
+    expect(all.items).toHaveLength(1);
+    expect(all.facets.state.closed).toBe(148);
+    expect(all.facets.stage.CLOSED).toBe(148);
+    expect(all.facets.allStates).toBe(1);
+    // Every other filter still applies to the Closed count.
+    expect((await json<{ facets: { state: Record<string, number> } }>(d, "/api/v1/items?tier=2")).facets.state.closed).toBe(74);
+    expect((await json<{ facets: { state: Record<string, number> } }>(d, "/api/v1/items?q=cleanup")).facets.state.closed).toBe(37);
+    // Choosing Closed shows that many rows, and its own count stays the same.
+    const closed = await json<{ items: unknown[]; facets: { state: Record<string, number> } }>(d, "/api/v1/items?state=closed");
+    expect(closed.items).toHaveLength(148);
+    expect(closed.facets.state.closed).toBe(148);
   });
 
   it("an unknown filter value is a 400 JSON, for each filter", async () => {
@@ -247,6 +271,24 @@ describe("ui api: items", () => {
     expect(body.runs.map((r) => [r.kind, r.status, r.tokens])).toEqual([["triage", "succeeded", 1234], ["implement", "failed", null]]);
     expect(body.runs[1]!.error).toEqual({ code: "agent_error", detail: "[withheld: github_token]" });
     expect(JSON.stringify(body)).not.toMatch(/token"?\s*:\s*\d|"lease"/);
+  });
+
+  it("item detail has spec_comment_url, parent_id, phase and the parent's phases (id, phase, title, stage, source) in phase order", async () => {
+    const { d, store } = await seeded();
+    const parent = await make(store, 50, "Split parent");
+    await patch(store, parent, { spec_comment_url: "https://github.com/o/r/issues/50#issuecomment-1" });
+    // Filed out of order: the list follows phase order.
+    const p2 = (await store.createWorkItem({ ...issue(52), title: `Phase two ${SECRET}`, parent: { id: parent.id, phase: 2 } }, system)).item;
+    const p1 = (await store.createWorkItem({ ...issue(51), title: "Phase one", parent: { id: parent.id, phase: 1 } }, system)).item;
+    type Detail = { item: { spec_comment_url: string | null; parent_id: string | null; phase: number | null; phases: unknown[] } };
+    const top = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(parent.id)}`);
+    expect(top.item).toMatchObject({ spec_comment_url: "https://github.com/o/r/issues/50#issuecomment-1", parent_id: null, phase: null });
+    expect(top.item.phases).toEqual([
+      { id: p1.id, phase: 1, title: "Phase one", stage: "NEW", source: { type: p1.source.type, id: p1.source.id, link: p1.source.link } },
+      { id: p2.id, phase: 2, title: "[withheld: github_token]", stage: "NEW", source: { type: p2.source.type, id: p2.source.id, link: p2.source.link } },
+    ]);
+    const phase = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(p2.id)}`);
+    expect(phase.item).toMatchObject({ spec_comment_url: null, parent_id: parent.id, phase: 2, phases: [] });
   });
 
   it("each run has its attempts in attempt order, with worker, status, times, error code, failure class and tokens", async () => {

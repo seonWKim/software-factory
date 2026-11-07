@@ -134,6 +134,15 @@ export interface QueueRow {
   why?: Why | null;
 }
 
+/** One phase of a split parent, as the item API lists it. */
+export interface PhaseRow {
+  id: string;
+  phase: number;
+  title: string | null;
+  stage: string;
+  source: SourceRef;
+}
+
 export interface ItemDetail {
   as_of: string;
   item: {
@@ -150,6 +159,13 @@ export interface ItemDetail {
     token_cost: number;
     pr_number: number | null;
     pr_url: string | null;
+    /** The posted spec comment; null before triage posts it. */
+    spec_comment_url?: string | null;
+    /** A phase of a split spec: its parent's id and its place in merge order; both null on any other item. */
+    parent_id?: string | null;
+    phase?: number | null;
+    /** A split parent's phases in phase order; empty for any other item. */
+    phases?: PhaseRow[];
     version: number;
     created_at: string;
     updated_at: string;

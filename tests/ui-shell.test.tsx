@@ -169,6 +169,28 @@ describe("app shell", () => {
   });
 });
 
+describe("sidebar in the icon-only layout", () => {
+  it("each link has a title and an accessible name, though its label is hidden", async () => {
+    const wide = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    try {
+      mount();
+      await screen.findByText("Needs you (4)");
+      for (const nav of [screen.getByRole("navigation", { name: "Pages" }), screen.getByRole("navigation", { name: "Tools" })]) {
+        const links = [...nav.querySelectorAll("a")];
+        expect(links.length).toBeGreaterThan(0);
+        for (const a of links) {
+          const label = a.querySelector("span")!.textContent!;
+          expect(a.getAttribute("title")).toBe(label);
+          expect(within(nav).getByRole("link", { name: label })).toBe(a);
+        }
+      }
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
+    }
+  });
+});
+
 describe("app pages", () => {
   it("the Floor shows the factory banner, what needs you, what runs and the queue, in that order", async () => {
     mount();

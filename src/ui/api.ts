@@ -17,7 +17,7 @@ import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItem
 import { itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { readSettings } from "./settings-api.js";
@@ -270,7 +270,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const parsed = parseFilters(params);
   if (!parsed.ok) return apiError(400, parsed.error);
   const f = parsed.filters;
-  const rows = await listRows({ store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, f);
+  const ctx = { store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms };
+  const rows = await listRows(ctx, f);
   const shown = applyFilters(rows, f);
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
@@ -302,7 +303,9 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       why: await c.why(r.why, it),
     });
   }
-  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets: facetCounts(rows, f) });
+  // The closed items count in the facets even when the list leaves them out (the Closed option's count).
+  const facets = facetCounts([...rows, ...(await closedFacetRows(ctx, f))], f);
+  return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets });
 }
 
 async function item(c: ApiCtx, id: WorkItemId) {
@@ -361,6 +364,11 @@ async function item(c: ApiCtx, id: WorkItemId) {
       token_cost: it.token_cost,
       pr_number: it.pr_number,
       pr_url: await c.prUrl(it),
+      spec_comment_url: await c.text(it.spec_comment_url),
+      // A phase of a split spec links to its parent; a split parent lists its phases (the store's listPhases).
+      parent_id: it.parent_id,
+      phase: it.phase,
+      phases: await phaseRows(c, it),
       version: it.version,
       created_at: it.created_at,
       updated_at: it.updated_at,
@@ -378,6 +386,15 @@ async function item(c: ApiCtx, id: WorkItemId) {
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
+}
+
+/** A split parent's phases in phase order, each with its title through the Withholder; empty for any other item. */
+async function phaseRows(c: ApiCtx, it: WorkItem) {
+  const out = [];
+  for (const p of await c.d.store.listPhases(it.id)) {
+    out.push({ id: p.id, phase: p.phase, title: await c.text(p.title || null), stage: p.stage, source: { type: p.source.type, id: p.source.id, link: p.source.link } });
+  }
+  return out;
 }
 
 /** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */

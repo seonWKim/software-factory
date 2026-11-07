@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel } from "../api.js";
-import { Badge, Empty, Table, Td } from "../components/ui/parts.js";
+import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
@@ -80,9 +80,9 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
-        <tr key={it.id} data-key={it.id}>
+        <Tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
-            <Link href={itemPath(it.id)} className={cn("block truncate font-medium", LINK_CLASS)}>
+            <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
               {it.title ?? it.id}
             </Link>
           </Td>
@@ -98,7 +98,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
               {it.pr_number === null ? "–" : it.pr_url ? <Ext href={it.pr_url}>#{it.pr_number}</Ext> : `#${it.pr_number}`}
             </Td>
           )}
-        </tr>
+        </Tr>
       ))}
     </Table>
   );
@@ -113,14 +113,14 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
       {running.map((r) => {
         const it = items.get(r.work_item_id);
         return (
-          <tr key={r.id}>
+          <Tr key={r.id}>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
             <Td className="font-mono text-xs">{r.owner ?? "–"}</Td>
             <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
             <Td className="tabular-nums">{ago(r.heartbeat_at, now)} ago</Td>
-          </tr>
+          </Tr>
         );
       })}
     </Table>
@@ -136,14 +136,14 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
-          <tr key={q.id}>
+          <Tr key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
             <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>
             <Td className="tabular-nums">{q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)}</Td>
-          </tr>
+          </Tr>
         );
       })}
     </Table>

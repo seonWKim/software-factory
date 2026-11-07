@@ -38,6 +38,8 @@ const view: SettingsView = {
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
     row("model_by", { kind: "model_by", value: '{"retry_up":true}', applies_at: "the next run that starts" }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
+    row("retry_max_ms", { value: "1800000", file_value: "1800000", default_value: "1800000", applies_at: "the next retry" }),
+    row("run_timeout_ms", { value: "5400000", source: "override", file_value: "3600000", default_value: "3600000", applies_at: "the next run that starts" }),
   ],
   pr_only: [
     { key: "plugins", note: "changes by PR only", description: DESC("plugins") },
@@ -132,6 +134,20 @@ describe("Settings page", () => {
     // Always in the page, not behind a hover or a breakpoint.
     const p = screen.getByText(DESC("max_loops"));
     expect(p.className).not.toMatch(/(^|\s)(hidden|sr-only|group-hover:|sm:|md:|lg:)/);
+  });
+
+  it("shows every millisecond key's value as a duration with its unit, and still its description", async () => {
+    const table = await show();
+    const duration = (key: string) => rowOf(table, key).querySelector("[data-duration]")?.textContent ?? null;
+    expect(duration("run_timeout_ms")).toBe("1h 30m");
+    expect(duration("retry_max_ms")).toBe("30m");
+    expect(duration("tick_ms")).toBe("2s");
+    for (const k of view.keys.filter((r) => r.key.endsWith("_ms"))) {
+      expect(duration(k.key), k.key).not.toBeNull();
+      expect(rowOf(table, k.key).querySelector("td")!.textContent).toContain(DESC(k.key));
+    }
+    // Keys that are not milliseconds show no duration.
+    for (const key of ["max_loops", "workers", "phases_auto_approve"]) expect(duration(key), key).toBeNull();
   });
 
   it("lists the audit history", async () => {
