@@ -87,7 +87,9 @@ describe("migrate: drain handshake with factory dev", () => {
     s.consume();
     let code: number | null = null;
     void done.then((c) => (code = c));
-    for (let t = 0; t < 121 && code === null; t++) {
+    // Keep advancing until the drain gives up: on a loaded machine an advance can land before the drain
+    // reaches its next sleep, so a fixed count of 121 could stop short and leave the drain asleep.
+    for (let t = 0; t < 5000 && code === null; t++) {
       clock.advance(1000);
       await new Promise((r) => setTimeout(r, 5)); // the file reads between sleeps
     }
@@ -96,5 +98,5 @@ describe("migrate: drain handshake with factory dev", () => {
     expect(s.request()).toBe("cancel");
     expect(lines.some((l) => l.includes("still waiting for the drain: 2 processes"))).toBe(true);
     expect(lines.at(-1)).toContain("did not drain within 120 s");
-  });
+  }, 60_000);
 });

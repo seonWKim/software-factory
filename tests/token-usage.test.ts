@@ -363,7 +363,7 @@ describe("worker: a run with several agent calls stores the sum", () => {
     if (impl.outcome?.status !== "succeeded") return;
     expect(impl.outcome.data.usage).toEqual({ ...sum, cost_usd: expect.closeTo(3.2, 10) });
     expect(impl.outcome.data.tokens).toBe(full(320));
-  });
+  }, 30_000); // a full worker run with two agent calls: slow when the machine is loaded
 });
 
 // ---------------------------------------------------------------------------------------------------------

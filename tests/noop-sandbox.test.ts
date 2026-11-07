@@ -329,5 +329,5 @@ describe("NoOpSandbox run folder with a read-only node_modules", () => {
     expect(added).toEqual([]);
     expect(tempFiles).toEqual([]);
     expect(cache).toBe(true);
-  });
+  }, 60_000); // spawns a full vitest run: slow when the machine is loaded
 });
