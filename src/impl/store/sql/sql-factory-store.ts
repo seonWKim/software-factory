@@ -92,6 +92,10 @@ import type {
   SettingChange,
   SettingOverride,
   StartSessionInput,
+  StoreTable,
+  TableCell,
+  TablePage,
+  TablePageInput,
   StartSessionResult,
   TransitionInput,
   TransitionResult,
@@ -99,7 +103,7 @@ import type {
   WorkerProcess,
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
-import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../../../interfaces/factory-store.js";
+import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
 import { migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
@@ -1537,6 +1541,82 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToCliCommand);
   }
 
+  // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
+
+  async listTables(): Promise<StoreTable[]> {
+    const out: StoreTable[] = [];
+    for (const t of await this.catalog()) {
+      const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM ${ident(t.name)}`);
+      out.push({ ...t, rows: Number(row?.n ?? 0) });
+    }
+    return out;
+  }
+
+  async listTableRows(input: TablePageInput): Promise<TablePage | null> {
+    const t = (await this.catalog()).find((c) => c.name === input.table);
+    if (!t) return null;
+    if (input.filter && !t.columns.includes(input.filter.column)) return null;
+    const limit = pageLimit(input.limit);
+    const offset = Number.isFinite(input.offset) ? Math.max(0, Math.floor(input.offset!)) : 0;
+    const where = input.filter ? ` WHERE ${ident(input.filter.column)} = ?` : "";
+    const params: SqlValue[] = input.filter ? [input.filter.value] : [];
+    const order = t.order_by.length ? ` ORDER BY ${t.order_by.map((c) => `${ident(c)} DESC`).join(", ")}` : "";
+    const [count] = await this.db.all(`SELECT COUNT(*) AS n FROM ${ident(t.name)}${where}`, params);
+    // limit and offset are integers computed here, inlined as the other paged reads do.
+    const rows = await this.db.all(`SELECT * FROM ${ident(t.name)}${where}${order} LIMIT ${limit} OFFSET ${offset}`, params);
+    return {
+      rows: rows.map((r) => Object.fromEntries(t.columns.map((c) => [c, toCell(r[c])]))),
+      total: Number(count?.n ?? 0),
+      limit,
+      offset,
+    };
+  }
+
+  /**
+   * The schema's tables from the database's own catalog, without row counts. SQLite's driver orders rows by
+   * `rowid`, MySQL's by its `seq` column; that dialect value tells the two catalogs apart.
+   */
+  private async catalog(): Promise<Omit<StoreTable, "rows">[]> {
+    const tables = new Map<string, { columns: string[]; pk: { name: string; pos: number }[] }>();
+    if (this.db.dialect.seq === "rowid") {
+      const names = await this.db.all(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+      );
+      for (const n of names) {
+        const cols = await this.db.all("SELECT name, pk FROM pragma_table_info(?) ORDER BY cid", [n.name as string]);
+        tables.set(n.name as string, {
+          columns: cols.map((c) => c.name as string),
+          pk: cols.filter((c) => Number(c.pk) > 0).map((c) => ({ name: c.name as string, pos: Number(c.pk) })),
+        });
+      }
+    } else {
+      const cols = await this.db.all(
+        `SELECT c.TABLE_NAME AS t, c.COLUMN_NAME AS c FROM information_schema.COLUMNS c
+         JOIN information_schema.TABLES tb ON tb.TABLE_SCHEMA = c.TABLE_SCHEMA AND tb.TABLE_NAME = c.TABLE_NAME
+         WHERE c.TABLE_SCHEMA = DATABASE() AND tb.TABLE_TYPE = 'BASE TABLE'
+         ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION`,
+      );
+      for (const r of cols) {
+        const t = tables.get(r.t as string) ?? { columns: [], pk: [] };
+        t.columns.push(r.c as string);
+        tables.set(r.t as string, t);
+      }
+      const keys = await this.db.all(
+        `SELECT TABLE_NAME AS t, COLUMN_NAME AS c, ORDINAL_POSITION AS pos FROM information_schema.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'PRIMARY'`,
+      );
+      for (const k of keys) tables.get(k.t as string)?.pk.push({ name: k.c as string, pos: Number(k.pos) });
+    }
+    const out: Omit<StoreTable, "rows">[] = [];
+    for (const [name, t] of [...tables].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      const primary_key = t.pk.sort((a, b) => a.pos - b.pos).map((p) => p.name);
+      const time = TIME_COLUMNS.find((c) => t.columns.includes(c));
+      const order_by = [...(time ? [time] : []), ...primary_key.filter((c) => c !== time)];
+      out.push({ name, columns: t.columns, primary_key, order_by });
+    }
+    return out;
+  }
+
   private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
     const [row] = await q.all("SELECT * FROM item_messages WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
     return row ? rowToItemMessage(row) : null;
@@ -1885,4 +1965,31 @@ function rowToWorkerProcess(row: Row): WorkerProcess {
     started_at: row.started_at as Timestamp,
     reported_at: row.reported_at as Timestamp,
   };
+}
+
+/** A table's order column is the first of these it has (design §9 Data page). */
+const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at"] as const;
+
+/**
+ * A quoted identifier. Only names read from the database's catalog reach here; anything that is not a plain
+ * name is refused, so no caller text is ever spliced into SQL. Backticks quote on SQLite and MySQL alike.
+ */
+function ident(name: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`not a plain identifier: ${JSON.stringify(name)}`);
+  return `\`${name}\``;
+}
+
+function pageLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return TABLE_PAGE_DEFAULT;
+  return Math.min(TABLE_PAGE_MAX, Math.max(1, Math.floor(limit)));
+}
+
+/** A driver value as a TableCell: dates as ISO text, big integers as numbers when exact, else text. */
+function toCell(v: unknown): TableCell {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string" || typeof v === "number") return v;
+  if (typeof v === "bigint") return Number.isSafeInteger(Number(v)) ? Number(v) : v.toString();
+  if (v instanceof Date) return v.toISOString();
+  if (v instanceof Uint8Array) return Buffer.from(v).toString("utf8");
+  return String(v);
 }

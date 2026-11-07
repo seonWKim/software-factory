@@ -14,7 +14,10 @@ import { issue, newStore, system, w1 } from "./helpers/store.js";
 const LEASE = 60_000;
 // Built here so no secret-shaped literal sits in the repository.
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
-const ROUTES = ["/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health"];
+const ROUTES = [
+  "/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health",
+  "/api/v1/data/tables", "/api/v1/data/tables/work_items", "/api/v1/data/tables/runs", "/api/v1/data/tables/state_changes",
+];
 
 function get(d: UiDeps, path: string, opts: { method?: string; host?: string } = {}): Promise<UiResponse> {
   return respond(d, { method: opts.method ?? "GET", url: path, host: opts.host ?? "127.0.0.1:4310" });

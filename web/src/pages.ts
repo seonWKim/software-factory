@@ -1,4 +1,4 @@
-import { Activity, Factory, HeartPulse, type LucideIcon, ListOrdered, ListTodo, Settings } from "lucide-react";
+import { Activity, Database, Factory, HeartPulse, type LucideIcon, ListOrdered, ListTodo, Settings } from "lucide-react";
 
 /** The sidebar's pages, in order. */
 export interface PageDef {
@@ -15,6 +15,14 @@ export const PAGES: readonly PageDef[] = [
   { path: "health", label: "Health", icon: HeartPulse },
   { path: "settings", label: "Settings", icon: Settings },
 ];
+
+/**
+ * The sidebar's tools, listed in their own group after the pages: Data, the raw store tables (design §9). A
+ * separate group, so the pages' list stays the operator's view and the tools read as debugging aids.
+ */
+export const TOOL_PAGES: readonly PageDef[] = [{ path: "data", label: "Data", icon: Database }];
+
+const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
 
 export const BASE = "/app/";
 
@@ -37,7 +45,7 @@ export function routeFor(pathname: string): Route {
     }
     if (id) return { page: PAGES[1]!, itemId: id };
   }
-  return { page: PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
+  return { page: ALL_PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
 }
 
 /** The page for a location path under /app/ (the sidebar's current entry). */
