@@ -12,6 +12,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
@@ -2224,5 +2225,158 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
     await f.step();
     expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+  });
+});
+
+describe("pre-push checks that also fail on the base branch: checks_env", () => {
+  const FLAKY = " FAIL  tests/flaky.test.ts > times out\nError: Test timed out in 5000ms.\n";
+  const BASE_DIR = ".factory-base";
+  type Out = { exit: number; stdout: string };
+
+  /** FakeSandbox whose `npm test` prints vitest FAIL lines: one output in the run folder, one in the base checkout. */
+  class CheckSandbox extends FakeSandbox {
+    branch: Out = { exit: 1, stdout: FLAKY };
+    base: Out = { exit: 1, stdout: FLAKY };
+    /** The checks run in the base checkout, argv joined by spaces. */
+    baseRuns: string[] = [];
+    override async exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
+      if (cmd[0] !== "npm" || cmd[1] !== "test") return super.exec(h, cmd, o);
+      const onBase = o.cwd === BASE_DIR;
+      if (onBase) this.baseRuns.push(cmd.join(" "));
+      else this.commands.push(cmd.join(" "));
+      const r = onBase ? this.base : this.branch;
+      return { exit_code: r.exit, signal: null, stdout: r.stdout, stderr: "", timed_out: false };
+    }
+  }
+
+  /** An item approved and implemented once, with the sandbox and broker set up by `prime` first. */
+  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, b: FakeBroker) => void } = {}) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const source = new FakeSource();
+    const sandbox = new CheckSandbox();
+    const broker = new FakeBroker();
+    o.prime?.(sandbox, broker);
+    const log = recordingLog();
+    const cfg: FactoryConfig = { ...config, settings: settingsWith({ max_attempts: o.max_attempts ?? 3 }) };
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log,
+      scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
+    });
+    const step = async () => {
+      await controller.tickIntake();
+      while (await worker.tick()) await controller.tickRuns();
+      await controller.tickRuns();
+    };
+    const src = issueRef(71);
+    source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await step();
+    source.queue.push({ kind: "spec_approved", source: src, comment_id: "700", approver: alice });
+    await step();
+    const item = (await store.getWorkItemBySource("github_issue", src.id))!;
+    const implementRuns = async () => (await store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    const codes = async () => (await implementRuns()).map((r) => (r.outcome?.status === "failed" ? r.outcome.error_code : r.status));
+    const again = async () => {
+      clock.advance(cfg.retry_max_ms);
+      await step();
+    };
+    const checkComments = () =>
+      broker.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { body: string; marker: string })
+        .filter((c) => c.marker.startsWith("<!-- factory:checks:"));
+    return { store, source, sandbox, log, item, implementRuns, codes, again, checkComments };
+  }
+
+  it("failing test files that fail on base too: checks_env, no attempt or restart spent, the item requeued", async () => {
+    // max_attempts 1: a task failure would block at once.
+    const f = await setup({ max_attempts: 1 });
+    const [run] = await f.implementRuns();
+    const wip = { branch: `factory/wip/${f.item.id}/${run!.id}` };
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_env", wip });
+    expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain("failing tests: tests/flaky.test.ts");
+    // Only the failing file ran on base, with the same command.
+    expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
+    // A temporary detached worktree of the base commit, removed afterwards.
+    const add = f.sandbox.gitCalls.findIndex((g) => g.includes(`worktree add --quiet --detach ${BASE_DIR} basesha`));
+    expect(add).toBeGreaterThanOrEqual(0);
+    expect(f.sandbox.gitCalls.slice(add + 1).some((g) => g.includes(`worktree remove --force ${BASE_DIR}`))).toBe(true);
+
+    const now = (await f.store.getWorkItem(f.item.id))!;
+    expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: f.item.restart_count });
+    const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
+    expect(scheduled?.detail).toMatchObject({ error_code: "checks_env", failure: "checks_env", task_failures: 0, infra_failures: 0 });
+    expect((await f.implementRuns())[1]).toMatchObject({ status: "queued", input: { wip } });
+  });
+
+  it("one owner comment per checks_env run names the flaky test files, keyed on the run id", async () => {
+    const f = await setup();
+    await f.again();
+    const runs = await f.implementRuns();
+    const comments = f.checkComments();
+    expect(comments.map((c) => c.marker)).toEqual(runs.slice(0, 2).map((r) => `<!-- factory:checks:${r.id} -->`));
+    for (const c of comments) {
+      expect(c.body).toContain("failing on the base branch too");
+      expect(c.body).toContain("`tests/flaky.test.ts`");
+    }
+  });
+
+  it("a failed owner comment is logged and does not hold up the requeue", async () => {
+    const f = await setup({
+      prime: (_s, b) => void (b.responses["github.comment"] = [{ ok: false, error_code: "forge_down", message: "503" }]),
+    });
+    const runs = await f.implementRuns();
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    expect(runs[1]).toMatchObject({ status: "queued" });
+    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "checks env comment failed" && l.fields?.run_id === runs[0]!.id)).toBe(true);
+  });
+
+  it("the third checks_env on an item blocks it for a human and queues nothing", async () => {
+    const f = await setup();
+    await f.again();
+    await f.again();
+    expect(await f.codes()).toEqual(["checks_env", "checks_env", "checks_env"]);
+    const now = (await f.store.getWorkItem(f.item.id))!;
+    expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:checks_env", restart_count: f.item.restart_count });
+    const block = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "checks_env");
+    expect(block?.detail).toMatchObject({ checks_env_failures: 3, task_failures: 0, infra_failures: 0 });
+    const last = f.source.comments.at(-1)!.body;
+    expect(last).toContain("failed on the base branch too 3 times");
+    expect(last).toContain("tests/flaky.test.ts");
+    await f.again();
+    expect(await f.codes()).toEqual(["checks_env", "checks_env", "checks_env"]);
+  });
+
+  it("failing test files that pass on base: checks_failed, the same comment and the same attempt charge", async () => {
+    const f = await setup({ prime: (s) => void (s.base = { exit: 0, stdout: "" }) });
+    const [run] = await f.implementRuns();
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed", infra: false });
+    expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
+    expect(f.checkComments().map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
+    const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
+    expect(scheduled?.detail).toMatchObject({ error_code: "checks_failed", failure: "task", task_failures: 1 });
+  });
+
+  it("a failing test file the base run does not report as failed (missing there): checks_failed", async () => {
+    const f = await setup({ prime: (s) => void (s.base = { exit: 1, stdout: "No test files found, exiting with code 1\n" }) });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toHaveLength(1);
+  });
+
+  it("a failing check that names no test file (lint, typecheck): checks_failed, no base run", async () => {
+    const f = await setup({ prime: (s) => void (s.branch = { exit: 2, stdout: "src/a.ts(1,7): error TS2322: Type 'string' is not assignable.\n" }) });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toEqual([]);
+    expect(f.sandbox.gitCalls.some((c) => c.includes("worktree add"))).toBe(false);
+  });
+
+  it("a base rerun that cannot start: checks_failed, as today", async () => {
+    const f = await setup({ prime: (s) => void s.failGit.push("-c core.hooksPath=/dev/null worktree add") });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toEqual([]);
+    expect(f.log.lines.some((l) => l.msg.startsWith("base rerun could not start"))).toBe(true);
   });
 });
