@@ -20,6 +20,9 @@ Produce:
 - scope: what is in and out of scope.
 - allowed_paths: repo-relative path prefixes the change may touch. As narrow as the work allows.
   An entry ending in `/` covers everything under it; any other entry covers only that exact path.
+  A store schema change (a new table, column or migration) needs a migration for every store the repository
+  ships. In this repository that means also allowing `migrations/mysql/` and
+  `src/impl/store/mysql/migrations.ts` beside the SQLite schema, so a path limit never stops the work halfway.
 - files_to_change: every repo-relative file or directory the done criteria require creating or editing
   (not files you only read). Before answering, make sure each entry equals an allowed_paths entry or sits
   under an allowed_paths entry ending in `/`. An output where allowed_paths does not cover files_to_change

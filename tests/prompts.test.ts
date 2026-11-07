@@ -25,6 +25,12 @@ function bullet(text: string, field: string): string {
 
 describe("prompts/triage.md", () => {
   const text = prompt("triage");
+
+  it("allows every store's migration paths for a store schema change (issue #229)", () => {
+    expect(text).toContain("store schema change");
+    expect(text).toContain("`migrations/mysql/`");
+    expect(text).toContain("`src/impl/store/mysql/migrations.ts`");
+  });
   const produce = text.slice(text.indexOf("Produce:"));
 
   it("asks for in_short as the first field, before the problem and any file-level field", () => {
