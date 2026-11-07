@@ -14,7 +14,7 @@ import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettableKey,
-  type SettingsBase, type SettingSource,
+  type GlobalSettableKey, type SettableValues, type SettingsBase, type SettingSource,
   effectiveSetting, isProjectSettableKey, resolveSettings,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -84,9 +84,15 @@ export function storeProjectResolver(
 /** What the CLI prints for a value: JSON text. */
 const fmt = (v: unknown): string => JSON.stringify(v) ?? String(v);
 
-/** The `workers` setting the factory acts on now: file, override or default, capped at `max_workers` (the same resolve the Settings page reads). */
-export async function effectiveWorkers(d: UiDeps, s: UiSettings): Promise<{ value: number; source: SettingSource }> {
-  const e = effectiveSetting(resolveSettings(s.base, await d.store.listSettingOverrides()), "workers");
+/** The base without the Settings wiring: no file values, so overrides and defaults decide. */
+const NO_FILE: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
+
+/**
+ * A global setting the factory acts on now: file, override or default (`workers` capped at `max_workers`), the same
+ * resolve the Settings page reads. Without the Settings wiring the file layer is empty.
+ */
+export async function effectiveGlobal<K extends GlobalSettableKey>(d: UiDeps, key: K): Promise<{ value: SettableValues[K]; source: SettingSource }> {
+  const e = effectiveSetting(resolveSettings(d.settings?.base ?? NO_FILE, await d.store.listSettingOverrides()), key);
   return { value: e.value, source: e.source };
 }
 
