@@ -16,8 +16,10 @@ import {
   parseTriage,
 } from "./outputs.js";
 import {
-  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, failureClass, wipBranchFor,
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
+  failureClass, wipBranchFor,
 } from "./policy.js";
+import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { stripAnsi } from "./output-summary.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
@@ -399,6 +401,20 @@ export class Worker {
         this.d.log.warn(`forge auth refused: implement and update runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
+    if (outcome.status === "failed" && outcome.error_code === PREFLIGHT_ACCESS) {
+      // A push_access or pr_api check failed other than with a 401/403 (issue #216): the same pause as forge_auth,
+      // in its own row, set before the outcome is stored. `started` from the store's conditional write: one log
+      // line and one owner comment per pause. The line names the check only, never the forge's answer.
+      const pause = await this.d.store.pauseClaims(this.after(this.cfg.auth_pause_ms ?? this.cfg.retry_max_ms), PREFLIGHT_ACCESS);
+      const started = pause.started === true;
+      outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
+      if (started) {
+        const check = preflightCheck(outcome.detail);
+        this.d.log.warn(`preflight access failed${check ? ` (${check})` : ""}: implement and update runs paused until ${pause.resume_at}`, {
+          ...log, resume_at: pause.resume_at,
+        });
+      }
+    }
     const done = await this.d.store.completeRun(run.id, token, outcome);
     // Codes and numbers only, never the outcome's detail text: a failed attempt reads from the log alone.
     const result = {
@@ -597,9 +613,12 @@ export class Worker {
       : false;
     if (restored) start = plan!.state.start_sha!;
     const resumed = plan ? null : await this.resumeWip(run, handle, branch);
-    let work: { commits: number; summary: string; next_steps: string; conflicts: string[] };
+    let work: { commits: number; summary: string; next_steps: string; conflicts: string[]; missing: string[]; deviations: string[] };
     if (resumed) {
-      work = { commits: resumed.commits, summary: resumed.summary, next_steps: resumed.next_steps, conflicts: resumed.conflicts };
+      work = {
+        commits: resumed.commits, summary: resumed.summary, next_steps: resumed.next_steps, conflicts: resumed.conflicts,
+        missing: resumed.missing ?? [], deviations: resumed.deviations ?? [],
+      };
     } else {
       const previous = await this.previousContext(item);
       const notes = await this.approverNotes(item);
@@ -635,7 +654,10 @@ export class Worker {
       if (commits.length === 0) {
         throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
       }
-      work = { commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [] };
+      work = {
+        commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
+        missing: out.value.missing, deviations: out.value.deviations,
+      };
     }
     // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
     // run has no agent, so a conflict there fails with merge_conflict.
@@ -658,6 +680,8 @@ export class Worker {
       summary: work.summary.slice(0, WIP_TEXT_CHARS),
       next_steps: work.next_steps.slice(0, WIP_TEXT_CHARS),
       conflicts,
+      missing: work.missing,
+      deviations: work.deviations,
     };
     // The pre-push checks (design §4, decided 2026-11-03): after sync and the gates, before any handoff row or push.
     let checked: { results: CheckResult[]; fixed: boolean };
@@ -706,20 +730,11 @@ export class Worker {
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
-      const issue = item.source.id.split("#")[1];
       const pr = await this.d.broker.call(ctx, "github.open_pr", {
         branch,
         base_ref: base,
         title: prTitle(item),
-        body: [
-          work.summary,
-          "",
-          ...checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null }),
-          "",
-          `Closes #${issue}`,
-          "",
-          `Work item: \`${item.id}\``,
-        ].join("\n"),
+        ...this.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
       });
       if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
       content = pr.content as { number: number };
@@ -732,8 +747,56 @@ export class Worker {
       pr_number: content.number,
       commits: work.commits,
       files: paths.slice(0, MAX_PR_FILES),
+      // What the PR body was built from, so an update run can rebuild it and the CI gate can hold an incomplete PR.
+      pr_summary: work.summary.slice(0, WIP_TEXT_CHARS),
+      missing: work.missing,
+      deviations: work.deviations,
       ...(sync.conflicts.length ? { conflicts: sync.conflicts } : {}),
     };
+  }
+
+  /**
+   * The PR body and labels for one push (issue #229): In short, Before you merge (missing work, differences from
+   * the spec, a human merge), what changed, then the factory's own checks. `incomplete` is on exactly while the
+   * implementer reports missing work. Every push sends both, so the PR describes the branch as it is now.
+   */
+  private prDescription(
+    item: WorkItem,
+    work: { summary: string; missing: readonly string[]; deviations: readonly string[] },
+    checks: readonly string[],
+  ): { body: string; labels: Record<string, boolean> } {
+    const tier = item.tier ?? 1;
+    const body = prBody({
+      summary: work.summary,
+      missing: work.missing,
+      deviations: work.deviations,
+      checks,
+      issue: item.source.id.split("#")[1] ?? null,
+      item_id: item.id,
+      notes: canAutoMerge(tier, this.cfg.dials) ? [] : [`A human merges this PR (tier ${tier}).`],
+    });
+    return { body, labels: { [incompleteLabel(this.cfg.status_label_prefix)]: work.missing.length > 0 } };
+  }
+
+  /**
+   * After an update or resolve run pushed (issue #229): rebuild the PR body from the last implement run's notes
+   * and this run's checks, so it describes the branch as it is now. Best effort: the push already happened, so a
+   * failed refresh is logged and the run still succeeds. No stored notes (older runs, adopted PRs): no change.
+   */
+  private async refreshPr(run: Run, item: WorkItem, ctx: ToolCallContext, branch: string, checks: readonly string[]): Promise<void> {
+    const notes = lastPrNotes(await this.d.store.listRuns(item.id));
+    if (!notes) return;
+    try {
+      const r = await this.d.broker.call(ctx, "github.open_pr", {
+        branch,
+        base_ref: this.cfg.repo.base_branch,
+        title: prTitle(item),
+        ...this.prDescription(item, notes, checks),
+      });
+      if (!r.ok) this.d.log.warn("PR body refresh failed", { run_id: run.id, error_code: r.error_code });
+    } catch (err) {
+      this.d.log.warn("PR body refresh failed", { run_id: run.id, error: err instanceof Error ? err.message.slice(0, 200) : "error" });
+    }
   }
 
   /**
@@ -833,8 +896,9 @@ export class Worker {
   /**
    * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
    * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
-   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403) or `preflight_failed`; its
-   * detail starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
+   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403, else `preflight_access` for
+   * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
+   * starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
   private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
     const { repo } = this.cfg;
@@ -1500,6 +1564,7 @@ export class Worker {
       });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, merge_sha);
+      await this.refreshPr(run, item, ctx, branch, checkedLines(checks.results, { fixed: false, skipped: null }));
       await comment(
         `PR #${item.pr_number} updated with ${repo.base_branch}: merged \`${baseRef}\` (${base_sha.slice(0, 8)}) cleanly and ${passed} passed. A human merge is still required.`,
       );
@@ -1601,6 +1666,8 @@ export class Worker {
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
+      const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
+      await this.refreshPr(run, item, ctx, branch, checkedLines(passed, { fixed: false, skipped: null }));
       return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha };
     } finally {
       await this.d.sandbox.destroy(handle);

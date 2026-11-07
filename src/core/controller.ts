@@ -32,7 +32,10 @@ import {
   type FailureClass,
   blockingRunKind,
   failureLine,
+  repeatsFastInfraFailure,
   repeatsLastFailure,
+  preflightCheck,
+  PREFLIGHT_ACCESS,
   SKIP_LABEL,
   autoResolveAttempts,
   autoResolveKey,
@@ -53,6 +56,7 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
 import {
@@ -1985,6 +1989,10 @@ export class Controller {
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
       await this.forgeAuthComment(it, run);
     }
+    // The same for a preflight-access pause (issue #216), keyed on its own pause end.
+    if (run.outcome?.status === "failed" && run.outcome.error_code === PREFLIGHT_ACCESS && run.outcome.pause_started) {
+      await this.preflightAccessComment(it, run);
+    }
     if (!this.expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
@@ -2058,10 +2066,21 @@ export class Controller {
         enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
       };
     }
-    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
+    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human. An incomplete
+    // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
-    await this.comment(it, `merge:${reviewRunId}`,
-      `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed. A human merge is required.\n\n${footerAfter(it, patch)}`);
+    const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
+    const ready = `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
+    const text = missing.length > 0
+      ? [
+        `${ready} It is **incomplete**: the implementer reports work the spec asks for that it does not do. Merging it does not finish this issue.`,
+        "",
+        ...missing.map((m) => `- ${m}`),
+        "",
+        "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
+      ].join("\n")
+      : `${ready} A human merge is required.`;
+    await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
 
@@ -2145,10 +2164,14 @@ export class Controller {
     }
     // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
     if (cls === "task" && this.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
+    // The same infra failure twice in a row, each within a minute of its start (issue #216): no passing hiccup.
+    if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
+      return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
+    }
     const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
     const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
-    // A forge 401/403: the retry also waits for the forge-auth pause to end (design §5 Restarts).
-    const authEnd = code === FORGE_AUTH && reset ? Date.parse(reset) : Number.NaN;
+    // A forge 401/403 or a failed access check: the retry also waits for its claim pause to end (design §5 Restarts).
+    const authEnd = (code === FORGE_AUTH || code === PREFLIGHT_ACCESS) && reset ? Date.parse(reset) : Number.NaN;
     // A stall: no backoff, the stall pause holds every claim until a probe answers.
     const notBefore = cls === "rate_limited"
       ? (reset ?? iso(failedAt + retry_max_ms))
@@ -2303,6 +2326,43 @@ export class Controller {
   }
 
   /**
+   * An infra failure that repeats the step's previous run at once (issue #216, decided 2026-11-07): same infra
+   * code and detail, both runs finished within FAST_FAILURE_MS of their start. The item blocks on a human with
+   * `repeated_failure` (restart_count + 1, as for any infra failure) and no retry is queued. One comment, keyed on
+   * the run, names the code, the detail and the tail of the last run's output, as the max_restart dead letter
+   * does; the detail is dropped if the egress scan flags it, then the tail too. `/retry` starts the step afresh.
+   */
+  private async repeatedInfraFailure(it: WorkItem, run: Run, code: string, detail: StateChangeDetail): Promise<Decision> {
+    const out = run.outcome?.status === "failed" ? run.outcome : null;
+    const patch = { restart_count: it.restart_count + 1, blocked_on: "human" as const, blocked_reason: REPEATED_FAILURE };
+    const tail = stripAnsi(out?.output_tail || "").trim();
+    const text = stripAnsi(out?.detail ?? "").trim();
+    const body = (withDetail: boolean, withTail: boolean) => [
+      "## Factory check: the same infrastructure failure twice",
+      "",
+      `The ${run.kind} run failed twice in a row the same way (\`${code}\`), each time within a minute of starting: ${describeFailure(code)}.${withDetail && text ? ` ${text}` : ""}`,
+      "",
+      ...(withTail && tail
+        ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
+        : []),
+      "The factory stopped restarting it, since another run would most likely fail the same way at once. Fix the cause, then comment `/retry` to run it again with a fresh budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n");
+    let text0 = body(true, true);
+    if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, true);
+    if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, false);
+    const url = await this.comment(it, `run-failed:${run.id}`, text0);
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: REPEATED_FAILURE,
+      detail,
+      ack_run: run.id,
+    };
+  }
+
+  /**
    * An implement, review or resolve run that returned needs_human (issue #167, decided 2026-11-07). The
    * worker pushed nothing. The item keeps its stage and blocks on a human with `agent_needs_human`; nothing is
    * queued. One comment, keyed on the run, gives the agent's reason and question (left out if the egress scan
@@ -2420,6 +2480,23 @@ export class Controller {
       `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
       "",
       "Check the factory's GitHub credentials (the app installation or token): they need write access to contents and pull requests on this repository. The run is retried after the pause ends.",
+    ].join("\n"));
+  }
+
+  /**
+   * The owner comment for a preflight-access pause (issue #216): on the item whose run started it, once per pause
+   * (keyed on the pause's end). It names the failed check and the time, never the forge's answer.
+   */
+  private async preflightAccessComment(it: WorkItem, run: Run): Promise<void> {
+    const out = run.outcome?.status === "failed" ? run.outcome : null;
+    if (!out?.reset_at) return;
+    const check = preflightCheck(out.detail) ?? "push_access or pr_api";
+    await this.comment(it, `preflight-access:${out.reset_at}`, [
+      "## Factory forge check: implement runs paused",
+      "",
+      `The implement preflight's \`${check}\` check failed during this item's ${run.kind} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
+      "",
+      "Check that the factory's GitHub app or token can still read this repository and its pull requests, and that GitHub answers. The run is retried after the pause ends.",
     ].join("\n"));
   }
 
@@ -2903,7 +2980,8 @@ const FAILURES: Record<string, string> = {
   prompt_missing: "prompts/resolve.md is missing",
   push_failed: "the push was rejected",
   forge_auth: "the forge refused the factory's credentials (401 or 403); implement and update runs are paused",
-  preflight_failed: "a check before the agent started failed (push access, the PR API or the base fetch); no agent ran",
+  preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
+  preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

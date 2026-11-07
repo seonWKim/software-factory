@@ -25,5 +25,10 @@ When to stop and ask (needs_human):
 - With `needs_human`, `summary` and `next_steps` may be left out. Nothing is pushed and no PR is opened; your commits are discarded, and the owner answers with `/retry`, `/revise` or `/reject`.
 
 Finish with:
-- summary: the PR description. It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on how things worked before, then "TO-BE: " and one plain sentence on how they work now, with no file paths. Only after that section, what you changed and why, with the file-level detail.
+- summary: the PR description. The factory builds the PR body from it on every push: your In short, then its own "Before you merge" section, then the rest of your summary, then its own "Tests" section.
+  - It starts with a section headed "In short (AS-IS → TO-BE)": "AS-IS: " and one plain sentence or two on how things worked before, then "TO-BE: " and one plain sentence on how they work now, with no file paths.
+  - Then a section headed "What changed": 5 to 8 bullets, one per change and why. Put the file-level and per-function detail in a `<details>` block under it.
+  - Write no Tests section: the factory reports its own checks. Failures that only happen in your sandbox (such as `listen EPERM`) are not test results; leave them out.
+- missing: work the spec asks for that this change does not do, one short entry each (for example "the MySQL step: migrations/mysql/ is outside the allowed paths"). Leave it empty when the work is complete. A non-empty list marks the PR incomplete: it is labelled and never merged as done, so list every gap here, not only in the summary.
+- deviations: where the change differs from the spec on purpose, one short entry each. Leave it empty when it does not.
 - next_steps: what remains or what the reviewer should look at.

@@ -306,7 +306,7 @@ async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
     const pr = url === null ? issue : { url, label: `PR #${it.pr_number}` };
     return { reason: "ready to merge", ...pr, command: "merge the PR" };
   }
-  const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" ? await latestErrorCode(c, it) : null);
+  const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" || reason === "repeated_failure" ? await latestErrorCode(c, it) : null);
   if (failed !== null) {
     const code = await c.w.text(failed, { channel: "run_outcome", max: 80 });
     return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
