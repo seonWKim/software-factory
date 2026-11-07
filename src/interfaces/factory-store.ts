@@ -83,7 +83,8 @@ export interface NewWorkItem {
 }
 
 export interface AdoptedPr {
-  pr_number: number;
+  /** The PR number as text; the store writes pr_number and change_url from it. */
+  change_ref: string;
   head_branch: string;
   /** The PR's head at adoption: recorded as last_head_sha, so only later pushes count as a person's. */
   head_sha: string;
@@ -106,7 +107,7 @@ export interface RecordPrHeadInput {
    * actor and the range expected_head..head_sha in its outcome. Null: only records the head (a baseline for
    * an item that had none). Ignored when `expected_head` is null, as there is no range to name.
    */
-  manual: { actor: Actor; pr_number: number } | null;
+  manual: { actor: Actor; change_ref: string } | null;
 }
 
 export type RecordPrHeadResult =
@@ -118,7 +119,8 @@ export type RecordPrHeadResult =
 
 export interface NewUnreviewedMerge {
   project: string;
-  pr_number: number;
+  /** The PR number as text; the store writes the pr_number column from it. */
+  change_ref: string;
   merge_sha: string;
   merger_id: UserId | null;
 }
@@ -375,8 +377,11 @@ export interface FactoryStore {
   ): Promise<{ item: WorkItem; created: boolean }>;
   getWorkItem(id: WorkItemId): Promise<WorkItem | null>;
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
-  /** The item in `project` whose PR (factory or adopted) has this number (oldest if several). */
-  getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null>;
+  /**
+   * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with
+   * change_ref NULL (written by an older controller) is found by its pr_number column.
+   */
+  getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
   getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null>;
   /** The phases of split parent `parentId`, in phase order (design 2026-11-01). Empty for any other item. Read-only. */

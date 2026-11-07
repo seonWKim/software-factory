@@ -52,7 +52,8 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "loop_count",
   "restart_count",
   "token_cost",
-  "pr_number",
+  // The PR field: changeAssignments adds pr_number and change_url beside it.
+  "change_ref",
   "merge_sha",
   "fixes_pr",
   "spec_comment_url",
@@ -67,7 +68,7 @@ export function newId(prefix: string): string {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
 }
 
-/** `change` is changeFields of the adopted PR's number (none otherwise), so the item matches its stored row. */
+/** `change` is changeFields of the adopted PR's change_ref (none otherwise), so the item matches its stored row. */
 export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Timestamp): WorkItem {
   const a = input.adopted;
   return {
@@ -91,7 +92,7 @@ export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Times
     loop_count: 0,
     restart_count: 0,
     token_cost: 0,
-    pr_number: a ? a.pr_number : null,
+    pr_number: change.pr_number,
     change_ref: change.change_ref,
     change_url: change.change_url,
     merge_sha: null,
@@ -195,7 +196,8 @@ export function rowToWorkItem(r: Row): WorkItem {
     restart_count: Number(r.restart_count),
     token_cost: Number(r.token_cost),
     pr_number: r.pr_number === null ? null : Number(r.pr_number),
-    change_ref: (r.change_ref as string | null | undefined) ?? null,
+    // A row an older controller wrote without change_ref reads as its pr_number, so the core sees its PR.
+    change_ref: (r.change_ref as string | null | undefined) ?? (r.pr_number === null || r.pr_number === undefined ? null : String(r.pr_number)),
     change_url: (r.change_url as string | null | undefined) ?? null,
     merge_sha: r.merge_sha as string | null,
     fixes_pr: r.fixes_pr === null ? null : Number(r.fixes_pr),

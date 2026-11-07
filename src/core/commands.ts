@@ -207,7 +207,7 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
   return undefined;
 }
 
-type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number"> & Partial<Pick<WorkItem, "merge_sha">>;
+type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha">>;
 
 /** The phase of an item; the same checks, in the same order, as the controller's command handling. */
 export function commandPhase(it: ItemState): CommandPhase {
@@ -238,7 +238,7 @@ export function commandPhase(it: ItemState): CommandPhase {
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
 export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
   const phase = commandPhase(it);
-  return { phase, has_pr: it.pr_number !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
+  return { phase, has_pr: it.change_ref !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
 }
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
