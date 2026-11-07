@@ -197,7 +197,7 @@ describe("review routing", () => {
     expect(it4).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 0, revision_count: 0 });
     expect(f.source.checkCalls).toEqual([42]);
     const review = (await f.runs("review"))[0]!;
-    const stored = (review.outcome as { data: { review: ReviewOutput } }).data.review;
+    const stored = (review.outcome as unknown as { data: { review: ReviewOutput } }).data.review;
     expect(stored.findings).toEqual([]);
     expect(stored.unverified).toEqual(["could not run npm test: listen EPERM"]);
     const body = f.reviewComments()[0]!;
