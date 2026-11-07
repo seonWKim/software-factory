@@ -64,6 +64,12 @@
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
   "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
+  "path_companions": [
+    { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+    { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+    { "when": "docs/design.md", "also": ["docs/design/"] },
+    { "when": "docs/plugins.md", "also": ["docs/plugins/"] }
+  ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
   "ui": { "port": 4310 },

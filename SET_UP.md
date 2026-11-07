@@ -180,6 +180,24 @@ Five settings are gates that can differ per project: `max_attempts`, `max_diff_l
 
 (The other keys of `factory.config.json` are left out of the example.) A project can only tighten: a number or budget above the global value, a global budget tier left out, or a global floor left out or lowered stops startup with an error naming the project and the key. A project block takes no other keys; `repo`, `dials`, `plugins` and the rest stay global. A project ID other than the configured repo's stops startup too. `npm run factory -- doctor` and the status page's Health panel list each setting's effective value and where it came from: `project`, `defaults` (top level or `defaults`), `built-in`, or `learned` (nothing writes learned values yet).
 
+### Path companions
+
+Some files always change together: a store schema change needs a MySQL migration step, and a design decision lives in a topic file beside its index. Declare these in `factory.config.json` under the optional top-level key `path_companions`, so a triage spec that names one file also allows the others:
+
+```json
+"path_companions": [
+  { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+  { "when": "docs/design.md", "also": ["docs/design/"] }
+]
+```
+
+- **Format.** A list of entries. Each has `when`, one repo-relative path, and `also`, a non-empty list of repo-relative paths. A path ending in `/` names a folder. No other key is allowed in an entry. A bad shape stops startup with a message naming the key and the entry index (`path_companions[1].also must be ...`). Without the key there are no companions.
+- **How `when` matches.** Only the spec's `files_to_change` (the files triage expects to change) is matched, not `allowed_paths`. A path matches when it equals `when`, sits under a `when` folder, or is a folder that `when` sits under.
+- **What gets added.** Each `also` path goes into the spec's `allowed_paths`, unless an allowed path already covers it. This happens on triage's answer before it is checked, so a companion triage lists in `files_to_change` but forgot in `allowed_paths` is accepted. It also happens before the tier floor, so an added path under a floor raises the tier. Built in, whatever the config: naming `docs/design.md` or `docs/plugins.md` in either list adds `docs/design/` or `docs/plugins/`; the index stays allowed. A split spec's phases are left alone: each phase's own triage adds its companions.
+- **The spec line.** The spec comment's Files section lists each added path under "Added by `path_companions`", with the path that caused it: ``- `migrations/mysql/`: added because the spec names `src/impl/store/sqlite/schema.ts` ``. A spec that matches nothing reads exactly as triage wrote it.
+
+The checked-in config declares both store schemas (SQLite and MySQL) and both doc indexes. Changing `path_companions` changes `factory.config.json`, which is under a floor, so it needs a human merge.
+
 ### CI and branch protection
 
 `.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. Job `test-mysql`: starts a `mysql:8` service and runs `npm test` with `SF_TEST_MYSQL_URL` set, so the MySQL store tests run too. No secret is needed.

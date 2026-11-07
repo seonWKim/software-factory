@@ -59,6 +59,7 @@ import {
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parseSizeDetail, parseSubIssues, phaseIssueBody,
   phaseLinkDetail, phaseMarker, phaseTitle, suggestSplit,
@@ -1807,7 +1808,10 @@ export class Controller {
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
           const { max_diff_lines, max_diff_files } = this.settings(it.project);
-          const parsed = parseTriage(data.spec, { max_diff_lines, max_diff_files });
+          // Path companions first (design 04-triage.md): on the raw answer, so a companion triage named only in
+          // files_to_change is covered, and before the floor, so an added path under a floor raises the tier.
+          const { answer, added } = applyCompanions(data.spec, this.cfg.path_companions ?? []);
+          const parsed = parseTriage(answer, { max_diff_lines, max_diff_files });
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const spec = parsed.value;
           const floor = floorTier(spec.allowed_paths, this.settings(it.project).floors);
@@ -1830,7 +1834,7 @@ export class Controller {
             const next = { ...it, ...fields };
             const patch = { ...fields, stage: "RUNNING" as const };
             const url = await this.comment(it, `spec:${run.id}`,
-              renderSpec(spec, tier, { floor, previous: it.tier }, [
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [
                 "The owner approved the split on the parent issue (`phases_auto_approve`), so this phase is implemented without its own `/approve`.",
                 "",
                 footerAfter(it, patch),
@@ -1856,7 +1860,7 @@ export class Controller {
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const url = await this.comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier }, footerAfter(it, patch)));
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)));
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,

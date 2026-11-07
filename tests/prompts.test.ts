@@ -33,6 +33,18 @@ describe("prompts/triage.md", () => {
   });
   const produce = text.slice(text.indexOf("Produce:"));
 
+  it("asks which other files a change to these paths requires (issue #224)", () => {
+    expect(text).toContain("Which other files does a change to these paths require?");
+  });
+
+  it("names the topic files as the documentation targets, not the index (issue #224)", () => {
+    const b = bullet(produce, "files_to_change");
+    expect(b).toContain("`docs/design/<topic>.md`");
+    expect(b).toContain("`docs/plugins/<interface>.md`");
+    expect(b).not.toMatch(/Name an index only when/);
+    expect(b).toMatch(/not the index/i);
+  });
+
   it("asks for in_short as the first field, before the problem and any file-level field", () => {
     expect(text).toContain("Produce:");
     const fields = [...produce.matchAll(/^- (\w+):/gm)].map((m) => m[1]);
