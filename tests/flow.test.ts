@@ -1305,6 +1305,39 @@ describe("/resolve on a merge conflict", () => {
   });
   const names = (f: F) => f.broker.calls.map((c) => c.name);
 
+  /** The newest stored message of the item that carries a command footer. */
+  const lastFooter = async (f: Pick<F, "store">, id: F["id"]) =>
+    (await f.store.listItemMessages(id)).filter((m) => m.body.includes("Commands you can reply with now:")).at(-1)?.body ?? "";
+
+  it("a reviewed PR that conflicts with main and runs out of automatic resolves offers /resolve in its newest footer", async () => {
+    // The store state of the report (2026-11-07): merge_conflict_pending after a passed review, no queued run.
+    const f = await conflicted(78);
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
+    const footer = await lastFooter(f, f.id);
+    expect(footer).toContain("- `/resolve [notes]`");
+    expect(footer).not.toContain("No command changes this item's state now.");
+  });
+
+  it("an update run whose tests fail after a clean merge offers /resolve in its newest footer", async () => {
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { summary: "s", next_steps: "n" } }), review: review("pass") });
+    const f = await factory(runner);
+    const src = issueRef(79);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "7900", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.exits["npm test"] = 1;
+    f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${item.id}`, head_sha: "h1", base_sha: "b1" });
+    await f.step();
+    expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+    expect((await f.store.listRuns(item.id)).filter((r) => r.status === "queued")).toEqual([]);
+    const footer = await lastFooter(f, item.id);
+    expect(footer).toContain("- `/resolve [notes]`");
+  });
+
   it("/resolve → resolve run → install, test, push → review → merge_pending; pr_merged still closes the item", async () => {
     const f = await conflicted(70);
     const before = await f.store.listRuns(f.item.id);
