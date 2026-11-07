@@ -276,6 +276,28 @@ export interface Loaded {
   model_by: ModelTable;
 }
 
+/** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
+const GITHUB_SOURCE = "github-issues";
+const GITHUB_FORGE = "github";
+
+/**
+ * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
+ * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
+ * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
+ */
+export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
+  if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
+  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
+  if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
+  if (selection.forge !== undefined) return selection;
+  const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
+  throw new Error(
+    `plugins.forge is ${value} but plugins.source lists "${GITHUB_SOURCE}": its pull requests (merges, closes, reviews) are read ` +
+      `only through a forge, so its factory PRs would never close their items; leave plugins.forge out (it then follows ` +
+      `plugins.source) or set it to "${GITHUB_FORGE}"`,
+  );
+}
+
 /**
  * `codeRoot` is where prompts are read (the updater's runtime copy); `root` is the cwd. `configFile` (from
  * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
@@ -319,7 +341,9 @@ export async function loadConfig(
   const model_by = parseModelBy(file.model_by);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
-  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
+  const plugins = withForgeDefault(
+    registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
+  );
   const grants = selectGrants(GRANTS, file.permissions);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
@@ -550,12 +574,15 @@ export class Plugins {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
   }
   /**
-   * The selected forge (`plugins.forge`, issue #172), or null when config selects none: then nothing is built.
-   * Optional and not yet used by build(): the controller still reads PR facts from its sources.
+   * The selected forge (`plugins.forge`, or the one `plugins.source` implies; issue #273), or null when config
+   * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
+   * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubClient): Promise<Forge | null> {
+  async forge(github: GitHubClient, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
-    return name === undefined ? null : createPlugin(this.loaded.registry, "forge", name, { ...this.base, github });
+    if (name === undefined) return null;
+    const ctx = { ...this.base, github, ...sync };
+    return createPlugin(this.loaded.registry, "forge", name, ctx);
   }
 }
 
@@ -583,6 +610,8 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
+  // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
+  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -628,6 +657,7 @@ export async function build(
   const controller = new Controller({
     store,
     sources,
+    forge,
     auth,
     local_auth,
     clock,

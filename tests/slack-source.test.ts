@@ -13,7 +13,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ACTION_CANCEL, ACTION_CONFIRM } from "../src/impl/source/slack-format.js";
 import { SlackSource, parseSlackSourceId, slackSourceId } from "../src/impl/source/slack-source.js";
-import { FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeForge, FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
 import { newStore, w1 } from "./helpers/store.js";
 
@@ -68,15 +68,16 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
     api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store: real, repo: { owner: "o", name: "r" }, log,
   });
   const gh = new FakeSource();
+  const forge = new FakeForge(gh);
   const auth = new SlackAuth();
   const controller = new Controller({
-    store: real, sources: [gh, slack], auth, clock, config, log, scanner, llm: new ApproveLLM(),
+    store: real, sources: [gh, slack], forge, auth, clock, config, log, scanner, llm: new ApproveLLM(),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log: silentLike(log), owner: "replica-a" });
   const done = listener.run(ac.signal);
   running.push({ ac, done });
-  return { clock, store: real, api, socket, log, slack, gh, auth, controller, scanner };
+  return { clock, store: real, api, socket, log, slack, gh, forge, auth, controller, scanner };
 }
 
 /** The listener's own lines go to the same recorder, so the "nothing names a person" checks see them too. */
@@ -378,7 +379,7 @@ describe("slack source: replies, buttons and commands", () => {
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
   });
 
-  it("the thread gets a link to the PR once there is one; PR status stays on GitHub", async () => {
+  it("the thread gets a link to the PR once there is one; PR status goes to the forge", async () => {
     const f = await setup();
     const ts = "1800000015.000100";
     const item = await specPending(f, ts);
@@ -388,7 +389,8 @@ describe("slack source: replies, buttons and commands", () => {
     const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
     expect(status).toHaveLength(1);
     expect(status[0]!.text).toBe("Status: *in review* · <https://github.com/o/r/pull/42|PR #42>");
-    expect(f.gh.statusCalls.filter((c) => c.source.id === item.source.id)).toEqual([{ source: item.source, status: "in_review", pr_number: 42 }]);
+    expect(f.forge.statusCalls.filter((c) => c.source.id === item.source.id)).toEqual([{ source: item.source, status: "in_review", pr_number: 42 }]);
+    expect(f.gh.statusCalls.filter((c) => c.source.id === item.source.id)).toEqual([]);
   });
 
   it("posts a marker at most once, looking in the thread first", async () => {
