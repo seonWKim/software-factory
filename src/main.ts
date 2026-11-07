@@ -434,6 +434,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "retry":
     case "revise":
     case "reject":
+    case "resolve":
     case "users":
       return localCli(loaded, cmd, args);
     case "improve": {
@@ -477,7 +478,7 @@ async function cliEnvironment(root: string): Promise<CliEnvironment> {
 }
 
 /**
- * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
+ * `factory task …` and `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200): the store only, no
  * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
  */
 async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], args: string[]): Promise<number> {
