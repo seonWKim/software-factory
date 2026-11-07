@@ -3,8 +3,7 @@
 // `Sandbox.exec`, with paths as argv entries. Egress scanning of their output stays with the caller (G5).
 //
 // Guarantees: Read, Glob, Grep, Write and Edit never touch a path under deny_paths (or a `.env` file), in its
-// written or its symlink-resolved form, and never a path outside the workdir and writable_paths (Read, Glob and
-// Grep also read readable_paths, the declared toolchain caches; nothing writes there). Bash gets
+// written or its symlink-resolved form, and never a path outside the workdir and writable_paths. Bash gets
 // only `policy.env` and refuses a secret-looking env_allowlist key; it is not path-checked.
 
 import { Bash } from "./bash.js";
@@ -14,7 +13,7 @@ import type { ToolSpec } from "./types.js";
 
 export { Bash } from "./bash.js";
 export { Edit, Read, Write } from "./file-tools.js";
-export { FORBIDDEN_ENV, OUTPUT_CAP, type GuardPolicy, type GuardPolicyInput, guardPolicy, toolchainEnvKeyRefusal } from "./policy.js";
+export { FORBIDDEN_ENV, OUTPUT_CAP, type GuardPolicy, type GuardPolicyInput, guardPolicy } from "./policy.js";
 export { Glob, Grep } from "./search-tools.js";
 export type { ToolCapability, ToolContext, ToolResult, ToolSpec } from "./types.js";
 

@@ -1,7 +1,8 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { toolchainCacheOverlaps } from "../../core/config.js";
-import { FORBIDDEN_ENV, guardPolicy, toolchainEnvKeyRefusal } from "../../core/tools/index.js";
+import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
+import { toolchainEnvKeyRefusal } from "../../core/tools/policy.js";
 import {
   type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage,
 } from "../../interfaces/agent-runner.js";

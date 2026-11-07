@@ -8,7 +8,7 @@ import {
   AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
   coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
-import { toolchainEnvKeyRefusal } from "./core/tools/index.js";
+import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
