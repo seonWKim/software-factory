@@ -372,7 +372,7 @@ export async function build(
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
-  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github }));
+  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github, store }));
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
