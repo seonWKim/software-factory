@@ -2965,7 +2965,6 @@ export function prTitle(item: WorkItem): string {
   return title || firstLine(item.problem).slice(0, 80);
 }
 
-/** The search query for implement and review: the problem plus the done criteria. */
 /**
  * The resolve prompt's note on a renumbering (design §5 Merge conflict): the conflicting files that still name a
  * moved step, which the worker could not rewrite. Empty when there are none.
@@ -2985,6 +2984,7 @@ function staleStepNote(plan: readonly Renumbering[], files: readonly ConflictFil
   ].join("\n");
 }
 
+/** The search query for implement and review: the problem plus the done criteria. */
 function specQuery(item: WorkItem): string {
   return [item.problem, ...(item.done_criteria ?? [])].join("\n");
 }
