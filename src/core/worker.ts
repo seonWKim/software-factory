@@ -27,6 +27,7 @@ import {
   AGENT_STALLED, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
   NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
+import { LOCAL_SOURCE } from "./local-merge.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import {
@@ -116,6 +117,31 @@ export interface WorkerDeps {
    * folder and session (design §5 Pause). Absent: the part of `id` before its first `:` (`<host>:<pid>:<n>`).
    */
   host?: string;
+  /**
+   * The local broker and a local-mode sandbox, for local items when `broker` and `sandbox` serve the forge (design
+   * 05-sources, Local items). Compose always sets it. Absent: `broker` and `sandbox` serve every item.
+   */
+  local?: LocalRoute;
+}
+
+/** Where a local item's runs go: the local broker (no remote, no PR) and a sandbox on the local base branch. */
+export interface LocalRoute {
+  broker: ToolBroker;
+  sandbox: Sandbox;
+}
+
+/** An item's broker and sandbox, by its source type: a local item takes `local` when it is set, never the forge. */
+export function routeFor(
+  d: { broker: ToolBroker; sandbox: Sandbox; local?: LocalRoute },
+  item: Pick<WorkItem, "source">,
+): LocalRoute & { local: boolean } {
+  const local = item.source.type === LOCAL_SOURCE;
+  return { ...(local && d.local ? d.local : { broker: d.broker, sandbox: d.sandbox }), local };
+}
+
+/** Whether `broker` serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
+export function hasTool(broker: ToolBroker, name: string): boolean {
+  return broker.allTools().some((t) => t.name === name);
 }
 
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
@@ -721,7 +747,7 @@ export class Worker {
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
     const plan = await this.resumePlan(run);
     const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
-    const handle = plan?.folder ?? kept?.handle ?? (await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
+    const handle = plan?.folder ?? kept?.handle ?? (await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
     // The folder lives until the run ends, whatever the outcome; only a pause, or a stopped run that keeps it for
     // its retry, keeps it (design §5 Pause, Restarts).
     let keep = false;
@@ -851,7 +877,7 @@ export class Worker {
     const branch = branchFor(item, this.cfg.branch_prefix);
     let start = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const baseSha = await this.trustedBase(handle);
-    await this.preflight(handle, ctx, branch);
+    await this.preflight(item, handle, ctx, branch);
     const dirs = await this.gitDirs(handle);
     // The run's own git folder, inside its workdir: the merge step below may write only there.
     const gitDir = (await this.git(handle, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
@@ -984,7 +1010,7 @@ export class Worker {
       if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
       await countFixCommits();
       const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-      throw await this.keepWip(run, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
+      throw await this.keepWip(run, item, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
     }
     if (checked.fixed) {
       await countFixCommits();
@@ -1014,12 +1040,13 @@ export class Worker {
     const db = await this.database(run);
     let content: { number: number; url?: string } | null = null;
     try {
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
+      const { broker } = this.route(item);
+      const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
       // A broker with no PR tool (the local one): the branch is the review's input and `factory merge` its merge.
-      if (this.hasTool("github.open_pr")) {
-        const pr = await this.d.broker.call(ctx, "github.open_pr", {
+      if (hasTool(broker, "github.open_pr")) {
+        const pr = await broker.call(ctx, "github.open_pr", {
           branch,
           base_ref: base,
           title: prTitle(item),
@@ -1029,7 +1056,7 @@ export class Worker {
         content = pr.content as { number: number; url?: string };
       }
     } catch (err) {
-      throw await this.keepWip(run, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
+      throw await this.keepWip(run, item, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
     }
     // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
     // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
@@ -1114,7 +1141,7 @@ export class Worker {
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const commits = (await this.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
     if (commits === 0) return failure;
-    return this.keepWip(run, ctx, handle, failure, {
+    return this.keepWip(run, item, ctx, handle, failure, {
       branch: wipBranchFor(item, this.cfg.branch_prefix, run.id),
       head,
       commits,
@@ -1158,7 +1185,7 @@ export class Worker {
       continue: true,
       ...(session ? { session } : {}),
     };
-    const kept = await this.keepWip(run, ctx, handle, failure, wip, false);
+    const kept = await this.keepWip(run, item, ctx, handle, failure, wip, false);
     if (session && kept.extra.wip && s) s.kept = { folder: handle.id, session: session.id };
     return kept;
   }
@@ -1204,10 +1231,12 @@ export class Worker {
    * failed refresh is logged and the run still succeeds. No stored notes (older runs, adopted PRs): no change.
    */
   private async refreshPr(run: Run, item: WorkItem, ctx: ToolCallContext, branch: string, checks: readonly string[]): Promise<void> {
+    const { broker } = this.route(item);
     const notes = lastPrNotes(await this.d.store.listRuns(item.id));
-    if (!notes) return;
+    // A local item has no PR body to refresh.
+    if (!notes || !hasTool(broker, "github.open_pr")) return;
     try {
-      const r = await this.d.broker.call(ctx, "github.open_pr", {
+      const r = await broker.call(ctx, "github.open_pr", {
         branch,
         base_ref: this.cfg.repo.base_branch,
         title: prTitle(item),
@@ -1317,19 +1346,20 @@ export class Worker {
    * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
    * starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
-  private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
+  private async preflight(item: WorkItem, handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
     const { repo } = this.cfg;
+    const { broker, sandbox } = this.route(item);
     // A broker with no forge (the local one) has no preflight: only the base fetch below is checked.
-    if (this.hasTool("github.preflight")) {
-      const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
+    if (hasTool(broker, "github.preflight")) {
+      const forge = await broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
       if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
     }
     try {
-      await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+      await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
     } catch (err) {
       throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
     }
-    const fetched = await this.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec()]);
+    const fetched = await this.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec(item)]);
     if (fetched.exit_code !== 0) throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${fetched.stderr.trim()}`.slice(0, 500));
   }
 
@@ -1372,14 +1402,14 @@ export class Worker {
    * failed wip push is only logged: the run fails with its original code, without a wip ref, and is retried as
    * before (a new agent run). Returns the failure to throw.
    */
-  private async keepWip(run: Run, ctx: ToolCallContext, handle: SandboxHandle, err: unknown, wip: WipRef, resumed: boolean): Promise<RunFailure> {
+  private async keepWip(run: Run, item: WorkItem, ctx: ToolCallContext, handle: SandboxHandle, err: unknown, wip: WipRef, resumed: boolean): Promise<RunFailure> {
     const failure = err instanceof RunFailure
       ? err
       : new RunFailure("exception", err instanceof Error ? err.message.slice(0, 500) : "", true);
     if (failure.code === "lease_lost") return failure;
     let kept = resumed;
     if (!resumed) {
-      const pushed = await this.d.broker
+      const pushed = await this.route(item).broker
         .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: this.cfg.repo.base_branch })
         .catch((e: unknown) => ({ ok: false as const, error_code: "exception", message: e instanceof Error ? e.message : "unknown" }));
       kept = pushed.ok;
@@ -1416,8 +1446,8 @@ export class Worker {
     const { repo } = this.cfg;
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
-    const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
-    await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec()]);
+    const fresh = await this.route(item).sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
+    await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec(item)]);
     const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
     if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
     // The fetched base may only move forward from the base the sandbox resolved before any agent ran.
@@ -1609,7 +1639,7 @@ export class Worker {
       "",
       ...conflicts.map((f) => `- \`${f}\``),
     ].join("\n");
-    const posted = await this.forgeComment(ctx, {
+    const posted = await this.forgeComment(item, ctx, {
       number: issueNumber(item),
       body,
       marker: `<!-- factory:merge-conflict:${run.id} -->`,
@@ -1749,7 +1779,7 @@ export class Worker {
       "",
       "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
     ].join("\n");
-    const posted = await this.forgeComment(ctx, {
+    const posted = await this.forgeComment(item, ctx, {
       number: issueNumber(item),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
@@ -1779,7 +1809,7 @@ export class Worker {
       "",
       `Nothing was pushed to the change's branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
     ].join("\n");
-    const posted = await this.forgeComment(ctx, {
+    const posted = await this.forgeComment(item, ctx, {
       number: issueNumber(item),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
@@ -2048,7 +2078,7 @@ export class Worker {
       "",
       ...scopeReply(outside),
     ].join("\n");
-    const posted = await this.forgeComment(ctx, {
+    const posted = await this.forgeComment(item, ctx, {
       number: issueNumber(item),
       body,
       marker: `<!-- factory:scope:${run.id} -->`,
@@ -2070,7 +2100,7 @@ export class Worker {
   ) {
     // A local item (no PR tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
     // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
-    const local = !this.hasTool("github.open_pr");
+    const local = !hasTool(this.route(item).broker, "github.open_pr");
     if (item.change_ref === null && !local) throw new RunFailure("no_pr", "work item has no PR");
     // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
     if (item.head_branch !== null || local) {
@@ -2117,7 +2147,7 @@ export class Worker {
     // only the rule names, and the controller blocks the item on a human.
     const scan = await this.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
     if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
-    const posted = await this.forgeComment(ctx, {
+    const posted = await this.forgeComment(item, ctx, {
       number: prNumber(item),
       body: reviewComment(v),
       marker: `<!-- factory:review:${run.id} -->`,
@@ -2136,11 +2166,11 @@ export class Worker {
     const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
-    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+    const handle = await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
     const comment = async (body: string) => {
-      const r = await this.forgeComment(ctx, {
+      const r = await this.forgeComment(item, ctx, {
         number: prNumber(item),
         body,
         marker: `<!-- factory:update:${run.id} -->`,
@@ -2204,7 +2234,7 @@ export class Worker {
       const passed = checks.results.map((r) => `\`${commandText(r.command)}\``).join(", ");
 
       const merge_sha = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", {
+      const pushed = await this.route(item).broker.call(ctx, "github.push_branch", {
         workdir: handle.workdir,
         branch,
         base_ref: repo.base_branch,
@@ -2244,7 +2274,7 @@ export class Worker {
     const branch = branchFor(item, branch_prefix);
     const baseRef = `origin/${repo.base_branch}`;
     const identity = gitIdentity(this.cfg.agent_git_identity);
-    const handle = await this.d.sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+    const handle = await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
     try {
@@ -2322,7 +2352,7 @@ export class Worker {
       const now = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
 
-      const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
+      const pushed = await this.route(item).broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
       const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
@@ -2710,18 +2740,18 @@ export class Worker {
     return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
   }
 
-  /** Whether the broker serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
-  private hasTool(name: string): boolean {
-    return this.d.broker.allTools().some((t) => t.name === name);
+  /** The item's broker and sandbox, by its source type (design 05-sources, Local items). */
+  private route(item: WorkItem): LocalRoute & { local: boolean } {
+    return routeFor(this.d, item);
   }
 
   /**
    * The base branch copied from the factory repo into a run folder's `origin/<base>`: the factory repo's
    * `origin/<base>`, or its local `refs/heads/<base>` when no forge plugin is selected (`local_only`).
    */
-  private baseRefspec(): string {
+  private baseRefspec(item: WorkItem): string {
     const base = this.cfg.repo.base_branch;
-    return `+${this.cfg.local_only ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
+    return `+${this.cfg.local_only || this.route(item).local ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
   }
 
   /**
@@ -2730,9 +2760,10 @@ export class Worker {
    * a forge issue (a local item, also with a forge broker selected; design 05-sources), or a review or update
    * without a change.
    */
-  private async forgeComment(ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
-    if (!this.hasTool("github.comment") || args.number === null) return { ok: true, content: null };
-    return this.d.broker.call(ctx, "github.comment", args);
+  private async forgeComment(item: WorkItem, ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
+    const { broker } = this.route(item);
+    if (!hasTool(broker, "github.comment") || args.number === null) return { ok: true, content: null };
+    return broker.call(ctx, "github.comment", args);
   }
 
   /**

@@ -1,24 +1,36 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { localProject } from "../src/compose.js";
+import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
+import { Sessions } from "../src/core/session.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
+import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef,
+  mallory, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
-import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // A local task end to end (issue #200): filed and approved from the CLI, read by the `local` source, applied by
 // the controller, built, reviewed, merged. Since issue #318 local commands are authorized by the `local` auth
 // plugin (local users in the store), GitHub comments by the GitHub one: here GitHubAuthProvider over a static grant
-// and a remote grant standing in for GitHub, which can be made unreachable.
+// and a remote grant standing in for GitHub, which can be made unreachable. Since issue #333 a local item takes
+// the local broker and sandbox by its source type, with or without a GitHub plugin selected, and `factory merge`
+// merges it into the local base branch: the flows below run over a real git repo.
 
 const OWNER = "github:1" as UserId;
 const ME = "local:me@example.com" as UserId;
@@ -81,70 +93,192 @@ async function factory(opts: { sync?: boolean } = {}) {
   return { clock, store, gh, forge, github, controller, broker, step, cli, refusals };
 }
 
+const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
+const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(dir, path, ".."), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+  git(dir, "add", "-A");
+  git(dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", msg);
+};
+const ADDED = ".github/workflows/scope.yml";
+
+/**
+ * Over a real git repo with an origin remote. `github: true`: the GitHub plugins are selected (a GitHub source and
+ * forge, a recording fake as the GitHub broker, an origin-fetching sandbox) and the local route sits beside them,
+ * as compose builds it. `github: false`: only local plugins, the local broker and the local sandbox. Every check
+ * command logs the folder it ran in, and fails while the `fail` marker file exists.
+ */
+async function gitFactory(o: { github: boolean }) {
+  const root = mkdtempSync(join(tmpdir(), "sf-local-flow-"));
+  const origin = join(root, "origin.git");
+  const repo = join(root, "repo");
+  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  git(root, "init", "--quiet", "-b", "main", repo);
+  commitIn(repo, { "README.md": "hi\n" }, "init");
+  git(repo, "remote", "add", "origin", origin);
+  git(repo, "push", "--quiet", "origin", "main");
+  git(repo, "fetch", "--quiet", "origin");
+  // The owner's live checkout: another branch, with uncommitted and untracked changes the merge must leave alone.
+  git(repo, "checkout", "--quiet", "-b", "work");
+  writeFileSync(join(repo, "README.md"), "hi, edited\n");
+  writeFileSync(join(repo, "notes.txt"), "untracked\n");
+  const owner = () => ({ head: git(repo, "rev-parse", "HEAD"), ref: git(repo, "symbolic-ref", "HEAD"), status: git(repo, "status", "--porcelain") });
+  const pushes = () => git(origin, "for-each-ref");
+  const cwds = join(root, "check-cwds.txt");
+  const fail = join(root, "fail");
+  const check = ["sh", "-c", `pwd >> '${cwds}'; test ! -e '${fail}'`];
+
+  const project = localProject({ owner: "o", name: "r" });
+  const cfg: FactoryConfig = {
+    ...config,
+    ...(o.github ? {} : { project, local_only: true as const }),
+    repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: check },
+  };
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const gh = new FakeSource();
+  const forge = new FakeForge(gh);
+  const github = new GitHubGrant();
+  const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
+  const local_auth = new LocalAuthProvider(store, grants);
+  const auth = o.github ? new GitHubAuthProvider(store, grants) : local_auth;
+  const wt = join(root, "wt");
+  const localRoute = {
+    broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }),
+    sandbox: new NoOpSandbox(wt, undefined, undefined, { local: true }),
+  };
+  // The GitHub broker: a recording fake whose calls are the GitHub calls. With GitHub selected, the selected sandbox fetches origin.
+  const ghBroker = new FakeBroker();
+  const sandbox = o.github ? new NoOpSandbox(wt) : localRoute.sandbox;
+  const controller = new Controller({
+    store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, local_auth, clock, config: cfg,
+    log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+  });
+  const runner = new FakeRunner({
+    triage: () => ({ output: triageSpec }),
+    implement: (spec) => {
+      commitIn(spec.sandbox.workdir, { [ADDED]: "name: scope\n" }, "add the scope check");
+      return { output: { summary: "added the scope check", next_steps: "none" } };
+    },
+    review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" } }),
+  });
+  const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
+  const worker = new Worker({
+    id: "w1" as WorkerId, store, sandbox, runner, broker: o.github ? ghBroker : localRoute.broker, local: localRoute, storage: new MemoryStorage(), clock,
+    config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
+  });
+  const step = async () => {
+    await controller.tickIntake();
+    while (await worker.tick()) await controller.tickRuns();
+    await controller.tickRuns();
+  };
+  let n = 0;
+  const cli = (user: UserId, a: CliAction) =>
+    runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => cfg.project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+  const toMergePending = async () => {
+    const id = (await cli(ME, { action: "create", title: "Add a scope check", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await step();
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect((await cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
+    await step();
+    await step();
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: null });
+    return id;
+  };
+  const merge = async (id: WorkItemId) => {
+    expect((await cli(ME, { action: "command", command: "merge", id, text: "" })).code).toBe(0);
+    await step();
+  };
+  /** Every GitHub call the fakes saw for local items: broker calls and preflights, permission reads, issue and PR writes. */
+  const githubCalls = () =>
+    ghBroker.calls.length + ghBroker.preflights.length + github.calls + gh.subIssueCalls
+    + gh.comments.filter((c) => c.source.type === "local").length + forge.comments.length + forge.statusCalls.length;
+  const messages = async (id: WorkItemId, prefix: string) =>
+    (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
+  const checkedIn = () => (existsSync(cwds) ? readFileSync(cwds, "utf8").split("\n").filter(Boolean) : []);
+  return { root, repo, fail, store, gh, ghBroker, owner, pushes, step, cli, toMergePending, merge, githubCalls, messages, checkedIn };
+}
+
+/** The flow's state changes are all there and in this order. */
+async function expectReasons(store: Awaited<ReturnType<typeof newStore>>["store"], id: WorkItemId, order: string[]) {
+  const reasons = (await store.listStateChanges(id)).map((c) => c.reason);
+  const at = order.map((r) => reasons.indexOf(r));
+  expect(at.every((i) => i >= 0)).toBe(true);
+  expect([...at].sort((a, b) => a - b)).toEqual(at);
+}
+
+const LOCAL_FLOW = ["intake", "triaged", "spec_approved", "implemented", "review_passed", "local_merged"];
+
+describe("local task flow, over git", { timeout: 60_000 }, () => {
+  for (const github of [false, true]) {
+    it(`${github ? "GitHub selected" : "no GitHub plugin"}: create → triage → implement → review → factory merge into the local main, with no GitHub call and no push`, async () => {
+      const f = await gitFactory({ github });
+      const ownerBefore = f.owner();
+      const pushesBefore = f.pushes();
+      const mainBefore = git(f.repo, "rev-parse", "main");
+
+      const id = await f.toMergePending();
+      const head = git(f.repo, "rev-parse", `refs/heads/factory/${id}`);
+      const checks = f.checkedIn().length;
+      await f.merge(id);
+
+      const main = git(f.repo, "rev-parse", "main");
+      expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main, change_ref: null });
+      expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ").slice(1)).toEqual([mainBefore, head]);
+      expect(git(f.repo, "show", `main:${ADDED}`)).toBe("name: scope");
+      await expectReasons(f.store, id, LOCAL_FLOW);
+      // The merge ran the test command in a temporary worktree, now gone, never in the live checkout.
+      const merged = f.checkedIn().slice(checks);
+      expect(merged).toHaveLength(1);
+      expect(merged[0]).not.toBe(f.repo);
+      expect(existsSync(merged[0]!)).toBe(false);
+      expect(git(f.repo, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree "))).toHaveLength(1);
+      expect(f.owner()).toEqual(ownerBefore);
+      // No GitHub call and no push, from create to merge.
+      expect(f.githubCalls()).toBe(0);
+      expect(f.pushes()).toBe(pushesBefore);
+    });
+  }
+
+  it("a failing test command on the merged commit merges nothing: main is unchanged and the item still waits", async () => {
+    const f = await gitFactory({ github: false });
+    const pushesBefore = f.pushes();
+    const id = await f.toMergePending();
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const ownerBefore = f.owner();
+    writeFileSync(f.fail, "");
+    await f.merge(id);
+
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("on the merged commit, so `main` did not move");
+    expect(f.owner()).toEqual(ownerBefore);
+    expect(f.pushes()).toBe(pushesBefore);
+    expect(f.githubCalls()).toBe(0);
+  });
+
+  it("GitHub selected: a GitHub issue still pushes and opens its PR through the GitHub broker; the local route is not used", async () => {
+    const f = await gitFactory({ github: true });
+    f.gh.queue.push({ kind: "item_requested", source: issueRef(5), requester: alice, title: "t", body: "b" });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", issueRef(5).id))!;
+    f.gh.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "900", approver: { provider: "github", subject: "1" }, note: "" });
+    await f.step();
+    await f.step();
+    const names = f.ghBroker.calls.map((c) => c.name);
+    expect(names.indexOf("github.push_branch")).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf("github.open_pr")).toBeGreaterThan(names.indexOf("github.push_branch"));
+    expect(f.ghBroker.preflights.length).toBeGreaterThan(0);
+    expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+    // Nothing was committed to a local factory branch for it.
+    expect(git(f.repo, "for-each-ref", "--format=%(refname)", "refs/heads/factory/")).toBe("");
+  });
+});
+
 describe("local task flow", () => {
-  it("solo: with the GitHub plugin selected and GitHub unreachable, a CLI task is approved, built, reviewed, merged, closed", async () => {
-    const f = await factory();
-    f.github.reachable = false;
-    const created = await f.cli(ME, { action: "create", title: "Add a scope gate", bodyFile: "body.md" });
-    expect(created.code).toBe(0);
-    const id = created.lines[0] as WorkItemId;
-
-    await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    const spec = (await f.store.listItemMessages(id)).map((m) => m.body).join("\n");
-    expect(spec).toContain(triageSpec.done_criteria[0]);
-
-    expect((await f.cli(ME, { action: "command", command: "approve", id, text: "looks good" })).code).toBe(0);
-    await f.step();
-    await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
-
-    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
-    await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
-
-    const reasons = (await f.store.listStateChanges(id)).map((c) => c.reason);
-    const order = ["intake", "triaged", "spec_approved", "implemented", "review_passed", "pr_merged"];
-    const at = order.map((r) => reasons.indexOf(r));
-    expect(at.every((i) => i >= 0)).toBe(true);
-    expect([...at].sort((a, b) => a - b)).toEqual(at);
-    const approval = (await f.store.listStateChanges(id)).find((c) => c.reason === "spec_approved")!;
-    expect(approval.actor).toEqual({ kind: "user", id: ME });
-    // The local owner, from the environment identity, with no link and no GitHub permission call.
-    expect((await f.store.listLocalUsers()).map((u) => [u.user_id, u.role])).toEqual([[ME, "owner"]]);
-    expect(await f.store.listLinks(ME)).toEqual([]);
-    expect(f.github.calls).toBe(0);
-
-    // No issue was created on the fake GitHub, and nothing about the local item was posted there.
-    expect(f.gh.subIssues).toEqual([]);
-    expect(f.gh.subIssueCalls).toBe(0);
-    expect(f.gh.comments.filter((c) => c.source.type === "local")).toEqual([]);
-    expect(f.broker.calls.filter((c) => /issue/.test(c.name))).toEqual([]);
-  });
-
-  it("solo, no sync plugin: CLI intake, approve, implement and review, then the fake forge's merge closes it; the GitHub grant is never called", async () => {
-    // Issue #286: with no local forge yet (a follow-up issue), the merge event is injected by the fake forge.
-    const f = await factory({ sync: false });
-    const id = (await f.cli(ME, { action: "create", title: "A local-only task", bodyFile: "body.md" })).lines[0] as WorkItemId;
-    await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect((await f.cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
-    await f.step();
-    await f.step();
-    const ready = (await f.store.getWorkItem(id))!;
-    expect(ready).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
-
-    f.forge.queue.push({ kind: "change_merged", change_ref: ready.change_ref!, head_branch: `factory/${id}`, merge_sha: "m2", merger: alice });
-    await f.step();
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
-    const reasons = (await f.store.listStateChanges(id)).map((c) => c.reason);
-    const at = ["intake", "triaged", "spec_approved", "implemented", "review_passed", "pr_merged"].map((r) => reasons.indexOf(r));
-    expect(at.every((i) => i >= 0)).toBe(true);
-    expect([...at].sort((a, b) => a - b)).toEqual(at);
-    expect(f.github.calls).toBe(0);
-    expect(f.gh.polls).toEqual([]);
-  });
-
   it("a GitHub comment is still authorized by the GitHub auth plugin", async () => {
     const f = await factory();
     await f.cli(ME, { action: "create", title: "t", bodyFile: "b" }); // a local owner exists; it is not a GitHub approver
@@ -190,5 +324,47 @@ describe("local task flow", () => {
     expect(await f.refusals(id)).toHaveLength(1);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     expect(await f.store.listLocalUsers()).toEqual([]);
+  });
+});
+
+describe("factory session on a local item, with the GitHub broker selected", () => {
+  async function sessions(o: { local: boolean }) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const sandbox = new FakeSandbox();
+    sandbox.changedFiles = ["src/a/x.ts"];
+    const ghBroker = new FakeBroker();
+    // The local broker's one tool: it commits the local branch and has no PR tool.
+    const localBroker = new FakeBroker();
+    localBroker.tools = localBroker.tools.filter((t) => t.name === "github.push_branch");
+    const s = new Sessions({
+      store, sandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent, files: new MemorySessionFiles(),
+      issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1", ...(o.local ? { local: { broker: localBroker, sandbox } } : {}),
+    });
+    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const { item } = await store.createWorkItem({ ...issue(1), source: { type: "local", id: "local:1", link: "" } }, system);
+    const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { stage: "RUNNING", allowed_paths: ["src/a/"], tier: 2, done_criteria: ["x"] } });
+    expect(r.ok).toBe(true);
+    return { store, s, ghBroker, localBroker, controller, id: item.id };
+  }
+
+  it("finish commits the local branch through the local broker, opens no PR, and the item goes to review with no change_ref", async () => {
+    const h = await sessions({ local: true });
+    expect((await h.s.start({ target: h.id, person: alice })).ok).toBe(true);
+    const done = await h.s.finish({});
+    expect(done.ok).toBe(true);
+    expect(done.lines.at(-1)).toContain("no push, no PR");
+    expect(h.localBroker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
+    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
+    await h.controller.tickRuns();
+    expect(await h.store.getWorkItem(h.id)).toMatchObject({ stage: "REVIEW", change_ref: null });
+  });
+
+  it("with no local route given, a local item's session is refused before any broker call", async () => {
+    const h = await sessions({ local: false });
+    const r = await h.s.start({ target: h.id, person: alice });
+    expect(r.ok).toBe(false);
+    expect(r.lines.join("\n")).toContain("only through the local broker");
+    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
   });
 });
