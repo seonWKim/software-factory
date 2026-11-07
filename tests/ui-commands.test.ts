@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type UiDeps, respond } from "../src/ui/server.js";
+import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -255,5 +258,50 @@ describe("app command requests: the controller loop", () => {
     expect(h.source.polls.length).toBe(polls);
     expect((await h.store.getAppCommandRequest(r.seq))!.handled_at).not.toBeNull();
     expect((await h.store.getWorkItem(it1.id))!.stage).toBe("RUNNING");
+  });
+});
+
+describe("app command requests: from the page's POST (issue #227)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+
+  function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): UiDeps {
+    return {
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, prUrl: (l, n) => `https://${l}/pull/${n}`,
+      health: new HealthMonitor(async () => [], h.clock), commands: { actor, token: TOKEN },
+    };
+  }
+
+  const post = (d: UiDeps, it: WorkItem, body: unknown) =>
+    respond(d, {
+      method: "POST", url: `/api/v1/items/${encodeURIComponent(it.id)}/commands`, host: HOST, origin: `http://${HOST}`,
+      contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify(body),
+    });
+
+  it("an approve POST becomes the controller's approve, with ui.user_id's permissions and the note", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    expect((await post(page(h, WRITER), it1, { command: "approve", note: "keep it small" })).status).toBe(202);
+    await h.controller.tickAppCommands();
+    const s = await h.shape(it1);
+    expect(s.item).toEqual({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect(s.changes).toEqual([expect.objectContaining({ reason: "spec_approved", actor: { kind: "user", id: WRITER } })]);
+    const approval = (await h.store.listStateChanges(it1.id)).find((c) => c.reason === "spec_approved");
+    expect(approval?.detail).toMatchObject({ note: "keep it small" });
+  });
+
+  it("a POST by a user without the permission, or of another command, is refused by the controller and shown in replies", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    expect((await post(page(h, READER), it1, { command: "approve" })).status).toBe(202);
+    expect((await post(page(h, WRITER), it1, { command: "reject", note: "no" })).status).toBe(202);
+    await h.controller.tickAppCommands();
+    expect((await h.store.getWorkItem(it1.id))!.blocked_reason).toBe("spec_pending");
+    const r = await respond(page(h, WRITER), { method: "GET", url: `/api/v1/items/${encodeURIComponent(it1.id)}`, host: HOST });
+    const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
+    expect(replies.map((x) => x.command)).toEqual(["approve", "reject"]);
+    expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
+    expect(replies[1]!.refusal).toContain("only `approve` is applied from an app request");
+    for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
 });

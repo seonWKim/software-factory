@@ -216,7 +216,7 @@ describe("no source at all", () => {
     });
     let n = 0;
     const cli = (a: CliAction) => {
-      const d: LocalCliDeps = { store, user: OWNER, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
+      const d: LocalCliDeps = { store, identity: { user: OWNER, from: "cli_user" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };
       return runLocalCli(d, a);
     };
     const step = async () => {
@@ -263,9 +263,7 @@ describe("no source at all", () => {
     await f.cli({ action: "command", command: "approve", id, text: "" });
     await f.step();
     const refusal = (await f.store.listItemMessages(id)).find((m) => m.marker.startsWith("<!-- factory:refused:cli:"));
-    expect(refusal!.body).toBe(
-      "`/approve` was not applied: your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`).",
-    );
+    expect(refusal!.body).toBe("`/approve` was not applied: your local identity resolves to no factory user under the local auth plugin.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 

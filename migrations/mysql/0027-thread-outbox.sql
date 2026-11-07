@@ -1,4 +1,4 @@
--- The thread outbox (issue #282, design 05-sources "Thread first"): the same table as SQLite migration 26. One row
+-- The thread outbox (issue #282, design 05-sources "Thread first"): the same table as SQLite migration 27. One row
 -- per thread entry a source must get: its source type, the target (JSON SourceRef), the item field its URL fills,
 -- the attempts and next try, a claim (token and expiry) so one replica posts it, and the delivery. Pending app
 -- command requests are copied into `command_inbox` (key `app:<seq>`, args {"app_request": seq}), where the

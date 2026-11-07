@@ -511,6 +511,8 @@ export interface SharedPath {
   /** Conflicts recorded on the path (the most among the files under it, for a folder). */
   conflicts: number;
   hotspot: boolean;
+  /** A mechanical path (`mechanical_paths`): weighed `mechanical_weight` unless learned higher. Absent: not one. */
+  mechanical?: boolean;
 }
 
 /**

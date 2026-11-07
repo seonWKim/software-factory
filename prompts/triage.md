@@ -17,6 +17,7 @@ Produce:
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
   open question only the owner can answer. At most 5, one line each. Always include the field: write
   `"decisions": []` when there are none. Do not repeat the done criteria here.
+- Check the design against the principles in AGENTS.md before writing decisions: local first (it works with no GitHub or other sync plugin, and a local action never waits on one), both use cases (solo and enterprise), few external calls, and the maintainability rule. When the solo default and the enterprise setting differ, say both in desired_output. A design that breaks a principle goes under decisions, with the principle named. Don't ask about what AGENTS.md already decides.
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
   One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
   (the implementer still gets all of them).

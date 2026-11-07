@@ -72,6 +72,35 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect(await store.listClaimDecisions(b)).toEqual([]);
     });
 
+    it("two items that each add a MySQL step, a History line in one topic file and an index line score under 2.5: both claims succeed at once", async () => {
+      const { store, clock } = await make();
+      const a = await item(store, clock, 1, {
+        files_to_change: ["migrations/mysql/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"],
+        allowed_paths: ["migrations/mysql/", "docs/design/", "docs/design.md", "lib/a.ts"],
+      });
+      const b = await item(store, clock, 2, {
+        files_to_change: ["migrations/mysql/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"],
+        allowed_paths: ["migrations/mysql/", "docs/design/", "docs/design.md", "lib/b.ts"],
+      });
+      const [x, y] = await Promise.all([claim(store, w1), claim(store, w2)]);
+      expect(new Set([x?.work_item_id, y?.work_item_id])).toEqual(new Set([a, b]));
+      expect(await store.listClaimDecisions(b)).toEqual([]);
+    });
+
+    it("two items that both change src/core/controller.ts are still held; the stored decision shows a mechanical path with its weight", async () => {
+      const { store, clock } = await make();
+      const a = await item(store, clock, 1, { files_to_change: ["src/core/controller.ts", "docs/design.md"] });
+      const b = await item(store, clock, 2, { files_to_change: ["src/core/controller.ts", "docs/design.md"] });
+      expect((await claim(store))?.work_item_id).toBe(a);
+      expect(await claim(store, w2)).toBeNull();
+      const [held] = await store.listClaimDecisions(b);
+      expect(held).toMatchObject({ decision: "held", cost: 3.25, threshold: 2.5 });
+      expect(held!.shared).toEqual([
+        { path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true },
+        { path: "src/core/controller.ts", weight: 3, conflicts: 0, hotspot: true },
+      ]);
+    });
+
     it("the threshold comes from the claim input: 2.0 at a threshold of 2.0 holds", async () => {
       const { store, clock } = await make();
       await item(store, clock, 1, { files_to_change: ["lib/a.ts", "lib/b.ts"] });
@@ -84,16 +113,16 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("two items sharing a hotspot file are serialized; the hotspot weight comes from the settings", async () => {
       const { store, clock } = await make();
-      await item(store, clock, 1, { files_to_change: ["docs/design.md"] });
-      const b = await item(store, clock, 2, { files_to_change: ["docs/design.md"] });
+      await item(store, clock, 1, { files_to_change: ["SET_UP.md"] });
+      const b = await item(store, clock, 2, { files_to_change: ["SET_UP.md"] });
       expect(await claim(store)).not.toBeNull();
       expect(await claim(store, w2)).toBeNull();
-      expect((await store.listClaimDecisions(b))[0]!.shared).toEqual([{ path: "docs/design.md", weight: 3, conflicts: 0, hotspot: true }]);
+      expect((await store.listClaimDecisions(b))[0]!.shared).toEqual([{ path: "SET_UP.md", weight: 3, conflicts: 0, hotspot: true }]);
 
       // The same pair with a lower configured hotspot weight runs side by side.
       const other = await make();
-      await item(other.store, other.clock, 1, { files_to_change: ["docs/design.md"] });
-      await item(other.store, other.clock, 2, { files_to_change: ["docs/design.md"] });
+      await item(other.store, other.clock, 1, { files_to_change: ["SET_UP.md"] });
+      await item(other.store, other.clock, 2, { files_to_change: ["SET_UP.md"] });
       const coordination = { ...DEFAULT_COORDINATION, hotspot_weight: 2 };
       expect(await other.store.claimRun({ worker_id: w1, kinds: ALL, lease_ms: LEASE, coordination })).not.toBeNull();
       expect(await other.store.claimRun({ worker_id: w2, kinds: ALL, lease_ms: LEASE, coordination })).not.toBeNull();

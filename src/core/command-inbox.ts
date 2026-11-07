@@ -1,6 +1,6 @@
 import { parseComment } from "./commands.js";
 import type { SourceRef } from "./types.js";
-import type { ExternalIdentity } from "../interfaces/auth-provider.js";
+import { localIdentity } from "./local-cli.js";
 import type { CliCommand } from "../interfaces/factory-store.js";
 import type { SourceEvent } from "../interfaces/source-adapter.js";
 
@@ -15,7 +15,7 @@ export function commandEvent(c: CliCommand, source: SourceRef): SourceEvent | nu
   const text = typeof c.args.text === "string" ? c.args.text : "";
   const body = text === "" ? `/${c.command}` : `/${c.command} ${text}`;
   const comment_id = c.key;
-  const who = commandIdentity(c.actor);
+  const who = localIdentity(c.actor);
   const parsed = parseComment(body);
   if (parsed === null) return { kind: "plain_comment", source, comment_id, author: who, body };
   if (parsed.kind === "unknown") return { kind: "unknown_command", source, comment_id, requester: who, command: parsed.word };
@@ -42,9 +42,4 @@ export function commandEvent(c: CliCommand, source: SourceRef): SourceEvent | nu
     default:
       return null;
   }
-}
-
-/** Provider `local`, subject the actor after `local:`. */
-export function commandIdentity(actor: string): ExternalIdentity {
-  return { provider: "local", subject: actor.startsWith("local:") ? actor.slice("local:".length) : actor };
 }

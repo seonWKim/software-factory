@@ -459,11 +459,23 @@ export const MIGRATIONS: readonly string[] = [
     checked_at    TEXT NOT NULL
   );
   `,
-  // 26: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
+  // 26: local users (issue #318). Who may act from the local CLI and UI under the `local` auth plugin: one row per
+  // factory user ID with its role (`owner`, `approver`, `requester`). `owner_slot` is 1 on the owner's row and NULL
+  // on every other, so UNIQUE allows one owner. IF NOT EXISTS: safe to run again below 26.
+  `
+  CREATE TABLE IF NOT EXISTS local_users (
+    user_id     TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,
+    owner_slot  INTEGER UNIQUE,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+  `,
+  // 27: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
   // must get: its source type, the target (JSON SourceRef), the item field its URL fills, the attempts, the next
   // try, a claim (token and expiry) so one replica posts it, and the delivery. Pending app command requests are
   // copied into `command_inbox` (key `app:<seq>`, args {"app_request": seq}), where the controller now
-  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 26.
+  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 27.
   `
   CREATE TABLE IF NOT EXISTS thread_outbox (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,

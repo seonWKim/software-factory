@@ -98,7 +98,13 @@ export interface ControllerDeps {
   sources?: readonly SourceAdapter[];
   /** One source: the same as `sources: [source]`. */
   source?: SourceAdapter;
+  /** Authorizes commands from GitHub (and every non-local origin). */
   auth: AuthProvider;
+  /**
+   * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
+   * #318: local commands never depend on the GitHub auth plugin. Absent: `auth`.
+   */
+  local_auth?: AuthProvider;
   clock: Clock;
   config: FactoryConfig;
   log: Logger;
@@ -544,7 +550,7 @@ export class Controller {
     if (r.command !== "approve") {
       refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
-      const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id);
+      const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
       if ("refuse" in principal) refusal = principal.refuse;
       else {
         const note = await this.approvalNote(item.id, typeof r.args.note === "string" ? r.args.note : undefined);
@@ -3113,18 +3119,31 @@ export class Controller {
   }
 
   private async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
-    const principal = await this.d.auth.resolve(identity);
+    const local = identity.provider === "local";
+    const principal = await (local ? this.localAuth : this.d.auth).resolve(identity);
     if (!principal) {
+      if (local) return { refuse: "your local identity resolves to no factory user under the local auth plugin" };
       return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
     }
-    return this.allowed(principal, action, resource);
+    return this.allowed(principal, action, resource, local);
   }
 
-  /** The permission half of `authorize`, for a principal already known (an app request names its user). */
-  private async allowed(principal: Principal, action: AuthAction, resource: string): Promise<Principal | Refusal> {
-    const decision = await this.d.auth.authorize(principal, action, { kind: "work_item", id: resource });
+  /** The auth plugin for local commands: the CLI and the local UI (issue #318). */
+  private get localAuth(): AuthProvider {
+    return this.d.local_auth ?? this.d.auth;
+  }
+
+  /**
+   * The permission half of `authorize`, for a principal already known (an app request names its user). `local`:
+   * a command from the CLI or the local UI, checked by the local auth plugin.
+   */
+  private async allowed(principal: Principal, action: AuthAction, resource: string, local = false): Promise<Principal | Refusal> {
+    const decision = await (local ? this.localAuth : this.d.auth).authorize(principal, action, { kind: "work_item", id: resource });
     if (!decision.allow) {
       this.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });
+      if (local && this.d.local_auth) {
+        return { refuse: `${principal.user_id} has no role that allows it (\`${decision.reason}\`); the local owner can grant one with \`factory users add ${principal.user_id} --role approver\`` };
+      }
       return { refuse: `it needs write permission on this repository (\`${decision.reason}\`)` };
     }
     return principal;

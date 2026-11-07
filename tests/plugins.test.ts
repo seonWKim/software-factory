@@ -8,6 +8,7 @@ import type { WorkerDeps } from "../src/core/worker.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -487,6 +488,27 @@ describe("plugin registry: existing config keys keep working", () => {
       root(REAL, "MYSQL_HOST=db.internal\nMYSQL_PORT=3307\nMYSQL_DATABASE=sf_other\nMYSQL_USER=sf_user\nMYSQL_PASSWORD=pw\n"),
     );
     expect(loaded.store).toEqual({ type: "mysql", host: "db.internal", port: 3307, database: "sf_other", user: "sf_user" });
+  });
+
+  it("local commands get the local auth plugin whatever auth selects for GitHub; the per-origin form names both", async () => {
+    const authOf = async (auth: unknown) => {
+      const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+      try {
+        const d = (built.controller as unknown as { d: { auth: unknown; local_auth: unknown } }).d;
+        return [d.auth, d.local_auth];
+      } finally {
+        await built.close();
+      }
+    };
+    const [gh, local] = await authOf("github");
+    expect(gh).toBeInstanceOf(GitHubAuthProvider);
+    expect(local).toBeInstanceOf(LocalAuthProvider);
+    const [gh2, local2] = await authOf({ github_issue: "github", local: "none" });
+    expect(gh2).toBeInstanceOf(GitHubAuthProvider);
+    expect(local2).toBeInstanceOf(NoAuthProvider);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack: "local" } }))).rejects.toThrow(/unknown auth origin "slack"/);
+    await expect(loadConfig(root({ ...REAL, auth: { local: "local" } }))).rejects.toThrow(/auth needs "github_issue"/);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", local: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
   });
 
   it("top-level auth none gives NoAuthProvider", async () => {
