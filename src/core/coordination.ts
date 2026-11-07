@@ -9,7 +9,8 @@ import type { DependencyKind, DependencyState, SharedPath, SourceRef } from "./t
  *   cost against any holder is at or above `max_cost` is held. Holders: items with an implement run in progress,
  *   items with an open PR, and other queued implement runs.
  * - Deadlock rule: a run held only by other queued runs (no running item, no open PR) is claimed when its turn
- *   comes, so the oldest of a group that holds each other goes first.
+ *   comes, so the oldest of a group that holds each other goes first. A queued run never holds on its own: it
+ *   cannot make progress before it is claimed, so only a running item or an open PR keeps a run queued.
  * - Dependencies: an item waits for every item it depends on to merge. A cycle is refused.
  */
 
@@ -163,8 +164,10 @@ export interface Hold {
 }
 
 /**
- * Every holder whose cost against the candidate is at or above `max_cost`, highest cost first (running and PR
- * holders before waiting ones at the same cost). Only holders of the same project and another item count.
+ * Every holder whose cost against the candidate is at or above `max_cost`: running and PR holders first, then
+ * waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
+ * one the stored decision names: a run held by an open PR names the PR, even when a queued run shares more files.
+ * Only holders of the same project and another item count.
  */
 export function holdsOn(
   candidate: { work_item_id: string; project: string; files: readonly string[] },
@@ -179,7 +182,7 @@ export function holdsOn(
     if (shared.length > 0 && cost >= s.max_cost) holds.push({ holder: h, shared, cost });
   }
   const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
-  return holds.sort((x, y) => y.cost - x.cost || rank(x) - rank(y));
+  return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
 }
 
 /**
