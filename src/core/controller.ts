@@ -53,6 +53,7 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
 import {
@@ -2058,10 +2059,21 @@ export class Controller {
         enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
       };
     }
-    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human.
+    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human. An incomplete
+    // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
-    await this.comment(it, `merge:${reviewRunId}`,
-      `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed. A human merge is required.\n\n${footerAfter(it, patch)}`);
+    const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
+    const ready = `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
+    const text = missing.length > 0
+      ? [
+        `${ready} It is **incomplete**: the implementer reports work the spec asks for that it does not do. Merging it does not finish this issue.`,
+        "",
+        ...missing.map((m) => `- ${m}`),
+        "",
+        "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
+      ].join("\n")
+      : `${ready} A human merge is required.`;
+    await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
 

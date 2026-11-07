@@ -253,6 +253,32 @@ describe("update run: worker", () => {
     expect(Object.keys(tests[0]!.env)).not.toContain("GITHUB_TOKEN");
   });
 
+  it("clean merge: the PR body is rebuilt from the last implement run's notes and this run's checks (issue #229)", async () => {
+    const f = await setup("clean");
+    // A finished implement run that stored its PR notes, as one from after issue #229 does.
+    const cur = (await f.store.getWorkItem(f.id))!;
+    const queued = await f.store.transition({
+      id: f.id, expected_version: cur.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "implement", idempotency_key: "impl-notes" },
+    });
+    if (!queued.ok) throw new Error("transition failed");
+    const impl = (await f.store.claimRun({ worker_id: "w0" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+    await f.store.completeRun(impl.id, impl.lease!.token, {
+      status: "succeeded", summary: "", data: { pr_summary: "## In short\n\nthe change", missing: ["the MySQL step"], deviations: [] },
+    });
+    f.source.queue.push(f.event());
+    await f.step();
+
+    const refresh = f.broker.calls.filter((c) => c.name === "github.open_pr");
+    expect(refresh).toHaveLength(1);
+    expect(refresh[0]!.args).toMatchObject({ branch: f.branch, base_ref: "main", labels: { "sf: incomplete": true } });
+    const body = String(refresh[0]!.args.body);
+    expect(body).toContain("## In short\n\nthe change");
+    expect(body).toContain("- **Not done:** the MySQL step");
+    expect(body).toContain("Checked before push: `sh -c exit 0` passed");
+    expect(f.broker.comments()).toHaveLength(1);
+  });
+
   it("conflict: no push, a comment listing every conflicting file, and a resolve run starts on its own", async () => {
     const f = await setup("conflict");
     f.source.queue.push(f.event());

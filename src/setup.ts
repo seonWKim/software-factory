@@ -11,7 +11,7 @@ import { runCanary } from "./canary.js";
 import { describeSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
-import { ensureLabel, statusLabels } from "./impl/source/github-issue-source.js";
+import { ensureLabel, prFlagLabels, statusLabels } from "./impl/source/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { SchemaVersion } from "./interfaces/factory-store.js";
 import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
@@ -220,12 +220,12 @@ export async function secretsToPrompt(
 }
 
 /**
- * One check per status label. A missing one is a warning, never a FAIL: the factory creates it on first
+ * One check per status label and PR flag label. A missing one is a warning, never a FAIL: the factory creates it on first
  * use, so it only means setup has not run since status labels were added.
  */
 export async function statusLabelChecks(client: GitHubClient, repo: RepoRef, prefix: string): Promise<Check[]> {
   const checks: Check[] = [];
-  for (const l of statusLabels(prefix)) {
+  for (const l of [...statusLabels(prefix), ...prFlagLabels(prefix)]) {
     try {
       await client.request("GET", `/repos/${repo.owner}/${repo.name}/labels/${encodeURIComponent(l.name)}`);
       checks.push({ ok: true, msg: `status label "${l.name}" exists` });
@@ -351,6 +351,7 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     await createLabels(client, repo, [
       { name: loaded.config.intake_label, ...LABEL },
       ...statusLabels(loaded.config.status_label_prefix),
+      ...prFlagLabels(loaded.config.status_label_prefix),
     ]);
   }
 

@@ -23,8 +23,9 @@ export function needsSpecApproval(tier: Tier, dials: FactoryConfig["dials"]): bo
   return tier >= dials.spec_gate_min_tier;
 }
 
-export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"]): boolean {
-  return tier <= dials.auto_merge_max_tier;
+/** Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. */
+export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"], incomplete = false): boolean {
+  return !incomplete && tier <= dials.auto_merge_max_tier;
 }
 
 /** One run per (item, kind, loop, restart): re-enqueueing the same step is a no-op. */
