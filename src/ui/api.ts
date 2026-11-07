@@ -19,6 +19,8 @@ import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js"
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
+import { needOf } from "./need.js";
+import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { effectiveWorkers, readSettings } from "./settings-api.js";
@@ -81,7 +83,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/data/tables":
       return data(await dataTables(c.data()));
     case "/pauses":
-      return readPauses(d);
+      return pauses(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -118,6 +120,14 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     return body === null ? apiError(404, "No such work item.") : ok(body);
   }
   return apiError(404, "Not found.");
+}
+
+/** GET /api/v1/pauses with, for a model stall, when it began (`since`): one more store read, no forge call. */
+async function pauses(d: ApiDeps): Promise<ApiResult> {
+  const r = await readPauses(d);
+  const body = r.value as { pauses: { name: string }[] };
+  const since = await d.store.getClaimPause("model_stall_since");
+  return { status: r.status, value: { ...body, pauses: body.pauses.map((p) => (p.name === "model_stall" ? { ...p, since } : p)) } };
 }
 
 function data(r: DataResult): ApiResult {
@@ -180,6 +190,16 @@ class ApiCtx {
       refs: w.refs.filter((n) => Number.isSafeInteger(n)),
       ref_url: repo ? await this.text(`${repo}/issues/`) : null,
     };
+  }
+
+  /** What a Needs-you row says (need.ts): the reason through the Withholder and the command to type. */
+  async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
+    const n = await needOf(
+      { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
+      it,
+      check && { state: check.state, conflicts: check.conflicts.length },
+    );
+    return { reason: n.reason, command: n.command };
   }
 
   /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
@@ -305,6 +325,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const out = [];
   for (const r of shown) {
     const it = r.item;
+    const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
@@ -326,7 +347,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       version: it.version,
       dependents: r.dependents,
       conflicts: r.conflicts,
-      merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
+      merge_check,
+      need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
     });
   }

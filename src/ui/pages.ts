@@ -16,6 +16,7 @@ import { between, duration, esc, facts as factsTable, link, page, table } from "
 import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
+import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiSettings } from "./settings-api.js";
 import type { UiCommands } from "./commands.js";
@@ -269,8 +270,8 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     const it = r.item;
     let next = "";
     if (NEEDS_YOU.includes(r.level)) {
-      const need = await needOf(c, it);
-      next = `${need.reason} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
+      const need = await needOf({ store: c.d.store, prUrl: (i) => c.prUrl(i), text: async (v, o) => (await c.w.plain(v, o)).text }, it);
+      next = `${esc(need.reason)} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
     }
     const title = `<a class="title" href="/items/${esc(encodeURIComponent(it.id))}"${r.titlePlain === null ? "" : ` title="${esc(r.titlePlain)}"`}>${r.titleHtml}</a>`;
     out.push({
@@ -301,49 +302,6 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
 /** The conflicts cell: both counts, or empty when the item never had a merge conflict. */
 function conflictsCell(n: ConflictCounts): string {
   return n.automatic === 0 && n.person === 0 ? "" : esc(`${n.automatic} automatic · ${n.person} needed a person`);
-}
-
-/** What a waiting item's row says: the reason in plain words, where to act, and the command to type. */
-interface Need {
-  /** Escaped HTML. */
-  reason: string;
-  url: string;
-  label: string;
-  command: string | null;
-}
-
-/** blocked_reason values with no command, in plain words. Anything else unknown is shown with spaces for `_`. */
-const PLAIN_REASONS: Record<string, string> = {
-  max_loops: "review found bugs too many times",
-  merge_conflict_pending: "merge conflict",
-};
-
-async function needOf(c: Ctx, it: WorkItem): Promise<Need> {
-  const issue = { url: it.source.link, label: "issue" };
-  const reason = it.blocked_reason ?? "";
-  const stored = (url: string | null, label: string) => (url === null ? issue : { url, label });
-  if (reason === "spec_pending") {
-    return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
-  }
-  if (reason === "merge_pending") {
-    const url = await c.prUrl(it);
-    const pr = url === null ? issue : { url, label: `PR #${it.pr_number}` };
-    return { reason: "ready to merge", ...pr, command: "merge the PR" };
-  }
-  const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" || reason === "repeated_failure" ? await latestErrorCode(c, it) : null);
-  if (failed !== null) {
-    const code = await c.w.text(failed, { channel: "run_outcome", max: 80 });
-    return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
-  }
-  const plain = PLAIN_REASONS[reason] ?? reason.replace(/[_:]+/g, " ");
-  return { reason: await c.w.text(plain, { fallback: "no reason" }), ...issue, command: null };
-}
-
-/** The error code of the item's latest failed run ("unknown" when it has none). */
-async function latestErrorCode(c: Ctx, it: WorkItem): Promise<string> {
-  const failed = (await c.d.store.listRuns(it.id)).filter((r) => r.outcome?.status === "failed");
-  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
-  return last?.outcome?.status === "failed" ? last.outcome.error_code : "unknown";
 }
 
 /** "#12" from a source id like "owner/repo#12"; the whole id when it has no number. */

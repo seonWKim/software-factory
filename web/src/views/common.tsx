@@ -59,6 +59,16 @@ export function WhyText({ why }: { why: Why }) {
   return <span data-why={why.code}>{parts}</span>;
 }
 
+/** A Needs-you row's reason and the command to type (the same words as the classic page). */
+function NeedText({ need }: { need: NonNullable<ItemRow["need"]> }) {
+  return (
+    <span data-need>
+      {need.reason}
+      {need.command && <> · <code className="font-mono text-xs">{need.command}</code></>}
+    </span>
+  );
+}
+
 /** A link out to GitHub; only drawn for the github plugin. */
 function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   return (
@@ -90,7 +100,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
-          <Td className="text-zinc-600 dark:text-zinc-400">{it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
+          <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
           {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
           {showPr && (
