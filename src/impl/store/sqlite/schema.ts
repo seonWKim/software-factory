@@ -407,4 +407,12 @@ export const MIGRATIONS: readonly string[] = [
     created_at   TEXT NOT NULL
   );
   `,
+  // 23: app command request handling (issue #245). `handled_at`: when the controller applied or refused the
+  // request, NULL while pending. `refusal`: the refusal text posted for it, NULL when applied. Old rows stay pending.
+  // The index serves the pending read (handled_at IS NULL, seq order).
+  `
+  ALTER TABLE app_command_requests ADD COLUMN handled_at TEXT;
+  ALTER TABLE app_command_requests ADD COLUMN refusal TEXT;
+  CREATE INDEX IF NOT EXISTS app_command_requests_pending ON app_command_requests (handled_at, seq);
+  `,
 ];
