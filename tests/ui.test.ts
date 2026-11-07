@@ -1,9 +1,9 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { request } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { uiPort } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
@@ -15,6 +15,7 @@ import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
 import { parseFilters } from "../src/ui/filters.js";
+import { newCsrfToken } from "../src/ui/settings-api.js";
 import { renderIndex, renderItem } from "../src/ui/pages.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
@@ -756,5 +757,72 @@ describe("ui: interactive sessions (design §5, 2026-11-01)", () => {
     expect(section(page, "timeline")).toMatch(/github:1[\s\S]*session_started/);
     expect(section(page, "runs")).toMatch(/interactive <span class="muted">\(github:1\)<\/span>[\s\S]*777/);
     expect(running + page).not.toContain(alice.login!);
+  });
+});
+
+describe("ui: item commands over the real socket (issue #227)", () => {
+  /** node:http, so the Host header is ours; a POST with a JSON body and the guard headers. */
+  function send(port: number, path: string, body: string, headers: Record<string, string>): Promise<Page> {
+    return new Promise((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port, path, method: "POST", headers: { host: `127.0.0.1:${port}`, ...headers }, setHost: false },
+        (res) => {
+          let out = "";
+          res.setEncoding("utf8");
+          res.on("data", (c: string) => (out += c));
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: out }));
+        },
+      );
+      req.on("error", reject);
+      req.end(body);
+    });
+  }
+
+  it("listens on 127.0.0.1 only, reads the guard headers and the body, caps it at 16 KB, and never logs the token", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const it0 = (await store.createWorkItem(issue(1), system)).item;
+    const token = newCsrfToken();
+    const logged: string[] = [];
+    const spies = (["log", "error", "warn", "info"] as const).map((m) =>
+      vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logged.push(a.map(String).join(" "))));
+    try {
+      const ui = await startUi(
+        {
+          store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`,
+          health: new HealthMonitor(async () => HEALTHY, clock), commands: { actor: "github:7" as UserId, token },
+        },
+        0,
+      );
+      servers.push(ui);
+      expect(ui.address).toBe("127.0.0.1");
+      const session = JSON.parse((await get(ui.port, "/api/v1/session")).body) as { csrf_token: string };
+      expect(session.csrf_token).toBe(token);
+      const path = `/api/v1/items/${encodeURIComponent(it0.id)}/commands`;
+      const headers = { "content-type": "application/json", origin: `http://127.0.0.1:${ui.port}`, "x-csrf-token": token };
+      const ok = await send(ui.port, path, JSON.stringify({ command: "approve", note: "go" }), headers);
+      expect(ok.status).toBe(202);
+      expect((await send(ui.port, path, JSON.stringify({ command: "approve" }), { ...headers, "x-csrf-token": "" })).status).toBe(403);
+      expect((await send(ui.port, path, JSON.stringify({ command: "approve" }), { ...headers, origin: "http://evil.example" })).status).toBe(403);
+      const big = await send(ui.port, path, JSON.stringify({ command: "approve", pad: "x".repeat(17 * 1024) }), headers);
+      expect(big.status).toBe(413);
+      const other = await send(ui.port, "/classic", "{}", headers);
+      expect(other.status).toBe(405);
+      expect(other.headers["content-type"]).toBe("application/json; charset=utf-8");
+      expect((await store.listAppCommandRequestsForItem(it0.id, 10)).map((r) => r.args)).toEqual([{ work_item_id: it0.id, note: "go" }]);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+    expect(logged.join("\n")).not.toContain(token);
+  });
+
+  it("the server binds a fixed 127.0.0.1 and main.ts never prints the token", () => {
+    const server = readFileSync(join(import.meta.dirname, "../src/ui/server.ts"), "utf8");
+    expect(server).toContain('const BIND = "127.0.0.1";');
+    expect(server).toContain("server.listen(port, BIND,");
+    const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
+    const ui = main.slice(main.indexOf('case "ui": {'), main.indexOf('case "migrate": {'));
+    expect(ui).toContain("commands: parts.commands");
+    expect(ui).not.toMatch(/console\.\w+\([^)]*(token|parts\.commands)/);
   });
 });
