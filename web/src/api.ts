@@ -36,6 +36,30 @@ export interface SourceRef {
   link: string;
 }
 
+/**
+ * The local merge check of a ready-to-merge item (design §5 Merge check); null for any other item. `checking`:
+ * no result yet for its current head. The shas and time say which base it was checked against, and when.
+ */
+export interface MergeCheckView {
+  state: "mergeable" | "conflicts" | "checking";
+  conflicts: string[];
+  head_sha: string | null;
+  base_sha: string | null;
+  checked_at: string | null;
+}
+
+/** The short label shown next to a ready-to-merge item's state. */
+export function mergeCheckLabel(m: MergeCheckView): string {
+  if (m.state === "mergeable") return "Mergeable";
+  if (m.state === "checking") return "Checking…";
+  return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
+}
+
+/** Whether the Merge button (#246) is disabled: while the item has conflicts or is being checked. */
+export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
+  return !!m && m.state !== "mergeable";
+}
+
 export interface ItemRow {
   id: string;
   source: SourceRef;
@@ -58,6 +82,7 @@ export interface ItemRow {
   version: number;
   dependents: number;
   conflicts: { automatic: number; person: number };
+  merge_check?: MergeCheckView | null;
 }
 
 export interface Items {
@@ -109,6 +134,7 @@ export interface ItemDetail {
     version: number;
     created_at: string;
     updated_at: string;
+    merge_check?: MergeCheckView | null;
   };
   timeline: {
     version: number;
