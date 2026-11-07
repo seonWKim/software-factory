@@ -287,3 +287,27 @@ describe("config keys: openai_compatible", () => {
     expect(err.message).toContain("openai_compatible.models");
   });
 });
+
+describe("config keys: path_companions (design 04-triage.md)", () => {
+  it("is a top-level key", () => {
+    expect(TOP_LEVEL_KEYS).toContain("path_companions");
+  });
+
+  it("a config that sets it loads without an unknown-key error", async () => {
+    const loaded = await loadConfig(root({ ...SQLITE, path_companions: [{ when: "src/a.ts", also: ["docs/a/"] }] }));
+    expect(loaded.config.path_companions).toEqual([{ when: "src/a.ts", also: ["docs/a/"] }]);
+  });
+
+  it("an absent key loads with no companions", async () => {
+    const { path_companions: _, ...rest } = SQLITE;
+    expect((await loadConfig(root(rest))).config.path_companions).toEqual([]);
+  });
+
+  it("a bad entry and an unknown key inside an entry fail with the key and the entry index, in one error", async () => {
+    const err = await loadError({ ...SQLITE, path_companions: [{ when: "src/a.ts", also: ["b"] }, { when: "", also: ["b"], extra: 1 }] });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("path_companions[1].when");
+    expect(err.message).toContain('path_companions[1] has unknown key "extra"');
+    expect(err.message).not.toContain("path_companions[0]");
+  });
+});
