@@ -19,7 +19,7 @@ import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
-import { type Run, type RunUsage, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
+import { type Run, type RunUsage, type Timestamp, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { MYSQL_URL, OTHER_PROJECT_KEY, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
@@ -352,6 +352,22 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     const v = await store.schemaVersion();
     expect(v.applied).toBe(v.latest);
     expect(v.latest).toBeGreaterThan(BASELINE_STATE);
+  });
+
+  it("step 0031 creates the improve report and filed-pattern tables; a report round-trips, no filed pattern is written", async () => {
+    const db = await newEmptyMysqlDatabase();
+    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const { item } = await store.createWorkItem(issue(1), system);
+    const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key: "improve:k" });
+    const window = { window_start: "2026-01-01T00:00:00.000Z" as Timestamp, window_end: "2026-01-02T00:00:00.000Z" as Timestamp };
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups: [], patterns: [] });
+    expect(await store.getImproveReport(run.id)).toEqual(report);
+    const tables = await store.listTables();
+    expect(tables.find((t) => t.name === "improve_reports")?.rows).toBe(1);
+    expect(tables.find((t) => t.name === "filed_patterns")?.rows).toBe(0);
   });
 
   describe("the commands, end to end on the built code", () => {

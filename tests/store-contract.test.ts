@@ -988,7 +988,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("change fields beside pr_number (migration 31)", () => {
+  describe("change fields beside pr_number (migration 32)", () => {
     const raw = async (store: FactoryStore, table: string, id: string) =>
       (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
     const adoptedIn = (n: number, project: string) => ({
@@ -2175,7 +2175,7 @@ describe("MySQL step 28 (host-sleeps)", () => {
   });
 });
 
-describe("migration 31 (change fields) on an existing SQLite database", () => {
+describe("migration 32 (change fields) on an existing SQLite database", () => {
   const adoptedIn = (n: number, project: string) => ({
     ...issue(n),
     project,
@@ -2257,7 +2257,7 @@ describe("migration 31 (change fields) on an existing SQLite database", () => {
   });
 });
 
-describe("MySQL step 31 (change-fields)", () => {
+describe("MySQL step 32 (change-fields)", () => {
   it("is a .ts data step right after the SQLite migration's starting state", () => {
     expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")).toMatchObject({
       number: CHANGE_MIGRATION, from: CHANGE_MIGRATION - 1, kind: "ts",

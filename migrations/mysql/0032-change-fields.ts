@@ -1,4 +1,4 @@
-// The change columns beside pr_number: the same as SQLite migration 31 (phase 1 of the change fields).
+// The change columns beside pr_number: the same as SQLite migration 32 (phase 1 of the change fields).
 // work_items.change_ref (the PR number as text), work_items.change_url (https://<label>/pull/<n> for a GitHub
 // project key whose label cursor `project_label:<key>` exists, else NULL: the same string as prUrl in src/main.ts),
 // unreviewed_merges.change_ref; an index on work_items (project, change_ref) and a unique key on unreviewed_merges

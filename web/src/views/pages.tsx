@@ -22,8 +22,17 @@ export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, M
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
+/** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
+function pauseLine(p: PauseRow, now: number): string {
+  const what = PAUSE_LABELS[p.name] ?? p.name;
+  if (p.name !== "model_stall") return `Paused (${p.name}): ${what}; until ${p.ends_at}.`;
+  const began = p.since ? ` since ${p.since}` : "";
+  const next = Date.parse(p.ends_at) <= now ? "the next check is due" : `next check at ${p.ends_at}`;
+  return `Paused (${p.name}): ${what}${began}; ${next}.`;
+}
+
 /** The supervisor banner: what the factory process is doing (the status page's words, shorter). */
-export function FactoryBanner({ factory, now }: { factory: FactoryState | null | undefined; now: number }) {
+export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
   if (factory === undefined) return null;
   const bad = "bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100";
   const warn = "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
@@ -38,6 +47,10 @@ export function FactoryBanner({ factory, now }: { factory: FactoryState | null |
     const target = shortRev(factory.target_rev);
     switch (factory.state) {
       case "running":
+        if (pauses.length > 0) {
+          text = pauses.map((p) => pauseLine(p, now)).join(" ");
+          break;
+        }
         tone = ok;
         text = `Factory running: revision ${rev}, since ${ago(factory.since, now)} ago.`;
         break;
@@ -145,6 +158,7 @@ export function FloorPage() {
   const items = useApi<Items>(API.items);
   const runs = useApi<{ runs: RunRow[] }>(API.runs);
   const queue = useApi<{ queue: QueueRow[] }>(API.queue);
+  const pauses = useApi<PausesView>(API.pauses);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
@@ -154,7 +168,7 @@ export function FloorPage() {
   const extra = actions.filter((a) => a.work_item_id === null || !ids.has(a.work_item_id)).length;
   return (
     <>
-      <FactoryBanner factory={o?.factory} now={now} />
+      <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
       <ClaimPauses now={now} />
       <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
         <SystemActions actions={actions} />

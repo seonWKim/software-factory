@@ -115,6 +115,8 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  /** What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows. */
+  need?: { reason: string; command: string | null };
   why?: Why;
 }
 
@@ -373,6 +375,8 @@ export interface DataPageBody {
 export interface PauseRow {
   name: string;
   ends_at: string;
+  /** When a model stall began; absent for the pauses that have no start time. */
+  since?: string | null;
 }
 
 /** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */

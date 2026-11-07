@@ -547,10 +547,38 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE claim_decisions ADD COLUMN held_since TEXT;
   `,
-  // 31: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
+  // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
+  // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
+  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  `
+  CREATE TABLE IF NOT EXISTS improve_reports (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    project_key     TEXT NOT NULL,
+    window_start    TEXT NOT NULL,
+    window_end      TEXT NOT NULL,
+    failure_groups  TEXT NOT NULL,
+    patterns        TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project_key, created_at);
+  CREATE TABLE IF NOT EXISTS filed_patterns (
+    id           TEXT PRIMARY KEY,
+    project_key  TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    report_id    TEXT NOT NULL REFERENCES improve_reports(id),
+    filed_ref    TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE (project_key, pattern_key)
+  );
+  `,
+  // 32: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
   // `change_url`: https://<label>/pull/<n> for a GitHub project key whose label cursor exists, else NULL (the same
   // string as prUrl in src/main.ts). Backfilled from pr_number; the store writes them with pr_number from now on.
-  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 31.
+  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 32.
   `
   ALTER TABLE work_items ADD COLUMN change_ref TEXT;
   ALTER TABLE work_items ADD COLUMN change_url TEXT;

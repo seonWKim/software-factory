@@ -6,7 +6,7 @@ import { LEVEL_LABELS, LEVELS, type Level, NEEDS_YOU } from "./priority.js";
 
 export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "CLOSED"];
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
-export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update"];
+export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve"];
 
 /** `needs` is the three levels that wait for a person; every other value is one level. */
 export type StateFilter = "needs" | Level;
