@@ -37,7 +37,7 @@ export const DEFAULT_MIN_REMAINING = 200;
 /** Default ETag cache size per client (one per process): entries, each one GET's URL, ETag and body. */
 export const DEFAULT_ETAG_ENTRIES = 500;
 /** Below this share of the hourly limit left, optional reads wait for the reset too (issue #254). */
-export const LOW_BUDGET_SHARE = 0.1;
+const LOW_BUDGET_SHARE = 0.1;
 /** A body larger than this is never cached (keeps the per-process cache bounded in bytes too). */
 const MAX_CACHED_BODY = 1_000_000;
 
