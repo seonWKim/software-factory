@@ -1711,15 +1711,16 @@ export class Controller {
   }
 
   /**
-   * The note and the `+paths` of an `/approve` or `/retry` (design §4, issue #280); none for other commands. The
-   * whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is split off
-   * and checked; the note is what is left, capped. A finding or a bad path refuses the command.
+   * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
+   * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
+   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command.
    */
   private async commandInput(id: WorkItemId, e: CommandEvent): Promise<{ note: string | null; paths: string[] } | Refusal> {
-    if (e.kind !== "spec_approved" && e.kind !== "retry_requested") return { note: null, paths: [] };
-    const scanned = await this.approvalNote(id, e.note, COMMAND[e.kind]);
+    if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
+    const text = e.kind === "resolve_requested" ? e.notes : e.note;
+    const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
     if ("refuse" in scanned) return scanned;
-    const split = parseCommandPaths(e.note ?? "");
+    const split = parseCommandPaths(text ?? "");
     if ("refuse" in split) return split;
     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
     return { note: note || null, paths: split.paths };
@@ -2033,7 +2034,9 @@ export class Controller {
     tag: StateChangeDetail | null = null,
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
-    if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
+    if (e.kind === "resolve_requested") {
+      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
+    }
     if (e.kind === "revise_requested" && e.pr) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
     }
@@ -4313,9 +4316,10 @@ function quote(text: string): string {
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
  * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
- * /resolve would otherwise be a silent no-op. The notes go on the run for the worker; they are untrusted.
+ * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
+ * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
  */
-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean): Decision | Refusal {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, note: string | null, w: Widening): Decision | Refusal {
   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
   if (!conflictPending(it) && !asked) {
@@ -4326,11 +4330,11 @@ function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAske
   }
   const next = { ...it, restart_count: it.restart_count + 1 };
   return {
-    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count, ...w.patch },
     actor,
     reason: "resolve_requested",
-    detail: { comment_id: e.comment_id },
-    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: e.notes } },
+    detail: { comment_id: e.comment_id, ...w.detail },
+    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: note ?? "" } },
   };
 }
 

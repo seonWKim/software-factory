@@ -81,12 +81,14 @@ describe("+paths (issue #280)", () => {
     expect(retryPathsReply(Array.from({ length: 11 }, (_, i) => `f${i}`))).toBeNull();
   });
 
-  it("/help and the command table show the +paths usage of /approve and /retry", () => {
+  it("/help and the command table show the +paths usage of /approve, /retry and /resolve", () => {
     const help = helpReply({ phase: "spec_pending", has_pr: false });
-    expect(help).toContain("`/approve +paths <path>...`");
-    expect(help).toContain("`/retry +paths <path>...`");
-    expect(commandTableMarkdown()).toContain("`/approve +paths <path>...`");
-    expect(commandTableMarkdown()).toContain("`/retry +paths <path>...`");
+    for (const usage of ["`/approve +paths <path>...`", "`/retry +paths <path>...`", "`/resolve +paths <path>...`"]) {
+      expect(help).toContain(usage);
+      expect(commandTableMarkdown()).toContain(usage);
+    }
+    // The usage column stays `/resolve [notes]`; `+paths` is in its description, as for /retry.
+    expect(helpReply({ phase: "merge_conflict", has_pr: true })).toContain("`/resolve [notes]` **(now)**");
   });
 });
 
