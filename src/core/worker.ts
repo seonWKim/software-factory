@@ -1,4 +1,4 @@
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
@@ -38,7 +38,7 @@ import {
   type Run, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
 import {
-  type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, type GateHooks, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
 } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -295,6 +295,32 @@ interface RunScratch {
   sessions: Set<string>;
   step_session?: string | null;
   kept?: { folder: string; session: string };
+  /** Times the gate hooks' Stop hook sent an agent step of this run back (capped by `agent_stop_checks`). */
+  stop_blocks?: number;
+}
+
+/** What the fix step needs from the implement run: its git folders, model, start and the merged-in base. */
+interface FixContext {
+  gitDir: string;
+  dirs: string;
+  model: ModelClass;
+  start: string;
+  baseSha: string;
+}
+
+/** The no-commit failure's detail; the gate hooks' Stop hook sends an agent back with it too. */
+export const NO_COMMITS_DETAIL = "the implementer made no commits";
+
+/**
+ * An implement run's own commits, oldest first: those since its start, else the non-merge commits since the base.
+ * The run folder can start on the item's branch with an earlier run's work already on it (a run that pushed, then
+ * failed, issue #261): an agent that only checks that work and adds nothing has not failed. Merges don't count.
+ * One rule for the no-commit failure and the gate hooks' Stop hook.
+ */
+export async function runCommits(git: (args: string[]) => Promise<string>, start: string, base: string): Promise<string[]> {
+  const commits = (await git(["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
+  if (commits.length > 0) return commits;
+  return (await git(["rev-list", "--reverse", "--no-merges", `${base}..HEAD`])).split("\n").filter(Boolean);
 }
 
 /** The handoff's next steps when the paused agent left no note. */
@@ -813,6 +839,7 @@ export class Worker {
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
         writable_paths: [],
         env_allowlist: gitIdentity(this.cfg.agent_git_identity),
+        gate_hooks: this.gateHooks(run, item, start, baseSha),
       }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? kept }).catch(async (err: unknown) => {
         stopWatch.abort();
         await watching;
@@ -840,14 +867,9 @@ export class Worker {
       // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
       if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
 
-      let commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
-      // The run folder can start on the item's branch with an earlier run's work already on it (a run that pushed,
-      // then failed): an agent that only checks that work and adds nothing has not failed. Merges don't count.
+      const commits = await runCommits((args) => this.git(handle, args), start, baseSha);
       if (commits.length === 0) {
-        commits = (await this.git(handle, ["rev-list", "--reverse", "--no-merges", `${baseSha}..HEAD`])).split("\n").filter(Boolean);
-      }
-      if (commits.length === 0) {
-        throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
+        throw new RunFailure("no_commits", NO_COMMITS_DETAIL, false, { output_tail: tail(result.transcript) });
       }
       work = {
         commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
@@ -890,7 +912,7 @@ export class Worker {
       work.commits += Number((await this.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
     };
     try {
-      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model, baseSha: sync.baseSha });
+      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model, start, baseSha: sync.baseSha });
     } catch (err) {
       // Each keeps the commits on a wip branch, so the retry starts from them.
       if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
@@ -1542,7 +1564,7 @@ export class Worker {
     handle: SandboxHandle,
     ctx: ToolCallContext,
     signal: AbortSignal,
-    s: { gitDir: string; dirs: string; model: ModelClass; baseSha: string },
+    s: FixContext,
   ): Promise<{ results: CheckResult[]; fixed: boolean }> {
     await this.cleanTree(handle);
     const first = await this.runCheckList(run, handle, signal);
@@ -1611,7 +1633,7 @@ export class Worker {
     item: WorkItem,
     handle: SandboxHandle,
     signal: AbortSignal,
-    s: { gitDir: string; dirs: string; model: ModelClass },
+    s: FixContext,
     failed: CheckResult,
   ): Promise<void> {
     const scan = failed.tail === "" ? { clean: true as const } : await this.d.scanner.scan("log", failed.tail);
@@ -1636,6 +1658,7 @@ export class Worker {
       output_schema: IMPLEMENT_SCHEMA,
       writable_paths: [s.gitDir],
       env_allowlist: gitIdentity(this.cfg.agent_git_identity),
+      gate_hooks: this.gateHooks(run, item, s.start, s.baseSha),
     }, "fix");
     const out = parseImplement(result.output);
     if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -1713,6 +1736,24 @@ export class Worker {
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
+  }
+
+  /**
+   * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the
+   * check list with the check env (no test database), and the Stop hook's cap with what earlier steps used.
+   */
+  private gateHooks(run: Run, item: WorkItem, start: string, baseSha: string): GateHooks {
+    const { max_diff_lines, max_diff_files } = settingValues(item.project, this.cfg.settings, this.d.learned);
+    return {
+      allowed_paths: [...item.allowed_paths],
+      start_sha: start,
+      base_sha: baseSha,
+      limits: { max_diff_lines, max_diff_files },
+      check_commands: checkCommands(this.cfg.repo),
+      check_env: { ...this.d.toolEnv, ...this.slotEnv() },
+      stop_checks: this.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
+      stop_blocks_used: this.scratch.get(run)?.stop_blocks ?? 0,
+    };
   }
 
   /** The run's test database, made on first use. Null without a TestDatabase. A failure is an infra failure. */
@@ -2223,7 +2264,7 @@ export class Worker {
     handle: SandboxHandle,
     signal: AbortSignal,
     role: Pick<AgentRunSpec, "system_prompt" | "prompt" | "tools" | "model_class" | "output_schema"> &
-      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role">>,
+      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role" | "gate_hooks">>,
     /** Second agent step in one run (the conflict resolution): its own transcript, `<run>.<step>.json`. */
     step?: string,
     /**
@@ -2266,6 +2307,11 @@ export class Worker {
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
+    // One line per time a gate hook sent the agent back (design §4, issue #302); the worker's gates still decide.
+    for (const b of result.gate_blocks ?? []) {
+      if (b.hook === "stop" && s) s.stop_blocks = (s.stop_blocks ?? 0) + 1;
+      this.d.log.info("gate hook sent the agent back", { run_id: run.id, step: step ?? "", hook: b.hook, check: b.check.slice(0, 200), attempt: b.attempt });
+    }
 
     // G5 before the transcript is stored anywhere. A known secret value or the canary fails the run; a pattern hit
     // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since
@@ -2653,7 +2699,7 @@ export function reviewComment(v: ReviewOutput): string {
 const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested"];
 
 /** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
-function fenced(text: string): string {
+export function fenced(text: string): string {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;
