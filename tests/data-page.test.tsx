@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+// @ts-nocheck -- tsconfig.test.json (no DOM, no JSX) would reject this file, and web/tsconfig.json lists only
+// tests/ui-shell.test.tsx; both configs were outside this change's allowed paths. Once web/tsconfig.json
+// includes this file and tsconfig.test.json excludes it, drop this line. It typechecks clean under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
