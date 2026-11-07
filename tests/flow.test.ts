@@ -333,6 +333,24 @@ describe("one issue to one merged PR", () => {
     expect(f.source.comments.some((c) => c.body.includes("## Factory spec"))).toBe(false);
   });
 
+  it("an implementer that adds no commits to a branch that already holds earlier work goes on with that work", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const f = await factory(runner);
+    f.sandbox.commits = [];
+    f.sandbox.revLists["rev-list --reverse --no-merges basesha..HEAD"] = ["earlier"];
+    f.source.queue.push({ kind: "item_requested", source: issueRef(5), requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "106", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
+    const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    expect(runs[0]!.outcome).not.toMatchObject({ error_code: "no_commits" });
+    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(true);
+  });
+
   it("an implementer that makes no commits fails the run", async () => {
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
