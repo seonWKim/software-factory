@@ -1,3 +1,4 @@
+import { cliHelpLine } from "./local-cli.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
 import type { RunKind, WorkItem } from "./types.js";
 
@@ -273,6 +274,8 @@ export function helpReply(s: CommandState): string {
       const now = applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
       return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
     }),
+    "",
+    cliHelpLine(),
   ].join("\n");
 }
 

@@ -17,11 +17,14 @@ import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
+import { FallbackLLM } from "./core/fallback-llm.js";
+import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
+import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
@@ -37,7 +40,7 @@ import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedSources,
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedRunners, selectedSources,
 } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
@@ -351,8 +354,12 @@ export class Plugins {
   store(secrets: SecretStore, clock: Clock): Promise<FactoryStore> {
     return createPlugin(this.loaded.registry, "store", this.loaded.plugins.store, { ...this.base, secrets, clock });
   }
-  llm(secrets: SecretStore): Promise<LLMProvider> {
-    return createPlugin(this.loaded.registry, "llm", this.loaded.plugins.llm, { ...this.base, secrets });
+  /** One provider, or a FallbackLLM over the `plugins.llm` chain (design 2026-11-07). */
+  async llm(secrets: SecretStore): Promise<LLMProvider> {
+    const names = selectedLlms(this.loaded.plugins);
+    const members = [];
+    for (const name of names) members.push({ name, impl: await createPlugin(this.loaded.registry, "llm", name, { ...this.base, secrets }) });
+    return members.length === 1 ? members[0]!.impl : new FallbackLLM(members);
   }
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
@@ -361,8 +368,14 @@ export class Plugins {
     return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
   }
   /** `tools`: the broker and scanner a runner exposes granted tools through; left out where nothing is granted. */
-  runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }) {
-    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets, ...tools });
+  /** One runner, or a FallbackRunner over the `plugins.runner` chain (design 2026-11-07). */
+  async runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }): Promise<AgentRunner> {
+    const names = selectedRunners(this.loaded.plugins);
+    const members = [];
+    for (const name of names) {
+      members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
+    }
+    return members.length === 1 ? members[0]!.impl : new FallbackRunner(members);
   }
   testDatabase(secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
@@ -402,7 +415,7 @@ export async function build(
   const runner = await p.runner(sandbox, secrets, { broker, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
-    throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${sel.runner} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
+    throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
   }
   const storage = await createPlugin(registry, "storage", sel.storage, base);
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });

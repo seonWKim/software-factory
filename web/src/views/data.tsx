@@ -2,6 +2,7 @@ import { Copy } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { API, type DataCell, type DataPageBody, type DataTables, useManualApi } from "../api.js";
 import { Empty, ErrorNote, Loading } from "../components/ui/parts.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -208,14 +209,14 @@ function CellView({ value, runItems, open, onOpen }: { value: DataCell; runItems
   if (value === null) return <span className="text-zinc-400">NULL</span>;
   if (typeof value === "number") return <span className="tabular-nums">{value}</span>;
   if (value === "[hidden]" || value.startsWith("[withheld: ")) return <em className="text-amber-700 dark:text-amber-400">{value}</em>;
-  if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} className="text-blue-700 hover:underline dark:text-blue-400">{value}</Link>;
+  if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} className={LINK_CLASS}>{value}</Link>;
   const owner = /^run_[A-Za-z0-9]+$/.test(value) ? runItems[value] : undefined;
-  if (owner) return <Link href={itemPath(owner)} title={`Run of ${owner}`} className="text-blue-700 hover:underline dark:text-blue-400">{value}</Link>;
+  if (owner) return <Link href={itemPath(owner)} title={`Run of ${owner}`} className={LINK_CLASS}>{value}</Link>;
   if (value.length <= CELL_MAX || open) return <>{value}</>;
   return (
     <>
       {value.slice(0, CELL_MAX)}…{" "}
-      <button type="button" onClick={onOpen} className="font-sans text-blue-700 hover:underline dark:text-blue-400">
+      <button type="button" onClick={onOpen} className={cn("font-sans", LINK_CLASS)}>
         Show all ({value.length} characters)
       </button>
     </>

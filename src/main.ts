@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
@@ -9,6 +10,8 @@ import {
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
+import { cliUserConfig } from "./core/config.js";
+import { CLI_COMMANDS, CLI_TOP_WORDS, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
@@ -22,6 +25,7 @@ import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
+import { storeProjectResolver } from "./ui/settings-api.js";
 import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
@@ -72,6 +76,8 @@ const USAGE = `factory <command>
   canary       G6: a real agent tries to find a planted canary secret
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
+${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
+               local work items (plugins.source includes "local"), acting as cli_user; no GitHub call
   issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -363,6 +369,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         await parts.close();
       }
     }
+    case "task":
+    case "approve":
+    case "retry":
+    case "revise":
+    case "reject":
+      return localCli(loaded, cmd, args);
     case "canary": {
       const report = await runCanary(loaded);
       console.log(JSON.stringify(report, null, 2));
@@ -371,6 +383,49 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
     default:
       console.log(USAGE);
       return cmd ? 1 : 0;
+  }
+}
+
+/**
+ * `factory task …` and `factory approve|retry|revise|reject <id> [text]` (issue #200): the store only, no
+ * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
+ */
+async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], args: string[]): Promise<number> {
+  const action = parseLocalCliArgs(word, args);
+  if ("error" in action) {
+    console.error(action.error);
+    return 1;
+  }
+  let user;
+  try {
+    user = cliUserConfig(loaded.file);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+  await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+  const store = await buildStatsStore(loaded);
+  try {
+    await store.migrate();
+    const { owner, name } = loaded.config.repo;
+    const resolveProject = storeProjectResolver(store, { owner, name });
+    const r = await runLocalCli(
+      {
+        store,
+        user,
+        project: async () => (await resolveProject())?.key ?? null,
+        read: (path) => readFile(path, "utf8"),
+        newId: () => randomUUID(),
+      },
+      action,
+    );
+    for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
+    if (r.code === 0 && action.action !== "list" && action.action !== "show" && !selectedSources(loaded.plugins).includes("local")) {
+      console.error('note: plugins.source does not include "local", so the controller does not read local items yet');
+    }
+    return r.code;
+  } finally {
+    await store.close();
   }
 }
 

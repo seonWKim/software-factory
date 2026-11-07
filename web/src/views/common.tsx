@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ItemRow, Overview, QueueRow, RunRow } from "../api.js";
 import { Badge, Empty, Table, Td } from "../components/ui/parts.js";
+import { cn } from "../lib/cn.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -19,10 +21,10 @@ export function useNow(): number {
 export function ItemTitle({ id, title, source }: { id: string; title: string | null; source: { id: string; link: string } }) {
   return (
     <span className="flex min-w-0 items-baseline gap-2">
-      <a href={source.link} target="_blank" rel="noreferrer" className="shrink-0 text-zinc-500 tabular-nums hover:underline">
+      <a href={source.link} target="_blank" rel="noreferrer" className={cn("shrink-0 tabular-nums", LINK_CLASS)}>
         {shortSource(source.id)}
       </a>
-      <Link href={itemPath(id)} className="truncate font-medium hover:underline">
+      <Link href={itemPath(id)} className={cn("truncate font-medium", LINK_CLASS)}>
         {title ?? source.id}
       </Link>
     </span>
@@ -32,7 +34,7 @@ export function ItemTitle({ id, title, source }: { id: string; title: string | n
 /** A link out to GitHub; only drawn for the github plugin. */
 function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   return (
-    <a href={href} target="_blank" rel="noreferrer" className="hover:underline">
+    <a href={href} target="_blank" rel="noreferrer" className={LINK_CLASS}>
       {children}
     </a>
   );
@@ -52,7 +54,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
       {items.map((it) => (
         <tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
-            <Link href={itemPath(it.id)} className="block truncate font-medium hover:underline">
+            <Link href={itemPath(it.id)} className={cn("block truncate font-medium", LINK_CLASS)}>
               {it.title ?? it.id}
             </Link>
           </Td>
@@ -83,7 +85,7 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
         const it = items.get(r.work_item_id);
         return (
           <tr key={r.id}>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)}>{r.work_item_id}</Link>}</Td>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
             <Td className="font-mono text-xs">{r.owner ?? "–"}</Td>
@@ -107,7 +109,7 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
         return (
           <tr key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)}>{q.work_item_id}</Link>}</Td>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
             <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>

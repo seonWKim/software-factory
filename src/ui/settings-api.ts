@@ -1,6 +1,6 @@
 // The Settings page's API (design §8 and §9, issue #236): GET /api/v1/settings reads every settable key with its
-// effective value, source, file value, project values and "applies at", the PR-only keys and the last 50 audit
-// rows; POST /api/v1/settings sets or resets one key. Every write goes through runSettings (src/settings-cmd.ts),
+// description, effective value, source, file value, project values and "applies at", the PR-only keys with their
+// descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key. Every write goes through runSettings (src/settings-cmd.ts),
 // the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does.
 //
 // The UI process has no forge client and no forge credential: `--project` finds the configured repo's project
@@ -13,7 +13,8 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import {
-  PROJECT_SETTABLE_KEYS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, type SettableKey, type SettingsBase,
+  PROJECT_SETTABLE_KEYS, PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettableKey,
+  type SettingsBase,
   effectiveSetting, isProjectSettableKey, resolveSettings,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -115,6 +116,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     }
     keys.push({
       key: k,
+      description: await text(SETTING_DESCRIPTIONS[k]),
       kind: kindOf(k),
       value: await text(fmt(r.global[k].raw)),
       source: e.source,
@@ -126,6 +128,8 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
       ...(k === "workers" ? { max: r.workers_cap, capped_at: r.values.workers < r.global.workers.value ? r.workers_cap : null } : {}),
     });
   }
+  const prOnly = [];
+  for (const key of PR_ONLY_KEYS) prOnly.push({ key, note: "changes by PR only", description: await text(PR_ONLY_DESCRIPTIONS[key]) });
   const ignored = [];
   for (const i of r.ignored) {
     ignored.push({ key: i.key, project: i.project ? await text(label(i.project)) : null, value: await text(i.value), reason: await text(i.reason) });
@@ -156,7 +160,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     project: ref ? await text(ref.label) : null,
     project_keys: PROJECT_SETTABLE_KEYS,
     keys,
-    pr_only: PR_ONLY_KEYS.map((key) => ({ key, note: "changes by PR only" })),
+    pr_only: prOnly,
     ignored,
     history,
   };

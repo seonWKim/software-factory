@@ -24,7 +24,9 @@ import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, setting
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
-import { type NeedsHuman, type TriagePhase, parseNeedsHuman, parseReview, parseTriage } from "./outputs.js";
+import {
+  type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriagePhase, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings,
+} from "./outputs.js";
 import {
   AGENT_NEEDS_HUMAN,
   AUTO_RESOLVE_LIMIT,
@@ -61,14 +63,14 @@ import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./re
 import { renderSpec } from "./spec-comment.js";
 import { applyCompanions } from "./companions.js";
 import {
-  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parseSizeDetail, parseSubIssues, phaseIssueBody,
+  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
   phaseLinkDetail, phaseMarker, phaseTitle, suggestSplit,
 } from "./split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -968,7 +970,7 @@ export class Controller {
         if (r === RETRY) continue;
         return r;
       }
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note), tag));
+      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -1280,6 +1282,7 @@ export class Controller {
     actor: Actor,
     floorNeed: number | null,
     note: string | null,
+    tag: StateChangeDetail | null = null,
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
     if (e.kind === "revise_requested" && e.pr) {
@@ -1291,6 +1294,16 @@ export class Controller {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it));
+    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
+      // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
+      if ((await this.splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
+      if (splitFiling(it)) {
+        const stale = this.d.clock.now().getTime() - Date.parse(it.updated_at) >= SPLIT_FILING_STALE_MS;
+        const phases = stale ? await this.specPhases(it) : null;
+        if (phases) return this.approveSplit(it, phases, actor, note, e.comment_id, tag);
+        return { refuse: "an earlier `/approve` is filing this split's phases; if it stopped, reply `/approve` again in 10 minutes" };
+      }
+    }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {
         refuse: `the item is ${phaseLabel("dependency_hold")} (${it.blocked_reason ?? "a dependency"}), and \`/approve\` does not lift a ` +
@@ -1349,7 +1362,7 @@ export class Controller {
       }
       case "spec_approved": {
         const phases = await this.specPhases(it);
-        if (phases) return this.approveSplit(it, phases, actor, note);
+        if (phases) return this.approveSplit(it, phases, actor, note, e.comment_id, tag);
         return {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
           actor,
@@ -1385,17 +1398,44 @@ export class Controller {
    * `/approve` on a split spec (design 2026-11-01): one sub-issue per phase, in order, each with the intake label
    * and linked to the parent, and one work item per phase, requested by the approver. The first phase is queued
    * for triage; each later one starts held (`phase_hold`) until the phase before it closes as completed
-   * (tickPhases). Filing and intake are idempotent (a marker per phase, intake keyed on the source), so a retry
-   * after a partial failure files no duplicates. A failure refuses the approval and keeps the spec waiting, so
-   * `/approve` again files the rest. On success the parent waits on its phases (`phases_open`); it is never
-   * implemented itself.
+   * (tickPhases). The approval first claims the filing with a conditional transition to `split_filing`, so of
+   * two passes at once (two replicas, an old process still draining) only one files (2026-11-07). A phase that
+   * already has a work item under this parent is not filed again; the rest are filed by marker (the parent's
+   * sub-issues, then the newest labelled issues) and taken in keyed on the source. A failure refuses the
+   * approval and puts the spec back at the gate, so `/approve` again files the rest. On success the parent
+   * waits on its phases (`phases_open`); it is never implemented itself. Returns null once applied: the
+   * transitions are its own, conditional on the claim.
    */
-  private async approveSplit(it: WorkItem, phases: TriagePhase[], actor: Actor, note: string | null): Promise<Decision | Refusal> {
+  private async approveSplit(
+    it: WorkItem,
+    phases: TriagePhase[],
+    actor: Actor,
+    note: string | null,
+    commentId: string,
+    tag: StateChangeDetail | null,
+  ): Promise<Decision | Refusal> {
     const adapter = this.adapterFor(it.source, "fileSubIssue");
     if (!adapter?.fileSubIssue) {
       return { refuse: "this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases" };
     }
+    const claim = await this.d.store.transition({
+      id: it.id,
+      expected_version: it.version,
+      patch: { blocked_on: "upstream", blocked_reason: SPLIT_FILING },
+      actor,
+      reason: SPLIT_FILING,
+      detail: { phases: phases.length, comment_id: commentId },
+    });
+    if (!claim.ok) {
+      if (claim.reason !== "version_conflict") return null;
+      // Another pass claimed it first: the same command is answered by that pass, another one is refused.
+      const cur = claim.current;
+      if (!splitFiling(cur) && !splitOpen(cur)) return { refuse: "the item changed while the approval was applied; reply `/approve` again" };
+      if ((await this.splitClaim(it.id))?.detail?.comment_id === commentId) return null;
+      return { refuse: "another `/approve` already approved this split" };
+    }
     const requester = actor.kind === "user" ? actor.id : it.requester_id;
+    const known = new Map((await this.d.store.listPhases(it.id)).map((p) => [p.phase, p.source]));
     const refs: SourceRef[] = [];
     try {
       for (const [i, phase] of phases.entries()) {
@@ -1403,7 +1443,7 @@ export class Controller {
         const prev = refs[i - 1] ?? null;
         const title = phaseTitle(index, phases.length, phase.title);
         const body = phaseIssueBody({ parent: it.source, phase, index, total: phases.length, depends_on: prev });
-        const ref = await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
+        const ref = known.get(index) ?? await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: ref,
@@ -1435,6 +1475,11 @@ export class Controller {
         phases: phases.length,
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
+      // Back at the gate, so `/approve` again is accepted at once.
+      const back = splitFiling(it)
+        ? { blocked_on: "human" as const, blocked_reason: "spec_pending" }
+        : { blocked_on: it.blocked_on, blocked_reason: it.blocked_reason };
+      await this.settleSplit(claim.item, { patch: back, actor, reason: "split_filing_failed", detail: { filed: refs.length, phases: phases.length } });
       return {
         refuse: `filing the phase sub-issues stopped after ${refs.length} of ${phases.length}; reply \`/approve\` again to file the rest (none is filed twice)`,
       };
@@ -1451,12 +1496,29 @@ export class Controller {
       "",
       footerAfter(it, patch),
     ].join("\n"));
-    return {
+    await this.settleSplit(claim.item, {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}) },
-    };
+      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+    });
+    return null;
+  }
+
+  /** The claim's end (`split_approved` or `split_filing_failed`), conditional on the claim being the item's last change. */
+  private async settleSplit(claimed: WorkItem, d: NonNullable<Decision>): Promise<void> {
+    const r = await this.d.store.transition({ ...d, id: claimed.id, expected_version: claimed.version });
+    if (!r.ok) {
+      this.d.log.warn("split claim changed before it settled", { work_item_id: claimed.id, reason: d.reason, conflict: r.reason });
+      return;
+    }
+    this.d.log.info("transition", { work_item_id: claimed.id, reason: d.reason, version: r.item.version });
+    await this.showStatus(r.item);
+  }
+
+  /** The parent's latest `split_filing` claim, whose detail names the command that made it. */
+  private async splitClaim(id: WorkItemId): Promise<StateChange | null> {
+    return (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_FILING).at(-1) ?? null;
   }
 
   /**
@@ -1507,7 +1569,7 @@ export class Controller {
     }
     const parentId = it.parent_id;
     const phase = it.phase;
-    const prev = phase > 1 ? (await this.d.store.listPhases(parentId)).find((p) => p.phase === phase - 1) : null;
+    const prev = phase > 1 ? (await this.recordedPhases(parentId)).find((p) => p.phase === phase - 1) : null;
     if (phase > 1 && !completed(prev)) return;
     await this.decide(id, (cur) =>
       phaseHeld(cur)
@@ -1522,6 +1584,18 @@ export class Controller {
     );
   }
 
+  /**
+   * The parent's phases, only those its approval recorded (`sub_issues` of its last split_approved). Another
+   * work item linked to the parent (a duplicate sub-issue a racing approval filed, then closed by hand) neither
+   * holds the next phase nor keeps the parent open. With no recorded list, every linked phase counts.
+   */
+  private async recordedPhases(parentId: WorkItemId): Promise<WorkItem[]> {
+    const phases = await this.d.store.listPhases(parentId);
+    const approved = (await this.d.store.listStateChanges(parentId)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
+    const ids = parseSubIssues(approved?.detail);
+    return ids ? phases.filter((p) => ids.includes(p.source.id)) : phases;
+  }
+
   private async closeSplitIfDone(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !splitOpen(it)) return;
@@ -1529,7 +1603,7 @@ export class Controller {
     const approved = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_APPROVED).at(-1);
     const ids = parseSubIssues(approved?.detail);
     if (!ids) return;
-    const phases = await this.d.store.listPhases(id);
+    const phases = await this.recordedPhases(id);
     if (phases.length < ids.length || !phases.every(completed)) return;
     const adapter = this.adapterFor(it.source, "closeIssue");
     if (!adapter) return;
@@ -1957,6 +2031,8 @@ export class Controller {
           };
         }
         case "review": {
+          // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
+          if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -1970,6 +2046,14 @@ export class Controller {
               ack_run: run.id,
             };
           }
+          const spec = specFindings(parsed.value);
+          if (parsed.value.verdict === "bug" || spec.length > 0) {
+            // Finding text becomes the next run's input or the spec feedback: scanned before anything is stored.
+            const scan = await this.d.scanner.scan("comment", parsed.value.findings.map((f) => f.text).join("\n"));
+            if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), { tier, token_cost: tokens }, "review");
+          }
+          // Any spec finding: the implementer cannot fix it inside the spec, so the spec is revised (issue #222).
+          if (spec.length > 0) return this.specRevision(it, run, specFeedback(parsed.value), { tier, token_cost: tokens }, "review");
           if (parsed.value.verdict === "bug") {
             if (it.loop_count + 1 >= this.cfg.max_loops) {
               const patch = { tier, token_cost: tokens, blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -2070,6 +2154,13 @@ export class Controller {
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
+    // The implementer reported a criterion the spec does not let it meet (issue #222): a spec revision, not a block.
+    if (run.kind === "implement" && code === SPEC_CONFLICT) {
+      const reason = run.outcome?.status === "failed" ? run.outcome.detail.trim() : "";
+      const scan = await this.d.scanner.scan("comment", reason);
+      if (!scan.clean) return this.leakBlock(it, run, scan.findings.map((f) => f.rule), {}, "implement");
+      return this.specRevision(it, run, conflictFeedback(reason), {}, "implement");
+    }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
@@ -2080,6 +2171,84 @@ export class Controller {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * A spec revision the factory starts itself (issue #222): a review with a spec finding, or an implement run that
+   * returned `spec_conflict`. The same path as `/revise` after a failure: back to triage with the feedback under
+   * the next `:v<n>` key, revision_count + 1, restart_count + 1 so the implement run after the revised spec is
+   * approved gets a new key (it continues on the PR branch; the PR number is kept). loop_count is unchanged. At
+   * the revision limit (`max_loops`) no triage run starts: the item waits at the spec gate with `max_revisions`
+   * (restart_count + 1 there too, so `/approve` implements the current spec afresh) and one comment says so.
+   */
+  private async specRevision(
+    it: WorkItem,
+    run: Run,
+    feedback: string,
+    fields: { tier?: Tier; token_cost?: number },
+    from: "review" | "implement",
+  ): Promise<Decision> {
+    const limit = this.cfg.max_loops;
+    const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
+    const detail = { run_id: run.id, from };
+    const why = from === "review" ? "The review found that the spec needs a change" : "The implementer reported that the spec cannot be met as written";
+    if (it.revision_count >= limit) {
+      const patch = {
+        ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "max_revisions",
+        restart_count: it.restart_count + 1, failure_comment_url: null,
+      };
+      await this.comment(it, `max-revisions:${run.id}`, [
+        `${why}, but the spec was revised ${it.revision_count} times (limit \`max_loops\` = ${limit}), so the factory started no new triage run (\`max_revisions\`).`,
+        "",
+        "Reply `/approve` to implement the spec above as it is, or `/reject <reason>` to close.",
+        "",
+        footerAfter(it, patch),
+      ].join("\n"));
+      return { patch, actor: SYSTEM, reason: "max_revisions", detail, ack_run: run.id };
+    }
+    const n = it.revision_count + 1;
+    return {
+      patch: {
+        ...fields, stage: "NEW", blocked_on: "none", blocked_reason: null, revision_count: n, restart_count: it.restart_count + 1,
+        spec_feedback: kept, failure_comment_url: null,
+      },
+      actor: SYSTEM,
+      reason: from === "review" ? "review_spec_revision" : "spec_conflict_revision",
+      detail,
+      ack_run: run.id,
+      // The spec-gate revision key: differs from the intake key and from every earlier revision's key.
+      enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
+    };
+  }
+
+  /**
+   * Finding text or a spec_conflict reason the egress scan flagged (issue #222): nothing of it is stored. The item
+   * blocks on a human as a failed run of its kind (so `/retry` and `/revise` apply) and one comment names the rules.
+   */
+  private async leakBlock(
+    it: WorkItem,
+    run: Run,
+    rules: readonly string[],
+    fields: { tier?: Tier; token_cost?: number },
+    kind: "review" | "implement",
+  ): Promise<Decision> {
+    const names = [...new Set(rules)].map((r) => r.replace(/[^\w.:-]/g, "").slice(0, 60)).filter(Boolean);
+    const patch = { ...fields, blocked_on: "human" as const, blocked_reason: `run_failed:${kind}:egress_blocked` };
+    const what = kind === "review" ? "review findings" : "spec conflict the implementer reported";
+    const url = await this.comment(it, `leak-blocked:${run.id}`, [
+      `The ${what} were blocked by the leak scanner (${names.map((n) => `\`${n}\``).join(", ") || "a rule"}), so nothing of them was stored or posted.`,
+      "",
+      `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: "run_failed",
+      detail: { run_id: run.id, error_code: "egress_blocked", rules: names.join(",") },
       ack_run: run.id,
     };
   }
@@ -2898,6 +3067,11 @@ function phaseSpecPending(it: WorkItem): boolean {
 }
 
 /** A split parent whose phases are filed and not all closed as completed. */
+/** A split parent whose `/approve` claimed the filing and has not settled it yet. */
+function splitFiling(it: WorkItem): boolean {
+  return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === SPLIT_FILING;
+}
+
 function splitOpen(it: WorkItem): boolean {
   return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
 }
@@ -3077,6 +3251,16 @@ const FAILURES: Record<string, string> = {
   git_failed: "a git command failed",
   cancelled: "the run was cancelled",
 };
+
+/** The spec feedback of a review with a spec finding: every finding, spec ones marked, then the summary. */
+function specFeedback(r: ReviewOutput): string {
+  return ["The factory reviewer found that the spec needs a change.", "", r.summary, "", ...r.findings.map((f) => `- ${findingLine(f)}`)].join("\n");
+}
+
+/** The spec feedback of an implement run that returned spec_conflict. */
+function conflictFeedback(reason: string): string {
+  return ["The implementer could not meet a done criterion inside the spec:", "", reason].join("\n");
+}
 
 function describeFailure(code: string): string {
   return FAILURES[code] ?? "the run failed";

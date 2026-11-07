@@ -8,7 +8,7 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { PR_ONLY_KEYS, SETTABLE_KEYS, SETTING_APPLIES, type SettingsBase } from "../src/core/settings.js";
+import { PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettingsBase } from "../src/core/settings.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -114,6 +114,7 @@ describe("GET /api/v1/settings", () => {
     expect(v.keys.map((k: { key: string }) => k.key)).toEqual([...SETTABLE_KEYS]);
     const row = (key: string) => v.keys.find((k: { key: string }) => k.key === key);
     expect(row("max_loops")).toMatchObject({ value: "4", source: "override", file_value: "3", applies_at: SETTING_APPLIES.max_loops, project_settable: false });
+    for (const k of SETTABLE_KEYS) expect(row(k).description).toBe(SETTING_DESCRIPTIONS[k]);
     expect(row("workers")).toMatchObject({ value: "5", source: "file", file_value: "5", max: 8, capped_at: null });
     expect(row("tick_ms")).toMatchObject({ value: "2000", source: "default", file_value: null });
     expect(row("max_attempts")).toMatchObject({
@@ -133,7 +134,7 @@ describe("GET /api/v1/settings", () => {
   it("lists the PR-only keys as 'changes by PR only'", async () => {
     const { d } = await setup();
     const v = await view(d);
-    expect(v.pr_only).toEqual(PR_ONLY_KEYS.map((key) => ({ key, note: "changes by PR only" })));
+    expect(v.pr_only).toEqual(PR_ONLY_KEYS.map((key) => ({ key, note: "changes by PR only", description: PR_ONLY_DESCRIPTIONS[key] })));
     for (const k of ["secrets", "egress", "broker"]) expect(v.pr_only.map((p: { key: string }) => p.key)).toContain(k);
     for (const k of PR_ONLY_KEYS) expect(v.keys.map((r: { key: string }) => r.key)).not.toContain(k);
   });
@@ -160,6 +161,16 @@ describe("GET /api/v1/settings", () => {
     expect(newCsrfToken()).not.toBe(settings.csrfToken);
     const { settings: _, ...without } = d;
     expect((await getSettings(without)).status).toBe(404);
+  });
+
+  it("passes descriptions through the Withholder", async () => {
+    const { d } = await setup();
+    const scanned: UiDeps = { ...d, scanner: new PatternEgressScanner(async () => [SETTING_DESCRIPTIONS.tick_ms, PR_ONLY_DESCRIPTIONS.secrets]) };
+    const v = await view(scanned);
+    const tick = v.keys.find((k: { key: string }) => k.key === "tick_ms");
+    expect(tick.description).not.toBe(SETTING_DESCRIPTIONS.tick_ms);
+    expect(tick.description).toContain("[withheld:");
+    expect(v.pr_only.find((p: { key: string }) => p.key === "secrets").description).toContain("[withheld:");
   });
 
   it("passes actor IDs and values through the Withholder", async () => {
