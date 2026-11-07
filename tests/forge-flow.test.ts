@@ -128,7 +128,7 @@ async function github(o: { withForge: boolean }) {
   }
   const client = new Client();
   const ctx = { clock, history_since: null, log };
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store, ctx);
+  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
   const forge = o.withForge ? new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", source, ctx) : null;
   const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   /** An item whose PR 42 waits for a human merge. */

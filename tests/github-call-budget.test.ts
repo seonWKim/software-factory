@@ -89,7 +89,7 @@ function setup(n: number, opts: { etag_entries?: number; min_remaining?: number 
   const client = new GitHubClient(credentials, "https://gh.test", { fetch: gh.fetchFn, clock, log, ...opts });
   const repo = { owner: "o", name: "r" };
   const ctx = { clock, history_since: null, log };
-  const source = new GitHubIssueSource(client, repo, "factory", "factory/", "main", undefined, null, ctx);
+  const source = new GitHubIssueSource(client, repo, "factory", "factory/", "main", undefined, null);
   // Both GitHub plugins selected (issue #273): the forge reads the PRs, the source everything else.
   const forge = new GitHubForge(client, repo, "factory/", "main", source, ctx);
   /** One poll tick as the controller makes it: the source, then the forge, each through its own cursor. */

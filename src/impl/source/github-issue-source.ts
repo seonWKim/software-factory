@@ -201,8 +201,6 @@ export class GitHubIssueSource implements PollSource, DependencySource {
      * budget). Without one every post reads the thread and every status reads the labels.
      */
     private readonly store: FactoryStore | null = null,
-    /** Unread since issue #273 (the forge's poll needs it); the github-issues descriptor still passes it. */
-    _pollContext: PollContext | null = null,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {

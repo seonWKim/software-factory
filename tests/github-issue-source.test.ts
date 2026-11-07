@@ -4,7 +4,7 @@ import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { issueRef } from "./helpers/fakes.js";
-import { RecordingGitHubClient as FakeClient, pollContext } from "./helpers/github.js";
+import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 const user = { id: 1, login: "alice", type: "User" };
@@ -18,7 +18,7 @@ const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
 
 function setup() {
   const client = new FakeClient();
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
   return { client, source };
 }
 
@@ -205,7 +205,7 @@ describe("GitHubIssueSource: closed issues", () => {
   }
   const make = () => {
     const client = new ClosedClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     return { client, source };
   };
   const closedIssue = (number: number, updated_at: string, pr = false) => ({
@@ -311,7 +311,7 @@ describe("GitHubIssueSource: /verdict", () => {
   }
   const make = () => {
     const client = new VerdictClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     return { client, source };
   };
   const approver = { provider: "github", subject: "1", login: "alice" };
@@ -443,7 +443,7 @@ describe("GitHubIssueSource: /resolve", () => {
 
   it("a /resolve on a factory PR's conversation names the PR and its head branch, and its source is the PR", async () => {
     const client = new PullClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     client.pulls[42] = { number: 42, head: { ref: "factory/wi_a", sha: "h" } };
     client.pulls[43] = { number: 43, head: { ref: "feature/x", sha: "h" } };
     client.responses["/repos/o/r/issues/comments"] = [
@@ -465,7 +465,7 @@ describe("GitHubIssueSource: /resolve", () => {
 
   it("/revise on a PR's conversation names the PR and its head branch, factory or not; a PR that is gone is ignored", async () => {
     const client = new PullClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     client.pulls[14] = { number: 14, head: { ref: "factory/wi_a", sha: "h" } };
     client.pulls[10] = { number: 10, head: { ref: "feature/x", sha: "h" } };
     const onPr = (id: number, body: string, pr: number) => ({
@@ -538,7 +538,7 @@ describe("GitHubIssueSource: status labels", () => {
 
   const make = (prefix?: string) => {
     const client = new LabelClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", prefix, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", prefix);
     return { client, source };
   };
   const enc = encodeURIComponent;
@@ -654,7 +654,7 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
   }
   const make = () => {
     const client = new SubIssueClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, pollContext());
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     return { client, source };
   };
   const input = { parent: issueRef(5), title: "Phase 1/2: core", body: "the phase text", marker: "<!-- factory:phase:wi_p:1 -->" };

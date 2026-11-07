@@ -342,7 +342,7 @@ describe("the first start on a repository with history (design §5, Merges)", ()
     const log = recordingLog();
     const repo = new Repo();
     const ctx = { clock, history_since: null, log };
-    const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store, ctx);
+    const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
     const forge = new GitHubForge(repo, { owner: "o", name: "r" }, "factory/", "main", source, ctx);
     const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
     const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
