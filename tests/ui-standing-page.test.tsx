@@ -5,14 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { UserId } from "../src/core/types.js";
+import type { StandingRule, Timestamp, UserId } from "../src/core/types.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, api } from "../src/ui/api.js";
 import { writeStanding } from "../src/ui/standing-api.js";
 import type { SettingsView, StandingView } from "../web/src/api.js";
-import { newStore } from "./helpers/store.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips (as tests/ui-settings-page.test.tsx does).
@@ -133,10 +133,33 @@ describe("Standing approvals section (stubbed API)", () => {
   });
 });
 
+/**
+ * The store methods the standing routes use, kept in memory. Not the SQLite store: this file runs under jsdom, whose
+ * module resolution on Node 22 (CI) does not know `node:sqlite`. tests/ui-standing.test.ts covers the routes on the
+ * real store.
+ */
+function memoryStore(clock: FakeClock): FactoryStore {
+  const rules: StandingRule[] = [];
+  const methods: Pick<FactoryStore, "listStandingRules" | "putStandingRule" | "listStandingProposals" | "listSettingOverrides"> = {
+    listStandingRules: async () => rules.map((r) => ({ ...r })),
+    putStandingRule: async ({ gate, tier, enabled, set_by }) => {
+      const now = clock.now().toISOString() as Timestamp;
+      const i = rules.findIndex((r) => r.gate === gate && r.tier === tier);
+      const rule = { gate, tier, enabled, set_by, created_at: i < 0 ? now : rules[i]!.created_at, updated_at: now };
+      if (i < 0) rules.push(rule);
+      else rules[i] = rule;
+      return { ...rule };
+    },
+    listStandingProposals: async () => [],
+    listSettingOverrides: async () => [],
+  };
+  return methods as FactoryStore;
+}
+
 describe("Standing approvals section against the real routes", () => {
   it("turn the rule off, then on, reload the page: the state shown matches the last write", async () => {
     const clock = new FakeClock();
-    const { store } = await newStore(clock);
+    const store = memoryStore(clock);
     await store.putStandingRule({ gate: "spec", tier: 1, enabled: true, set_by: "github:1" as UserId });
     const d: ApiDeps = {
       store,
