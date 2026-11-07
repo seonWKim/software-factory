@@ -2119,3 +2119,49 @@ describe("MySQL step 28 (host-sleeps)", () => {
     expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
   });
 });
+
+describe("migration 32 on an existing SQLite database", () => {
+  it("adds standing_rules and standing_proposals and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig32-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 31; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect(await store.getCursor("poll")).toBe("c1");
+      const { created } = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+      expect(created).toBe(true);
+      expect((await store.putStandingRule({ gate: "spec", tier: 2, enabled: false, set_by: "github:1" as UserId })).enabled).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 32 (standing-approvals)", () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-31 database: both tables added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect(await store.getCursor("poll")).toBe("c1");
+    const first = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    const again = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    expect([first.created, again.created]).toEqual([true, false]);
+    await store.putStandingRule({ gate: "spec", tier: 2, enabled: true, set_by: "github:1" as UserId });
+    expect((await store.listStandingRules()).map((r) => [r.gate, r.tier, r.enabled])).toEqual([["spec", 2, true]]);
+  });
+});
