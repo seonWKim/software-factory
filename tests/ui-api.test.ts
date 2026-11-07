@@ -3,7 +3,7 @@
 // Everything goes through respond(), the server's whole request handling without a socket.
 
 import { describe, expect, it } from "vitest";
-import type { WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { Timestamp, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -287,6 +287,49 @@ describe("ui api: runs, queue, workers, overview, health", () => {
       { owner: "[withheld: github_token]", running: 1 },
       { owner: "host:11:1", running: 2 },
     ]);
+  });
+
+  it("/workers adds processes: one entry per live process, idle ones too, each with its runs; workers is unchanged", async () => {
+    const { d, store, clock, claimed } = await seeded();
+    const started_at = clock.now().toISOString() as Timestamp;
+    // A dead process's row: older than lease_ms, so not listed.
+    await store.reportWorkerProcess({ process_id: "gone:3", pid: 3, host: "gone", slots: 1, max_slots: 1, busy: 1, index_base: 0, started_at });
+    clock.advance(LEASE + 1);
+    await store.reportWorkerProcess({ process_id: "host:11", pid: 11, host: "host", slots: 3, max_slots: 4, busy: 2, index_base: 0, started_at });
+    await store.reportWorkerProcess({ process_id: "idle:5", pid: 5, host: "idle", slots: 2, max_slots: 2, busy: 0, index_base: 4, started_at });
+    const body = await json<{ workers: unknown[]; processes: Record<string, unknown>[] }>(d, "/api/v1/workers");
+    expect(body.workers).toEqual([
+      { owner: "[withheld: github_token]", running: 1 },
+      { owner: "host:11:1", running: 2 },
+    ]);
+    const reported_at = clock.now().toISOString();
+    expect(body.processes.map((p) => [p.host, p.pid])).toEqual([["host", 11], ["idle", 5]]);
+    expect(body.processes[0]).toMatchObject({
+      process_id: "host:11", pid: 11, host: "host", slots: 3, max_slots: 4, busy: 2, idle: 1, index_base: 0, started_at, reported_at,
+    });
+    const runs = body.processes[0]!.runs as Record<string, unknown>[];
+    expect(runs).toHaveLength(2);
+    expect(runs.find((r) => r.id === claimed.id)).toEqual({
+      id: claimed.id, kind: "implement", work_item_id: claimed.work_item_id, worker_id: "host:11:1", started_at: claimed.started_at,
+    });
+    expect(body.processes[1]).toMatchObject({ pid: 5, slots: 2, max_slots: 2, busy: 0, idle: 2, index_base: 4, runs: [] });
+    for (const p of body.processes) {
+      for (const k of ["pid", "host", "slots", "max_slots", "busy", "reported_at"]) expect(Object.keys(p)).toContain(k);
+    }
+  });
+
+  it("/workers still answers when the processes read fails (e.g. the table is missing): workers as before, processes empty, the error named", async () => {
+    const { d, store } = await seeded();
+    store.listWorkerProcesses = async () => {
+      throw new Error("Table 'sf.worker_processes' doesn't exist");
+    };
+    const body = await json<{ workers: unknown[]; processes: unknown[]; processes_error?: string }>(d, "/api/v1/workers");
+    expect(body.workers).toEqual([
+      { owner: "[withheld: github_token]", running: 1 },
+      { owner: "host:11:1", running: 2 },
+    ]);
+    expect(body.processes).toEqual([]);
+    expect(body.processes_error).toBe("Table 'sf.worker_processes' doesn't exist");
   });
 
   it("/overview gives the numbers the page shows for the same store", async () => {

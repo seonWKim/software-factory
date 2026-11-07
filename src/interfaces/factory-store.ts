@@ -570,6 +570,44 @@ export interface FactoryStore {
   resetSettingOverride(input: ResetSettingInput): Promise<SettingChange | null>;
   /** Audit rows, newest first, at most `limit`. Read-only. */
   listSettingChanges(limit: number): Promise<SettingChange[]>;
+
+  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
+  // `process_id`, written once per tick, so a reader on any host sees every process's slots.
+
+  /**
+   * Writes the snapshot of one process, keyed by `process_id`: a repeat write replaces the row. `reported_at`
+   * is the store clock's now. Returns the stored row.
+   */
+  reportWorkerProcess(report: WorkerProcessReport): Promise<WorkerProcess>;
+  /**
+   * Live processes: rows whose `reported_at` is at most `max_age_ms` old (a row a dead process left behind is
+   * not listed once it is older). Ordered by host, then pid, then process_id. Read-only.
+   */
+  listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
+  /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
+  removeWorkerProcess(process_id: string): Promise<boolean>;
+}
+
+/** What a WorkerPool reports each tick. */
+export interface WorkerProcessReport {
+  /** `<host>:<pid>`, the pool's worker id prefix: the row's key. */
+  process_id: string;
+  pid: number;
+  host: string;
+  /** Slots that may claim now: the live `workers`, capped at `max_slots`. 0 while draining. */
+  slots: number;
+  /** The slot count: the file's `max_workers` (absent: `workers`). */
+  max_slots: number;
+  /** Slots holding a run at the moment of the write. */
+  busy: number;
+  /** The first worker index; the process's worker ids are `<process_id>:<index_base … index_base + max_slots - 1>`. */
+  index_base: number;
+  /** When the pool started. */
+  started_at: Timestamp;
+}
+
+export interface WorkerProcess extends WorkerProcessReport {
+  reported_at: Timestamp;
 }
 
 /** One stored override. `project` is "" for a global override, else a project key. `value` is JSON text. */

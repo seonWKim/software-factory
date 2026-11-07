@@ -6,7 +6,7 @@ import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
-import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { MYSQL_URL, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, system } from "./helpers/store.js";
 
 // Interactive sessions (design §5, 2026-11-01, issue #112): the run's actor, transcript and token columns.
 describe("migration step 18: run session columns", () => {
@@ -16,7 +16,6 @@ describe("migration step 18: run session columns", () => {
     for (const sql of [readFileSync(join(STEPS_DIR, step.file), "utf8"), MIGRATIONS[17]!]) {
       for (const col of ["actor_id", "transcript_url", "session_tokens"]) expect(sql).toContain(col);
     }
-    expect(MIGRATIONS).toHaveLength(18);
   });
 });
 
@@ -24,18 +23,18 @@ describe.skipIf(!MYSQL_URL)("migration step 18 on MySQL", () => {
   it("a run written before it reads the three fields as null after npm run migrate", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
+    // Every step before 18 applied, and a run written then, as on a database from before it.
+    const dir = mysqlStepsUpTo(17);
+    await new MysqlMigrations(c, { dir }).apply(() => undefined);
+    const before = new SqlFactoryStore(new MysqlDriver({ ...db.options, stepsDir: dir }), new FakeClock());
+    db.onCleanup(() => before.close());
+    const { item } = await before.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
+    const [run] = await before.listRuns(item.id);
+    expect((await new MysqlMigrations(c).status()).pending[0]?.label).toBe("0018-run-session.sql");
+
     await new MysqlMigrations(c).apply(() => undefined);
     const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
     db.onCleanup(() => store.close());
-    await store.migrate();
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
-    const [run] = await store.listRuns(item.id);
-    // Step 18 undone and the state set back, as on a database from before it, with the run already written.
-    await c.query("ALTER TABLE runs DROP COLUMN actor_id, DROP COLUMN transcript_url, DROP COLUMN session_tokens");
-    await c.query("UPDATE schema_state SET state = 17 WHERE id = 1");
-    expect((await new MysqlMigrations(c).status()).pending.map((p) => p.label)).toEqual(["0018-run-session.sql"]);
-
-    await new MysqlMigrations(c).apply(() => undefined);
     await store.migrate();
     expect(await store.getRun(run!.id)).toMatchObject({ actor_id: null, transcript_url: null, session_tokens: null });
   });

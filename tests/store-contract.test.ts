@@ -1,13 +1,24 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
-import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
+import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
-import { BACKENDS, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
+import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
 
-describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
+describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
+  const make = makeBackend;
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
       const { store } = await make();
@@ -1397,6 +1408,53 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("worker processes (migration 19)", () => {
+    const report = (over: Partial<WorkerProcessReport> = {}): WorkerProcessReport => ({
+      process_id: "host-a:42", pid: 42, host: "host-a", slots: 2, max_slots: 4, busy: 1, index_base: 0,
+      started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ...over,
+    });
+
+    it("a report is stored with reported_at = now; a repeat write for the same process replaces the row", async () => {
+      const { store, clock } = await make();
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([]);
+      const first = await store.reportWorkerProcess(report());
+      expect(first).toEqual({ ...report(), reported_at: clock.now().toISOString() });
+      clock.advance(1000);
+      await store.reportWorkerProcess(report({ slots: 3, busy: 3 }));
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([{ ...report({ slots: 3, busy: 3 }), reported_at: clock.now().toISOString() }]);
+    });
+
+    it("lists one row per process, by host then pid; a row older than max_age_ms is not listed", async () => {
+      const { store, clock } = await make();
+      await store.reportWorkerProcess(report({ process_id: "host-b:7", host: "host-b", pid: 7 }));
+      clock.advance(LEASE / 2);
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      await store.reportWorkerProcess(report());
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42", "host-b:7"]);
+      clock.advance(LEASE / 2);
+      // host-b:7 is exactly LEASE old: still live.
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(3);
+      clock.advance(1);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42"]);
+    });
+
+    it("remove deletes only that process's row; removing again reports false", async () => {
+      const { store } = await make();
+      await store.reportWorkerProcess(report());
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(true);
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(false);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9"]);
+    });
+
+    it("concurrent first writes for one process leave one row", async () => {
+      const { store } = await make();
+      await Promise.all([store.reportWorkerProcess(report({ busy: 0 })), store.reportWorkerProcess(report({ busy: 2 }))]);
+      const rows = await store.listWorkerProcesses(LEASE);
+      expect(rows).toHaveLength(1);
+      expect([0, 2]).toContain(rows[0]!.busy);
+    });
+  });
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
   // 18 on both backends); notes and the last finish live in the run's input.
   describe("interactive sessions", () => {
@@ -1463,5 +1521,81 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
     });
+  });
+});
+
+describe("migration 19 on an existing SQLite database", () => {
+  it("adds worker_processes and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig19-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 18; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)").run(
+      "workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z",
+    );
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+      expect(await store.getCursor("poll")).toBe("c1");
+      await store.reportWorkerProcess({
+        process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+      });
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 19 (worker-processes)", () => {
+  const file = "0019-worker-processes.sql";
+  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("is the repo's step after 18, a .sql file", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "worker-processes")).toMatchObject({ number: 19, from: 18, kind: "sql", file });
+  });
+
+  it("creates the same columns as SQLite migration 19, idempotently (IF NOT EXISTS)", () => {
+    const columns = (text: string) =>
+      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|CHAR)/gm)].map((m) => m[1]).sort();
+    const sqlite = MIGRATIONS[18]!;
+    expect(sqlite).toContain("CREATE TABLE worker_processes");
+    expect(columns(sql())).toEqual(columns(sqlite));
+    expect(columns(sqlite)).toEqual(["busy", "host", "index_base", "max_slots", "pid", "process_id", "reported_at", "slots", "started_at"]);
+    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS worker_processes");
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-18 database: worker_processes added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    // Every step before 19 applied, as on a database from before it.
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(18) }).apply(() => undefined);
+    await conn.query(
+      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
+    );
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    const s = await new MysqlMigrations(conn).apply(() => undefined);
+    expect(s.pending[0]?.number).toBe(19);
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+    expect(await store.getCursor("poll")).toBe("c1");
+    await store.reportWorkerProcess({
+      process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+    });
+    expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
   });
 });

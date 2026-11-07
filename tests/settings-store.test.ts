@@ -5,7 +5,7 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import type { SqlDriver, SqlExecutor } from "../src/impl/store/sql/driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { MYSQL_URL, newEmptyMysqlDatabase, newMysqlDatabase } from "./helpers/store.js";
+import { MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, newMysqlDatabase } from "./helpers/store.js";
 
 /** A driver whose transactions fail on any statement that matches `fail`. Everything else is the real driver. */
 function failing(inner: SqlDriver, fail: RegExp): SqlDriver {
@@ -58,18 +58,14 @@ describe.skipIf(!MYSQL_URL)("migration step 17 on MySQL", () => {
   it("pending before npm run migrate: --status lists it and the store refuses to start; after it, both tables exist", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
-    // Every step applied, then 17 and the later steps undone and the state set back (as on a database from before it).
-    await new MysqlMigrations(c).apply(() => undefined);
-    await c.query("DROP TABLE settings_overrides");
-    await c.query("DROP TABLE settings_changes");
-    await c.query("ALTER TABLE runs DROP COLUMN actor_id, DROP COLUMN transcript_url, DROP COLUMN session_tokens");
-    await c.query("UPDATE schema_state SET state = 16 WHERE id = 1");
+    // Every step before 17 applied, as on a database from before it.
+    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(16) }).apply(() => undefined);
 
     const status = await new MysqlMigrations(c).status();
-    expect(status.pending.map((p) => p.label)).toEqual(["0017-settings-overrides.sql", "0018-run-session.sql"]);
+    expect(status.pending[0]?.label).toBe("0017-settings-overrides.sql");
     const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
     db.onCleanup(() => store.close());
-    await expect(store.migrate()).rejects.toThrow("2 schema steps pending (state 16, latest 18): run `npm run migrate`");
+    await expect(store.migrate()).rejects.toThrow(/schema steps? pending \(state 16, latest \d+\): run `npm run migrate`/);
 
     await new MysqlMigrations(c).apply(() => undefined);
     const [tables] = await c.query(

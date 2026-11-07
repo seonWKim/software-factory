@@ -88,6 +88,8 @@ import type {
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
+  WorkerProcess,
+  WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../../../interfaces/factory-store.js";
 import { migrationPendingError } from "../../../interfaces/updater.js";
@@ -1403,6 +1405,43 @@ export class SqlFactoryStore implements FactoryStore {
     return rowToSettingChange(row!);
   }
 
+  // Worker processes (design §5 Coordination, 2026-11-07)
+
+  async reportWorkerProcess(r: WorkerProcessReport): Promise<WorkerProcess> {
+    const reported_at = this.now();
+    const values: SqlValue[] = [r.pid, r.host, r.slots, r.max_slots, r.busy, r.index_base, r.started_at, reported_at];
+    const update = () =>
+      this.db.run(
+        `UPDATE worker_processes SET pid = ?, host = ?, slots = ?, max_slots = ?, busy = ?, index_base = ?, started_at = ?, reported_at = ?
+         WHERE process_id = ?`,
+        [...values, r.process_id],
+      );
+    // Keyed by process_id: update the row, else insert it; a concurrent first insert that loses updates instead.
+    if ((await update()) === 0) {
+      try {
+        await this.db.run(
+          `INSERT INTO worker_processes (pid, host, slots, max_slots, busy, index_base, started_at, reported_at, process_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [...values, r.process_id],
+        );
+      } catch (err) {
+        if (!this.db.isDuplicateKey(err)) throw err;
+        await update();
+      }
+    }
+    return { ...r, reported_at };
+  }
+
+  async listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]> {
+    const since = new Date(this.clock.now().getTime() - max_age_ms).toISOString();
+    const rows = await this.db.all("SELECT * FROM worker_processes WHERE reported_at >= ? ORDER BY host, pid, process_id", [since]);
+    return rows.map(rowToWorkerProcess);
+  }
+
+  async removeWorkerProcess(process_id: string): Promise<boolean> {
+    return (await this.db.run("DELETE FROM worker_processes WHERE process_id = ?", [process_id])) > 0;
+  }
+
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
@@ -1650,4 +1689,18 @@ function placeholders(n: number): string {
 /** Link codes are stored only as this hash (design 2026-11-01). */
 function hashCode(code: string): string {
   return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
+}
+
+function rowToWorkerProcess(row: Row): WorkerProcess {
+  return {
+    process_id: row.process_id as string,
+    pid: Number(row.pid),
+    host: row.host as string,
+    slots: Number(row.slots),
+    max_slots: Number(row.max_slots),
+    busy: Number(row.busy),
+    index_base: Number(row.index_base),
+    started_at: row.started_at as Timestamp,
+    reported_at: row.reported_at as Timestamp,
+  };
 }

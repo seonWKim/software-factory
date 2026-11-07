@@ -1,5 +1,5 @@
 import { LiveSettings } from "./settings.js";
-import type { WorkerId } from "./types.js";
+import type { Timestamp, WorkerId } from "./types.js";
 import { Worker, type WorkerDeps } from "./worker.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
@@ -18,6 +18,9 @@ export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "activ
   index_base?: number;
 }
 
+/** Why the live slot count changed, as the `worker slots` line gives it. "drain" is any stop of the pool. */
+export type SlotChangeReason = "start" | "settings change" | "drain";
+
 /** One running slot: its own stop signal (a drop in `workers`) and the loop's promise. */
 interface Slot {
   stop: AbortController;
@@ -35,21 +38,48 @@ interface Slot {
  * run; a slot at or above it stops claiming, finishes its current run and stops; a stopped slot starts again
  * once `workers` rises. The slot count is the file's `max_workers` (absent: its `workers`), which sizes the
  * supervisor's index block, so no index is ever shared with another process.
+ *
+ * Reporting (design §5 Coordination, 2026-11-07): one `worker slots` log line when the live count changes (start,
+ * a settings change, drain), never on an unchanged tick. Each tick the pool writes its row to the store (pid,
+ * host, slots, max_slots, busy, index_base, started_at); while draining it keeps writing with slots 0 until the
+ * last run ends, then removes the row. A failed write is logged once per failure streak and never stops a slot.
  */
 export class WorkerPool {
   /** Every slot's Worker, running or not. Slot i has index `index_base + i`. */
   readonly workers: readonly Worker[];
   private readonly live: LiveSettings;
+  /** Per slot: whether it holds a run now (set between the claim's hold and the run's release). */
+  private readonly slotAwake: readonly SlotAwake[];
+  private readonly process_id: string;
+  private readonly host: string;
+  private readonly pid: number;
+  private readonly index_base: number;
+  private reportFailing = false;
 
   constructor(private readonly d: WorkerPoolDeps) {
     const { id_prefix, index_base = 0, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     const settings = this.live;
-    this.workers = Array.from({ length: d.config.max_workers ?? d.config.workers }, (_, i) => {
+    const size = d.config.max_workers ?? d.config.workers;
+    this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
+    this.workers = Array.from({ length: size }, (_, i) => {
       const index = index_base + i;
-      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake, active: () => i < settings.workers() });
+      const slotAwake = this.slotAwake[i]!;
+      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() });
     });
+    // id_prefix is `<host>:<pid>`.
+    const cut = id_prefix.lastIndexOf(":");
+    const pid = Number(id_prefix.slice(cut + 1));
+    this.process_id = id_prefix;
+    this.host = d.host ?? (cut === -1 ? id_prefix : id_prefix.slice(0, cut));
+    this.pid = cut !== -1 && Number.isInteger(pid) ? pid : process.pid;
+    this.index_base = index_base;
+  }
+
+  /** Slots holding a run now. */
+  busy(): number {
+    return this.slotAwake.filter((a) => a.busy).length;
   }
 
   /** Slots that may claim now: the live `workers`, capped at the slot count. */
@@ -64,9 +94,15 @@ export class WorkerPool {
   async run(signal: AbortSignal): Promise<void> {
     const slots = new Map<number, Slot>();
     const all = new Set<Promise<void>>();
+    const started_at = this.d.clock.now().toISOString() as Timestamp;
+    let current: number | null = null;
     while (!signal.aborted) {
       await this.live.refresh();
       const want = this.size();
+      if (want !== current) {
+        this.logSlots(want, current, current === null ? "start" : "settings change");
+        current = want;
+      }
       this.workers.forEach((w, i) => {
         const slot = slots.get(i);
         if (i < want && !slot) {
@@ -83,12 +119,66 @@ export class WorkerPool {
         } else if (i >= want && slot && !slot.stop.signal.aborted) {
           // Stops claiming; the loop finishes its current run, then ends and frees the slot.
           slot.stop.abort();
-          this.d.log.info("worker slot stopping: workers lowered", { worker_id: w.id, workers: want });
         }
       });
+      await this.report(want, started_at);
       await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
     }
-    while (all.size > 0) await Promise.all([...all]);
+    this.logSlots(0, current, "drain");
+    // Draining: keep the row fresh (slots 0, the runs still held) until the last run ends, then remove it.
+    while (all.size > 0) {
+      await this.report(0, started_at);
+      const wake = new AbortController();
+      await Promise.race([Promise.all([...all]), this.d.clock.sleep(this.live.config().tick_ms, wake.signal).catch(() => undefined)]);
+      wake.abort();
+    }
+    await this.d.store.removeWorkerProcess(this.process_id).catch((err: unknown) => this.reportFailed(err));
+  }
+
+  private logSlots(slots: number, from: number | null, reason: SlotChangeReason): void {
+    this.d.log.info("worker slots", { pid: this.pid, slots, from, reason });
+  }
+
+  private async report(slots: number, started_at: Timestamp): Promise<void> {
+    try {
+      await this.d.store.reportWorkerProcess({
+        process_id: this.process_id,
+        pid: this.pid,
+        host: this.host,
+        slots,
+        max_slots: this.workers.length,
+        busy: this.busy(),
+        index_base: this.index_base,
+        started_at,
+      });
+      this.reportFailing = false;
+    } catch (err) {
+      this.reportFailed(err);
+    }
+  }
+
+  /** The row is a report, not a gate: a failed write never stops a slot. Logged once per failure streak. */
+  private reportFailed(err: unknown): void {
+    if (this.reportFailing) return;
+    this.reportFailing = true;
+    this.d.log.warn("worker process report failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+  }
+}
+
+/** One slot's view of the shared KeepAwake: `busy` while the slot holds a run (hold to release). */
+class SlotAwake implements KeepAwake {
+  busy = false;
+
+  constructor(private readonly inner: KeepAwake) {}
+
+  hold(): Promise<void> {
+    this.busy = true;
+    return this.inner.hold();
+  }
+
+  release(): Promise<void> {
+    this.busy = false;
+    return this.inner.release();
   }
 }
 
