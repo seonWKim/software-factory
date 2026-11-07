@@ -121,7 +121,7 @@ Who may act: local commands (the CLI and the local UI) are checked by the local 
 |---|---|---|
 | Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
 | Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
-| May approve, retry, revise, reject | The owner | The owner and every `approver` |
+| May approve, retry, revise, reject, resolve | The owner | The owner and every `approver` |
 | May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
 | `anonymous` | Read and create only: never the owner, never an approver | The same |
 
@@ -134,12 +134,13 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+- `factory resolve <id> [notes]`: Store `/resolve` for the item; the controller applies it.
 - `factory merge <id>`: Approver only: merge a local item's branch into the local base branch once its review passed (no push, never automatic); the controller applies it.
 - `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
 - `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
 - `factory users remove <user_id>`: Owner only: remove a local user's role.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. It needs the approver role (the owner has it), applies only to an item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. It needs the approver role (the owner has it), applies only to an item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
 With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"auth": "local"`, `"permissions": { "grants": ["static"] }` and `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
 

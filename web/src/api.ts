@@ -115,8 +115,11 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
-  /** What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows. */
-  need?: { reason: string; command: string | null };
+  /**
+   * What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows.
+   * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
+   */
+  need?: { reason: string; command: string | null; anchor?: string | null };
   why?: Why;
   /** The split parent (null for any other item) and this item's place among its phases. */
   parent_id?: string | null;
@@ -222,12 +225,26 @@ export interface ItemDetail {
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
+  /** The item's thread (src/ui/thread.ts), oldest first; every body already through the Withholder. */
+  thread?: ThreadEntry[];
   /** The commands that apply in the item's current state, in the order to show them. */
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
+}
+
+/** One entry of an item's thread: `author` is `factory` or `unknown` (no author is stored), `channel` the item's source type. */
+export interface ThreadEntry {
+  seq: number;
+  at: string;
+  kind: string;
+  author: string;
+  channel: string;
+  /** The entry's id on the item page: `msg-<seq>`. */
+  anchor: string;
+  body: string;
 }
 
 /** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */

@@ -287,7 +287,7 @@ export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
-  "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env",
+  "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env", "toolchain",
 ] as const;
 export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
@@ -334,6 +334,7 @@ export const PR_ONLY_DESCRIPTIONS: Readonly<Record<PrOnlyKey, string>> = {
   broker: "Which tool broker runs the forge actions agents ask for, such as a push.",
   deny_paths: "Absolute paths that agent runs may never read.",
   env: "Whether the factory runs locally or in the cloud.",
+  toolchain: "Cache folders agents may read but not write, their extra env, and the command that warms them.",
 };
 
 /** When a set takes effect, per key. What `settings set` prints and docs/design.md lists. */

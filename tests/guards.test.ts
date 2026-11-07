@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import { Worker } from "../src/core/worker.js";
-import { Read } from "../src/core/tools/index.js";
+import { Edit, Glob, Grep, Read, type ToolContext, Write, guardPolicy } from "../src/core/tools/index.js";
+import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { WorkerId } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -118,6 +119,101 @@ describe("G3/G4: harness settings deny secret paths", () => {
     );
     expect(args).toEqual(expect.arrayContaining(["--setting-sources", "project", "--strict-mcp-config", "--allowedTools", "Read"]));
     expect(args.join(" ")).not.toContain("oauth-value");
+  });
+});
+
+// Toolchain caches (design 05-sandbox.md, issue #334): declared caches are readable, never writable, and a denied
+// path stays denied, in the harness settings and in the shared file tools every other runner uses.
+describe("G3/G4: toolchain caches are read-only", () => {
+  const cache = "/home/u/.gradle/caches";
+  const spec = { deny_paths: ["/home/u/.config/software-factory"], writable_paths: ["/repo/.git"], readable_paths: [cache] };
+  const withCache = buildHarnessSettings(spec, "/wt/1", ["/tmp/h/tmp"]) as {
+    permissions: { allow: string[]; deny: string[] };
+    sandbox: { filesystem: { denyRead: string[]; allowWrite: string[]; allowRead?: string[]; denyWrite?: string[] } };
+  };
+
+  it("puts a declared cache in the filesystem read allow list only, never in allowWrite or an allow rule", () => {
+    expect(withCache.sandbox.filesystem.allowRead).toEqual([cache]);
+    expect(withCache.sandbox.filesystem.allowWrite).not.toContain(cache);
+    expect(withCache.sandbox.filesystem.denyWrite).toEqual([cache]);
+    expect(withCache.permissions.allow.some((r) => r.includes(cache))).toBe(false);
+    expect(withCache.permissions.deny).toContain(`Edit(/${cache}/**)`);
+    expect(withCache.sandbox.filesystem.denyRead).toContain("/home/u/.config/software-factory");
+  });
+
+  it("drops a cache that overlaps a denied path, so allowRead never reopens it", () => {
+    const s = buildHarnessSettings({ ...spec, readable_paths: ["/home/u/.config"] }) as { sandbox: { filesystem: Record<string, unknown> } };
+    expect(s.sandbox.filesystem).not.toHaveProperty("allowRead");
+  });
+
+  it("with no cache, the settings are exactly those without the field", () => {
+    const { readable_paths: _, ...none } = spec;
+    expect(buildHarnessSettings({ ...none, readable_paths: [] }, "/wt/1")).toEqual(buildHarnessSettings(none, "/wt/1"));
+    expect(JSON.stringify(buildHarnessSettings(none, "/wt/1"))).not.toMatch(/allowRead|denyWrite/);
+  });
+
+  describe("the shared file tools", () => {
+    const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+    let root: string;
+    let ctx: ToolContext;
+    let cacheDir: string;
+    let denied: string;
+
+    beforeAll(async () => {
+      root = realpathSync(mkdtempSync(join(tmpdir(), "sf-cache-")));
+      const origin = join(root, "origin.git");
+      const repo = join(root, "repo");
+      git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+      git(root, "clone", "--quiet", origin, repo);
+      writeFileSync(join(repo, "README.md"), "hi\n");
+      git(repo, "add", ".");
+      git(repo, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "-m", "init");
+      git(repo, "push", "--quiet", "origin", "main");
+      const sandbox = new NoOpSandbox(join(root, "worktrees"));
+      const handle = await sandbox.create({ repo, branch: "factory/wi_cache", base_ref: "main" });
+      cacheDir = join(root, "gradle-caches");
+      mkdirSync(join(cacheDir, "modules"), { recursive: true });
+      writeFileSync(join(cacheDir, "modules", "dep.pom"), "<project>cached</project>\n");
+      denied = join(root, "secrets");
+      mkdirSync(denied);
+      writeFileSync(join(denied, "key.txt"), "TOP-SECRET-7f3a\n");
+      // A link inside the cache to the denied folder: its resolved form is denied.
+      symlinkSync(denied, join(cacheDir, "modules", "escape"));
+      ctx = {
+        sandbox,
+        handle,
+        policy: guardPolicy({ workdir: handle.workdir, deny_paths: [denied], writable_paths: [], readable_paths: [cacheDir], env_allowlist: {} }),
+      };
+    });
+    afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+    it("Read, Glob and Grep accept a path under a declared cache", async () => {
+      const read = await Read.run({ file_path: join(cacheDir, "modules", "dep.pom") }, ctx);
+      expect(read).toMatchObject({ ok: true, content: expect.stringContaining("cached") });
+      expect(await Glob.run({ pattern: "**/*.pom", path: cacheDir }, ctx)).toMatchObject({ ok: true, content: expect.stringContaining("dep.pom") });
+      expect(await Grep.run({ pattern: "cached", path: cacheDir }, ctx)).toMatchObject({ ok: true, content: expect.stringContaining("dep.pom") });
+    });
+
+    it("Write and Edit refuse a path under a declared cache and leave it unchanged", async () => {
+      const file = join(cacheDir, "modules", "dep.pom");
+      expect(await Write.run({ file_path: join(cacheDir, "new.txt"), content: "x" }, ctx)).toMatchObject({ ok: false, error: expect.stringContaining("outside the workdir") });
+      expect(await Edit.run({ file_path: file, old_string: "cached", new_string: "changed" }, ctx)).toMatchObject({ ok: false });
+      expect(readFileSync(file, "utf8")).toContain("cached");
+      expect(existsSync(join(cacheDir, "new.txt"))).toBe(false);
+    });
+
+    it("a deny_paths entry stays unreadable, directly or through a link inside the cache", async () => {
+      for (const file_path of [join(denied, "key.txt"), join(cacheDir, "modules", "escape", "key.txt")]) {
+        const r = await Read.run({ file_path }, ctx);
+        expect(r.ok, file_path).toBe(false);
+        expect(JSON.stringify(r)).not.toContain("TOP-SECRET");
+      }
+    });
+
+    it("without readable_paths a cache read is refused, as before", async () => {
+      const plain = { ...ctx, policy: guardPolicy({ workdir: ctx.handle.workdir, deny_paths: [denied], writable_paths: [], env_allowlist: {} }) };
+      expect(await Read.run({ file_path: join(cacheDir, "modules", "dep.pom") }, plain)).toMatchObject({ ok: false });
+    });
   });
 });
 

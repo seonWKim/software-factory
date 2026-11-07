@@ -1,7 +1,9 @@
 // Golden set for the reviewer (design §6 Measurement): known-bad and known-good factory PRs, replayed
 // through the same runner, prompt, schema and tools as the worker's review run, scored as catch rate and
 // false-alarm rate. Cases live in the repo (`golden/cases/<pr>/`); results live under the state dir, never
-// in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes.
+// in the store. Nothing here writes to GitHub, builds a ToolBroker, or pushes. `compareCases` replays the
+// same cases twice through `runCases` (base prompt, head prompt) and applies GOLDEN_MARGIN; it runs locally
+// only (design §6, owner decision 2026-11-07: no model credential in GitHub Actions).
 
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
@@ -259,6 +261,9 @@ export function renderSpec(item: WorkItem): string {
 export const GOLDEN_AGENTS = ["reviewer"] as const;
 export type GoldenAgent = (typeof GOLDEN_AGENTS)[number];
 
+/** The prompt file (under `prompts/`) each agent's replay uses: a case without a `prompts` tag gets its agent's. */
+export const AGENT_PROMPT: Record<GoldenAgent, string> = { reviewer: "review.md" };
+
 function checkAgent(agent: string | undefined): GoldenAgent {
   if (agent !== "reviewer") throw new GoldenError(`only --agent reviewer is supported (got ${agent === undefined ? "none" : JSON.stringify(agent)})`);
   return agent;
@@ -399,13 +404,18 @@ export function formatReport(report: GoldenReport): string {
 interface LoadedCase {
   id: string;
   expect: Expect;
+  /** The prompt files the case replays (`case.json` `prompts`, else the agent's prompt). */
+  prompts: string[];
   work_item_id: string;
   diff: string;
   spec: string;
 }
 
-/** Every case under `casesDir`, sorted by id. A malformed case fails the whole run before any agent runs. */
-async function loadCases(casesDir: string): Promise<LoadedCase[]> {
+/**
+ * Every case under `casesDir`, sorted by id; with `only`, just the cases tagged with one of those prompts.
+ * A malformed case fails the whole run before any agent runs.
+ */
+async function loadCases(casesDir: string, agent: GoldenAgent, only?: readonly string[]): Promise<LoadedCase[]> {
   if (!(await exists(casesDir))) return [];
   const ids = (await readdir(casesDir, { withFileTypes: true }))
     .filter((e) => e.isDirectory() && !e.name.startsWith("."))
@@ -414,11 +424,14 @@ async function loadCases(casesDir: string): Promise<LoadedCase[]> {
   const out: LoadedCase[] = [];
   for (const id of ids) {
     const dir = join(casesDir, id);
-    const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string };
+    const meta = JSON.parse(await readFile(join(dir, "case.json"), "utf8")) as { expect?: string; work_item_id?: string; prompts?: unknown };
     const expect = checkExpect(typeof meta.expect === "string" ? meta.expect : "", `case ${id}: expect`)!;
+    const prompts = casePrompts(meta.prompts, id) ?? [AGENT_PROMPT[agent]];
+    if (only && !prompts.some((p) => only.includes(p))) continue;
     out.push({
       id,
       expect,
+      prompts,
       work_item_id: typeof meta.work_item_id === "string" ? meta.work_item_id : `golden_${id}`,
       diff: await readFile(join(dir, "diff.patch"), "utf8"),
       spec: await readFile(join(dir, "spec.md"), "utf8"),
@@ -432,9 +445,9 @@ async function loadCases(casesDir: string): Promise<LoadedCase[]> {
  * own detached sandbox (`branch: null`), destroyed after. The prompt is the stored spec plus the stored
  * diff, in the worker's review layout; no doc index, so a replay does not depend on the docs at run time.
  */
-export async function runCases(deps: GoldenRunDeps, opts: { agent: string }): Promise<GoldenReport> {
-  checkAgent(opts.agent);
-  const cases = await loadCases(deps.casesDir);
+export async function runCases(deps: GoldenRunDeps, opts: { agent: string; prompts?: readonly string[] }): Promise<GoldenReport> {
+  const agent = checkAgent(opts.agent);
+  const cases = await loadCases(deps.casesDir, agent, opts.prompts);
   const stamp = deps.clock.now().toISOString();
   const signal = deps.signal ?? new AbortController().signal;
   const results: CaseResult[] = [];
@@ -447,6 +460,14 @@ export async function runCases(deps: GoldenRunDeps, opts: { agent: string }): Pr
   const file = join(deps.resultsDir, `${stamp.replace(/[:.]/g, "-")}.json`);
   await writeFile(file, body, { flag: "wx" });
   return { ...rates, cases: results, results_file: file };
+}
+
+function casePrompts(v: unknown, id: string): string[] | null {
+  if (v === undefined) return null;
+  if (!Array.isArray(v) || v.length === 0 || !v.every((p) => typeof p === "string" && /^[\w.-]+\.md$/.test(p))) {
+    throw new GoldenError(`case ${id}: prompts must be a non-empty list of prompt file names (e.g. "review.md")`);
+  }
+  return v as string[];
 }
 
 async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal: AbortSignal): Promise<CaseResult> {
@@ -485,6 +506,163 @@ async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal:
   } finally {
     if (handle) await deps.sandbox.destroy(handle);
   }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// golden compare
+
+/**
+ * The most the catch rate may drop, or the false-alarm rate may rise, from the base prompt to the head
+ * prompt before the comparison fails. A proposed default (design §6); one replay per case, so it is coarse.
+ */
+export const GOLDEN_MARGIN = 0.05;
+
+/**
+ * Code that fills or sends every prompt: a change to one of these replays the cases of every prompt.
+ * An entry ending in `/` is a directory. A change under `prompts/` replays only that prompt's cases.
+ */
+export const PROMPT_CODE_PATHS: readonly string[] = [
+  "src/golden.ts",
+  "src/core/outputs.ts",
+  "src/core/model-choice.ts",
+  "src/core/worker.ts",
+  "src/impl/runner/",
+  "src/impl/claude/",
+  "src/impl/openai/",
+  "src/impl/llm/",
+];
+
+/** The prompt files a change to `changed` (repo-relative paths) can affect; `null` (no change list) means all. */
+export function affectedPrompts(changed: readonly string[] | null, all: readonly string[]): string[] {
+  if (changed === null) return [...all];
+  const code = changed.some((f) => PROMPT_CODE_PATHS.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p)));
+  if (code) return [...all];
+  return all.filter((name) => changed.includes(`prompts/${name}`));
+}
+
+export interface CompareOptions {
+  agent: GoldenAgent;
+  /** Path of the base prompt file (the head prompt is the repo's current one). */
+  base: string;
+  /** `--since <ref>`: the changed paths are read from git against this ref; absent: the repo's base branch. */
+  since?: string;
+  /** `--all`: replay without looking at what changed. */
+  all: boolean;
+}
+
+export function parseCompareArgs(args: readonly string[]): CompareOptions {
+  const usage = "usage: factory golden compare --base <file> [--agent reviewer] [--since <ref> | --all]";
+  let agent: string | undefined = "reviewer";
+  let base: string | undefined;
+  let since: string | undefined;
+  let all = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    const value = () => {
+      const v = args[++i];
+      if (v === undefined || v.startsWith("--")) throw new GoldenError(usage);
+      return v;
+    };
+    if (a === "--agent") agent = value();
+    else if (a === "--base") base = value();
+    else if (a === "--since") since = value();
+    else if (a === "--all") all = true;
+    else throw new GoldenError(`unknown argument ${a}; ${usage}`);
+  }
+  if (base === undefined || (all && since !== undefined)) throw new GoldenError(usage);
+  return { agent: checkAgent(agent), base, ...(since !== undefined ? { since } : {}), all };
+}
+
+export type CompareOutcome = "pass" | "fail" | "skipped";
+
+export interface CompareReport {
+  agent: GoldenAgent;
+  outcome: CompareOutcome;
+  /** Why it skipped or failed; null on a pass. */
+  reason: string | null;
+  margin: number;
+  /** The prompt files whose cases were replayed. */
+  prompts: string[];
+  base: Rates["rates"] | null;
+  head: Rates["rates"] | null;
+  /** `<resultsDir>/compare-<timestamp>/compare.json`. */
+  record_file: string;
+}
+
+/** Fails when the catch rate drops, or the false-alarm rate rises, by more than `margin`. Null rates skip. */
+export function compareRates(base: Rates["rates"], head: Rates["rates"], margin = GOLDEN_MARGIN): { outcome: CompareOutcome; reason: string | null } {
+  const na = (
+    [
+      ["base catch_rate", base.catch_rate],
+      ["base false_alarm_rate", base.false_alarm_rate],
+      ["head catch_rate", head.catch_rate],
+      ["head false_alarm_rate", head.false_alarm_rate],
+    ] as const
+  ).filter(([, r]) => r.value === null);
+  if (na.length > 0) return { outcome: "skipped", reason: `n/a rate (no completed case): ${na.map(([n]) => n).join(", ")}` };
+  // A tiny epsilon so a change of exactly the margin passes despite floating point.
+  const over = (d: number) => d > margin + 1e-9;
+  const reasons: string[] = [];
+  const drop = base.catch_rate.value! - head.catch_rate.value!;
+  const rise = head.false_alarm_rate.value! - base.false_alarm_rate.value!;
+  if (over(drop)) reasons.push(`catch_rate dropped by ${drop.toFixed(3)} (more than ${margin})`);
+  if (over(rise)) reasons.push(`false_alarm_rate rose by ${rise.toFixed(3)} (more than ${margin})`);
+  return reasons.length > 0 ? { outcome: "fail", reason: reasons.join("; ") } : { outcome: "pass", reason: null };
+}
+
+/**
+ * Replays the cases of the prompts `changed` affects through `runCases`, once with `basePrompt` and once
+ * with the head prompt (`deps.reviewPrompt`), and compares the rates. Skips (no replay) when the change
+ * touches no prompt or prompt code, when no case is tagged with an affected prompt, or (after the replay)
+ * when a rate is n/a. Every outcome is recorded in `compare.json` (G5-scanned, channel `run_outcome`).
+ */
+export async function compareCases(
+  deps: GoldenRunDeps,
+  opts: { agent: GoldenAgent; basePrompt: string; changed: readonly string[] | null },
+): Promise<CompareReport> {
+  const agent = checkAgent(opts.agent);
+  const prompt = AGENT_PROMPT[agent];
+  const dir = join(deps.resultsDir, `compare-${deps.clock.now().toISOString().replace(/[:.]/g, "-")}`);
+  const prompts = affectedPrompts(opts.changed, [prompt]);
+  let base: Rates["rates"] | null = null;
+  let head: Rates["rates"] | null = null;
+  let verdict: { outcome: CompareOutcome; reason: string | null };
+  if (prompts.length === 0) {
+    verdict = { outcome: "skipped", reason: `the change touches neither prompts/${prompt} nor the code that fills or sends prompts` };
+  } else if ((await loadCases(deps.casesDir, agent, prompts)).length === 0) {
+    verdict = { outcome: "skipped", reason: `no golden cases tagged ${prompts.join(", ")} in golden/cases` };
+  } else {
+    // The same replay path for both sides; each side keeps its own results file.
+    const run = (reviewPrompt: string, side: string) =>
+      runCases({ ...deps, reviewPrompt, resultsDir: join(dir, side) }, { agent, prompts });
+    base = (await run(opts.basePrompt, "base")).rates;
+    head = (await run(deps.reviewPrompt, "head")).rates;
+    verdict = compareRates(base, head);
+  }
+  const record_file = join(dir, "compare.json");
+  const report: CompareReport = { agent, ...verdict, margin: GOLDEN_MARGIN, prompts, base, head, record_file };
+  const body = `${JSON.stringify({ ...report, record_file: undefined }, null, 2)}\n`;
+  await scanAll(deps.scanner, "run_outcome", [body], "the compare record");
+  await mkdir(dir, { recursive: true });
+  await writeFile(record_file, body, { flag: "wx" });
+  return report;
+}
+
+/** The compare report as Markdown, for a terminal or a job summary. */
+export function formatCompare(r: CompareReport): string {
+  const side = (name: string, rates: Rates["rates"] | null) =>
+    rates ? [`- ${name}: ${formatRate("catch_rate", rates.catch_rate)}; ${formatRate("false_alarm_rate", rates.false_alarm_rate)}`] : [];
+  return [
+    `## golden compare (${r.agent}): ${r.outcome}`,
+    "",
+    ...(r.outcome === "skipped" ? [`Comparison skipped: ${r.reason}.`] : []),
+    ...(r.outcome === "fail" ? [`Failed: ${r.reason}.`] : []),
+    ...side("base", r.base),
+    ...side("head", r.head),
+    `- margin: ${r.margin}`,
+    ...(r.prompts.length > 0 ? [`- prompts: ${r.prompts.join(", ")}`] : []),
+    `- record: ${r.record_file}`,
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------------------------------------

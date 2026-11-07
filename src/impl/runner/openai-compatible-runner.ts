@@ -129,6 +129,7 @@ export class OpenAICompatibleRunner implements AgentRunner {
       workdir: spec.sandbox.workdir,
       deny_paths: spec.deny_paths,
       writable_paths: spec.writable_paths,
+      readable_paths: spec.readable_paths ?? [],
       env_allowlist: spec.env_allowlist,
     });
     const ctx: ToolContext = { sandbox: this.opts.sandbox, handle: spec.sandbox, policy, signal: stop.signal };

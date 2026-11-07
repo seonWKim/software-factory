@@ -2,6 +2,7 @@ import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
+import { isUnder } from "./tools/paths.js";
 import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 
@@ -192,6 +193,41 @@ export interface LoadedConfig {
    * answer's `allowed_paths` when its `files_to_change` names the `when` path. Absent: none.
    */
   path_companions?: PathCompanion[];
+  /**
+   * The project's toolchain (design 05-sandbox.md, issue #334): `toolchain` from factory.config.json, checked at
+   * load by compose.ts (`toolchainConfig`). Absent: no warm step, no readable cache and no extra agent env, so
+   * every run is exactly as before the block existed.
+   */
+  toolchain?: ToolchainConfig;
+}
+
+/**
+ * The checked `toolchain` block. `caches`: absolute, normalized folders (a leading `~` taken against the owner's
+ * HOME) the agent may read and never write; none overlaps a denied path. `env`: non-secret entries added to the
+ * agent's environment (G1 checks on key and value). `warm_command`: argv the worker runs before the agent, with
+ * the network and no credential; absent in the file: `repo.install_command`.
+ */
+export interface ToolchainConfig {
+  caches: readonly string[];
+  env: Readonly<Record<string, string>>;
+  warm_command: readonly string[];
+}
+
+/** The keys of the `toolchain` block. */
+export const TOOLCHAIN_KEYS = ["caches", "env", "warm_command"] as const;
+
+/**
+ * Each declared cache that cannot be read safely, with the denied path it overlaps: the cache is that path, lies
+ * inside it, or holds it (the secret file's folder is a `deny_paths` entry). One entry per pair; `index` is the
+ * cache's place in `caches`. Both lists normalized.
+ */
+export function toolchainCacheOverlaps(
+  caches: readonly string[],
+  denied: readonly string[],
+): { index: number; cache: string; denied: string }[] {
+  return caches.flatMap((cache, index) =>
+    denied.filter((d) => isUnder(cache, d) || isUnder(d, cache)).map((d) => ({ index, cache, denied: d })),
+  );
 }
 
 /** The alarm keys when factory.config.json gives none (design 05-alarms). */

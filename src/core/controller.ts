@@ -282,6 +282,8 @@ const FLOOR_TIER = "floor_tier";
  * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
  */
 const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
+/** The state a PR waiting on its merge conflict is in; every comment that sets it ends with its footer (`/resolve`). */
+const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -2884,12 +2886,14 @@ export class Controller {
             case "conflict":
               return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
             case "tests_failed":
-              return {
-                patch: { blocked_reason: CONFLICT_PENDING },
-                actor: SYSTEM,
-                reason: "update_tests_failed",
-                ack_run: run.id,
-              };
+              // The worker's PR comment names the failure; this one offers the command that applies now.
+              await this.prComment(it, `update-tests-failed:${run.id}`, [
+                `The base branch merged cleanly into PR #${it.pr_number}, but the tests failed on the updated branch, so nothing was pushed.`,
+                "Comment `/resolve [notes]` to let an agent fix it, or fix it by hand.",
+                "",
+                footerAfter(it, CONFLICT_PATCH),
+              ].join("\n"));
+              return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_tests_failed", ack_run: run.id };
             default:
               return {
                 // No comment is posted for this one, so an older failure link must not stand in for it.
@@ -3234,8 +3238,10 @@ export class Controller {
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
+        "",
+        footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: { blocked_reason: CONFLICT_PENDING }, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
@@ -3287,13 +3293,15 @@ export class Controller {
       `Nothing was pushed; PR #${it.pr_number} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
+      "",
+      footerAfter(it, CONFLICT_PATCH),
     ].join("\n");
     // The detail is run output (G5): post it only if the scan passes, else the comment without it.
     const scan = await this.d.scanner.scan("comment", body(true));
     if (auto) await this.prComment(it, `run-failed:${run.id}`, body(scan.clean));
     else await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
     return {
-      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING },
+      patch: CONFLICT_PATCH,
       actor: SYSTEM,
       reason: "resolve_failed",
       detail: { run_id: run.id, error_code: code, ...(auto ? { base_sha: auto.base_sha, attempt: auto.attempt } : {}) },
