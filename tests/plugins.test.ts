@@ -75,6 +75,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
   test_database: { none: NoTestDatabase },
+  // Optional with no default (issue #172): the default selection builds no forge.
+  forge: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -176,8 +178,14 @@ describe("plugin registry: defaults", () => {
       test_database: "none",
     });
     const ctx = await context(loaded);
+    expect(loaded.plugins).not.toHaveProperty("forge");
     for (const kind of PLUGIN_KINDS) {
       const name = loaded.plugins[kind];
+      if (REGISTRY[kind].optional) {
+        expect(name, kind).toBeUndefined();
+        continue;
+      }
+      if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
       expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
       if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
@@ -741,7 +749,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 16 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(16);
+  it("covers 17 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(17);
   });
 });
