@@ -82,6 +82,7 @@ import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../i
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
+import { labelTarget } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
@@ -535,7 +536,11 @@ export class Controller {
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
-    for (const it of items) if (it.stage !== "CLOSED") await this.showStatus(it);
+    const open = items.filter((it) => it.stage !== "CLOSED");
+    // One batched read of the stored label states: a target already showing its status costs no call at all.
+    const stored = await this.d.store.listLabelStates(open.map((it) => it.source.id));
+    const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
+    for (const it of open) await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
   }
 
   async tickModelProbe(): Promise<void> {
@@ -3192,12 +3197,12 @@ export class Controller {
 
   /**
    * The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. An
-   * adopted item's source is its PR, so it is labelled once.
+   * adopted item's source is its PR, so it is labelled once. `current` says a target already shows the status.
    */
-  private async showStatus(it: WorkItem): Promise<void> {
+  private async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
-    await this.setStatus(it.source, status, null);
-    if (it.pr_number !== null && it.origin !== "adopted") await this.setStatus(it.source, status, it.pr_number);
+    if (!current(null)) await this.setStatus(it.source, status, null);
+    if (it.pr_number !== null && it.origin !== "adopted" && !current(it.pr_number)) await this.setStatus(it.source, status, it.pr_number);
   }
 
   /**
@@ -3226,10 +3231,19 @@ export class Controller {
     return (await this.post(it.source, body, `<!-- factory:${key} -->`))?.url ?? null;
   }
 
-  /** postComment through the adapter of `source`'s type; null (and a warning) when none is configured. */
+  /**
+   * postComment through the adapter of `source`'s type; null (and a warning) when none is configured. A marker the
+   * store has a posted record of returns its URL with no call; a changed body is not edited, only logged.
+   */
   private async post(source: SourceRef, body: string, marker: string): Promise<{ url: string | null } | null> {
     const adapter = this.adapterFor(source, "postComment");
-    return adapter ? adapter.postComment(source, body, marker) : null;
+    if (!adapter) return null;
+    const stored = await this.d.store.getPostedComment(source.id, marker, body);
+    if (stored?.comment_id) {
+      if (!stored.same_body) this.d.log.warn("comment already posted with another body; not edited", { source_id: source.id, marker });
+      return { url: stored.url };
+    }
+    return adapter.postComment(source, body, marker);
   }
 
   /**
