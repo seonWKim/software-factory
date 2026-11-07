@@ -281,14 +281,17 @@ export interface Loaded {
 
 /** The placeholder in prompts/*.md that names the project's pre-push checks. */
 export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+/** The placeholder in prompts/*.md that names where a change lives: the forge plugin, or "local" with none. */
+export const FORGE_PLACEHOLDER = "{{forge}}";
 
 /**
- * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
- * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
+ * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; and the forge name
+ * (`plugins.forge`, else "local").
  */
-export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge);
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -419,7 +422,7 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
-  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local");
   const prompts: Prompts = {
     triage: await readPrompt("triage"),
     implement: await readPrompt("implement"),
