@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, realpathSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 
 function git(cwd: string, ...args: string[]) {
@@ -88,15 +89,15 @@ describe("NoOpSandbox", () => {
 });
 
 type Call = { args: string[] };
-const ok = (stdout = "") => ({ exit_code: 0, stdout, stderr: "" });
-const fail = (stderr: string) => ({ exit_code: 1, stdout: "", stderr });
+const ok = (stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
+const fail = (stderr: string): ExecResult => ({ exit_code: 1, signal: null, stdout: "", stderr, timed_out: false });
 const noWait = async () => {};
 
 /** A fake runner: `fetch` answers from `onFetch`, `rev-parse` answers a fixed sha. Records every git call's args. */
-function fakeRunner(onFetch: (n: number) => Promise<{ exit_code: number; stdout: string; stderr: string }> | { exit_code: number; stdout: string; stderr: string }) {
+function fakeRunner(onFetch: (n: number) => Promise<ExecResult> | ExecResult) {
   const calls: Call[] = [];
   let fetches = 0;
-  const run = async (cmd: readonly string[]) => {
+  const run = async (cmd: readonly string[]): Promise<ExecResult> => {
     const args = cmd.slice(3); // drop "git", "-C", <cwd>
     calls.push({ args });
     if (args[0] === "fetch") return onFetch(fetches++);
