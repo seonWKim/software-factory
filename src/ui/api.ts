@@ -5,10 +5,10 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The three write routes, POST
-// /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts) and POST
-// /api/v1/pauses/resume (pause-api.ts), are handled behind server.ts's write guards; GET /api/v1/settings,
-// GET /api/v1/session and GET /api/v1/pauses are here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The four write routes, POST
+// /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts), POST /api/v1/pauses/resume
+// (pause-api.ts) and POST /api/v1/standing (standing-api.ts), are handled behind server.ts's write guards; GET
+// /api/v1/settings, GET /api/v1/session, GET /api/v1/pauses and GET /api/v1/standing are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
@@ -24,7 +24,8 @@ import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { readGitHubBudget } from "./github-budget.js";
-import { effectiveWorkers, readSettings } from "./settings-api.js";
+import { effectiveGlobal, readSettings } from "./settings-api.js";
+import { readStanding } from "./standing-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -86,6 +87,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return data(await dataTables(c.data()));
     case "/pauses":
       return pauses(d);
+    case "/standing":
+      return ok(await readStanding(d));
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -251,7 +254,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
   const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
   // The effective `workers` setting (file, override or default, capped at max_workers), not the file value the status holds.
-  const workers = status && c.d.settings ? await effectiveWorkers(c.d, c.d.settings) : status ? { value: status.workers, source: "file" as const } : null;
+  const workers = status && c.d.settings ? await effectiveGlobal(c.d, "workers") : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
     rev: status.rev,
