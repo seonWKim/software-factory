@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { Run, WorkerId, WorkItem } from "../src/core/types.js";
@@ -306,5 +307,19 @@ describe("GitHubIssueSource.prCheckResults", () => {
   it("is empty when no check ran", async () => {
     const { source } = make();
     expect(await source.prCheckResults(42)).toEqual([]);
+  });
+});
+
+describe("prompts/review.md", () => {
+  const text = readFileSync("prompts/review.md", "utf8");
+
+  it("tells the reviewer to read the CI results and to run tests only to confirm a specific finding", () => {
+    expect(text).toMatch(/Read the "CI results" section/);
+    expect(text).toMatch(/Run tests only to confirm a specific finding/);
+    expect(text).not.toMatch(/Run the tests \(`npm test`/);
+  });
+
+  it("puts notes that are not findings in the summary", () => {
+    expect(text).toMatch(/a note that is not one \(for example "needs a human merge", "not a defect"[^)]*\) goes in `summary`, not in findings/);
   });
 });
