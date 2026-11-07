@@ -1151,7 +1151,7 @@ export class SqlFactoryStore implements FactoryStore {
     const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
     const created = await this.insertOnce(
       this.db,
-      `INSERT INTO improve_reports (id, run_id, project, window_start, window_end, failure_groups, patterns, created_at)
+      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         report.id, report.run_id, report.project, report.window_start, report.window_end,
@@ -2513,7 +2513,7 @@ function rowToImproveReport(row: Row): ImproveReport {
   return {
     id: row.id as ImproveReportId,
     run_id: row.run_id as RunId,
-    project: row.project as string,
+    project: row.project_key as string,
     window_start: row.window_start as Timestamp,
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
