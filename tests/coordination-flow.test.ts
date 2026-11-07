@@ -153,6 +153,42 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     expect(await f.claim()).toBeNull();
   });
 
+  it("/retry on a dependency closed unmerged reads the dependencies again: a PR closed unmerged still refuses, a fixed link releases", async () => {
+    const source = new DepSource();
+    const f = await setup(source);
+    const dep = await f.item(92, { stage: "REVIEW", pr_number: 192 }, []);
+    source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
+    const a = await f.item(1);
+    await f.controller.tickCoordination();
+    await f.controller.handleEvent({ kind: "pr_closed", pr_number: 192, head_branch: `factory/${dep}` });
+    expect(await f.get(a)).toMatchObject({ blocked_on: "human", blocked_reason: "dependency_closed:#92" });
+    // The block's comment names the command that re-checks it.
+    expect(source.comments.find((c) => c.marker === `<!-- factory:dependency-closed:${a}:o/r#92 -->`)!.body).toContain("`/retry`");
+
+    // The PR stays closed unmerged: refused, nothing changes, no run queued.
+    const before = await f.get(a);
+    await f.controller.handleEvent({ kind: "retry_requested", source: issue(1).source, comment_id: "601", requester: alice });
+    expect(await f.get(a)).toEqual(before);
+    expect(source.comments.find((c) => c.marker === "<!-- factory:refused:601 -->")!.body).toContain("#92 is still closed without a merge");
+    expect(await f.queued(a)).toEqual([]);
+
+    // The link now points at an open issue outside the factory: read at once (no refresh interval), a new
+    // implement run queued with the human as actor, then held as any dependency hold.
+    source.links.set("o/r#1", [{ depends_on: "other/repo#5", kind: "depends_on" }]);
+    await f.controller.handleEvent({ kind: "retry_requested", source: issue(1).source, comment_id: "602", requester: alice });
+    expect(await f.get(a)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for other/repo#5 to merge" });
+    expect(await f.queued(a)).toHaveLength(1);
+    expect(await f.claim()).toBeNull();
+    const retried = (await f.store.listStateChanges(a)).find((c) => c.reason === "retry_requested")!;
+    expect(retried).toMatchObject({ actor: { kind: "user" }, detail: { released: "dependency_closed:#92" } });
+
+    // It merges: released on the next read, and the run is claimed.
+    source.states.set("other/repo#5", "merged");
+    f.clock.advance(10 * 60_000);
+    await f.controller.tickCoordination();
+    expect(await f.claim()).toMatchObject({ work_item_id: a, kind: "implement" });
+  });
+
   it("/approve on a dependency hold does not lift it, and the reply says why", async () => {
     const source = new DepSource();
     const f = await setup(source);
