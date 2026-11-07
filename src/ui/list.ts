@@ -36,6 +36,8 @@ export interface ListRow extends FilterRow {
   /** The item's queued or running run, and a queued run's 1-based place in the queue. */
   run: Run | null;
   position: number | null;
+  /** The latest claim decision of the item's active implement run; null when it has none or it is from an earlier run. */
+  decision: ClaimDecision | null;
   /** Merge conflicts resolved automatically and those that needed a person, from the item's history. */
   conflicts: ConflictCounts;
   /** Why the item waits (why.ts); its text is not withheld yet. */
@@ -50,14 +52,16 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   const items = await c.store.listWorkItemsWhere({ exclude_closed: !showsClosed(f), limit: LIST_LIMIT });
   const { active, position } = await activeRuns(c.store);
   const pauses = await readClaimPauses(c.store);
+  // One read for every row's latest claim decision; only an active implement run gets one.
+  const decisions = await c.store.listLatestClaimDecisions(items.filter((it) => active.get(it.id)?.kind === "implement").map((it) => it.id));
 
-  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why })[] = [];
+  const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why; decision: ClaimDecision | null })[] = [];
   const phases = items.filter((it) => it.parent_id !== null);
   for (const it of items) {
     const run = active.get(it.id) ?? null;
     const blocked = it.blocked_on === "human" || it.blocked_on === "budget";
     const changes = await c.store.listStateChanges(it.id);
-    const decision = await latestDecision(c.store, it.id, run);
+    const decision = run?.kind === "implement" ? (decisions.get(it.id) ?? null) : null;
     const waiting = waitingOn(it, phases);
     inputs.push({
       item: it,
@@ -72,6 +76,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       ...waiting,
       deadlock: deadlocked(decision, run),
       conflicts: conflictCounts(await c.store.listRuns(it.id), changes),
+      decision,
       why: whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, pauses, waiting, c.now),
     });
   }
@@ -95,6 +100,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       runStatus: r.input.run?.status ?? null,
       run: active.get(it.id) ?? null,
       position: position.get(active.get(it.id)?.id ?? "") ?? null,
+      decision: r.input.decision && r.input.decision.run_id === active.get(it.id)?.id ? r.input.decision : null,
       conflicts: r.input.conflicts,
       why: r.input.why,
     });

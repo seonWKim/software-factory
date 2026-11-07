@@ -325,11 +325,10 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const shown = applyFilters(rows, f);
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
-  const decisions = await c.d.store.listLatestClaimDecisions(shown.map((r) => r.item.id));
   const out = [];
   for (const r of shown) {
     const it = r.item;
-    const decision = decisions.get(it.id) ?? null;
+    const decision = r.decision; // the current run's only: an earlier run's hold is stale
     const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
