@@ -297,6 +297,8 @@ export interface WorkerPause {
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update). `preflight_access`:
 the push_access or pr_api preflight check failed another way (issue #216), so no implement-type claim either.
+ * `github_rate_limit`: GitHub's REST rate limit was hit (2026-11-07), so no implement, update or review claim and no
+ * GitHub poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
  * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
@@ -304,7 +306,8 @@ the push_access or pr_api preflight check failed another way (issue #216), so no
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
  */
-export type ClaimPauseName = "rate_limit" | "forge_auth" | "preflight_access" | "model_stall" | "model_stall_since" | "model_answered";
+export type ClaimPauseName =
+  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit" | "model_stall" | "model_stall_since" | "model_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
@@ -472,7 +475,10 @@ export type RunOutcome =
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
       infra: boolean;
-      /** For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth` and `preflight_access`: when the pause ends. */
+      /**
+       * For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth`, `preflight_access` and
+       * `github_rate_limited`: when the pause ends.
+       */
       reset_at?: Timestamp | null;
       /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
       output_tail?: string;
