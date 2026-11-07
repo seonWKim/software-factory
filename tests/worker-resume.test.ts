@@ -72,7 +72,12 @@ describe("wip branch on a failed push or PR", () => {
     const retry = (await f.runs(it0, "implement"))[1]!;
     expect(retry.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, commits: 2 } });
     expect(pushes.at(-1)).toEqual({ branch: `factory/${it0.id}`, head: HEAD });
-    expect(f.sandbox.gitCalls).toContain(`-c core.hooksPath=/dev/null checkout --quiet -f -B factory/${it0.id} ${HEAD}`);
+    // A fresh index, the wip head checked out, then no untracked files left from the base the clone started on:
+    // files the base added since the wip commit would make the sync's merge abort (git_failed on every retry).
+    const checkout = f.sandbox.gitCalls.indexOf(`-c core.hooksPath=/dev/null checkout --quiet -f -B factory/${it0.id} ${HEAD}`);
+    expect(checkout).toBeGreaterThan(0);
+    expect(f.sandbox.gitCalls[checkout - 1]).toBe(`read-tree ${HEAD}`);
+    expect(f.sandbox.gitCalls[checkout + 1]).toBe("-c core.hooksPath=/dev/null clean -ffdq");
     // The PR body is the failed run's agent summary.
     const pr = f.broker.calls.filter((c) => c.name === "github.open_pr").at(-1)!;
     expect((pr.args as { body: string }).body).toContain("the summary");
