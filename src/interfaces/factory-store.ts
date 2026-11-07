@@ -640,7 +640,7 @@ export interface FactoryStore {
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
-  // through the same path as a comment command. Nothing creates them yet but tests.
+  // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
 
   /**
    * Records one request, pending (handled_at and refusal null). Its `seq` is greater than every request recorded
