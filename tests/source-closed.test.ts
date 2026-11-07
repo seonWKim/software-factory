@@ -30,6 +30,9 @@ class RecordingBroker implements ToolBroker {
   listTools(grants: readonly string[]): ToolDescriptor[] {
     return this.inner.listTools(grants);
   }
+  allTools(): readonly ToolDescriptor[] {
+    return this.inner.allTools();
+  }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const result = await this.inner.call(ctx, name, args);
     this.results.push({ name, result });

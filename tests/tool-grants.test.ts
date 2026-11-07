@@ -127,7 +127,7 @@ describe("tool_grants at startup", () => {
   });
 
   it("a broker that lists no tools at all can be granted nothing", () => {
-    const bare: Pick<ToolBroker, "allTools"> = {};
+    const bare: Pick<ToolBroker, "allTools"> = { allTools: () => [] };
     expect(() => toolGrantsConfig({ triage: ["test.read_note"] }, bare)).toThrow(/valid read-only tools of the configured broker: \(none\)/);
     expect(toolGrantsConfig({}, bare)).toEqual({});
   });
