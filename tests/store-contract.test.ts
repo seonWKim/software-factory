@@ -1720,7 +1720,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
   // App command requests (issue #245, migration 23 on both backends).
-  describe("dependency edges keep the issue updated_at they were read at (migrations 26 and 27)", () => {
+  describe("dependency edges keep the issue updated_at they were read at (migrations 27 and 28)", () => {
     const T1 = "2026-11-07T10:00:00.000Z" as Timestamp;
     const T2 = "2026-11-07T11:00:00.000Z" as Timestamp;
 
