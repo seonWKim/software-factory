@@ -309,7 +309,18 @@ interface RunScratch {
   kept?: { folder: string; session: string };
   /** Times the gate hooks' Stop hook sent an agent step of this run back (capped by `agent_stop_checks`). */
   stop_blocks?: number;
+  /** The toolchain's warm_command ran for this run (design 05-sandbox.md): later agent steps skip it. */
+  warmed?: boolean;
 }
+
+/**
+ * The run kinds whose first agent step the toolchain's warm_command runs before (design 05-sandbox.md, issue
+ * #334): the ones that build and run checks. Triage only reads, so it warms nothing.
+ */
+const WARM_KINDS: readonly RunKind[] = ["implement", "review", "resolve"];
+
+/** The failure code of a run whose toolchain warm_command failed: no agent started. An infra failure, retried. */
+export const WARM_FAILED = "warm_failed";
 
 /** What the fix step needs from the implement run: its git folders, model, start and the merged-in base. */
 interface FixContext {
@@ -2311,6 +2322,29 @@ export class Worker {
     if (f) throw new RunFailure("tests_failed", `\`${commandText(f.command)}\` ${f.how}`, false, f.tail ? { output_tail: f.tail } : {});
   }
 
+  /**
+   * The toolchain's warm step (design 05-sandbox.md, issue #334): `warm_command` in the run folder before the
+   * run's first agent step, as the worker (its tool env: the owner's HOME and caches, and the network), with the
+   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends
+   * the run before any agent starts, naming the command.
+   */
+  private async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
+    const round = await runChecks({
+      sandbox: this.d.sandbox,
+      handle,
+      commands: [cmd],
+      env: { ...this.d.toolEnv, ...this.slotEnv() },
+      timeout_ms: this.cfg.run_timeout_ms,
+      signal,
+      redact: [],
+    });
+    if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+    const f = round.failed;
+    if (f) {
+      throw new RunFailure(WARM_FAILED, `toolchain warm_command \`${commandText(f.command)}\` ${f.how}; no agent started`, true, f.tail ? { output_tail: f.tail } : {});
+    }
+  }
+
   private async agent(
     run: Run,
     item: WorkItem,
@@ -2338,6 +2372,11 @@ export class Worker {
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }
+    const toolchain = this.cfg.toolchain;
+    if (toolchain && s && !s.warmed && WARM_KINDS.includes(run.kind)) {
+      await this.warm(run, handle, signal, toolchain.warm_command);
+      s.warmed = true;
+    }
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
     const liveBefore = await this.liveUntracked(handle);
@@ -2356,6 +2395,8 @@ export class Worker {
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
+      // The toolchain block (design 05-sandbox.md): caches the agent may read, never write, and its env entries.
+      ...(toolchain ? { readable_paths: toolchain.caches, toolchain_env: toolchain.env } : {}),
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.

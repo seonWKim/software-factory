@@ -1,6 +1,7 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
+import { toolchainCacheOverlaps } from "../../core/config.js";
+import { FORBIDDEN_ENV, guardPolicy, toolchainEnvKeyRefusal } from "../../core/tools/index.js";
 import {
   type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage,
 } from "../../interfaces/agent-runner.js";
@@ -40,20 +41,45 @@ export interface HarnessCredential {
   value: string;
 }
 
-/** G1: the agent's whole environment, built from scratch. Nothing is inherited from the worker. */
+/**
+ * The per-run toolchain homes (design 05-sandbox.md, issue #334): with a `toolchain` block, each tool's own cache
+ * or home points into the run's TMPDIR (`<TMPDIR>/toolchain/<name>`), which the agent may already write, so a
+ * build writes there and never into a shared cache. A `toolchain.env` entry may point one elsewhere (e.g. Gradle's
+ * read-only `GRADLE_RO_DEP_CACHE` beside a per-run `GRADLE_USER_HOME`).
+ */
+export const TOOLCHAIN_HOMES: Readonly<Record<string, string>> = {
+  npm_config_cache: "npm",
+  CARGO_HOME: "cargo",
+  PIP_CACHE_DIR: "pip",
+  GRADLE_USER_HOME: "gradle",
+};
+
+/**
+ * G1: the agent's whole environment, built from scratch. Nothing is inherited from the worker. With
+ * `toolchain_env` (a `toolchain` block): the per-run toolchain homes, then its entries, each key checked again
+ * here; the fixed entries below always win. Without it: exactly the environment before the block existed.
+ */
 export function buildAgentEnv(
-  spec: Pick<AgentRunSpec, "env_allowlist">,
+  spec: Pick<AgentRunSpec, "env_allowlist" | "toolchain_env">,
   credential: HarnessCredential,
   paths: { home: string; claudeConfigDir: string; path: string },
 ): Record<string, string> {
   for (const key of Object.keys(spec.env_allowlist)) {
     if (FORBIDDEN_ENV.test(key)) throw new Error(`env_allowlist may not contain ${key} (G1)`);
   }
+  const tmp = join(paths.home, "tmp");
+  const toolchain = spec.toolchain_env;
+  for (const key of Object.keys(toolchain ?? {})) {
+    const refusal = toolchainEnvKeyRefusal(key);
+    if (refusal) throw new Error(refusal);
+  }
+  const homes = Object.fromEntries(Object.entries(TOOLCHAIN_HOMES).map(([k, dir]) => [k, join(tmp, "toolchain", dir)]));
   return {
+    ...(toolchain ? { ...homes, ...toolchain } : {}),
     ...spec.env_allowlist,
     PATH: paths.path,
     HOME: paths.home,
-    TMPDIR: join(paths.home, "tmp"),
+    TMPDIR: tmp,
     LANG: "C.UTF-8",
     TERM: "dumb",
     CLAUDE_CONFIG_DIR: paths.claudeConfigDir,
@@ -132,24 +158,33 @@ const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set(["Edit", "Write"]);
  * owner's live checkout included) never runs. No `workdir`: no run folder rule. The paths come from
  * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
  *
+ * Toolchain caches (`readable_paths`, design 05-sandbox.md): in `sandbox.filesystem.allowRead` (the OS read allow
+ * list) and, so no write root can cover them, in `denyWrite` and an `Edit(//<cache>/**)` deny rule; never in
+ * `allowWrite` or `permissions.allow`. A cache that overlaps a `deny_paths` entry is dropped here too (startup
+ * already refuses it), so `allowRead` never reopens a denied folder. None: no key is added.
+ *
  * Network: `allowLocalBinding` lets sandboxed commands bind and connect on localhost only, so tests that start a
  * local server (`listen 127.0.0.1:0`) run. No `allowedDomains` entry is added, so every other host stays denied
  * (in `-p` mode nobody can approve one). `npm_config_update_notifier=false` stops npm's own update check, which
  * otherwise asks registry.npmjs.org on every npm and npx call and is denied (docs/plugins/agent-runner.md).
  */
 export function buildHarnessSettings(
-  spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths">,
+  spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths" | "readable_paths">,
   workdir?: string,
   tmp: readonly string[] = [],
 ): Record<string, unknown> {
-  const policy = guardPolicy({ workdir: workdir ?? "/", deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, env_allowlist: {} });
+  const policy = guardPolicy({
+    workdir: workdir ?? "/", deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, readable_paths: spec.readable_paths ?? [], env_allowlist: {},
+  });
   const writeRoots = [...(workdir === undefined ? [] : [policy.workdir]), ...policy.writable_paths, ...tmp];
+  const caches = policy.readable_paths.filter((c) => toolchainCacheOverlaps([c], policy.deny_paths).length === 0);
   return {
     env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
     permissions: {
       allow: writeRoots.map((r) => `Edit(${rulePath(r)}/**)`),
       deny: [
         ...policy.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
+        ...caches.map((c) => `Edit(${rulePath(c)}/**)`),
         ...ENV_FILE_DENY,
         ...HARNESS_ONLY_DENY,
       ],
@@ -158,7 +193,11 @@ export function buildHarnessSettings(
       enabled: true,
       autoAllowBashIfSandboxed: true,
       allowUnsandboxedCommands: false,
-      filesystem: { denyRead: [...policy.deny_paths], allowWrite: [...policy.writable_paths] },
+      filesystem: {
+        denyRead: [...policy.deny_paths],
+        allowWrite: [...policy.writable_paths],
+        ...(caches.length > 0 ? { allowRead: [...caches], denyWrite: [...caches] } : {}),
+      },
       network: { allowLocalBinding: true },
       credentials: {
         envVars: [
