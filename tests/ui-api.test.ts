@@ -881,3 +881,95 @@ describe("ui api: unreviewed merges", () => {
     expect(await count()).toBe(1);
   });
 });
+
+describe("ui api: why an item waits (issue #310)", () => {
+  type WhyBody = { code: string; text: string; next_actor: string; refs: number[]; ref_url: string | null };
+  type Decision = Awaited<ReturnType<FactoryStore["listClaimDecisions"]>>[number];
+  /** The seeded store, with the claim decisions the test sets (only the claim writes real ones). */
+  async function withDecisions() {
+    const decisions = new Map<string, Decision[]>();
+    const s = await seeded({
+      store: (store) =>
+        new Proxy(store, {
+          get(target, prop, receiver) {
+            if (prop === "listClaimDecisions") return async (id: WorkItemId) => decisions.get(id) ?? [];
+            const v = Reflect.get(target, prop, receiver) as unknown;
+            return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+          },
+        }),
+    });
+    const decide = (item: WorkItem, run_id: string, decision: Decision["decision"], holder_kind: Decision["holder_kind"] = "pr") =>
+      decisions.set(item.id, [{
+        run_id, work_item_id: item.id, decision, holder_work_item_id: null, holder_ref: "#92", holder_kind,
+        shared: [], cost: 4, threshold: 2.5, fallback: false, approved_by: null, at: s.clock.now().toISOString(),
+      } as unknown as Decision]);
+    return { ...s, decide };
+  }
+  const whyOn = async (d: UiDeps, id: string) => {
+    const list = await json<{ items: { id: string; level: string; why: WhyBody }[] }>(d, "/api/v1/items");
+    const queue = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
+    const item = await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`);
+    return { row: list.items.find((i) => i.id === id)!, queued: queue.queue.find((q) => q.work_item_id === id) ?? null, item: item.item.why };
+  };
+
+  it("a held run reads 'Held behind #N' with its holder on Items, the item page and the Queue's why", async () => {
+    const { d, store, decide } = await withDecisions();
+    const held = await make(store, 20, "Held item");
+    await enqueue(store, held, "implement", "held:i", { stage: "RUNNING" });
+    const run = (await store.listRuns(held.id)).find((r) => r.kind === "implement")!;
+    decide(held, run.id, "held", "pr");
+    const w = await whyOn(d, held.id);
+    const expected = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: "https://github.com/o/r/issues/" };
+    expect(w.row.why).toEqual(expected);
+    expect(w.queued!.why).toEqual(expected);
+    expect(w.item).toEqual(expected);
+  });
+
+  it("a dependency blocker waits (not queued) and reads the same sentence on Items, Queue and the item page", async () => {
+    const { d, store } = await withDecisions();
+    const dep = await make(store, 21, "Dependent item");
+    await enqueue(store, dep, "implement", "dep:i", { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" });
+    const w = await whyOn(d, dep.id);
+    expect(w.row.level).toBe("waiting_on_issue");
+    for (const why of [w.row.why, w.queued!.why!, w.item]) {
+      expect(why).toMatchObject({ code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13] });
+    }
+  });
+
+  it("an ordinary queued run reads its queue position, the same on Items and the Queue", async () => {
+    const { d, items } = await withDecisions();
+    const w = await whyOn(d, items.queued2.id);
+    expect(w.queued!.why).toMatchObject({ code: "queued", text: "Queued at position 2" });
+    expect(w.row.why.text).toBe(w.queued!.why!.text);
+    expect(w.item.text).toBe(w.queued!.why!.text);
+  });
+
+  it("a claim pause names itself on a run its kind stops, by the claim rule", async () => {
+    const { d, store, clock, items } = await withDecisions();
+    await store.pauseClaims(new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp, "forge_auth");
+    const dep = await make(store, 22, "Implement waits");
+    await enqueue(store, dep, "implement", "p:i", { stage: "RUNNING" });
+    expect((await whyOn(d, dep.id)).queued!.why).toMatchObject({ code: "paused", next_actor: "human" });
+    // A triage run is not stopped by a forge pause.
+    expect((await whyOn(d, items.queued.id)).queued!.why).toMatchObject({ code: "queued" });
+  });
+
+  it("a deadlock claim decision puts its item in Needs you and in the overview's needs_you", async () => {
+    const { d, items, claimed, decide } = await withDecisions();
+    const before = (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
+    decide(items.running, claimed.id, "deadlock", "waiting");
+    expect((await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you).toBe(before + 1);
+    const w = await whyOn(d, items.running.id);
+    expect(w.row.level).toBe("needs_human");
+    expect(w.row.why).toMatchObject({ code: "deadlock", next_actor: "human", refs: [92] });
+    const needs = await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs");
+    expect(needs.items.map((i) => i.id)).toContain(items.running.id);
+  });
+
+  it("free text in why passes the Withholder", async () => {
+    const { d, items } = await withDecisions();
+    const w = await whyOn(d, items.secretive.id);
+    expect(w.row.why.text).toBe("[withheld: github_token]");
+    expect(w.item.text).toBe("[withheld: github_token]");
+  });
+});

@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { DRAIN_MARGIN_MS, GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
+import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { supervise } from "../src/supervisor.js";
@@ -354,5 +355,89 @@ describe("supervisor: signals", () => {
     expect(f.events.slice(-3)).toEqual(["kill SIGTERM 1", "kill SIGKILL 1", "exit 1"]);
     expect(log.lines.some((l) => /hard stop/.test(l.msg))).toBe(true);
     expect(f.live).toEqual([]);
+  });
+});
+
+describe("supervisor: in place (updater none)", () => {
+  function inPlaceSetup(head: ExecResult | Error = ok("c9\n")) {
+    const dir = mkdtempSync(join(tmpdir(), "sf-inplace-"));
+    const statusFile = join(dir, "supervisor.json");
+    const calls: string[] = [];
+    const run: CommandRunner = async (cmd, opts) => {
+      calls.push(`${opts.cwd}: ${cmd.join(" ")}`);
+      if (head instanceof Error) throw head;
+      return head;
+    };
+    const updater = new NoneUpdater({ repoPath: dir, run, env: { PATH: "/usr/bin" }, clock: new FakeClock(), log: recordingLog(), statusFile });
+    const read = () => JSON.parse(readFileSync(statusFile, "utf8")) as Record<string, unknown>;
+    return { dir, statusFile, calls, updater, read, signals: new EventEmitter() };
+  }
+
+  it("writes running (child_pid: this process, rev: HEAD, no supervisor_pid) before the in-place run starts", async () => {
+    const s = inPlaceSetup();
+    let seen: Record<string, unknown> | null = null;
+    const code = await supervise({
+      updater: s.updater,
+      clock: new FakeClock(),
+      pollMs: POLL,
+      log: recordingLog(),
+      signals: s.signals,
+      inPlace: async () => void (seen = s.read()),
+    });
+    expect(code).toBe(0);
+    expect(seen).toMatchObject({ state: "running", child_pid: process.pid, rev: "c9", target_rev: null });
+    expect(seen).not.toHaveProperty("supervisor_pid");
+    expect(s.calls).toEqual([`${s.dir}: git rev-parse HEAD`]);
+    expect(existsSync(`${s.statusFile}.tmp`)).toBe(false);
+  });
+
+  it("rev is null when git rev-parse fails", async () => {
+    for (const head of [{ ...ok(), exit_code: 128 }, new Error("spawn git ENOENT")]) {
+      const s = inPlaceSetup(head);
+      let seen: Record<string, unknown> | null = null;
+      await supervise({ updater: s.updater, clock: new FakeClock(), pollMs: POLL, log: recordingLog(), signals: s.signals, inPlace: async () => void (seen = s.read()) });
+      expect(seen).toMatchObject({ state: "running", rev: null });
+    }
+  });
+
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    it(`${sig}: once the in-place run returns, the file says stopped with child_pid null`, async () => {
+      const s = inPlaceSetup();
+      let started = false;
+      const running = supervise({
+        updater: s.updater,
+        clock: new FakeClock(),
+        pollMs: POLL,
+        log: recordingLog(),
+        signals: s.signals,
+        inPlace: (signal) =>
+          new Promise<void>((resolve) => {
+            started = true;
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+      });
+      await waitFor(() => started, "in-place run started");
+      expect(s.read()).toMatchObject({ state: "running" });
+      s.signals.emit(sig);
+      expect(await running).toBe(0);
+      expect(s.read()).toMatchObject({ state: "stopped", child_pid: null, rev: "c9" });
+      expect(s.read()).not.toHaveProperty("supervisor_pid");
+    });
+  }
+
+  it("an in-place run that throws still ends stopped, and the error reaches the caller", async () => {
+    const s = inPlaceSetup();
+    const running = supervise({
+      updater: s.updater,
+      clock: new FakeClock(),
+      pollMs: POLL,
+      log: recordingLog(),
+      signals: s.signals,
+      inPlace: async () => {
+        throw new Error("store unreachable");
+      },
+    });
+    await expect(running).rejects.toThrow("store unreachable");
+    expect(s.read()).toMatchObject({ state: "stopped", child_pid: null });
   });
 });

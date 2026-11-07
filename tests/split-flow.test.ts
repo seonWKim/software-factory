@@ -7,7 +7,7 @@ import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
-import { newStore, w1 } from "./helpers/store.js";
+import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Split specs (design 2026-11-01): a large estimate gives a split spec; /approve files one sub-issue per phase,
 // in order; each later phase is held until the one before it closes as completed; the parent closes last.
@@ -272,6 +272,46 @@ describe("split spec flow", () => {
     expect(await f.bySource(s2!.ref)).toMatchObject({ blocked_reason: PHASE_HOLD });
     expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_reason: PHASES_OPEN });
     expect(f.source.closed.map((s) => s.id)).not.toContain(issueRef(74).id);
+  });
+
+  it("a split parent closed as completed counts as merged for its dependents (no merge sha of its own)", async () => {
+    const f = await setup();
+    const parent = await f.intake(75);
+    await f.finish("triage", f.triaged(bigSpec(2)));
+    await f.approve(issueRef(75));
+    const [s1, s2] = f.source.subIssues;
+    /** An implementing item on issue `n` that depends on the parent, with its implement run queued under `key`. */
+    const dependent = async (n: number, key: string) => {
+      const { item } = await f.store.createWorkItem({ ...issue(n), source: issueRef(n) }, system);
+      await f.store.transition({
+        id: item.id, expected_version: 1, actor: system, reason: "x",
+        patch: { stage: "RUNNING", tier: 2, allowed_paths: ["lib/"] }, enqueue: { kind: "implement", idempotency_key: key },
+      });
+      await f.store.replaceDependencyEdges(item.id, [{ depends_on: issueRef(75).id, kind: "depends_on" }]);
+      return item;
+    };
+    const held = await dependent(81, "81:implement");
+    const blocked = await dependent(82, "82:implement");
+    await f.controller.tickCoordination();
+    expect(await f.get(held)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for #75 to merge" });
+    // An item an older version blocked when the parent closed (it had no merge sha), with its run cancelled.
+    const b = await f.get(blocked);
+    await f.store.transition({
+      id: b.id, expected_version: b.version, actor: system, reason: "dependency_closed",
+      patch: { blocked_on: "human", blocked_reason: "dependency_closed:#75" }, cancel_queued_runs: true,
+    });
+
+    await f.closeSource(s1!.ref, "completed");
+    await f.closeSource(s2!.ref, "completed");
+    expect(await f.get(parent)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: null });
+    // The held dependent is released when the split closes, in the same pass.
+    expect(await f.get(held)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect((await f.store.listDependencyEdges({ work_item_id: held.id }))[0]).toMatchObject({ state: "merged" });
+
+    // The blocked one: a human `/retry` reads its dependencies again and starts a new implement run.
+    await f.controller.handleEvent({ kind: "retry_requested", source: issueRef(82), comment_id: "8201", requester: alice });
+    expect(await f.get(blocked)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect((await f.runsOf(blocked)).filter((r) => r.status === "queued").map((r) => r.kind)).toEqual(["implement"]);
   });
 
   it("/revise on a split spec runs triage again; the new spec need not be a split", async () => {
