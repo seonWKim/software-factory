@@ -73,7 +73,16 @@
     { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "docs/design.md", "also": ["docs/design/"] },
-    { "when": "docs/plugins.md", "also": ["docs/plugins/"] }
+    { "when": "docs/plugins.md", "also": ["docs/plugins/"] },
+    {
+      "when": "src/interfaces/factory-store.ts",
+      "also": [
+        "src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts",
+        "tests/store-contract.test.ts", "migrations/mysql/", "src/impl/store/mysql/migrations.ts"
+      ]
+    },
+    { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"] },
+    { "when": "docs/design/", "also": ["docs/design.md"] }
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
