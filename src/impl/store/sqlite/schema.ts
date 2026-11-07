@@ -645,7 +645,7 @@ export const MIGRATIONS: readonly string[] = [
     last_alert_at  TEXT NOT NULL
   );
   `,
-  // 36: the mirror mark of CLI commands on sync-source items (design 05-sources, CLI intake). `mirror`: 1 when the
+  // 37: the mirror mark of CLI commands on sync-source items (design 05-sources, CLI intake). `mirror`: 1 when the
   // command is to be posted once on its item's source (a CLI command on a GitHub item), 0 otherwise and on every
   // older row. `mirrored_at`: when that post succeeded, NULL until then. The index serves the unmirrored read.
   `

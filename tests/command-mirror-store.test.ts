@@ -11,8 +11,8 @@ import { BACKENDS } from "./helpers/store.js";
 
 // The mirror mark of CLI commands on sync-source items (design 05-sources, CLI intake): a command appended with
 // `mirror` is listed until it is marked mirrored, once. Never pin a step as the newest: compare with `>=`.
-const STEP = 36;
-const STEP_FILE = "0036-command-mirror.sql";
+const STEP = 37;
+const STEP_FILE = "0037-command-mirror.sql";
 
 for (const b of BACKENDS) {
   describe(`${b.name}: the CLI command mirror mark`, () => {
@@ -37,7 +37,7 @@ for (const b of BACKENDS) {
   });
 }
 
-describe("SQLite migration 36: the mirror mark", () => {
+describe("SQLite migration 37: the mirror mark", () => {
   it("adds mirror (0 on older rows) and mirrored_at to an existing database's command inbox", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
     const raw = new DatabaseSync(":memory:");
@@ -55,8 +55,8 @@ describe("SQLite migration 36: the mirror mark", () => {
   });
 });
 
-describe("MySQL step 36 (command-mirror)", () => {
-  it("is one ALTER right after step 35 with the same columns as SQLite migration 36", () => {
+describe("MySQL step 37 (command-mirror)", () => {
+  it("is one ALTER right after step 36 with the same columns as SQLite migration 37", () => {
     expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "command-mirror")).toMatchObject({
       number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
     });
