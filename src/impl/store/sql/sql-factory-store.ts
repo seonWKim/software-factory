@@ -1066,7 +1066,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   // Coordination (design §5, 2026-11-03)
 
-  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
+  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const wanted = new Map<string, DependencyLink>();
@@ -1082,9 +1082,22 @@ export class SqlFactoryStore implements FactoryStore {
           [id, l.depends_on, l.kind, now, now],
         );
       }
+      if (read_at !== undefined) {
+        await tx.run("UPDATE dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
+        await tx.run("UPDATE work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
+      }
       const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
       return rows.map(rowToDependencyEdge);
     });
+  }
+
+  async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT edges_source_updated_at FROM work_items WHERE id = ?", [id]);
+    return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
+  }
+
+  async markDependencyLinksStale(id: WorkItemId): Promise<void> {
+    await this.db.run("UPDATE work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
   }
 
   async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {

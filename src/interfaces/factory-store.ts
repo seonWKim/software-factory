@@ -482,9 +482,17 @@ export interface FactoryStore {
 
   /**
    * Makes `links` the item's edges: new ones are inserted `open`, kept ones keep their state, others are deleted.
-   * Idempotent. Returns the item's edges.
+   * Idempotent. Returns the item's edges. With `read_at` (the issue's updated_at the links were read at, issue #254)
+   * every edge and the item record it, in the same transaction; without it both keep what they had.
    */
-  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]>;
+  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]>;
+  /**
+   * The issue updated_at the item's links were last read at (`replaceDependencyEdges` with `read_at`), kept on the
+   * item so an issue with no links has one too. Null: never read with a time, or marked stale. Read-only.
+   */
+  dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null>;
+  /** Clears the item's read time, so the controller reads its links on the next poll. Idempotent. */
+  markDependencyLinksStale(id: WorkItemId): Promise<void>;
   /** Edges of one item, or every edge pointing to one source id, or every edge. Read-only. */
   listDependencyEdges(filter?: { work_item_id?: WorkItemId; depends_on?: string }): Promise<DependencyEdge[]>;
   /** Sets one edge's state. False when there is no such edge. */

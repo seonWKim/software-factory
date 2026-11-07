@@ -333,6 +333,7 @@ export function rowToDependencyEdge(r: Row): DependencyEdge {
     depends_on: r.depends_on as string,
     kind: r.kind as DependencyEdge["kind"],
     state: r.state as DependencyEdge["state"],
+    source_updated_at: (r.source_updated_at as Timestamp | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
