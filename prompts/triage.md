@@ -13,11 +13,18 @@ Produce:
   will work after the change. Keep file-level detail out of it: no file paths, no line numbers, no
   function names.
 - problem: the problem in two to five sentences, in your own words, grounded in the code you read.
-  File paths and details belong here, not in in_short.
+  File paths and details belong here, not in in_short. It is the second section of the spec.
+- decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
+  open question only the owner can answer. At most 5, one line each; an empty list when there are none.
+  Do not repeat the done criteria here.
 - done_criteria: concrete, checkable conditions. Each one should be testable by a reviewer.
-  One condition per entry.
-- desired_output: what the PR should contain (code, tests, docs).
-- scope: what is in and out of scope.
+  One condition per entry. Put the most important first: only the first 10 are shown, the rest are folded
+  (the implementer still gets all of them).
+- desired_output: what the PR should contain (code, tests, docs), only where the done criteria do not
+  already say it. It is hidden when it repeats them.
+- in_scope: what this change covers, one item per entry.
+- out_of_scope: what it leaves out, one item per entry. Only things it does not do; never list in-scope
+  work here.
 - allowed_paths: repo-relative path prefixes the change may touch. As narrow as the work allows.
   An entry ending in `/` covers everything under it; any other entry covers only that exact path.
 - files_to_change: every repo-relative file or directory the done criteria require creating or editing
