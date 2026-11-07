@@ -134,7 +134,7 @@ describe("command table", () => {
 
   it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
     const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
-      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+      commandPhase({ stage, blocked_on: "human", blocked_reason, change_ref: null });
     expect(at("RUNNING", "run_failed:implement:diff_too_large")).toBe("too_large");
     expect(at("RUNNING", "run_failed:implement:no_commits")).toBe("failed_implement");
     expect(at("RUNNING", "max_attempts")).toBe("failed_implement");
@@ -193,7 +193,7 @@ describe("command table", () => {
     expect(commandsFor({ phase: "agent_needs_human", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).toContain("resolve");
     expect(commandsFor({ phase: "repeated_failure", has_pr: true, asked_by: "resolve" }).map((c) => c.name)).not.toContain("resolve");
     const at = (stage: "NEW" | "RUNNING" | "REVIEW", blocked_reason: string) =>
-      commandPhase({ stage, blocked_on: "human", blocked_reason, pr_number: null });
+      commandPhase({ stage, blocked_on: "human", blocked_reason, change_ref: null });
     for (const stage of ["NEW", "RUNNING", "REVIEW"] as const) {
       expect(at(stage, "agent_needs_human")).toBe("agent_needs_human");
       expect(at(stage, "repeated_failure")).toBe("repeated_failure");
@@ -295,7 +295,7 @@ describe("footers match what the controller accepts", () => {
       const { item } = await store.createWorkItem({ source: issueRef(n), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
       const setup = {
         id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
-        patch: { ...PATCHES[phase], pr_number: pr, tier: 2 as const },
+        patch: { ...PATCHES[phase], change_ref: pr === null ? null : String(pr), tier: 2 as const },
         ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
       };
       // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.

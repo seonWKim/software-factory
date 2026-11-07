@@ -149,7 +149,7 @@ describe("factory stats", () => {
     const adopt = async (n: number, close: boolean, token_cost: number) => {
       const { item } = await store.createWorkItem({
         ...issue(n),
-        adopted: { pr_number: n, head_branch: "feature/x", head_sha: "h", allowed_paths: ["a"], tier: 1 },
+        adopted: { change_ref: String(n), head_branch: "feature/x", head_sha: "h", allowed_paths: ["a"], tier: 1 },
       }, human);
       if (!close) return;
       const r = await store.transition({

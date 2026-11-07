@@ -362,7 +362,7 @@ describe("workers resume", () => {
     const w = await world();
     const { item } = await w.store.createWorkItem(issue(1), system);
     const r = await w.store.transition({
-      id: item.id, expected_version: item.version, patch: { pr_number: 7 }, actor: system, reason: "seed",
+      id: item.id, expected_version: item.version, patch: { change_ref: "7" }, actor: system, reason: "seed",
       enqueue: { kind: "review", idempotency_key: "r1" },
     });
     expect(r.ok).toBe(true);

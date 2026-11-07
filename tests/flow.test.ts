@@ -80,6 +80,26 @@ describe("CI check gate before merge_pending", () => {
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["review_passed"]);
   });
 
+  it("the PR the worker opened stores change_url from the open result, through the run outcome", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const url = "https://github.example/o/r/pull/42";
+    f.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    const src = issueRef(62);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "301", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    const implement = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
+    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
+    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
+  });
+
   it("checks pending: the item stays in REVIEW with no merge_pending until they pass", async () => {
     const f = await toReview([{ state: "pending" }]);
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", pr_number: 42, loop_count: 0 });
@@ -1737,7 +1757,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
     const moved = await store.transition({
       id: created.id, expected_version: 1, actor: { kind: "system", id: "test" }, reason: "test_setup",
       patch: {
-        stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42,
+        stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42",
         allowed_paths: ["src/"], done_criteria: ["gate works"], scope: "gate only",
       },
     });

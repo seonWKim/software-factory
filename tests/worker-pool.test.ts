@@ -437,7 +437,7 @@ describe("SF_WORKER_INDEX", () => {
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(1), system);
     await store.transition({
-      id: item.id, expected_version: 1, patch: { pr_number: 7, allowed_paths: ["docs/"] }, actor: system, reason: "x",
+      id: item.id, expected_version: 1, patch: { change_ref: "7", allowed_paths: ["docs/"] }, actor: system, reason: "x",
       enqueue: { kind, idempotency_key: kind },
     });
     const sandbox = new UpdateSandbox();

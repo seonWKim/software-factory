@@ -305,7 +305,7 @@ describe("policy helpers", () => {
   });
 
   it("the footer at agent_needs_human lists /resolve only when a resolve run asked", () => {
-    const it0 = { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 } as const;
+    const it0 = { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: "42" } as const;
     const names = (k?: Run["kind"]) => commandsFor(commandState(it0, k)).map((c) => c.name);
     expect(names("resolve")).toEqual(expect.arrayContaining(["reject", "revise", "retry", "resolve"]));
     expect(names("implement")).not.toContain("resolve");

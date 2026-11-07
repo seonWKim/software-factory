@@ -88,7 +88,7 @@ describe("controller: status labels", () => {
     const before = f.source.statusCalls.length;
     // A revert of a factory merge writes a `reverted` row with an empty patch.
     await f.store.transition({
-      id: item.id, expected_version: item.version, patch: { pr_number: 9, merge_sha: "abc1234" }, actor: system, reason: "test",
+      id: item.id, expected_version: item.version, patch: { change_ref: "9", merge_sha: "abc1234" }, actor: system, reason: "test",
     });
     f.source.queue.push({ kind: "base_commit", sha: "r1", message: "Revert x\n\nThis reverts commit abc1234." });
     await f.controller.tickIntake();
@@ -128,7 +128,7 @@ describe("controller: start-up status catch-up", () => {
     const b = (await f.store.createWorkItem(issue(2), system)).item;
     await f.store.transition({
       id: b.id, expected_version: b.version, actor: system, reason: "test",
-      patch: { stage: "REVIEW", pr_number: 5, blocked_on: "human", blocked_reason: "merge_pending" },
+      patch: { stage: "REVIEW", change_ref: "5", blocked_on: "human", blocked_reason: "merge_pending" },
     });
     const c = (await f.store.createWorkItem(issue(3), system)).item;
     await f.store.transition({
