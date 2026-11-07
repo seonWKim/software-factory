@@ -10,6 +10,7 @@ import type {
   Handoff,
   HandoffId,
   Run,
+  RunAttempt,
   RunId,
   RunInput,
   SourceType,
@@ -200,6 +201,21 @@ export function rowToWorkItem(r: Row): WorkItem {
     pr_files: parseJson(r.pr_files),
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
+  };
+}
+
+/** A run_attempts row. Its lease_token stays in the store: a fencing token is never returned. */
+export function rowToRunAttempt(r: Row): RunAttempt {
+  return {
+    run_id: r.run_id as RunId,
+    attempt: Number(r.attempt),
+    worker_id: (r.worker_id as WorkerId | null) ?? null,
+    status: r.status as RunAttempt["status"],
+    started_at: (r.started_at as Timestamp | null) ?? null,
+    finished_at: (r.finished_at as Timestamp | null) ?? null,
+    error_code: (r.error_code as string | null) ?? null,
+    failure_class: (r.failure_class as RunAttempt["failure_class"]) ?? null,
+    tokens: Number(r.tokens),
   };
 }
 

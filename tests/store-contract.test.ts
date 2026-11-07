@@ -294,6 +294,161 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("run attempts (design §6): one record per claim", () => {
+    const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 3, cache_write_tokens: 2, cost_usd: null, model: null };
+    const close = { stage: "CLOSED" as const, close_reason: "wont_do" as const, blocked_on: "none" as const, blocked_reason: null };
+
+    async function queued(key = "t") {
+      const ctx = await make();
+      const { item } = await ctx.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: key } });
+      return { ...ctx, item };
+    }
+    const claim = (store: FactoryStore, worker = w1) => store.claimRun({ worker_id: worker, kinds: ["triage"], lease_ms: LEASE });
+
+    it("a claim writes one running record with the run, attempt 1, worker and start; queued runs have none", async () => {
+      const { store, clock, item } = await queued();
+      expect(await store.listRunAttempts(item.id)).toEqual([]);
+      clock.advance(1_000);
+      const run = (await claim(store))!;
+      expect(await store.listRunAttempts(item.id)).toEqual([
+        {
+          run_id: run.id, attempt: 1, worker_id: w1, status: "running", started_at: clock.now().toISOString(),
+          finished_at: null, error_code: null, failure_class: null, tokens: 0,
+        },
+      ]);
+      // The fencing token is never part of the record.
+      expect(Object.keys((await store.listRunAttempts(item.id))[0]!)).not.toContain("lease_token");
+    });
+
+    it("completeRun closes the claim's record: succeeded with tokens, no error code and no failure class", async () => {
+      const { store, clock, item } = await queued();
+      const run = (await claim(store))!;
+      clock.advance(5_000);
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "", data: { tokens: 1234 } });
+      expect(await store.listRunAttempts(item.id)).toEqual([
+        {
+          run_id: run.id, attempt: 1, worker_id: w1, status: "succeeded", started_at: run.started_at,
+          finished_at: clock.now().toISOString(), error_code: null, failure_class: null, tokens: 1234,
+        },
+      ]);
+    });
+
+    it("a failed outcome stores its error code, failureClass() and outcomeTokens()", async () => {
+      const cases = [
+        [{ status: "failed" as const, error_code: "agent_error", detail: "", infra: false, usage }, "task", 20],
+        [{ status: "failed" as const, error_code: "push_failed", detail: "", infra: true }, "infra", 0],
+        [{ status: "failed" as const, error_code: "rate_limited", detail: "", infra: true, usage }, "rate_limited", 20],
+        [{ status: "failed" as const, error_code: "agent_stalled", detail: "", infra: true }, "stalled", 0],
+      ] as const;
+      // One store for every case (a fresh MySQL database per case is slow): one item each, claimed in turn.
+      const { store } = await make();
+      for (const [i, [outcome, cls, tokens]] of cases.entries()) {
+        const { item } = await store.createWorkItem(issue(i + 1), system, { enqueue: { kind: "triage", idempotency_key: `t${i}` } });
+        const run = (await claim(store))!;
+        expect(run.work_item_id).toBe(item.id);
+        await store.completeRun(run.id, run.lease!.token, outcome);
+        expect(await store.listRunAttempts(item.id)).toMatchObject([
+          { status: "failed", error_code: outcome.error_code, failure_class: cls, tokens },
+        ]);
+      }
+    });
+
+    it("a stale token closes nothing: the close is conditional on the token that opened the record", async () => {
+      const { store, clock, item } = await queued();
+      const first = (await claim(store))!;
+      clock.advance(LEASE + 1);
+      await store.expireLeases(3);
+      const second = (await claim(store, w2))!;
+      expect(await store.completeRun(first.id, first.lease!.token, { status: "succeeded", summary: "", data: { tokens: 9 } }))
+        .toEqual({ ok: false, reason: "lease_lost" });
+      expect((await store.listRunAttempts(item.id)).map((a) => [a.attempt, a.worker_id, a.status, a.tokens])).toEqual([
+        [1, w1, "lease_expired", 0],
+        [2, w2, "running", 0],
+      ]);
+      await store.completeRun(second.id, second.lease!.token, { status: "succeeded", summary: "", data: { tokens: 9 } });
+      expect((await store.listRunAttempts(item.id)).map((a) => a.status)).toEqual(["lease_expired", "succeeded"]);
+    });
+
+    it("the reaper closes a record as lease_expired, infra, tokens 0, whether it requeues, fails or cancels the run", async () => {
+      const { store, clock, item } = await queued();
+      for (let i = 0; i < 2; i++) {
+        await claim(store);
+        clock.advance(LEASE + 1);
+        await store.expireLeases(2);
+      }
+      const at = clock.now().toISOString();
+      expect((await store.listRuns(item.id))[0]!.status).toBe("failed");
+      const attempts = await store.listRunAttempts(item.id);
+      expect(attempts.map((a) => a.attempt)).toEqual([1, 2]);
+      for (const a of attempts) {
+        expect(a).toMatchObject({ status: "lease_expired", error_code: "lease_expired", failure_class: "infra", tokens: 0 });
+      }
+      expect(attempts[1]!.finished_at).toBe(at);
+
+      // An expired run of a CLOSED item is cancelled, and its record still closes as lease_expired.
+      const other = await queued("t2");
+      await claim(other.store);
+      await other.store.transition({ id: other.item.id, expected_version: 1, patch: close, actor: human, reason: "source_closed" });
+      other.clock.advance(LEASE + 1);
+      await other.store.expireLeases(3);
+      expect((await other.store.listRuns(other.item.id))[0]!.status).toBe("cancelled");
+      expect(await other.store.listRunAttempts(other.item.id)).toMatchObject([{ status: "lease_expired", failure_class: "infra" }]);
+    });
+
+    it("a close that stops running runs closes their records as cancelled", async () => {
+      const { store, clock, item } = await queued();
+      await claim(store);
+      clock.advance(1_000);
+      await store.transition({
+        id: item.id, expected_version: 1, patch: close, actor: human, reason: "source_closed", cancel_running_runs: true,
+      });
+      expect(await store.listRunAttempts(item.id)).toMatchObject([
+        { status: "cancelled", finished_at: clock.now().toISOString(), error_code: null, failure_class: null, tokens: 0 },
+      ]);
+    });
+
+    it("pause and resume: the pause closes the record as paused, the resume opens attempt 2; run.attempt stays 1", async () => {
+      const { store, clock, item } = await queued();
+      const run = (await claim(store))!;
+      clock.advance(1_000);
+      const resume = { host: "h", folder: "sbx_1", base_sha: null, start_sha: null, head: null, bundle: null };
+      expect((await store.pauseRun(run.id, run.lease!.token, { paused_by: "github:1", session_id: null, resume })).ok).toBe(true);
+      const pausedAt = clock.now().toISOString();
+      clock.advance(1_000);
+      const resumed = (await claim(store, w2))!;
+      expect(resumed.attempt).toBe(1);
+      clock.advance(1_000);
+      await store.completeRun(resumed.id, resumed.lease!.token, { status: "succeeded", summary: "", data: { tokens: 7 } });
+      expect(await store.listRunAttempts(item.id)).toEqual([
+        {
+          run_id: run.id, attempt: 1, worker_id: w1, status: "paused", started_at: run.started_at, finished_at: pausedAt,
+          error_code: null, failure_class: null, tokens: 0,
+        },
+        {
+          run_id: run.id, attempt: 2, worker_id: w2, status: "succeeded", started_at: resumed.started_at,
+          finished_at: clock.now().toISOString(), error_code: null, failure_class: null, tokens: 7,
+        },
+      ]);
+      expect((await store.getRun(run.id))!.attempt).toBe(1);
+    });
+
+    it("lists the item's attempts by run, then attempt; other items' attempts are not included", async () => {
+      const { store, item } = await queued();
+      const a = (await claim(store))!;
+      await store.completeRun(a.id, a.lease!.token, { status: "failed", error_code: "agent_error", detail: "", infra: false, usage });
+      await store.transition({ id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "triage", idempotency_key: "t:2" } });
+      const b = (await claim(store))!;
+      await store.completeRun(b.id, b.lease!.token, { status: "succeeded", summary: "", data: { tokens: 50 } });
+      const other = (await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "o" } })).item;
+      await claim(store);
+      expect((await store.listRunAttempts(item.id)).map((x) => [x.run_id, x.attempt, x.status, x.tokens])).toEqual([
+        [a.id, 1, "failed", 20],
+        [b.id, 1, "succeeded", 50],
+      ]);
+      expect(await store.listRunAttempts(other.id)).toHaveLength(1);
+    });
+  });
+
   describe("title and run timing columns", () => {
     it("records the title at intake, null when not given; transitions leave it alone", async () => {
       const { store } = await make();
@@ -1519,6 +1674,10 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       clock.advance(LEASE + 1);
       expect(await store.expireLeases(5)).toEqual([s.run.id]);
       expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
+      // The session start opened the run's one attempt record; the reaper closed it with the run's code.
+      expect((await store.listRunAttempts(s.item.id)).map((a) => [a.attempt, a.status, a.error_code, a.failure_class])).toEqual([
+        [1, "failed", "session_lost", "task"],
+      ]);
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
     });
   });
