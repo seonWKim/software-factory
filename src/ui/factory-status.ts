@@ -3,6 +3,7 @@
 // settings take effect.
 
 import { readFile } from "node:fs/promises";
+import { readStoredProject } from "../core/project-labels.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { SupervisorStatus } from "../interfaces/updater.js";
 import type { Check } from "../setup.js";
@@ -43,6 +44,15 @@ function pidAlive(pid: number): boolean {
 export async function modelStallLine(store: Pick<FactoryStore, "getClaimPause">): Promise<string | null> {
   const since = await store.getClaimPause("model_stall_since");
   return since === null ? null : `agents paused: model not answering since ${since}`;
+}
+
+/**
+ * A warn while the configured repo's project key is not stored (design 2026-11-07): a first start waits for
+ * GitHub to resolve it. None once it is stored. One store read, no forge call.
+ */
+export async function projectKeyChecks(store: Pick<FactoryStore, "getCursor">, repo: { owner: string; name: string }): Promise<Check[]> {
+  if (await readStoredProject(store, repo)) return [];
+  return [{ ok: false, warn: true, msg: `project key of ${repo.owner}/${repo.name} not stored yet: the factory waits for GitHub to resolve it (see the GitHub API line)` }];
 }
 
 /** The same line as a failing check, for the dashboard's Health panel; none without a stall pause. */
