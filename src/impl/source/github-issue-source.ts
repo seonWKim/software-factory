@@ -5,7 +5,7 @@ import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
+  ClosePrInput, PollResult, PollSource, PrCheck, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
@@ -666,6 +666,14 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
    */
   async prChecks(pr_number: number): Promise<PrChecks> {
+    const list = await this.prCheckList(pr_number);
+    const failed = list.filter((c) => c.result === "failed").map((c) => c.name);
+    if (failed.length) return { state: "failed", failed };
+    return list.some((c) => c.result === "pending") ? { state: "pending" } : { state: "passed" };
+  }
+
+  /** Each check prChecks reads, with its result: check runs first, then commit statuses. The same GETs. */
+  async prCheckList(pr_number: number): Promise<PrCheck[]> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${pr_number}`);
     const sha = encodeURIComponent(pull.head.sha);
@@ -678,18 +686,15 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
     const status = await this.client.request<{ statuses: GhStatus[] }>("GET", `${base}/commits/${sha}/status?per_page=100`);
 
-    const failed: string[] = [];
-    let pending = false;
+    const list: PrCheck[] = [];
     for (const r of runs) {
-      if (r.status !== "completed") pending = true;
-      else if (!PASSING_CONCLUSIONS.has(r.conclusion ?? "")) failed.push(r.name);
+      const result = r.status !== "completed" ? "pending" : PASSING_CONCLUSIONS.has(r.conclusion ?? "") ? "passed" : "failed";
+      list.push({ name: r.name, result });
     }
     for (const s of status.statuses) {
-      if (s.state === "pending") pending = true;
-      else if (s.state !== "success") failed.push(s.context);
+      list.push({ name: s.context, result: s.state === "pending" ? "pending" : s.state === "success" ? "passed" : "failed" });
     }
-    if (failed.length) return { state: "failed", failed };
-    return pending ? { state: "pending" } : { state: "passed" };
+    return list;
   }
 
   /**

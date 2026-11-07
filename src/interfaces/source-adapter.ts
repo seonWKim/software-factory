@@ -188,6 +188,12 @@ export interface PushedEvent {
  */
 export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[] };
 
+/**
+ * One automated check on a PR's head commit and its result, as `prChecks` judges it: `passed`, `failed`
+ * (finished without success) or `pending` (not finished). The name is untrusted text from the forge.
+ */
+export interface PrCheck { name: string; result: "passed" | "failed" | "pending" }
+
 /** What every source offers, whichever way its events arrive. */
 interface SourceAdapterBase {
   readonly type: SourceType;
@@ -197,6 +203,12 @@ interface SourceAdapterBase {
    * PRs: the controller then treats the checks as passed.
    */
   prChecks?(pr_number: number): Promise<PrChecks>;
+  /**
+   * Each check on PR `pr_number`'s current head commit with its result, the same checks `prChecks` reads,
+   * in its order; empty when none ran. Read when a review is queued, for the review prompt (design §4).
+   * Read-only. Absent on sources with no PRs: the review prompt then says the results were not read.
+   */
+  prCheckList?(pr_number: number): Promise<PrCheck[]>;
   /**
    * The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only.
    * Absent on sources with no PRs.
