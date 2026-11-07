@@ -298,7 +298,14 @@ export const MIGRATIONS: readonly string[] = [
     at           TEXT NOT NULL
   );
   `,
-  // 18: worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
+  // 18: interactive sessions (design §5, 2026-11-01, issue #112): an interactive run's person (user ID), transcript
+  // URL and reported token total. Every other run, old rows included, keeps all three NULL.
+  `
+  ALTER TABLE runs ADD COLUMN actor_id TEXT;
+  ALTER TABLE runs ADD COLUMN transcript_url TEXT;
+  ALTER TABLE runs ADD COLUMN session_tokens INTEGER;
+  `,
+  // 19: worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
   // `<host>:<pid>`, replaced each tick and deleted on a clean stop. Readers skip rows older than lease_ms.
   `
   CREATE TABLE worker_processes (

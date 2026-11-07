@@ -31,7 +31,9 @@ import type {
   WorkItem,
   WorkItemId,
   ClaimPauseName,
+  RunInput,
   RunResume,
+  SessionRecord,
   WorkerId,
   WorkerPause,
 } from "../../../core/types.js";
@@ -45,7 +47,9 @@ import {
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
-import { IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE } from "../../../core/policy.js";
+import {
+  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, pathsOverlap,
+} from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
@@ -75,9 +79,12 @@ import type {
   RedeemLinkResult,
   ResetSettingInput,
   SchemaVersion,
+  SessionUpdate,
   SetSettingInput,
   SettingChange,
   SettingOverride,
+  StartSessionInput,
+  StartSessionResult,
   TransitionInput,
   TransitionResult,
   WorkItemFilter,
@@ -438,7 +445,9 @@ export class SqlFactoryStore implements FactoryStore {
   // Runs
 
   async claimRun(input: ClaimInput): Promise<Run | null> {
-    if (input.kinds.length === 0) return null;
+    // An interactive run is a person's session, never a worker's (design §5, 2026-11-01).
+    const kinds = input.kinds.filter((k) => k !== INTERACTIVE);
+    if (kinds.length === 0) return null;
     const { seq, forUpdate } = this.db.dialect;
     const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
@@ -473,16 +482,23 @@ export class SqlFactoryStore implements FactoryStore {
           await tx.all(`SELECT work_item_id FROM runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
         ).map((r) => r.work_item_id as string),
       );
+      // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
+      const sessions = (await this.runningPaths(tx, [INTERACTIVE])).map((r) => ({ id: r.work_item_id as string, paths: parseList(r.allowed_paths) }));
+      const overlapsSession = async (itemId: string): Promise<boolean> => {
+        if (sessions.length === 0 || sessions.some((x) => x.id === itemId)) return sessions.length > 0;
+        const it = await this.selectItem(tx, itemId as WorkItemId);
+        return it !== null && sessions.some((x) => pathsOverlap(it.allowed_paths, x.paths).length > 0);
+      };
 
       // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
       // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
       const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM runs r
-         WHERE r.status = 'queued' AND r.kind IN (${placeholders(input.kinds.length)})
+         WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?)
          ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
-        [...input.kinds, now, ...CLAIM_ORDER],
+        [...kinds, now, ...CLAIM_ORDER],
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
       const coord = queued.some((q) => q.kind === "implement")
@@ -494,6 +510,7 @@ export class SqlFactoryStore implements FactoryStore {
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
           continue;
@@ -744,7 +761,8 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
-        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL ORDER BY started_at DESC, ${seq} DESC`,
+        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
+        [INTERACTIVE],
       );
       const paused: WorkerId[] = [];
       for (const r of running) {
@@ -830,7 +848,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, kind, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -847,6 +865,13 @@ export class SqlFactoryStore implements FactoryStore {
             `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [now, run.id as string],
+          );
+        } else if (run.kind === INTERACTIVE) {
+          // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
+          const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
+          await tx.run(
+            "UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            [JSON.stringify(lost), now, now, run.id as string],
           );
         } else if (Number(run.attempt) >= max_attempts) {
           await tx.run(
@@ -871,6 +896,87 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getRun(id: RunId): Promise<Run | null> {
     return this.selectRun(this.db, id);
+  }
+
+  // Interactive sessions (design §5, 2026-11-01)
+
+  async startSession(input: StartSessionInput): Promise<StartSessionResult> {
+    const { forUpdate, seq } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<StartSessionResult> => {
+      // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const current = await this.selectItem(tx, input.id, forUpdate);
+      if (!current) return { ok: false, reason: "not_found" };
+      if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+      const own = await tx.all(`SELECT id, kind, status FROM runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
+      const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
+      if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
+      const writer = own.find((r) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string));
+      if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
+      for (const o of await this.runningPaths(tx, [...IMPLEMENT_KINDS, INTERACTIVE])) {
+        const paths = pathsOverlap(input.patch.allowed_paths ?? current.allowed_paths, parseList(o.allowed_paths));
+        if (o.work_item_id !== input.id && paths.length > 0) {
+          return { ok: false, reason: "overlap", work_item_id: o.work_item_id as WorkItemId, run_id: o.id as RunId, paths };
+        }
+      }
+      const runId = newId("run") as RunId;
+      const now = this.now();
+      const session: SessionRecord = { notes: [], last_finish: null };
+      await tx.run(
+        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, actor_id,
+           transcript_url, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
+        [runId, input.id, INTERACTIVE, `${input.id}:interactive:${runId}`, input.owner, this.after(input.lease_ms),
+          JSON.stringify({ session } satisfies RunInput), input.actor.id, input.transcript_url, now, now, now],
+      );
+      const { changes, sets, values } = diffPatch(current, input.patch);
+      const version = current.version + 1;
+      await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
+        ...values, version, now, input.id, input.expected_version,
+      ]);
+      const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, { ...input.detail, run_id: runId });
+      const cancelled: RunId[] = [];
+      for (const r of own.filter((x) => x.kind === "triage")) {
+        const n = await tx.run("UPDATE runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'queued'", [now, r.id as string]);
+        if (n === 1) cancelled.push(r.id as RunId);
+      }
+      return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled };
+    });
+  }
+
+  async updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult> {
+    return this.db.transaction(async (tx): Promise<LeaseResult> => {
+      const run = await this.selectRun(tx, runId, this.db.dialect.forUpdate);
+      const s = run?.input?.session;
+      if (!run || !s || run.status !== "running" || run.lease?.token !== token) return { ok: false, reason: "lease_lost" };
+      const now = this.now();
+      const next: SessionRecord = {
+        ...s,
+        ...(update.note !== undefined ? { notes: [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES) } : {}),
+        ...(update.last_finish !== undefined ? { last_finish: { ...update.last_finish, at: now } } : {}),
+      };
+      await tx.run("UPDATE runs SET input = ?, session_tokens = ?, transcript_url = ?, updated_at = ? WHERE id = ?", [
+        JSON.stringify({ ...run.input, session: next }), update.tokens ?? run.session_tokens, update.transcript_url ?? run.transcript_url, now, runId,
+      ]);
+      return { ok: true, run: (await this.selectRun(tx, runId))! };
+    });
+  }
+
+  /** Running runs of `kinds` with their item's allowed_paths. */
+  private runningPaths(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<Row[]> {
+    return tx.all(
+      `SELECT r.id, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+       WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`,
+      [...kinds],
+    );
+  }
+
+  async listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]> {
+    if (statuses.length === 0) return [];
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE kind = ? AND status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq}`,
+      [kind, ...statuses],
+    );
+    return rows.map(rowToRun);
   }
 
   async listRuns(id: WorkItemId): Promise<Run[]> {
@@ -1549,6 +1655,9 @@ interface CoordContext {
   /** Held by a dependency: an edge not yet merged, or `blocked_on: dependency`. */
   depHeld: (id: string) => boolean;
 }
+
+/** Notes kept per session: the newest ones. */
+const MAX_SESSION_NOTES = 200;
 
 /** The one row in `claim_locks`: every claim takes it first (migration 7). */
 const CLAIM_LOCK = "claim";

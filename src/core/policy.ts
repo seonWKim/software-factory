@@ -140,6 +140,21 @@ export function isCovered(path: string, allowed: readonly string[]): boolean {
  */
 export const IMPLEMENT_KINDS: readonly RunKind[] = ["implement", "update"];
 
+/** A person's session (design §5, 2026-11-01): writes the item's branch like IMPLEMENT_KINDS, never claimed by a worker. */
+export const INTERACTIVE: RunKind = "interactive";
+/** Session error codes: `session abandon`, and the reaper's on an expired session lease (never requeued). */
+export const SESSION_ABANDONED = "abandoned";
+export const SESSION_LOST = "session_lost";
+/** The blocked reason of an item whose session ended without a PR: RUNNING, blocked on a human, nothing queued. */
+export const SESSION_RELEASED = "session_released";
+
+/** The paths two lists share by the scope gate's coverage rule (as the coordination cost's shared paths). */
+export function pathsOverlap(a: readonly string[], b: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const x of a) for (const y of b) if (x === y || isCovered(y, [x])) out.add(y); else if (isCovered(x, [y])) out.add(x);
+  return [...out].sort();
+}
+
 /**
  * Scope gate (design §4): given the NUL-separated output of
  * `git diff --name-only -z --no-renames <base>...HEAD` and the item's allowed_paths, returns every changed

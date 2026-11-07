@@ -49,6 +49,8 @@ export interface StatsReport {
    * null. Absent in reports built before it existed.
    */
   adopted?: StatsRow;
+  /** Finished `interactive` runs (design §5, 2026-11-01), any item, and their reported tokens. Counts only, no ids. */
+  interactive?: { runs: number; tokens: number };
 }
 
 export const STATS_TIERS: readonly (Tier | null)[] = [1, 2, 3, 4, 5, null];
@@ -82,9 +84,11 @@ function row(tier: Tier | null, records: readonly StatsRecord[], config: StatsCo
 }
 
 /** Reads through the one read-only store method; the narrow type keeps every write method out of reach. */
-export async function collectStats(store: Pick<FactoryStore, "listStatsRecords">, config: StatsConfig): Promise<StatsReport> {
+export async function collectStats(store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind">, config: StatsConfig): Promise<StatsReport> {
   const records = await store.listStatsRecords([STATS_REASONS.reject, STATS_REASONS.retry]);
-  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config) };
+  const sessions = await store.listRunsByKind("interactive", ["succeeded", "failed"]);
+  const interactive = { runs: sessions.length, tokens: sum(sessions.map((r) => r.session_tokens ?? 0)) };
+  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), interactive };
 }
 
 export function tierLabel(tier: Tier | null): string {
@@ -118,6 +122,7 @@ export function formatStatsText(report: StatsReport): string {
     ...(report.adopted ? ["adopted: CLOSED pull requests a person opened and the factory adopted, any tier; not in the tier rows."] : []),
     `weights: none ${w.none}, minor ${w.minor}, major ${w.major}, critical ${w.critical}.`,
     "/reject and /retry count applied commands only (spec_rejected, retry_requested); refused commands are not counted.",
+    ...(report.interactive ? [`interactive sessions: ${report.interactive.runs} finished, ${report.interactive.tokens} tokens reported (factory session).`] : []),
   ].join("\n");
 }
 

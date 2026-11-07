@@ -1,11 +1,14 @@
 import { randomBytes } from "node:crypto";
+import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import mysql from "mysql2/promise";
 import { onTestFinished } from "vitest";
 import type { Actor, UserId, WorkerId } from "../../src/core/types.js";
 import type { Clock } from "../../src/interfaces/clock.js";
 import type { FactoryStore, NewWorkItem } from "../../src/interfaces/factory-store.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
-import { MysqlMigrations } from "../../src/impl/store/mysql/migrations.js";
+import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, inlineStepName } from "../../src/impl/store/mysql/migrations.js";
 import { MysqlDriver, type MysqlOptions } from "../../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
@@ -62,6 +65,21 @@ export async function newEmptyMysqlDatabase() {
     await admin.end();
   });
   return { database, options, connect, onCleanup: (f: () => Promise<void>) => cleanups.push(f) };
+}
+
+/**
+ * The repo's MySQL schema steps numbered up to `state` (step files and INLINE_STEPS), as files in a fresh dir.
+ * A database migrated with it stops at `state`, as one from before the later steps; a step's upgrade test then
+ * runs `MysqlMigrations` with the repo's own steps, so a later step never breaks it.
+ */
+export function mysqlStepsUpTo(state: number): string {
+  const dir = mkdtempSync(join(tmpdir(), "sf-mysql-steps-"));
+  for (const f of readdirSync(STEPS_DIR)) {
+    const n = /^(\d{4})-/.exec(f);
+    if (n && Number(n[1]) <= state) copyFileSync(join(STEPS_DIR, f), join(dir, f));
+  }
+  for (const st of INLINE_STEPS) if (st.number <= state) writeFileSync(join(dir, inlineStepName(st)), st.sql);
+  return dir;
 }
 
 /**
