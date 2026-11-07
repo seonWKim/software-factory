@@ -1,5 +1,5 @@
 import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
-import { prNumber } from "./change-ref.js";
+import { issueNumber, prNumber } from "./change-ref.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
@@ -1610,7 +1610,7 @@ export class Worker {
       ...conflicts.map((f) => `- \`${f}\``),
     ].join("\n");
     const posted = await this.forgeComment(ctx, {
-      number: Number(item.source.id.split("#")[1]),
+      number: issueNumber(item),
       body,
       marker: `<!-- factory:merge-conflict:${run.id} -->`,
     });
@@ -1750,7 +1750,7 @@ export class Worker {
       "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
     ].join("\n");
     const posted = await this.forgeComment(ctx, {
-      number: Number(item.source.id.split("#")[1]),
+      number: issueNumber(item),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
     });
@@ -1779,8 +1779,8 @@ export class Worker {
       "",
       `Nothing was pushed to the change's branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
     ].join("\n");
-    const posted = await this.d.broker.call(ctx, "github.comment", {
-      number: Number(item.source.id.split("#")[1]),
+    const posted = await this.forgeComment(ctx, {
+      number: issueNumber(item),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
     });
@@ -2049,7 +2049,7 @@ export class Worker {
       ...scopeReply(outside),
     ].join("\n");
     const posted = await this.forgeComment(ctx, {
-      number: Number(item.source.id.split("#")[1]),
+      number: issueNumber(item),
       body,
       marker: `<!-- factory:scope:${run.id} -->`,
     });
@@ -2720,11 +2720,13 @@ export class Worker {
   }
 
   /**
-   * A comment on the item's issue or PR through the broker; a broker with no comment tool (the local one, whose
-   * items' messages are their thread) posts nothing and succeeds.
+   * A comment on the item's issue or PR through the broker. It posts nothing and succeeds with a broker with no
+   * comment tool (the local one, whose items' messages are their thread) or with no number: an item that is not
+   * a forge issue (a local item, also with a forge broker selected; design 05-sources), or a review or update
+   * without a change.
    */
   private async forgeComment(ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
-    if (!this.hasTool("github.comment")) return { ok: true, content: null };
+    if (!this.hasTool("github.comment") || args.number === null) return { ok: true, content: null };
     return this.d.broker.call(ctx, "github.comment", args);
   }
 
