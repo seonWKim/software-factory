@@ -21,6 +21,7 @@
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
+  "cli_user": "github:69591622",
   "workers": 5,
   "max_workers": 10,
   "plugins": {
@@ -30,7 +31,7 @@
     "sandbox": "noop",
     "runner": "claude-code",
     "llm": "claude-cli",
-    "source": "github-issues",
+    "source": ["github-issues", "local"],
     "storage": "fs",
     "capability": "list-all",
     "clock": "system",

@@ -20,7 +20,10 @@ export interface TriageOutput {
   in_scope?: string[];
   /** Out-of-scope items, one per entry. Absent on an older output. */
   out_of_scope?: string[];
-  /** Decisions the human must make before approving: risky choices, open questions (at most 5 shown). */
+  /**
+   * Decisions the human must make before approving: risky choices, open questions (at most 5 shown). Optional in
+   * the schema (a cheap model often leaves it out when there are none); the validator defaults it to [].
+   */
   decisions?: string[];
   allowed_paths: string[];
   /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
@@ -151,7 +154,7 @@ export const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
-    "in_short", "problem", "decisions", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
+    "in_short", "problem", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
     "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files",
   ],
   properties: {
@@ -325,6 +328,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   const scoped = lists
     ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
     : { scope: scope as string };
+  // Optional: a triage output without `decisions` means none (the schema does not require it).
   const decisions = v.decisions ?? [];
   if (!isStrs(decisions)) return { ok: false, error: "decisions" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
@@ -348,7 +352,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, ...(decisions.length > 0 ? { decisions } : {}), ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
 }
