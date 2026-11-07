@@ -8,7 +8,7 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import { FORGE_AUTH, PREFLIGHT_ACCESS } from "../../core/policy.js";
+import { FORGE_AUTH, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, networkDetail, unreachableHost } from "../../core/policy.js";
 import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
 import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -222,6 +222,9 @@ export class GitHubToolBroker implements ToolBroker {
       { SF_GIT_TOKEN: token.reveal() },
     );
     if (r.exit_code !== 0) {
+      // A host that cannot be reached is the network, not the push: the network pause, with the host only.
+      const host = unreachableHost(r.stderr);
+      if (host !== null) return { ok: false, error_code: NETWORK_UNAVAILABLE, message: networkDetail(host) };
       // A refused credential is not a rejected push: forge_auth pauses implement-type claims (design §5 Restarts).
       return { ok: false, error_code: forgeAuthRefused(r.stderr) ? FORGE_AUTH : "push_failed", message: r.stderr.trim().slice(0, 500) };
     }
@@ -305,7 +308,8 @@ export class GitHubToolBroker implements ToolBroker {
   /**
    * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (it answers;
    * its push flag is only reported) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
-   * or 403 is `forge_auth`; anything else `preflight_access` (since 2026-11-07, issue #216; before, `preflight_failed`),
+   * or 403 is `forge_auth`; a DNS or connect error `network_unavailable` (the network pause, its message the host
+   * only); anything else `preflight_access` (since 2026-11-07, issue #216; before, `preflight_failed`),
    * which pauses implement-type claims. The message starts with the failed check's name and
    * carries the status only: no response body, no header, no credential.
    */
@@ -320,6 +324,9 @@ export class GitHubToolBroker implements ToolBroker {
       } catch (err) {
         const status = refusedStatus(err);
         if (status) return { ok: false, error_code: FORGE_AUTH, message: `${what}: GitHub refused the credentials (${status})` };
+        // DNS or connect: the network pause (design §5 Restarts), the host only, no attempt spent.
+        const host = err instanceof GitHubError ? null : unreachableHost(causeText(err));
+        if (host !== null) return { ok: false, error_code: NETWORK_UNAVAILABLE, message: networkDetail(host) };
         const why = err instanceof GitHubError ? `GitHub answered ${err.status}` : "GitHub could not be reached";
         return { ok: false, error_code: PREFLIGHT_ACCESS, message: `${what}: ${why}` };
       }
@@ -344,6 +351,13 @@ export class GitHubToolBroker implements ToolBroker {
     const r = await this.deps.client.commentOnce(this.deps.repo, a.number, a.body, a.marker);
     return { ok: true, content: r };
   }
+}
+
+/** An error's message and its causes' (fetch puts the DNS or connect error in `cause`), for classifying only. */
+function causeText(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err, depth = 0; e instanceof Error && depth < 4; e = (e as { cause?: unknown }).cause, depth++) parts.push(e.message);
+  return parts.join(": ");
 }
 
 /** The status of a GitHub 401 or 403, else null. */

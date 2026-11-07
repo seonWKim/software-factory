@@ -56,8 +56,11 @@ import {
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
-  MODEL_ANSWERED,
   MODEL_STALL,
+  NETWORK,
+  NETWORK_SINCE,
+  type ProbePause,
+  networkProbeDelayMs,
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
@@ -88,6 +91,7 @@ import type {
 import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
@@ -123,6 +127,11 @@ export interface ControllerDeps {
    * controller's state decisions never use it.
    */
   llm?: LLMProvider;
+  /**
+   * The network pause's probe (design §5 Restarts). Absent: nothing can be asked, so the pause ends at its first
+   * probe time, as a stall pause does with no LLM provider.
+   */
+  network_probe?: NetworkProbe;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
   /**
@@ -617,24 +626,58 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, one short prompt on the cheap
-   * model class through the LLM provider. An answer ends the pause (`model_answered`), so claims resume; no
-   * answer (an error, a refusal, a throw or no reply within stall_ms) moves the pause probe_interval_ms later.
-   * Both are store writes that only move times later, so two replicas probing at once end in the same state.
-   * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
+   * The probe pauses (design §5 Restarts), one schedule for both: once a pause's probe time has passed, the replica
+   * whose conditional write moves it to the next probe time (claimProbe) probes, and no other one. A pass ends the
+   * pause (endClaimPause), so claims resume; a failure leaves the next probe time in place.
+   * `model_stall`: one short prompt on the cheap model class; no answer within stall_ms (an error, a refusal, a
+   * throw) is a failure, the next probe probe_interval_ms later. With no LLM provider the pause ends at its probe.
+   * `network`: the NetworkProbe, the next probe 30 s later, backing off to 5 min (networkProbeDelayMs).
    */
   private async probeStep(): Promise<void> {
-    const due = await this.d.store.getClaimPause(MODEL_STALL);
-    if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
-    const answered = this.d.llm ? await this.probe(this.d.llm) : true;
+    const llm = this.d.llm;
+    await this.probePause(MODEL_STALL, {
+      delayMs: async () => this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+      probe: llm ? async () => ((await this.probe(llm)) ? null : "no answer") : null,
+      passed: llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends",
+      failed: (next) => this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next}`, { resume_at: next }),
+    });
+    const net = this.d.network_probe;
+    await this.probePause(NETWORK, {
+      delayMs: async (now) => {
+        const since = await this.d.store.getClaimPause(NETWORK_SINCE);
+        return networkProbeDelayMs(since === null ? 0 : now - Date.parse(since));
+      },
+      probe: net ? async () => {
+        const r = await net.probe().catch(() => ({ ok: false as const, host: "unknown host" }));
+        return r.ok ? null : r.host;
+      } : null,
+      passed: "network reachable again: claims resume",
+      // Info, not warn: the pause's start was the one warning; the host is the only detail.
+      failed: (next, host) => this.d.log.info(`network still unreachable: runs stay paused, next probe at ${next}`, { host, resume_at: next }),
+    });
+  }
+
+  /** One probe pause's due probe; see probeStep. `probe` resolves null on a pass, else what failed. */
+  private async probePause(
+    name: ProbePause,
+    p: {
+      delayMs: (now: number) => Promise<number>;
+      probe: (() => Promise<string | null>) | null;
+      passed: string;
+      failed: (next: Timestamp, why: string) => void;
+    },
+  ): Promise<void> {
+    const due = await this.d.store.getClaimPause(name);
     const now = this.d.clock.now().getTime();
-    if (answered) {
-      await this.d.store.pauseClaims(iso(now), MODEL_ANSWERED);
-      this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
+    if (due === null || Date.parse(due) > now) return;
+    const next = iso(now + (await p.delayMs(now)));
+    if (!(await this.d.store.claimProbe(name, due, next))) return;
+    const failure = p.probe ? await p.probe() : null;
+    if (failure === null) {
+      if ((await this.d.store.endClaimPause(name)).ended) this.d.log.info(p.passed, {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(now + (this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms)), MODEL_STALL);
-    this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
+    p.failed(next, failure);
   }
 
   /** One short prompt on the cheap model: true when it answered. Carries no work item data. */

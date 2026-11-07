@@ -37,7 +37,8 @@
     "clock": "system",
     "updater": "git-worktree",
     "github_auth": "app",
-    "test_database": "none"
+    "test_database": "none",
+    "network_probe": "http"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {

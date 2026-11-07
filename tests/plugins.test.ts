@@ -27,6 +27,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
+import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -78,6 +79,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   test_database: { none: NoTestDatabase },
   // Optional with no default (issue #172): the default selection builds no forge.
   forge: {},
+  network_probe: { http: HttpNetworkProbe },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -177,6 +179,7 @@ describe("plugin registry: defaults", () => {
       awake: "caffeinate",
       github_auth: "token",
       test_database: "none",
+      network_probe: "http",
     });
     const ctx = await context(loaded);
     expect(loaded.plugins).not.toHaveProperty("forge");
@@ -783,7 +786,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 17 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(17);
+  it("covers 18 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(18);
   });
 });
