@@ -145,6 +145,9 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_VALUE_3: "false",
   GIT_NO_REPLACE_OBJECTS: "1",
   GIT_GRAFT_FILE: "/dev/null",
+  // Without it, every git call prints the grafts deprecation hint (GIT_GRAFT_FILE above) to stderr, and a stored
+  // error (cut to 500 characters) holds only the hint, not git's message.
+  GIT_ADVICE: "0",
   GIT_TERMINAL_PROMPT: "0",
 };
 
@@ -801,8 +804,7 @@ export class Worker {
       this.d.log.warn("paused run: the WIP bundle did not restore; starting from the branch", { run_id: run.id });
       return false;
     }
-    await this.git(handle, ["read-tree", state.head]);
-    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, state.head]);
+    await this.checkoutClean(handle, branch, state.head);
     return true;
   }
 
@@ -842,9 +844,20 @@ export class Worker {
       this.d.log.warn("wip branch missing or moved; running the agent again", { run_id: run.id, wip_branch: wip.branch });
       return null;
     }
-    await this.git(handle, ["read-tree", wip.head]);
-    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, wip.head]);
+    await this.checkoutClean(handle, branch, wip.head);
     return wip;
+  }
+
+  /**
+   * Puts `branch` on `head` with a fresh index and no untracked files (ignored ones, such as node_modules, stay).
+   * The clone starts on the base: after read-tree, files the base added since `head` are no longer tracked, so
+   * checkout leaves them on disk, and the sync's `git merge` of the base then aborts on them ("untracked working
+   * tree files would be overwritten"), with no unmerged path, as `git_failed` on every retry.
+   */
+  private async checkoutClean(handle: SandboxHandle, branch: string, head: string): Promise<void> {
+    await this.git(handle, ["read-tree", head]);
+    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, head]);
+    await this.git(handle, [...NO_HOOKS, "clean", "-ffdq"]);
   }
 
   /**
