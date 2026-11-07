@@ -59,6 +59,8 @@ import {
   MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
+  CHECKS_ENV,
+  CHECKS_ENV_LIMIT,
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent } from "./command-inbox.js";
@@ -2686,7 +2688,9 @@ export class Controller {
   /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
    * this step (the first run and its automatic retries): a rate limit is never an attempt; infra failures
-   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. Under both
+   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
+   * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
+   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
    * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
    * its reset time). At a limit, the item blocks on a human with the last error posted. The retry key comes
    * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
@@ -2704,9 +2708,20 @@ export class Controller {
     const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
     const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
 
+    if (cls === "checks_env") {
+      const env = (await this.d.store.listRuns(it.id)).filter(
+        (r) => failureClass(r.outcome) === "checks_env" && (r.id === run.id || r.acknowledged_at !== null),
+      ).length;
+      if (env > CHECKS_ENV_LIMIT) {
+        // The run_failed form, so `/retry` and the status page read it like any other failed run.
+        const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${CHECKS_ENV}` };
+        const url = await this.lastAttemptComment(it, run, code, CHECKS_ENV, env, footerAfter(it, patch));
+        return { patch: { ...patch, failure_comment_url: url }, actor: SYSTEM, reason: CHECKS_ENV, detail: { ...detail, checks_env_failures: env }, ack_run: run.id };
+      }
+    }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit nor a stall is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && limit) {
+    // Neither a rate limit, a stall nor a checks_env run is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -3129,7 +3144,9 @@ export class Controller {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.settings(it.project).max_attempts}), so the factory stopped retrying it.`
-      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
+      : limit === CHECKS_ENV
+        ? `The ${run.kind} run's checks failed on the base branch too ${n} times (the factory requeues at most ${CHECKS_ENV_LIMIT}), so it stopped retrying it. Fix or skip the failing tests on the base branch first.`
+        : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
     const tail = stripAnsi(out?.output_tail || out?.detail || "").trim();
     const first = firstErrorLine(tail);
     const tests = failingTests(tail);
@@ -3676,6 +3693,7 @@ const FAILURES: Record<string, string> = {
   // The implement run's code (design §4, 2026-11-03): a task failure, retried up to max_attempts. Not the
   // CHECKS_FAILED blocked reason above, which is a failed PR check after review (design §5 CI gate).
   checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
+  checks_env: "a check before push failed, also after one fix step, and its failing test files fail on the base commit too (flaky or broken on the base); retried without spending an attempt or a restart",
   toolchain_missing: "a check before push could not start its tools (a module under node_modules or a tool binary is missing); an infrastructure failure, retried without spending an attempt",
   test_database_failed: "the run's test database for the checks could not be created",
   unresolved_conflicts: "conflicts were left unresolved",
