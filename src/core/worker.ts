@@ -49,7 +49,7 @@ import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
-import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
+import type { ToolBroker, ToolCallContext, ToolResult } from "../interfaces/tool-broker.js";
 
 export interface WorkerDeps {
   /** `<host>:<pid>:<n>` under a WorkerPool: unique per worker loop, stored as the lease owner. */
@@ -1010,26 +1010,29 @@ export class Worker {
     const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
     const wip = (): WipRef => wipAt(head);
     const db = await this.database(run);
-    let content: { number: number };
+    let content: { number: number } | null = null;
     try {
       const pushed = await this.d.broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
       if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
       await this.recordPushedHead(run, ctx, head);
-      const pr = await this.d.broker.call(ctx, "github.open_pr", {
-        branch,
-        base_ref: base,
-        title: prTitle(item),
-        ...this.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
-      });
-      if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
-      content = pr.content as { number: number };
+      // A broker with no PR tool (the local one): the branch is the review's input and `factory merge` its merge.
+      if (this.hasTool("github.open_pr")) {
+        const pr = await this.d.broker.call(ctx, "github.open_pr", {
+          branch,
+          base_ref: base,
+          title: prTitle(item),
+          ...this.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
+        });
+        if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
+        content = pr.content as { number: number };
+      }
     } catch (err) {
       throw await this.keepWip(run, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
     }
     // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
     // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
     return {
-      pr_number: content.number,
+      pr_number: content?.number ?? null,
       commits: work.commits,
       files: paths.slice(0, MAX_PR_FILES),
       // What the PR body was built from, so an update run can rebuild it and the CI gate can hold an incomplete PR.
@@ -1312,15 +1315,17 @@ export class Worker {
    */
   private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
     const { repo } = this.cfg;
-    const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
-    if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
-    const baseRef = `origin/${repo.base_branch}`;
+    // A broker with no forge (the local one) has no preflight: only the base fetch below is checked.
+    if (this.hasTool("github.preflight")) {
+      const forge = await this.d.broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
+      if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
+    }
     try {
       await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
     } catch (err) {
       throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${err instanceof Error ? err.message : "unknown"}`.slice(0, 500));
     }
-    const fetched = await this.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, `+refs/remotes/${baseRef}:refs/remotes/${baseRef}`]);
+    const fetched = await this.gitRaw(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec()]);
     if (fetched.exit_code !== 0) throw new RunFailure(PREFLIGHT_FAILED, `base_fetch: ${fetched.stderr.trim()}`.slice(0, 500));
   }
 
@@ -1408,7 +1413,7 @@ export class Worker {
     const baseRef = `origin/${repo.base_branch}`;
     // From the factory repo, freshly fetched outside the clone; never the clone's own remote (design §5).
     const fresh = await this.d.sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
-    await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, `+refs/remotes/${baseRef}:refs/remotes/${baseRef}`]);
+    await this.git(handle, ["fetch", "--quiet", "--no-tags", repo.path, this.baseRefspec()]);
     const baseSha = (await this.git(handle, ["rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`])).trim();
     if (baseSha !== fresh) throw new RunFailure("untrusted_base", "the clone's base does not match the factory repo's");
     // The fetched base may only move forward from the base the sandbox resolved before any agent ran.
@@ -1600,7 +1605,7 @@ export class Worker {
       "",
       ...conflicts.map((f) => `- \`${f}\``),
     ].join("\n");
-    const posted = await this.d.broker.call(ctx, "github.comment", {
+    const posted = await this.forgeComment(ctx, {
       number: Number(item.source.id.split("#")[1]),
       body,
       marker: `<!-- factory:merge-conflict:${run.id} -->`,
@@ -1740,7 +1745,7 @@ export class Worker {
       "",
       "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
     ].join("\n");
-    const posted = await this.d.broker.call(ctx, "github.comment", {
+    const posted = await this.forgeComment(ctx, {
       number: Number(item.source.id.split("#")[1]),
       body,
       marker: `<!-- factory:checks:${run.id} -->`,
@@ -2002,7 +2007,7 @@ export class Worker {
       "",
       ...scopeReply(outside),
     ].join("\n");
-    const posted = await this.d.broker.call(ctx, "github.comment", {
+    const posted = await this.forgeComment(ctx, {
       number: Number(item.source.id.split("#")[1]),
       body,
       marker: `<!-- factory:scope:${run.id} -->`,
@@ -2022,9 +2027,12 @@ export class Worker {
     model: ModelClass,
     plan: ResumePlan | null = null,
   ) {
-    if (item.pr_number === null) throw new RunFailure("no_pr", "work item has no PR");
+    // A local item (no PR tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
+    // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
+    const local = !this.hasTool("github.open_pr");
+    if (item.pr_number === null && !local) throw new RunFailure("no_pr", "work item has no PR");
     // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
-    if (item.head_branch !== null) {
+    if (item.head_branch !== null || local) {
       await this.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branchFor(item, this.cfg.branch_prefix)}`]);
     }
     const base = `origin/${this.cfg.repo.base_branch}`;
@@ -2068,7 +2076,7 @@ export class Worker {
     // only the rule names, and the controller blocks the item on a human.
     const scan = await this.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
     if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
-    const posted = await this.d.broker.call(ctx, "github.comment", {
+    const posted = await this.forgeComment(ctx, {
       number: item.pr_number,
       body: reviewComment(v),
       marker: `<!-- factory:review:${run.id} -->`,
@@ -2091,7 +2099,7 @@ export class Worker {
       throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
     });
     const comment = async (body: string) => {
-      const r = await this.d.broker.call(ctx, "github.comment", {
+      const r = await this.forgeComment(ctx, {
         number: item.pr_number,
         body,
         marker: `<!-- factory:update:${run.id} -->`,
@@ -2650,6 +2658,29 @@ export class Worker {
   /** Every worker git call in a run folder: the trusted env ranks above whatever the run's .git/config says. */
   private gitRaw(handle: SandboxHandle, args: string[], env: Record<string, string> = {}) {
     return this.d.sandbox.exec(handle, ["git", ...args], { env: { ...this.d.toolEnv, ...env, ...TRUSTED_GIT_ENV } });
+  }
+
+  /** Whether the broker serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
+  private hasTool(name: string): boolean {
+    return this.d.broker.allTools().some((t) => t.name === name);
+  }
+
+  /**
+   * The base branch copied from the factory repo into a run folder's `origin/<base>`: the factory repo's
+   * `origin/<base>`, or its local `refs/heads/<base>` when no forge plugin is selected (`local_only`).
+   */
+  private baseRefspec(): string {
+    const base = this.cfg.repo.base_branch;
+    return `+${this.cfg.local_only ? `refs/heads/${base}` : `refs/remotes/origin/${base}`}:refs/remotes/origin/${base}`;
+  }
+
+  /**
+   * A comment on the item's issue or PR through the broker; a broker with no comment tool (the local one, whose
+   * items' messages are their thread) posts nothing and succeeds.
+   */
+  private async forgeComment(ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
+    if (!this.hasTool("github.comment")) return { ok: true, content: null };
+    return this.d.broker.call(ctx, "github.comment", args);
   }
 
   /**

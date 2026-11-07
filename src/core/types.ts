@@ -66,7 +66,7 @@ export interface WorkItem {
   pr_number: number | null;
   /**
    * The change columns the store writes with pr_number (migration 35): `change_ref` is the PR number as text,
-   * `change_url` the PR link when the project is a GitHub key with a stored label. Both null without a PR number,
+   * `change_url` the PR link when the project is a forge key with a stored label. Both null without a PR number,
    * and on rows written before migration 35. Store-derived: never patched directly.
    */
   change_ref: string | null;

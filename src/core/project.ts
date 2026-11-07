@@ -11,8 +11,11 @@ export interface ProjectRef {
   label: string;
 }
 
-/** Providers the key format names. Only one provider is implemented; the format leaves room for others. */
-export type ProjectProvider = "github";
+/**
+ * Providers the key format names: the forge's, and `local` for a factory with no forge plugin (design 05-sources,
+ * Local startup). The format leaves room for others.
+ */
+export type ProjectProvider = "github" | "local";
 
 const KEY = /^([a-z][a-z0-9-]*):([A-Za-z0-9.-]+(?::\d+)?):(.+)$/;
 /** A legacy project value: `owner/name`, as stored before project keys. */
@@ -23,6 +26,15 @@ export function githubProjectKey(host: string, nodeId: string): string {
   if (!/^[A-Za-z0-9.-]+(?::\d+)?$/.test(host)) throw new Error(`not a host name: ${JSON.stringify(host)}`);
   if (!/^[A-Za-z0-9_=-]+$/.test(nodeId)) throw new Error(`not a repository node ID: ${JSON.stringify(nodeId)}`);
   return `github:${host}:${nodeId}`;
+}
+
+/**
+ * The key of the configured repo when no forge plugin is selected: `local:local:<digest>`, `digest` a hex hash of
+ * its `owner/name` made by the caller (core runs no crypto). No forge ID, so a rename starts a new project.
+ */
+export function localProjectKey(digest: string): string {
+  if (!/^[0-9a-f]{16,64}$/.test(digest)) throw new Error(`not a hex digest: ${JSON.stringify(digest)}`);
+  return `local:local:${digest}`;
 }
 
 /** The label of a repository: `<host>/<owner>/<name>`. */

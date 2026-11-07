@@ -48,6 +48,7 @@ export default definePlugin({
       runtimeDir: join(c.loaded.stateDir, "runtime"),
       stagingDir: join(c.loaded.stateDir, "runtime-next"),
       baseBranch: c.loaded.config.repo.base_branch,
+      ...(c.loaded.config.local_only ? { local: true } : {}),
       run: c.run,
       launcher: c.launcher,
       clock: c.clock,

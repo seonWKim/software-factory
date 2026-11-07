@@ -58,6 +58,7 @@ import {
   GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
+  branchFor,
   workItemIdFromBranch,
   FORGE_AUTH,
   MODEL_STALL,
@@ -71,7 +72,8 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent, syncedCommand } from "./command-inbox.js";
-import { isCliCommandKey } from "./local-cli.js";
+import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
+import { isCliCommandKey, localIdentity } from "./local-cli.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
@@ -669,8 +671,74 @@ export class Controller {
     // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
     // judges it, and a sync source item's transition never waits on its source. Its mirror on the issue is the mirror step's.
     if (!item) return;
+    // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
+    // CLI refuses it for any other when it writes one.
+    if (c.command === MERGE_COMMAND) {
+      if (item.source.type === LOCAL_TYPE) await this.mergeLocal(item.id, localIdentity(c.actor), c.key);
+      return;
+    }
     const e = commandEvent(c, item.source);
     if (e) await this.handle(e);
+  }
+
+  /**
+   * The local merge (design 05-sources, Local startup): the one merge path for an item with no PR, reached by
+   * `factory merge <id>` through the command inbox (and later by other callers, never a second path). Authorized
+   * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
+   * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push
+   * and no checkout; a conflict leaves the item in merge_pending and the reply names the files. A merge closes the
+   * item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
+   * automatic: only a human's command calls it. Safe to run twice: a branch the base already contains moves
+   * nothing and closes the item with the base's commit; `key` keys the reply.
+   */
+  async mergeLocal(id: WorkItemId, who: ExternalIdentity, key: string): Promise<void> {
+    const item = await this.d.store.getWorkItem(id);
+    if (!item) return;
+    const { repo, branch_prefix } = this.cfg;
+    const branch = branchFor(item, branch_prefix);
+    const principal = await this.authorize(who, "approve_merge", item.id);
+    let refusal: string;
+    if ("refuse" in principal) refusal = principal.refuse;
+    else if (!awaitingMerge(item) || item.pr_number !== null) {
+      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
+      refusal = item.pr_number !== null
+        ? `${item.id} has PR #${item.pr_number}: merge the PR instead`
+        : `${item.id} is not waiting for a merge (${at}); \`factory merge\` applies once its review passed (merge_pending)`;
+    } else if (!canMergeLocal(this.d.sandbox)) refusal = "this controller has no sandbox that can merge locally";
+    else {
+      const r = await this.d.sandbox.mergeLocal({
+        repo: repo.path, base_ref: repo.base_branch, branch, identity: this.cfg.agent_git_identity,
+        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} with \`factory merge\`.`,
+      });
+      if (r.merged) {
+        const actor: Actor = { kind: "user", id: principal.user_id };
+        const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.pr_number === null
+          ? {
+              patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+              actor,
+              reason: "local_merged",
+              detail: { branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}) },
+            }
+          : null));
+        if (lost === null) {
+          this.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: principal.user_id });
+          await this.post(item, item.source, `Merged \`${branch}\` into the local \`${repo.base_branch}\` as \`${r.sha.slice(0, 12)}\` (no push). The item is closed.`, `<!-- factory:local-merged:${key} -->`);
+          await this.guard("dependents", () => this.releaseDependents(item.source.id));
+          return;
+        }
+        refusal = lost;
+      } else if ("conflicts" in r) {
+        refusal = [
+          `\`${branch}\` does not merge cleanly into the local \`${repo.base_branch}\`, so nothing moved and the item still waits for a merge. Conflicting files:`,
+          "",
+          ...r.conflicts.map((f) => `- \`${f}\``),
+          "",
+          `\`${branch}\` is a local branch of this repository: merge \`${repo.base_branch}\` into it and commit the resolution there, then run \`factory merge ${item.id}\` again`,
+        ].join("\n");
+      } else refusal = r.refused;
+    }
+    this.d.log.info("command refused", { work_item_id: item.id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
+    await this.post(item, item.source, `\`factory merge\` was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
   }
 
   /**
@@ -2759,7 +2827,8 @@ export class Controller {
         }
         case "implement": {
           if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
-          const pr = Number(data.pr_number);
+          // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
+          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
           return {
@@ -3086,7 +3155,11 @@ export class Controller {
     // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
     const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
-    const ready = `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
+    // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
+    const local = it.pr_number === null && it.origin !== "adopted";
+    const ready = local
+      ? `The local branch \`${branchFor(it, this.cfg.branch_prefix)}\` passed review (tier ${tier}).`
+      : `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
     const text = missing.length > 0
       ? [
         `${ready} It is **incomplete**: the implementer reports work the spec asks for that it does not do. Merging it does not finish this issue.`,
@@ -3095,7 +3168,7 @@ export class Controller {
         "",
         "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
       ].join("\n")
-      : `${ready} A human merge is required.`;
+      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, with no push` : ""}.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
