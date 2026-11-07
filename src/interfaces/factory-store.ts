@@ -13,6 +13,8 @@ import type {
   Tier,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveWindow,
   Run,
   RunAttempt,
   RunId,
@@ -24,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -122,6 +127,25 @@ export interface NewRun {
   not_before?: Timestamp | null;
   /** Stored with the run for the worker to read (e.g. `/resolve` notes). Absent or null: none. */
   input?: RunInput | null;
+}
+
+/** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
+export interface NewImproveReport extends ImproveWindow {
+  run_id: RunId;
+  project: string;
+  groups: ImproveReport["groups"];
+  patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -432,18 +456,21 @@ export interface FactoryStore {
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
    * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. A probe pause (`model_stall`,
-   * `network`) in effect: its row and its answered row (`model_answered`, `network_answered`) move to now, as a
-   * passing probe does, so its since row reads null too. `ended` is true when a pause was in effect. A pause not in
-   * effect (none, already over, a second call) changes no row. The since and answered rows are not pauses of
-   * their own and throw.
+   * `network`) in effect: its row and its answered row (`model_answered`, `network_answered`) move to the earlier
+   * of the probe time and now, as a passing probe does, so its since row reads null too and a failure right after
+   * starts a new pause. `ended` is true when a pause was in effect. A pause not in effect (none, already over, a
+   * second call) changes no row. The since and answered rows are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
   /**
-   * Takes the due probe of probe pause `name` (design §5 Restarts): moves its probe time from `due` to `next` with
-   * one conditional write, true for the one caller whose write landed. Only that replica probes; every other one
-   * sees false (another took it, or the time moved) and probes nothing.
+   * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time
+   * `due`, moves it to `next` with one conditional write under the claim lock, true for the one caller whose write
+   * landed. Only that replica probes; every other one sees false (another took it, the time moved, or the pause
+   * ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
    */
   claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
+  /** claimProbe for `model_stall`. */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
@@ -497,6 +524,33 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+  /** Runs whose finished_at is in [start, end), oldest first (finished_at, then insertion order). Read-only. */
+  listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]>;
+  /**
+   * Queues a run on an existing item with no transition (design §7: the improve run of a system work item, whose
+   * state never changes). A run with the same idempotency key already there: that run, `created: false`.
+   */
+  enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
+
+  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+
+  /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
+  recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
+  getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
 
   // Coordination (design §5, 2026-11-03)
 

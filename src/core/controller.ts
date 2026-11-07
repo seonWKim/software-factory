@@ -65,10 +65,12 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent } from "./command-inbox.js";
+import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -338,6 +340,8 @@ export class Controller {
    */
   private readonly edgesReadAt = new Map<string, number>();
   private readonly stateReadAt = new Map<string, number>();
+  /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
+  private improveDay: string | null = null;
 
   constructor(private readonly d: ControllerDeps) {
     this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
@@ -378,6 +382,8 @@ export class Controller {
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
+      // A store read until the day changes: the day's improve run is queued once (design §7).
+      await this.guard("improve", () => this.improveStep());
       // Last, so the messages this tick wrote go out in it.
       await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
@@ -628,7 +634,8 @@ export class Controller {
   /**
    * The probe pauses (design §5 Restarts), one schedule for both: once a pause's probe time has passed, the replica
    * whose conditional write moves it to the next probe time (claimProbe) probes, and no other one. A pass ends the
-   * pause (endClaimPause), so claims resume; a failure leaves the next probe time in place.
+   * pause (endClaimPause), so claims resume; a failure keeps the pause and moves the next probe the pause's delay
+   * after the failed probe. Any live controller may take a due probe, not only the one that set the pause.
    * `model_stall`: one short prompt on the cheap model class; no answer within stall_ms (an error, a refusal, a
    * throw) is a failure, the next probe probe_interval_ms later. With no LLM provider the pause ends at its probe.
    * `network`: the NetworkProbe, the next probe 30 s later, backing off to 5 min (networkProbeDelayMs).
@@ -677,7 +684,9 @@ export class Controller {
       if ((await this.d.store.endClaimPause(name)).ended) this.d.log.info(p.passed, {});
       return;
     }
-    p.failed(next, failure);
+    const after = this.d.clock.now().getTime();
+    const moved = await this.d.store.pauseClaims(iso(after + (await p.delayMs(after))), name);
+    p.failed(moved.resume_at, failure);
   }
 
   /** One short prompt on the cheap model: true when it answered. Carries no work item data. */
@@ -694,6 +703,25 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
+  async tickImprove(): Promise<void> {
+    await this.live.refresh();
+    await this.improveStep();
+  }
+
+  /**
+   * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
+   * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
+   * process the store write once the day's run is there.
+   */
+  private async improveStep(): Promise<void> {
+    const day = utcDay(this.d.clock.now());
+    if (this.improveDay === day) return;
+    const { run, created } = await enqueueImprove(this.d, this.project(), "daily");
+    if (created) this.d.log.info("improve run queued", { run_id: run.id, day });
+    this.improveDay = day;
   }
 
   async tickReaper(): Promise<void> {
@@ -1178,10 +1206,24 @@ export class Controller {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
+      return this.decide(id, async (x) =>
+        withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
+  }
+
+  /**
+   * A spec decision (approve, reject, revise) gets the standing-approval detail (design 05-standing-approvals):
+   * gate, tier, kind, outcome, whether the spec changed, and the deciding user's ID. Any other decision as it is.
+   */
+  private async withSpecDecision(it: WorkItem, d: Decision | Refusal): Promise<Decision | Refusal> {
+    if (!d || "refuse" in d) return d;
+    const outcome = SPEC_DECISIONS[d.reason];
+    if (!outcome) return d;
+    const kind = specKind(it, it.parent_id === null && (await this.specPhases(it)) !== null);
+    const gate = specDecisionDetail({ tier: it.tier, kind, outcome, spec_changed: specChanged(outcome, d.patch), actor: d.actor });
+    return { ...d, detail: { ...d.detail, ...gate } };
   }
 
   /**
@@ -1752,7 +1794,13 @@ export class Controller {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+      detail: {
+        phases: phases.length,
+        sub_issues: JSON.stringify(refs.map((r) => r.id)),
+        ...(note ? { note } : {}),
+        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor }),
+        ...tag,
+      },
     });
     return null;
   }
@@ -2286,18 +2334,22 @@ export class Controller {
 
   private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
-    await this.decide(run.work_item_id, async (it) => {
+    // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
+    // adds them to each decision that does not set token_cost itself.
+    const decision = async (it: WorkItem): Promise<Decision> => {
+      // An improve run changes nothing else on its system item (design §7): its report is already stored.
+      if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
       if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
         const ask = parseNeedsHuman(data.needs_human);
         if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
-        if (run.kind === "resolve") return withSpent(await this.resolveFailed(it, run, "invalid_output"), run, it);
-        return withSpent(await this.retryOrBlock(it, run, "task", "invalid_output"), run, it);
+        if (run.kind === "resolve") return this.resolveFailed(it, run, "invalid_output");
+        return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
       switch (run.kind) {
@@ -2490,10 +2542,11 @@ export class Controller {
           }
         }
       }
-    });
+    };
+    await this.decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
   private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {

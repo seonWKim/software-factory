@@ -367,6 +367,17 @@ describe("session end without a PR", () => {
     for (let i = 0; i < 2; i++) await h.controller.tickRuns();
     expect((await h.item(it0.id)).token_cost).toBe(900);
   });
+
+  it("a finished session on an item closed meanwhile is ignored, and its reported tokens still land in token_cost", async () => {
+    const h = await started();
+    const { it0 } = h;
+    expect((await h.sessions.finish({ tokens: 300 })).ok).toBe(true);
+    const cur = await h.item(it0.id);
+    await h.store.transition({ id: it0.id, expected_version: cur.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+    for (let i = 0; i < 2; i++) await h.controller.tickRuns();
+    expect(await h.item(it0.id)).toMatchObject({ stage: "CLOSED", token_cost: 300 });
+    expect((await h.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "run_ignored" });
+  });
 });
 
 describe("session flow and CLI", () => {

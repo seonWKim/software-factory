@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveReportId,
   Run,
   RunAttempt,
   RunAttemptStatus,
@@ -21,6 +23,10 @@ import type {
   SourceRef,
   SourceType,
   Stage,
+  StandingGate,
+  StandingProposal,
+  StandingProposalId,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   StateChangeId,
@@ -85,9 +91,12 @@ import type {
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
+  NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
   NewRun,
+  NewStandingProposal,
+  NewStandingRule,
   NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
@@ -830,20 +839,33 @@ export class SqlFactoryStore implements FactoryStore {
     return { ended: ended === 1 };
   }
 
-  /** Ends a probe pause as a passing probe does: its row and its answered row move to now, under the claim lock. */
+  /**
+   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the
+   * earlier of the probe time and now. Never a future answer, so a failure right after starts a pause.
+   */
   private async endProbe(pause: ProbePause): Promise<{ ended: boolean }> {
     return this.db.transaction(async (tx) => {
       const { current, answered } = await this.probeRows(tx, pause, true);
       if (current === undefined || !probeInEffect(current, answered)) return { ended: false };
       const now = this.now();
-      await this.setPauseRows(tx, [[pause, now], [PROBE_PAUSES[pause].answered, now]]);
+      const at = current < now ? current : now;
+      await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
       return { ended: true };
     });
   }
 
   async claimProbe(name: ProbePause, due: Timestamp, next: Timestamp): Promise<boolean> {
+    // Under the claim lock, as every probe pause write: a pause ended meanwhile is never moved back into effect.
     // Conditional on the probe time the caller read: of replicas that saw the same due probe, one write lands.
-    return (await this.db.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
+    return this.db.transaction(async (tx) => {
+      const { answered } = await this.probeRows(tx, name, true);
+      if (!probeInEffect(due, answered) || next <= due) return false;
+      return (await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
+    });
+  }
+
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    return { taken: await this.claimProbe(MODEL_STALL, due, next) };
   }
 
   // Worker pauses (design §5 Pause)
@@ -1138,6 +1160,87 @@ export class SqlFactoryStore implements FactoryStore {
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
+  }
+
+  async listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
+      [start, end],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const run = await this.insertRun(tx, input);
+      if (run) return { run, created: true };
+      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      return { run: rowToRun(row!), created: false };
+    });
+  }
+
+  // Improve reports (design §7)
+
+  async recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
+    const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        report.id, report.run_id, report.project, report.window_start, report.window_end,
+        JSON.stringify(report.groups), JSON.stringify(report.patterns), report.created_at,
+      ],
+    );
+    return created ? { report, created } : { report: (await this.getImproveReport(input.run_id))!, created };
+  }
+
+  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
+    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  // Standing approvals (design 05-standing-approvals)
+
+  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const enabled = input.enabled ? 1 : 0;
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.gate, input.tier, enabled, input.set_by, now, now],
+      );
+      if (!inserted) {
+        await tx.run("UPDATE standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
+          enabled, input.set_by, now, input.gate, input.tier,
+        ]);
+      }
+      const [row] = await tx.all("SELECT * FROM standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
+      return rowToStandingRule(row!);
+    });
+  }
+
+  async listStandingRules(): Promise<StandingRule[]> {
+    return (await this.db.all("SELECT * FROM standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
+  }
+
+  async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
+    const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      "INSERT INTO standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [proposal.id, proposal.gate, proposal.tier, proposal.run_length, proposal.threshold, proposal.created_at],
+    );
+    if (created) return { proposal, created };
+    const [row] = await this.db.all("SELECT * FROM standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
+      input.gate, input.tier, input.run_length,
+    ]);
+    return { proposal: rowToStandingProposal(row!), created };
+  }
+
+  async listStandingProposals(): Promise<StandingProposal[]> {
+    return (await this.db.all("SELECT * FROM standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
   }
 
   // Coordination (design §5, 2026-11-03)
@@ -2480,6 +2583,41 @@ function rowToMergeCheck(row: Row): MergeCheck {
     head_sha: row.head_sha as string,
     base_sha: row.base_sha as string,
     checked_at: row.checked_at as Timestamp,
+  };
+}
+
+function rowToImproveReport(row: Row): ImproveReport {
+  return {
+    id: row.id as ImproveReportId,
+    run_id: row.run_id as RunId,
+    project: row.project_key as string,
+    window_start: row.window_start as Timestamp,
+    window_end: row.window_end as Timestamp,
+    groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
+    patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToStandingRule(row: Row): StandingRule {
+  return {
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    enabled: Number(row.enabled) === 1,
+    set_by: row.set_by as UserId,
+    created_at: row.created_at as Timestamp,
+    updated_at: row.updated_at as Timestamp,
+  };
+}
+
+function rowToStandingProposal(row: Row): StandingProposal {
+  return {
+    id: row.id as StandingProposalId,
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    run_length: Number(row.run_length),
+    threshold: Number(row.threshold),
+    created_at: row.created_at as Timestamp,
   };
 }
 

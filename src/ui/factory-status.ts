@@ -39,14 +39,18 @@ function pidAlive(pid: number): boolean {
 
 /**
  * The probe pause lines (design §5 Restarts), one per pause in effect, else null: `agents paused: model not
- * answering since <time>` for `model_stall`, `agents paused: network not reachable since <time>; runs start again
- * once a probe passes` for `network` (the why-it-waits wording). `factory status` prints them above the item table.
+ * answering since <time>, next probe at <time>` for `model_stall`, `agents paused: network not reachable since
+ * <time>; runs start again once a probe passes` for `network` (the why-it-waits wording). `factory status` prints
+ * them above the item table.
  */
 export async function modelStallLine(store: Pick<FactoryStore, "getClaimPause">): Promise<string | null> {
-  const stall = await store.getClaimPause("model_stall_since");
-  const network = await store.getClaimPause("network_since");
+  const [since, next, network] = await Promise.all([
+    store.getClaimPause("model_stall_since"),
+    store.getClaimPause("model_stall"),
+    store.getClaimPause("network_since"),
+  ]);
   const lines = [
-    ...(stall === null ? [] : [`agents paused: model not answering since ${stall}`]),
+    ...(since === null || next === null ? [] : [`agents paused: model not answering since ${since}, next probe at ${next}`]),
     ...(network === null ? [] : [`agents paused: network not reachable since ${network}; runs start again once a probe passes`]),
   ];
   return lines.length === 0 ? null : lines.join("\n");
