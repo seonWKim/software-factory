@@ -29,6 +29,7 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
+import { LastChecks, serverRevision } from "./ui/system-actions.js";
 import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
@@ -72,7 +73,8 @@ const USAGE = `factory [--config <path>] <command>
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
-  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker
+  ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
+               git-worktree updater, dev runs it too and restarts it on each new revision
   migrate [--status | --dry-run]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
@@ -265,6 +267,8 @@ async function main(argv: readonly string[]): Promise<number> {
       // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
       // sees one user for the UI and the terminal.
       const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
+      // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
+      const lastChecks = new LastChecks();
       const ui = await startUi(
         {
           store: parts.store,
@@ -280,9 +284,12 @@ async function main(argv: readonly string[]): Promise<number> {
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
           // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
           health: new HealthMonitor(
-            async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))],
+            lastChecks.wrap(async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))]),
             parts.clock,
           ),
+          lastChecks,
+          // The revision this server runs (its code root's HEAD): the app shows a banner when its own differs.
+          revision: await serverRevision(loaded.codeRoot),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
@@ -297,7 +304,10 @@ async function main(argv: readonly string[]): Promise<number> {
         uiPort(loaded.file.ui),
       );
       console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
-      const signal = stopOnSignals();
+      // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
+      const orphan = new AbortController();
+      if (process.env[SUPERVISED_ENV] === "1" && process.send) process.once("disconnect", () => orphan.abort());
+      const signal = AbortSignal.any([stopOnSignals(), orphan.signal]);
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();
       await parts.close();

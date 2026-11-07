@@ -14,7 +14,7 @@
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { WorkItemId } from "../core/types.js";
-import { api, apiError, isApiPath } from "./api.js";
+import { type ApiDeps, api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
 import { MAX_COMMAND_BODY, commandsPathId, commandsPost } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
@@ -25,6 +25,7 @@ import { type UiDeps, renderIndex, renderItem } from "./pages.js";
 
 export type { UiDeps } from "./pages.js";
 export type { PauseDeps } from "./pause-api.js";
+export type { ApiDeps } from "./api.js";
 
 const BIND = "127.0.0.1";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
@@ -154,7 +155,7 @@ function commandsWrite(req: Pick<UiRequest, "method" | "url">): string | null {
 }
 
 /** The whole request handling, without the socket. Writes only through the three write routes. */
-export async function respond(d: PauseDeps, req: UiRequest): Promise<UiResponse> {
+export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
   const route = writeRoute(d, req);
@@ -215,7 +216,7 @@ export interface UiServer {
 }
 
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
-export async function startUi(d: PauseDeps, port: number): Promise<UiServer> {
+export async function startUi(d: ApiDeps, port: number): Promise<UiServer> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host };
     const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
