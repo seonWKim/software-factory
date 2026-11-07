@@ -72,6 +72,7 @@ import type {
   BudgetCheckpointResult,
   ClaimInput,
   CliCommand,
+  Alert,
   FactoryStore,
   InboxRow,
   ItemMessage,
@@ -86,6 +87,7 @@ import type {
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
+  NewAlert,
   NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
@@ -1853,6 +1855,34 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToHostSleep(row) : null;
   }
 
+  // Alerts (design 05-alarms): the pattern's row is the dedupe, the alert row the record.
+
+  async recordAlert(input: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }> {
+    const now = this.now();
+    return this.db.transaction(async (tx) => {
+      // Conditional: only the first write of a pattern, or the one that finds its last alert dedupe_ms old, wins.
+      const due =
+        (await this.insertOnce(tx, "INSERT INTO alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
+        (await tx.run("UPDATE alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND last_alert_at <= ?", [
+          now, input.pattern_key, this.after(-dedupe_ms),
+        ])) === 1;
+      if (!due) return { created: false as const };
+      const alert: Alert = { ...input, id: newId("al"), created_at: now };
+      await tx.run(
+        "INSERT INTO alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [alert.id, alert.pattern, alert.pattern_key, alert.error_code, alert.count, alert.detail, alert.created_at],
+      );
+      return { created: true as const, alert };
+    });
+  }
+
+  async listAlerts(opts: { limit: number }): Promise<Alert[]> {
+    const limit = Math.max(0, Math.floor(opts.limit));
+    // limit is an integer computed here, inlined as the other paged reads do.
+    const rows = await this.db.all(`SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
+    return rows.map(rowToAlert);
+  }
+
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
@@ -2506,6 +2536,18 @@ function rowToMergeCheck(row: Row): MergeCheck {
     head_sha: row.head_sha as string,
     base_sha: row.base_sha as string,
     checked_at: row.checked_at as Timestamp,
+  };
+}
+
+function rowToAlert(row: Row): Alert {
+  return {
+    id: row.id as string,
+    pattern: row.pattern as Alert["pattern"],
+    pattern_key: row.pattern_key as string,
+    error_code: row.error_code as string,
+    count: Number(row.count),
+    detail: (row.detail as string | null) ?? null,
+    created_at: row.created_at as Timestamp,
   };
 }
 

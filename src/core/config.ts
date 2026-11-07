@@ -137,6 +137,14 @@ export interface LoadedConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
   probe_interval_ms?: number;
+  /**
+   * The alarm step (design 05-alarms): matching runs on distinct items (and zero-token agent runs in a row) that
+   * raise an alert, the minutes they are counted over, and the child restarts within 30 minutes that raise one.
+   * Settable live. Absent: ALARM_DEFAULTS.
+   */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -173,6 +181,9 @@ export interface LoadedConfig {
    */
   path_companions?: PathCompanion[];
 }
+
+/** The alarm keys when factory.config.json gives none (design 05-alarms). */
+export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
 
 /** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
 export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;

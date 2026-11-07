@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -15,7 +15,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
@@ -32,7 +32,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -113,6 +113,10 @@ export interface FileConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
+  /** The alarm step's thresholds (design 05-alarms). Settable live. Absent: 3, 60 and 5 (ALARM_DEFAULTS). */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -353,6 +357,7 @@ export async function loadConfig(
     poll_interval_ms: file.poll_interval_ms,
     run_timeout_ms: file.run_timeout_ms,
     ...stallConfig(file),
+    ...alarmConfig(file),
     inbox_retention_days: retention,
     workers,
     max_workers,
@@ -638,6 +643,8 @@ export async function build(
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
+    // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
+    restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
   });
 
   const worker = new WorkerPool({
@@ -931,6 +938,30 @@ export function stallConfig(
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
   }
   return r;
+}
+
+/**
+ * The restart list of the supervisor status file (design 05-alarms). No file (not supervised, or the `none`
+ * updater), one that does not parse, or one from before the list existed: none.
+ */
+export async function readRestarts(file: string): Promise<ChildRestart[]> {
+  try {
+    const status = JSON.parse(await readFile(file, "utf8")) as Partial<SupervisorStatus>;
+    return Array.isArray(status.restarts) ? status.restarts : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The alarm keys (design 05-alarms) with their defaults (ALARM_DEFAULTS): positive integers, or startup fails. */
+export function alarmConfig(
+  file: Pick<FileConfig, "alarm_repeat_count" | "alarm_window_minutes" | "alarm_restart_count">,
+): { alarm_repeat_count: number; alarm_window_minutes: number; alarm_restart_count: number } {
+  return {
+    alarm_repeat_count: positiveInteger("alarm_repeat_count", file.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count),
+    alarm_window_minutes: positiveInteger("alarm_window_minutes", file.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes),
+    alarm_restart_count: positiveInteger("alarm_restart_count", file.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count),
+  };
 }
 
 export const DEFAULT_INBOX_RETENTION_DAYS = 14;
