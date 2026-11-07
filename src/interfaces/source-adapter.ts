@@ -39,6 +39,11 @@ export type SourceEvent =
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; note?: string }
   /** `/help`: the controller replies once with every command, marking the ones that apply now. */
   | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /**
+   * `/standing [accept|decline <rule>]` (design 05-standing-approvals): `args` is the raw text after the command;
+   * the controller parses it. About the factory's rules, answered on the work item the comment is on.
+   */
+  | { kind: "standing_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; args: string }
   /** A command word the factory does not know, as typed (letters only, without the `/`). */
   | { kind: "unknown_command"; source: SourceRef; comment_id: string; requester: ExternalIdentity; command: string }
   /**

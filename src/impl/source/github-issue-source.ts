@@ -295,6 +295,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         case "help":
           events.push({ kind: "help_requested", source, comment_id, requester: who });
           break;
+        case "standing":
+          events.push({ kind: "standing_requested", source, comment_id, requester: who, args: text });
+          break;
         case "verdict": {
           const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
           if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: who, args: text });
