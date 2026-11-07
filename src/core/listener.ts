@@ -1,4 +1,5 @@
 import type { FactoryConfig } from "./config.js";
+import { StoreLease, errorMessage as message, listenerLeaseOps } from "./lease.js";
 import type { LogFields, Logger } from "./log.js";
 import { retryDelayMs } from "./policy.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -37,8 +38,12 @@ type Ended = { kind: "closed"; events: number; error?: unknown } | { kind: "leas
  */
 export class Listener {
   private state: State | null = null;
+  /** The listener lease (src/core/lease.ts): the same take, renew and release as the sync lease. */
+  private readonly lease: StoreLease;
 
-  constructor(private readonly d: ListenerDeps) {}
+  constructor(private readonly d: ListenerDeps) {
+    this.lease = new StoreLease(listenerLeaseOps(d.store, d.source.type), d.clock, d.config, d.owner);
+  }
 
   /** Runs until `signal` aborts, then releases the lease if it still holds it. */
   async run(signal: AbortSignal): Promise<void> {
@@ -56,12 +61,12 @@ export class Listener {
   /** The lease token if this replica took the lease, else null. */
   private async acquire(): Promise<number | null> {
     try {
-      const r = await this.d.store.acquireListenerLease(this.d.source.type, this.d.owner, this.d.config.lease_ms);
+      const r = await this.lease.acquire();
       if (r.ok) {
-        this.enter("leased", "info", "listener lease taken", { token: r.lease.token });
-        return r.lease.token;
+        this.enter("leased", "info", "listener lease taken", { token: r.token });
+        return r.token;
       }
-      this.enter("waiting", "info", "listener waiting: another replica holds the lease", { holder: r.holder?.owner ?? null });
+      this.enter("waiting", "info", "listener waiting: another replica holds the lease", { holder: r.holder });
     } catch (err) {
       this.enter("store_failed", "warn", "listener lease check failed", { error: message(err) });
     }
@@ -80,7 +85,7 @@ export class Listener {
       this.enter("lease_lost", "warn", "listener lease lost; stream closed", { token, ...fields });
       held.abort();
     };
-    const renewing = this.renew(token, held.signal, loseLease);
+    const renewing = this.renew(held.signal, loseLease);
     const { base_ms, max_ms } = this.d.reconnect ?? RECONNECT_DEFAULTS;
     let failures = 0;
     try {
@@ -102,10 +107,9 @@ export class Listener {
       held.abort();
       outer.removeEventListener("abort", stop);
       await renewing;
-      if (!lost) {
-        // Shutting down: hand the lease over now instead of after lease_ms.
-        await this.d.store.releaseListenerLease(this.d.source.type, token).catch(() => undefined);
-      }
+      // Shutting down: hand the lease over now instead of after lease_ms. A lost lease is no longer held.
+      if (!lost) await this.lease.release();
+      else this.lease.drop();
     }
   }
 
@@ -114,21 +118,12 @@ export class Listener {
    * retried, but once lease_ms has passed since the last good renew the lease is treated as lost, so this
    * replica stops listening before another one can take over (no two connections at once).
    */
-  private async renew(token: number, signal: AbortSignal, loseLease: (f: LogFields) => void): Promise<void> {
-    const { lease_ms, heartbeat_ms } = this.d.config;
-    let lastOk = this.d.clock.now().getTime();
+  private async renew(signal: AbortSignal, loseLease: (f: LogFields) => void): Promise<void> {
     while (!signal.aborted) {
-      await this.sleep(heartbeat_ms, signal);
+      await this.sleep(this.d.config.heartbeat_ms, signal);
       if (signal.aborted) return;
-      try {
-        const r = await this.d.store.renewListenerLease(this.d.source.type, token, lease_ms);
-        if (!r.ok) return loseLease({ reason: "renew_refused", holder: r.holder?.owner ?? null });
-        lastOk = this.d.clock.now().getTime();
-      } catch (err) {
-        if (this.d.clock.now().getTime() - lastOk >= lease_ms) {
-          return loseLease({ reason: "renew_failed", error: message(err) });
-        }
-      }
+      const r = await this.lease.renew();
+      if (!r.ok) return loseLease(r.fields);
     }
   }
 
@@ -181,8 +176,4 @@ export class Listener {
   private sleep(ms: number, signal: AbortSignal): Promise<void> {
     return this.d.clock.sleep(ms, signal).catch(() => undefined);
   }
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message.slice(0, 300) : "unknown";
 }

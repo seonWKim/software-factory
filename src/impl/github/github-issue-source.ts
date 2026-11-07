@@ -328,7 +328,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   /**
    * Stores one comment (issue #284): a command once in the command inbox, which the controller applies from, and
    * the comment once in its work item's thread (an issue that is no work item has no thread), both keyed on
-   * `github:<comment id>`, so a repeat poll or a second replica writes nothing more. Returns the events the
+   * `github:<comment id>`, so a repeat poll or a second replica writes nothing more. The thread entry's actor is
+   * `github:<numeric user id>`; the controller resolves a command's actor through the linked account. Returns the events the
    * controller still takes from the poll: a plain comment's (for `/link` and suggestions). Without a store a
    * command is returned as the event its row maps to.
    */
@@ -342,7 +343,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       return e ? [e] : plain;
     }
     const item = await this.itemOf(source, pr);
-    if (item) await this.store.recordItemMessage({ work_item_id: item, marker: githubCommentKey(cm.id), body: cm.body });
+    // The author as the account's numeric ID, never the login: the audit of who wrote a refused command too.
+    if (item) await this.store.recordItemMessage({ work_item_id: item, marker: githubCommentKey(cm.id), body: cm.body, actor: `github:${cm.user.id}` });
     if (command) await this.store.appendCliCommand(command);
     return plain;
   }

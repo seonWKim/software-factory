@@ -618,6 +618,15 @@ async function githubParts(loaded: Loaded, p: Plugins, secrets: SecretStore, clo
   return { credentials, github: new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock)) };
 }
 
+/**
+ * Shares GitHub's rate limit through the store from now on (design 05-sources, call budget): every process that
+ * calls GitHub reads the last response any replica got, at most once per tick, and writes its own. With no GitHub
+ * plugin selected there is no client, and no budget row is written.
+ */
+function shareGitHubBudget(loaded: Loaded, github: GitHubClient, store: FactoryStore, config: FactoryConfig): void {
+  if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
+}
+
 /** The loaded config with the resolved project, and the per-project settings re-keyed from `owner/name` to its key. */
 export function resolvedConfig(config: LoadedConfig, project: ProjectRef): FactoryConfig {
   const ownerName = `${config.repo.owner}/${config.repo.name}`;
@@ -763,6 +772,7 @@ export async function build(
     store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  shareGitHubBudget(loaded, github, store, config);
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
   // controller and the worker pool, refreshed each tick. The file's per-project blocks are keyed by project key.
@@ -795,7 +805,8 @@ export async function build(
     restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
     // With no GitHub plugin selected (Local startup) there is no GitHub client and no budget to record.
-    ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status() }),
+    // The shared budget is read before each tick's optional reads, at most once per tick.
+    ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
   });
 
   const worker = new WorkerPool({
@@ -963,6 +974,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
   const { project, refreshed } = await projectAtStartup(loaded, { store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
+  shareGitHubBudget(loaded, github, store, config);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();
   return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
