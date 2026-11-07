@@ -10,8 +10,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
+import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
+import { serverRevision } from "../src/ui/system-actions.js";
+import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -1068,5 +1070,109 @@ describe("ui api: why an item waits (issue #310)", () => {
     const w = await whyOn(d, items.secretive.id);
     expect(w.row.why.text).toBe("[withheld: github_token]");
     expect(w.item.text).toBe("[withheld: github_token]");
+  });
+});
+
+describe("ui api: the server's revision and the app's (issue #311)", () => {
+  it("the overview returns the server's git revision, the same one the web build has built in through Vite define", async () => {
+    const root = new URL("..", import.meta.url).pathname;
+    const server = await serverRevision(root);
+    expect(server).toMatch(/^[0-9a-f]{40}$/);
+    const define = (viteConfig as { define?: Record<string, string> }).define ?? {};
+    expect(JSON.parse(define.__FACTORY_REV__ ?? "null")).toBe(server);
+
+    const { d } = await seeded();
+    const withRev: ApiDeps = { ...d, revision: server };
+    expect((await json<{ server_rev: string | null }>(withRev, "/api/v1/overview")).server_rev).toBe(server);
+    // Without a revision (a test, a checkout without git) it is null, never the supervisor's.
+    expect((await json<{ server_rev: string | null }>(d, "/api/v1/overview")).server_rev).toBeNull();
+  });
+});
+
+describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
+  type Pause = { name: string; ends_at: string; since?: string | null };
+  const pausesOf = async (d: UiDeps) => (await json<{ pauses: Pause[] }>(d, "/api/v1/pauses")).pauses;
+  const at = (clock: FakeClock, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+
+  it("returns each active pause with its end time and a model stall's start; an ended pause is not returned", async () => {
+    const { d, store, clock } = await seeded();
+    expect(await pausesOf(d)).toEqual([]);
+    const began = clock.now().toISOString();
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    await store.pauseClaims(at(clock, 120_000), "rate_limit");
+    await store.pauseClaims(at(clock, 30_000), "forge_auth");
+    const list = await pausesOf(d);
+    expect(list.map((p) => p.name).sort()).toEqual(["forge_auth", "model_stall", "rate_limit"]);
+    expect(list.find((p) => p.name === "model_stall")).toMatchObject({ ends_at: at(clock, 60_000), since: began });
+    expect(list.find((p) => p.name === "rate_limit")).toEqual({ name: "rate_limit", ends_at: at(clock, 120_000) });
+    clock.advance(45_000);
+    expect((await pausesOf(d)).map((p) => p.name).sort()).toEqual(["model_stall", "rate_limit"]);
+    // A model stall whose probe is due stays until a probe answers.
+    clock.advance(200_000);
+    const due = await pausesOf(d);
+    expect(due.map((p) => p.name)).toEqual(["model_stall"]);
+    expect(due[0]!.ends_at < clock.now().toISOString()).toBe(true);
+  });
+
+  type NeedRow = { id: string; level: string; need?: { reason: string; command: string | null } };
+  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_human: "Needs a human" };
+
+  it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
+    const { d, store, items } = await seeded();
+    const more: Record<string, WorkItem> = {};
+    for (const [n, reason] of [[20, "run_failed:implement:diff_too_large"], [21, "max_loops"], [22, "merge_conflict_pending"], [23, "something_new"]] as const) {
+      more[reason] = await make(store, n, `Item ${n}`);
+      await patch(store, more[reason]!, { blocked_on: "human", blocked_reason: reason });
+    }
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const need = (id: string) => rows.find((r) => r.id === id)!.need!;
+    expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("failed: diff_too_large");
+    expect(need(items.approve.id).command).toBe("/approve or /reject <reason>");
+    expect(need(items.merge.id).reason).toBe("merge check running");
+    for (const r of rows) {
+      expect(r.need, r.id).toBeDefined();
+      expect(r.need!.reason.toLowerCase(), r.id).not.toBe(LABELS[r.level]!.toLowerCase());
+    }
+    expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
+  });
+
+  it("a ready-to-merge row shows the merge check: mergeable, or the conflict count", async () => {
+    const { d, store, items } = await seeded();
+    const row = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!.need!;
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("mergeable");
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: false, conflicts: ["a.ts", "b.ts"], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("2 conflicting files");
+  });
+
+  it("a row that does not wait for you has no need", async () => {
+    const { d, items } = await seeded();
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items;
+    expect(rows.find((r) => r.id === items.running.id)!.need).toBeUndefined();
+  });
+
+  it("the overview, items and pauses reads make no forge or other remote call: store reads only", async () => {
+    const calls: string[] = [];
+    const spy = (s: FactoryStore): FactoryStore =>
+      new Proxy(s, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) => {
+            calls.push(String(prop));
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    const forge = { calls: 0 };
+    const { d, store, clock } = await seeded({ store: spy });
+    // A forge stub in the deps: nothing in the UI may reach it.
+    const withForge = { ...d, forge: new Proxy({}, { get: () => { forge.calls++; } }) } as UiDeps;
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    calls.length = 0;
+    for (const path of ["/api/v1/overview", "/api/v1/items?state=needs", "/api/v1/pauses"]) await json(withForge, path);
+    expect(forge.calls).toBe(0);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.filter((n) => !/^(get|list|count|schemaVersion)/.test(n))).toEqual([]);
   });
 });

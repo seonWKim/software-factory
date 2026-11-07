@@ -3,11 +3,13 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
 import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
+import { RevisionBanner } from "../web/src/views/system-banner.js";
 
 // The app shell (step 2 of #124, design §9): it fetches only /api/v1/*, polls every 3 s while the document is
 // visible and not while it is hidden, and keeps the light/dark choice in browser storage.
@@ -553,5 +555,119 @@ describe("why an item waits (issue #310)", () => {
     expect(refLinks(cells[0]!)).toEqual([]);
     expect(refLinks(cells[1]!)).toEqual([["#12", `${REF_URL}12`]]);
     expect(cells[1]!.textContent).toBe(dep.text);
+  });
+});
+
+describe("system actions, revisions and the tab title (issue #311)", () => {
+  const BANNER = "Dashboard out of date: reload / restart factory ui";
+
+  it("a revision mismatch shows the banner; equal or unknown revisions show none", () => {
+    const { container, rerender } = render(<RevisionBanner server={"a".repeat(40)} web={"b".repeat(40)} />);
+    expect(screen.getByTestId("revision-banner").textContent).toBe(BANNER);
+    expect(screen.getByRole("alert").querySelector("code")!.textContent).toBe("factory ui");
+    rerender(<RevisionBanner server={"a".repeat(40)} web={"a".repeat(40)} />);
+    expect(container.textContent).toBe("");
+    rerender(<RevisionBanner server={null} web={"a".repeat(40)} />);
+    expect(container.textContent).toBe("");
+    rerender(<RevisionBanner server={"a".repeat(40)} web={null} />);
+    expect(container.textContent).toBe("");
+  });
+
+  it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    await vi.waitFor(() => expect(document.title).toBe("(4) Floor · software-factory"));
+    cleanup();
+    const before = overview.needs_you;
+    overview.needs_you = 0;
+    try {
+      mount();
+      await screen.findByText("Needs you (0)");
+      await vi.waitFor(() => expect(document.title).toBe("Floor · software-factory"));
+    } finally {
+      overview.needs_you = before;
+    }
+  });
+
+  it("the Floor's Needs you lists each system action with its command", async () => {
+    const actions = [
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null },
+      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
+    ];
+    (overview as Record<string, unknown>).system_actions = actions;
+    try {
+      mount();
+      const list = await screen.findByRole("list", { name: "System actions" });
+      const rows = [...list.querySelectorAll("li")];
+      expect(rows.map((r) => r.getAttribute("data-action"))).toEqual(["migration_pending", "claim_pause"]);
+      expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
+      expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
+      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
+      // The section counts the item row and both actions.
+      const needs = screen.getByRole("region", { name: "Needs you" });
+      expect(within(needs).getByText("3")).toBeTruthy();
+    } finally {
+      delete (overview as Record<string, unknown>).system_actions;
+    }
+  });
+
+  it("Health folds ok rows behind their count; warn and fail rows stay visible", async () => {
+    const checks = [
+      ...Array.from({ length: 22 }, (_, i) => ({ status: "ok", msg: `fine ${i}` })),
+      { status: "warn", msg: "token expires in 2 days" },
+      { status: "fail", msg: "push access denied" },
+    ];
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      await screen.findByText("push access denied");
+      const folded = screen.getByTestId("ok-checks") as HTMLDetailsElement;
+      expect(folded.open).toBe(false);
+      expect(folded.querySelector("summary")!.textContent).toBe("22 ok");
+      expect(folded.querySelectorAll("li")).toHaveLength(22);
+      for (const msg of ["token expires in 2 days", "push access denied"]) expect(folded.textContent).not.toContain(msg);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
+});
+
+describe("Floor banner and Needs-you Why (claim pauses)", () => {
+  const NOW = Date.parse(AT);
+  const running = { state: "running", rev: "aaaaaaa1111", target_rev: "aaaaaaa1111", child_pid: 7, since: AT, workers: 3, error: null, pending: [] } as never;
+  const bannerText = (pauses?: { name: string; ends_at: string; since?: string | null }[]) => {
+    render(<FactoryBanner factory={running} now={NOW} pauses={pauses} />);
+    return screen.getByTestId("factory-banner").textContent;
+  };
+
+  it("with no pause the banner is unchanged", () => {
+    expect(bannerText([])).toContain("Factory running: revision aaaaaaa");
+  });
+
+  it.each(["forge_auth", "preflight_access", "rate_limit"])("a %s pause replaces 'Factory running' and says when it ends", (name) => {
+    const text = bannerText([{ name, ends_at: "2026-11-07T01:00:00.000Z" }]);
+    expect(text).toContain(name);
+    expect(text).toContain("until 2026-11-07T01:00:00.000Z");
+    expect(text).not.toContain("Factory running");
+  });
+
+  it("a model stall says when it began and when the next check is; a due check says so", () => {
+    const pause = { name: "model_stall", since: "2026-11-06T23:00:00.000Z" };
+    const soon = bannerText([{ ...pause, ends_at: "2026-11-07T00:30:00.000Z" }]);
+    expect(soon).toContain("since 2026-11-06T23:00:00.000Z");
+    expect(soon).toContain("next check at 2026-11-07T00:30:00.000Z");
+    cleanup();
+    const due = bannerText([{ ...pause, ends_at: "2026-11-06T23:30:00.000Z" }]);
+    expect(due).toContain("the next check is due");
+    expect(due).not.toContain("2026-11-06T23:30:00.000Z");
+  });
+
+  it("the Why column shows the need's reason and command, not the badges", () => {
+    const need = { reason: "failed: diff_too_large", command: "/retry" };
+    render(<ItemsTable items={[row(1, "needs_human", "Failed one", { blocked_on: "human", badges: ["failed"], need }) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
+    const cell = document.querySelector("[data-need]")!.closest("td")!;
+    expect(cell.textContent).toBe("failed: diff_too_large · /retry");
   });
 });
