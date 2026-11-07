@@ -238,7 +238,8 @@ describe("plugin registry: every discovered plugin", () => {
 
       it("builds an object from a full context without running anything", async () => {
         vi.stubEnv("PATH", pathWithFakeCaffeinate());
-        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
+        // A `slack` block too: the slack source refuses to build without its channel IDs; nothing else reads it.
+        const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0123ABCD"] } }));
         const ctx = await context(loaded);
         const isMysql = d.kind === "store" && d.name === "mysql";
         const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);

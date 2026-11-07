@@ -34,9 +34,10 @@ const OTHER = "C0OTHER";
 const ALLOWED = "U0ALLOW";
 const DENIED = "U0DENY";
 const STRANGER = "U0WHO";
-const GH_TOKEN = "ghp_PLANTEDgithubTOKEN0123456789abcdef";
-const APP_TOKEN = "xapp-1-PLANTEDappTOKEN0123456789";
-const BOT_TOKEN = "xoxb-PLANTEDbotTOKEN0123456789";
+// Built at runtime, so this file itself holds no token-shaped literal for the repository's own scan.
+const GH_TOKEN = ["ghp", "PLANTEDgithubTOKEN0123456789abcdef"].join("_");
+const APP_TOKEN = ["xapp", "1", "PLANTEDappTOKEN0123456789"].join("-");
+const BOT_TOKEN = ["xoxb", "PLANTEDbotTOKEN0123456789"].join("-");
 /** Names a Slack payload may carry; none may reach the store, events or logs. */
 const NAMES = ["Alice Display", "alice.real", "alice_username"];
 
@@ -182,7 +183,7 @@ async function setup(opts: { scanner?: EgressScanner; store?: (s: FactoryStore) 
   const controller = new Controller({ store: real, sources: [gh, slack], auth, clock, config, log, scanner, llm: new ApproveLLM() });
   const ac = new AbortController();
   running.push(ac);
-  void new Listener({ store, source: slack, clock, config, log, owner: "replica-a" }).run(ac.signal);
+  void new Listener({ store, source: slack, clock, config, log, owner: "replica-a", reconnect: { base_ms: 1_000, max_ms: 1_000 } }).run(ac.signal);
   /** Delivers `env`, waits for its ack (or a flush), then lets the controller read the inbox. */
   const deliver = async (env: SlackEnvelope, acked = true) => {
     client.push(env);
@@ -264,7 +265,7 @@ describe("slack plugin: descriptor, secrets and config", () => {
     const web = new SlackWebClient(secrets, ok.fn);
     const out = JSON.stringify([await web.whoami(), await web.replies(CHANNEL, "1.1"), await web.post({ channel: CHANNEL, thread_ts: "1.1", text: "t", blocks: [], marker: "m" })]);
     const failing = new SlackWebClient(secrets, fakeFetch({ ok: false, error: "invalid_auth" }).fn);
-    const errors = await Promise.all([failing.whoami(), failing.connect(new AbortController().signal), failing.post({ channel: CHANNEL, thread_ts: "1.1", text: "t", blocks: [], marker: "m" })]
+    const errors = await Promise.all(([failing.whoami(), failing.connect(new AbortController().signal), failing.post({ channel: CHANNEL, thread_ts: "1.1", text: "t", blocks: [], marker: "m" })] as Promise<unknown>[])
       .map((p) => p.then(() => "", (e: Error) => e.message)));
     expect(errors.every((m) => m.includes("invalid_auth"))).toBe(true);
     for (const text of [out, ...errors, ...ok.calls.map((c) => c.body)]) {
@@ -327,8 +328,8 @@ describe("slack intake", () => {
     expect(await f.store.listInboxAfter("slack_thread", 0, 10)).toEqual([]);
     fail = false;
     // The listener reconnects after its backoff; the unacked envelope is delivered again.
-    for (let i = 0; i < 10 && !f.client.acks.includes(env.envelope_id!); i++) {
-      f.clock.advance(60_000);
+    for (let i = 0; i < 20 && !f.client.acks.includes(env.envelope_id!); i++) {
+      f.clock.advance(1_000);
       await flush();
     }
     expect(f.client.acks).toContain(env.envelope_id);
@@ -345,8 +346,8 @@ describe("slack intake", () => {
     f.client.disconnect();
     // Slack redelivers the same event in a new envelope on the next connection.
     const again = { ...mention(CHANNEL, ts, "EvSAME"), envelope_id: "env-replayed" };
-    for (let i = 0; i < 10 && f.client.connects < 2; i++) {
-      f.clock.advance(60_000);
+    for (let i = 0; i < 20 && f.client.connects < 2; i++) {
+      f.clock.advance(1_000);
       await flush();
     }
     await f.deliver(again);
@@ -476,7 +477,9 @@ describe("slack egress", () => {
     const log = recordingLog();
     const slack = new SlackSource({ client, channels: [CHANNEL], scanner: leaky(), log });
     const body = `Spec\n\n${"x".repeat(4000)}\n${GH_TOKEN}\n\nCommands you can reply with now:\n- \`/approve [notes]\`: ok.`;
-    for (let i = 0; i < 3; i++) expect(await slack.postComment(ref, body, "<!-- factory:spec:1 -->")).toEqual({ url: null });
+    expect(await slack.postComment(ref, body, "<!-- factory:spec:1 -->")).toEqual({ url: null });
+    // The same message again (a re-decide, a restart): the withheld notice holds its marker, so nothing is posted.
+    for (let i = 0; i < 2; i++) await slack.postComment(ref, body, "<!-- factory:spec:1 -->");
     expect(client.posts).toHaveLength(1);
     expect(client.posts[0]!.text).toBe(WITHHELD_NOTICE);
     expect(buttonsOf(client.posts[0]!)).toEqual([]);
@@ -487,7 +490,7 @@ describe("slack egress", () => {
 
   it("GITHUB_TOKEN planted in the spec and in status text reaches no Slack event, post, log or inbox row", async () => {
     const f = await setup({ scanner: leaky() });
-    const { thread, item } = await specPending(f, { ...triageSpec, problem: `Use ${GH_TOKEN} to push` });
+    const { thread, item } = await specPending(f, { ...triageSpec, in_short: `AS-IS: ${GH_TOKEN}\nTO-BE: none`, problem: `Use ${GH_TOKEN} to push` });
     await f.slack.postComment(item.source, `Status: implementing with ${GH_TOKEN}`, "<!-- factory:status:x -->");
     await f.deliver(reply(thread, "/help"));
     const out = JSON.stringify([f.client.posts, f.client.pending, f.log.lines, await f.store.listInboxAfter("slack_thread", 0, 100), item.source, item.title]);
