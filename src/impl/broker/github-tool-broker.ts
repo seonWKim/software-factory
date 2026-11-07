@@ -32,6 +32,7 @@ async function runFolderGitDir(workdir: string): Promise<string | null> {
 const TOOLS: readonly ToolDescriptor[] = [
   {
     name: "github.push_branch",
+    read_only: false,
     description: "Push the current HEAD of a run folder to its factory branch on the factory repo's remote.",
     input_schema: {
       type: "object",
@@ -41,6 +42,7 @@ const TOOLS: readonly ToolDescriptor[] = [
   },
   {
     name: "github.open_pr",
+    read_only: false,
     description: "Open a PR for a factory branch, or return the open one.",
     input_schema: {
       type: "object",
@@ -55,6 +57,7 @@ const TOOLS: readonly ToolDescriptor[] = [
   },
   {
     name: "github.preflight",
+    read_only: true,
     description:
       "Read-only check before an implement run's agent starts: the credentials may push to the repository, and the PR API answers for the branch.",
     input_schema: {
@@ -65,6 +68,7 @@ const TOOLS: readonly ToolDescriptor[] = [
   },
   {
     name: "github.comment",
+    read_only: false,
     description: "Comment on an issue or PR at most once per marker.",
     input_schema: {
       type: "object",
@@ -116,6 +120,10 @@ export class GitHubToolBroker implements ToolBroker {
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
     return TOOLS.filter((t) => grants.includes(t.name));
+  }
+
+  catalog(): ToolDescriptor[] {
+    return [...TOOLS];
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {

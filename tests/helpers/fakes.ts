@@ -19,6 +19,7 @@ import type { Run, WorkItem, WorkerId } from "../../src/core/types.js";
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
+import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { newStore } from "./store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
 
@@ -503,6 +504,8 @@ type Script = Partial<
 
 export class FakeRunner implements AgentRunner {
   specs: AgentRunSpec[] = [];
+  /** Whether the worker may hand this runner a run with granted broker tools. */
+  exposes_tools = false;
   constructor(public script: Script) {}
 
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
@@ -549,10 +552,34 @@ export class FakeBroker implements ToolBroker {
    * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
    */
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
-  listTools(): ToolDescriptor[] {
-    return [];
+  /** The notes `test.read_note` returns, by `name`. */
+  notes: Record<string, string> = {};
+  /** Every `test.read_note` that ran its own code (past the lease check), in order. */
+  reads: { ctx: ToolCallContext; args: unknown }[] = [];
+  /**
+   * Set: every call checks the caller's lease against this store first, as the GitHub broker does, and a run that
+   * lost it gets `lease_lost` without the tool's code running. Absent: no lease check (the older tests).
+   */
+  store?: FactoryStore;
+
+  listTools(grants: readonly string[]): ToolDescriptor[] {
+    return FAKE_BROKER_TOOLS.filter((t) => grants.includes(t.name));
+  }
+  catalog(): ToolDescriptor[] {
+    return [...FAKE_BROKER_TOOLS];
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
+    if (this.store) {
+      const run = await this.store.getRun(ctx.run_id);
+      const holds = run !== null && run.work_item_id === ctx.work_item_id && run.status === "running" && run.lease?.token === ctx.lease_token;
+      if (!holds) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    }
+    if (name === "test.read_note") {
+      this.reads.push({ ctx, args });
+      const key = (args as { name?: unknown } | null)?.name;
+      const note = typeof key === "string" ? this.notes[key] : undefined;
+      return note === undefined ? { ok: false, error_code: "not_found", message: "no such note" } : { ok: true, content: { note } };
+    }
     (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
@@ -561,6 +588,20 @@ export class FakeBroker implements ToolBroker {
     return { ok: true, content: {} };
   }
 }
+
+/** The fake broker's tools: the GitHub broker's four (same read_only flags) and the read-only `test.read_note`. */
+export const FAKE_BROKER_TOOLS: readonly ToolDescriptor[] = [
+  { name: "github.push_branch", description: "push", input_schema: { type: "object" }, read_only: false },
+  { name: "github.open_pr", description: "open a PR", input_schema: { type: "object" }, read_only: false },
+  { name: "github.preflight", description: "read-only forge check", input_schema: { type: "object" }, read_only: true },
+  { name: "github.comment", description: "comment", input_schema: { type: "object" }, read_only: false },
+  {
+    name: "test.read_note",
+    description: "Read a note by name.",
+    input_schema: { type: "object", required: ["name"], properties: { name: { type: "string" } } },
+    read_only: true,
+  },
+];
 
 /** Read-only PR diffs by number, standing in for GitHubClient.pullDiff. Records every PR asked for. */
 export class FakeGitHubDiff {
@@ -612,13 +653,18 @@ export async function pipeline(opts: {
   implement?: (spec: AgentRunSpec) => Partial<AgentRunResult>;
   config?: Partial<FactoryConfig>;
   scanner?: EgressScanner;
+  /** The workers' runner instead of the FakeRunner (which is still returned as `runner`). */
+  agentRunner?: AgentRunner;
+  broker?: FakeBroker;
+  /** One storage for both workers, so a test can read stored transcripts. Absent: one each. */
+  storage?: SharedStorage;
 } = {}) {
   const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const sandbox = new FakeSandbox();
-  const broker = new FakeBroker();
+  const broker = opts.broker ?? new FakeBroker();
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
     implement: opts.implement ?? (() => ({ output: { summary: "the summary", next_steps: "the next steps" } })),
@@ -629,7 +675,7 @@ export async function pipeline(opts: {
   const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
   const worker = (id: string) =>
     new Worker({
-      id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
+      id: id as WorkerId, store, sandbox, runner: opts.agentRunner ?? runner, broker, storage: opts.storage ?? new MemoryStorage(),
       clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(),
     });
   const w1 = worker("w1");

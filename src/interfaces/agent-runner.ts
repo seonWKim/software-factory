@@ -18,7 +18,12 @@ export interface AgentRunSpec {
    * deny_paths, writable_paths and env_allowlist, shared by the tools and every runner.
    */
   tools: readonly ToolSpec[];
-  /** ToolBroker tools granted to the agent. Phase 1: always empty; the worker calls the broker itself. */
+  /**
+   * Read-only ToolBroker tools granted to the agent for this run's role (`tool_grants` in factory.config.json,
+   * checked at startup). Empty when config grants the role none. A runner exposes exactly these, and only when its
+   * `exposes_tools` is true; every call goes back to the worker process, which checks the name against this list,
+   * calls the broker with the run's id, item and lease token, and egress-scans the result (architecture §5).
+   */
   tool_grants: readonly string[];
   lease_token: number;
   /** Non-secret env vars allowed into the agent process (G1). The runner adds only the harness credential. */
@@ -92,6 +97,11 @@ export interface AgentRunResult {
 export interface AgentRunner {
   run(spec: AgentRunSpec): Promise<AgentRunResult>;
   /**
+   * Whether this runner can expose granted broker tools to its agent. Absent: false. A run with non-empty
+   * `tool_grants` is refused (never run with the grants dropped) when this is not true.
+   */
+  readonly exposes_tools?: boolean;
+  /**
    * Whether session `id` is stored on this host and readable, so `--resume` can continue it. Absent: sessions
    * are never resumed (a paused run starts a new session from its WIP commit and handoff).
    */
@@ -99,3 +109,21 @@ export interface AgentRunner {
   /** Removes session `id` from this host. Idempotent; safe for a session that is already gone. */
   removeSession?(id: string): Promise<void>;
 }
+
+/**
+ * The refusal of a run whose grants this runner cannot expose (`exposes_tools` not true), or null when there is
+ * nothing to refuse. The error names the granted tools: grants are never silently dropped.
+ */
+export function grantsRefusal(runner: Pick<AgentRunner, "exposes_tools">, spec: Pick<AgentRunSpec, "tool_grants">): AgentRunResult | null {
+  if (spec.tool_grants.length === 0 || runner.exposes_tools === true) return null;
+  return {
+    status: "failed",
+    output: null,
+    transcript: "",
+    usage: { input_tokens: 0, output_tokens: 0, cost_usd: null },
+    error: `${TOOLS_NOT_EXPOSED}: this runner cannot expose broker tools; granted: ${spec.tool_grants.join(", ")}`,
+  };
+}
+
+/** The error code of a run refused because its runner cannot expose its granted tools. */
+export const TOOLS_NOT_EXPOSED = "tools_not_exposed";
