@@ -14,7 +14,6 @@
     { "prefix": "factory.config.json", "tier": 3 },
     { "prefix": "src/core/", "tier": 3 },
     { "prefix": "src/impl/runner/", "tier": 4 },
-    { "prefix": "src/impl/broker/", "tier": 4 },
     { "prefix": "src/impl/github/github-tool-broker.ts", "tier": 4 },
     { "prefix": "src/impl/github/broker.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/egress/", "tier": 4 },
