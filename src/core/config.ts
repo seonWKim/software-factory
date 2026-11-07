@@ -98,6 +98,13 @@ export interface LoadedConfig {
     test_command: string[];
     check_commands?: string[][];
   };
+  /**
+   * True when config selects no GitHub plugin (design 05-sources, Local startup; set by the composition root from
+   * the plugin selection, never a config key): no GitHub credential, repo lookup or origin fetch, the base is the
+   * factory repo's local `refs/heads/<base_branch>`, branches stay local and a human merges with `factory merge`.
+   * Absent: a GitHub plugin is selected, everything as before.
+   */
+  local_only?: true;
   intake_label: string;
   /** Status labels are this prefix plus a fixed suffix, e.g. "sf: needs approval". Default "sf: ". */
   status_label_prefix: string;

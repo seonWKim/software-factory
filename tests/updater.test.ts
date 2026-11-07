@@ -73,7 +73,8 @@ class World {
   }
 
   private resolveRef(ref: string): string {
-    return ref === "origin/main" || ref === "refs/remotes/origin/main^{commit}" ? this.origin : ref;
+    // `refs/heads/main`: the local base branch a `local` updater follows; this world keeps one main line.
+    return ref === "origin/main" || ref === "refs/remotes/origin/main^{commit}" || ref === "refs/heads/main^{commit}" ? this.origin : ref;
   }
 
   path(rel: string): string {
@@ -234,7 +235,7 @@ class FakeLauncher implements ChildLauncher {
 function setup(
   opts: { runTimeoutMs?: number; statusFile?: string; world?: World } & Pick<
     GitWorktreeOptions,
-    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile" | "configFile"
+    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile" | "configFile" | "local"
   > = {},
 ) {
   const world = opts.world ?? new World();
@@ -259,6 +260,7 @@ function setup(
     ...(opts.autoMigrate !== undefined ? { autoMigrate: opts.autoMigrate } : {}),
     ...(opts.requestFile ? { requestFile: opts.requestFile } : {}),
     ...(opts.configFile ? { configFile: opts.configFile } : {}),
+    ...(opts.local ? { local: true } : {}),
   });
   return { world, launcher, log, clock, updater };
 }
@@ -470,8 +472,33 @@ describe("updater: git-worktree first start", () => {
   });
 });
 
+describe("updater: git-worktree with no GitHub plugin selected (local)", () => {
+  it("never fetches origin and never fast-forwards the main checkout: it follows the local base branch", async () => {
+    const { world, launcher, updater } = setup({ local: true });
+    await updater.start();
+    expect(world.events).toEqual([
+      `worktree add ${V("c1")} c1`,
+      `ci ${V("c1")}`,
+      `build ${V("c1")}@c1`,
+      `launch 1 ${V("c1")}/dist/main.js (// built from c1)`,
+    ]);
+    // `factory merge` moved the local base branch: the next poll builds it, still with no fetch.
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    await settle();
+    expect(world.events).toContain(`worktree add ${V("c2")} c2`);
+    expect(world.events).not.toContain("fetch");
+    expect(world.events.some((e) => e.startsWith("ff "))).toBe(false);
+    const git = world.calls.map((c) => c.split(": ")[1]!).filter((c) => c.startsWith("git "));
+    expect(git.filter((c) => / fetch | merge |origin/.test(` ${c} `))).toEqual([]);
+    expect(git).toContain("git rev-parse --verify refs/heads/main^{commit}");
+    expect(launcher.children).toHaveLength(2);
+    await updater.shutdown();
+  });
+});
+
 describe("updater: git-worktree start-then-drain", () => {
-  const CODE = ["src/core/worker.ts", "prompts/review.md", "package.json", "package-lock.json", "tsconfig.test.json", "factory.config.json"];
+  const CODE =["src/core/worker.ts", "prompts/review.md", "package.json", "package-lock.json", "tsconfig.test.json", "factory.config.json"];
   for (const file of CODE) {
     it(`${file}: fetch, build in a new folder, start the new child, then drain the old one`, async () => {
       const { world, launcher, updater } = setup();
