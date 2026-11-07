@@ -3,7 +3,7 @@ import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import type { AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";

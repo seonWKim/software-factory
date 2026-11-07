@@ -10,7 +10,7 @@ import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, PREFLIGHT_ACCESS } from "../../core/policy.js";
 import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
-import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
+import { GitHubError, type GitHubClient, type RepoRef } from "./github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
 /**
