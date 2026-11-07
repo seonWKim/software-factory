@@ -8,6 +8,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, localIdentity, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
+import { Sessions } from "../src/core/session.js";
 import { Worker } from "../src/core/worker.js";
 import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
@@ -19,7 +20,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -343,5 +344,65 @@ describe("local task flow", { timeout: 60_000 }, () => {
     expect(await f.refusals(id)).toHaveLength(1);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     expect(await f.store.listLocalUsers()).toEqual([]);
+  });
+});
+
+describe("factory session on a local item beside the GitHub plugin", () => {
+  async function sessions(opts: { local: boolean }) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const [ghSandbox, localSandbox] = [new FakeSandbox(), new FakeSandbox()];
+    for (const s of [ghSandbox, localSandbox]) s.changedFiles = [".github/workflows/gate.yml"];
+    const ghBroker = new FakeBroker();
+    // The local broker's one tool: it commits the branch locally and opens no PR.
+    const localBroker = new FakeBroker();
+    localBroker.tools = localBroker.tools.filter((t) => t.name === "github.push_branch");
+    const s = new Sessions({
+      store, sandbox: ghSandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent,
+      files: new MemorySessionFiles(), issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1",
+      ...(opts.local ? { local: { broker: localBroker, sandbox: localSandbox } } : {}),
+    });
+    const gh = new FakeSource();
+    const controller = new Controller({
+      store, sources: [gh, new LocalSource(store)], forge: new FakeForge(gh), auth: new FakeAuth(), local_auth: new FakeAuth(), clock, config, log: silent,
+      scanner: cleanScanner, repeated_failure_rule: false,
+    });
+    const { item } = await store.createWorkItem({ source: { type: "local", id: "local:1", link: "" }, requester_id: ME, project: PROJECT_KEY, problem: "p", resources: [] }, {
+      kind: "system", id: "system:test",
+    });
+    const r = await store.transition({
+      id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "seed",
+      patch: { stage: "RUNNING", allowed_paths: [".github/workflows/"], tier: 2, done_criteria: ["x"] },
+    });
+    if (!r.ok) throw new Error(r.reason);
+    return { store, ghSandbox, localSandbox, ghBroker, localBroker, s, controller, item: r.item };
+  }
+
+  it("start and finish use the local sandbox and broker: the branch is committed locally, no PR is opened, and the item reviews with no PR", async () => {
+    const h = await sessions({ local: true });
+    const started = await h.s.start({ target: h.item.id, person: alice });
+    expect(started.ok).toBe(true);
+    expect(h.localSandbox.created.map((c) => c.branch)).toEqual([`factory/${h.item.id}`]);
+    expect(h.ghSandbox.created).toEqual([]);
+
+    const done = await h.s.finish({ id: h.item.id });
+    expect(done.ok).toBe(true);
+    expect(done.lines.at(-1)).toContain("as a local branch (no push, no PR)");
+    expect(h.localBroker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
+    expect(h.ghBroker.calls).toEqual([]);
+    expect(h.ghBroker.preflights).toEqual([]);
+    await h.controller.tickRuns();
+    expect(await h.store.getWorkItem(h.item.id)).toMatchObject({ stage: "REVIEW", pr_number: null });
+    expect((await h.store.listRuns(h.item.id)).map((r) => r.kind)).toContain("review");
+  });
+
+  it("with no local broker given, a session on a local item is refused and nothing is pushed", async () => {
+    const h = await sessions({ local: false });
+    const r = await h.s.start({ target: h.item.id, person: alice });
+    expect(r).toMatchObject({ ok: false });
+    expect(r.lines.join("\n")).toContain("is a local item");
+    expect(h.ghSandbox.created).toEqual([]);
+    expect(h.ghBroker.calls).toEqual([]);
+    expect(await h.store.listRuns(h.item.id)).toEqual([]);
   });
 });
