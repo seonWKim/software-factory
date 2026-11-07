@@ -58,6 +58,7 @@ export const TOP_LEVEL_KEYS = [
   "agent_git_identity",
   "ui",
   "updater",
+  "github",
   "stats",
   "budgets",
   "budget_min_sample",
@@ -91,6 +92,7 @@ export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies re
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
+export const GITHUB_KEYS = ["min_remaining"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
@@ -174,6 +176,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.agent_git_identity, "agent_git_identity", "agent_git_identity", AGENT_GIT_IDENTITY_KEYS);
   check(raw.ui, "ui", "ui", UI_KEYS);
   check(raw.updater, "updater", "updater", UPDATER_KEYS);
+  check(raw.github, "github", "github", GITHUB_KEYS);
   check(raw.stats, "stats", "stats", STATS_KEYS);
   check(raw.openai_compatible, "openai_compatible", "openai_compatible", OPENAI_COMPATIBLE_KEYS);
   if (isObject(raw.openai_compatible)) {

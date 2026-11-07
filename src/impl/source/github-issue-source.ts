@@ -304,9 +304,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       }
     }
 
-    // Pulls have no `since`: read newest-updated first and stop at the cursor.
+    // Pulls have no `since`: read newest-updated first and stop at the cursor, without reading the pages
+    // past it (design §5 Sources, GitHub call budget).
     // Every PR, not only factory ones (design 2026-11-01): a merge with no work item is an unreviewed merge.
-    const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, c.pulls ? 5 : 1);
+    const pastCursor = (page: GhPull[]) => c.pulls !== null && (page.at(-1)?.updated_at ?? "") < c.pulls;
+    const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, c.pulls ? 5 : 1, pastCursor);
     for (const p of pulls) {
       if (c.pulls && p.updated_at < c.pulls) break;
       next.pulls = max(next.pulls, p.updated_at);
@@ -332,6 +334,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     // PR only when it does not know it yet. Then factory PRs that cannot merge into their base: the controller
     // keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
     const open = await this.client.list<GhPull>(`${base}/pulls?state=open&sort=updated&direction=desc`);
+    // Under the budget threshold the reads below wait for the reset; the next poll makes them (they are not cursored,
+    // or keep their cursor). The intake lists above always run.
+    const low = this.client.lowBudget();
     const reviewed: GhPull[] = [];
     for (const p of open) {
       const factory = p.head.ref.startsWith(this.branchPrefix);
@@ -349,7 +354,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
           labels: (p.labels ?? []).map((l) => l.name),
         });
       }
-      if (!factory) continue;
+      if (!factory || low) continue;
       const full = await this.client.request<GhPullFull>("GET", `${base}/pulls/${p.number}`);
       if (full.mergeable !== false) continue;
       events.push({
@@ -362,10 +367,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
 
     // "Request changes" reviews on the PRs reported open, after their pr_open (design §4).
-    events.push(...(await this.changeRequests(base, reviewed, c, next)));
+    if (!low) events.push(...(await this.changeRequests(base, reviewed, c, next)));
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
-    const commits = await this.client.list<GhCommit>(
+    // Under the budget threshold the cursor stays put, so the next poll reads them.
+    const commits = low ? [] : await this.client.list<GhCommit>(
       `${base}/commits?sha=${encodeURIComponent(this.baseBranch)}` + (c.commits ? `&since=${c.commits}` : ""),
       COMMIT_PAGES,
     );
@@ -636,21 +642,26 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * One status label on the issue, or on PR `pr_number` (PRs share the issue labels API): create the label
-   * if missing, add it, then remove the other seven fixed status names. Any other label, including one a
-   * human made under the same prefix, is left alone. Each step is idempotent.
+   * One status label on the issue, or on PR `pr_number` (PRs share the issue labels API): read its labels;
+   * if the target is missing, create the label if missing and add it; then remove the other seven fixed status
+   * names. Nothing more when the labels are already right. Any other label, including one a human made under
+   * the same prefix, is left alone. Each step is idempotent.
    */
   async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     const repo = `/repos/${this.repo.owner}/${this.repo.name}`;
     const n = pr_number ?? issueNumberFromSourceId(source.id);
     const all = statusLabels(this.statusPrefix);
     const target = all.find((l) => l.status === status)!;
-    await ensureLabel(this.client, this.repo, target);
-    await this.client.request("POST", `${repo}/issues/${n}/labels`, { labels: [target.name] });
     const others = new Set(all.filter((l) => l !== target).map((l) => l.name));
-    const current = await this.client.list<{ name: string }>(`${repo}/issues/${n}/labels`, 1);
-    for (const { name } of current) {
-      if (!others.has(name)) continue;
+    // Read first (a conditional GET): a label already right costs one call, or none on a 304 (GitHub call budget).
+    const current = (await this.client.list<{ name: string }>(`${repo}/issues/${n}/labels`, 1)).map((l) => l.name);
+    const stale = current.filter((name) => others.has(name));
+    if (current.includes(target.name) && stale.length === 0) return;
+    if (!current.includes(target.name)) {
+      await ensureLabel(this.client, this.repo, target);
+      await this.client.request("POST", `${repo}/issues/${n}/labels`, { labels: [target.name] });
+    }
+    for (const name of stale) {
       try {
         await this.client.request("DELETE", `${repo}/issues/${n}/labels/${encodeURIComponent(name)}`);
       } catch (err) {
@@ -666,6 +677,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
    */
   async prChecks(pr_number: number): Promise<PrChecks> {
+    // Under the budget threshold the gate waits (pending) and a later pass reads the checks.
+    if (this.client.lowBudget()) return { state: "pending" };
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${pr_number}`);
     const sha = encodeURIComponent(pull.head.sha);

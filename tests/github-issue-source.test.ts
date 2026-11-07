@@ -651,19 +651,34 @@ describe("GitHubIssueSource: status labels", () => {
     expect(statusLabels("x/").find((l) => l.status === "done")!.name).toBe("x/done");
   });
 
-  it("creates the label, adds it, then removes only other fixed-set status labels", async () => {
+  it("reads the labels, creates the label, adds it, then removes only other fixed-set status labels", async () => {
     const { client, source } = make();
     client.issueLabels.set(7, ["factory", "sf: triaging", "sf: custom", "bug"]);
     await source.setStatus(issueRef(7), "needs_approval", null);
 
     const def = statusLabels("sf: ").find((l) => l.status === "needs_approval")!;
     expect(client.calls).toEqual([
+      { method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined },
       { method: "POST", path: "/repos/o/r/labels", body: { name: "sf: needs approval", color: def.color, description: def.description } },
       { method: "POST", path: "/repos/o/r/issues/7/labels", body: { labels: ["sf: needs approval"] } },
-      { method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined },
       { method: "DELETE", path: `/repos/o/r/issues/7/labels/${enc("sf: triaging")}`, body: undefined },
     ]);
     expect(client.issueLabels.get(7)).toEqual(["factory", "sf: custom", "bug", "sf: needs approval"]);
+  });
+
+  it("makes one read and no write when the labels are already right (GitHub call budget)", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["factory", "sf: implementing"]);
+    await source.setStatus(issueRef(7), "implementing", null);
+    expect(client.calls).toEqual([{ method: "GET", path: "/repos/o/r/issues/7/labels?per_page=100&page=1", body: undefined }]);
+  });
+
+  it("only removes the stale status label when the target is already there", async () => {
+    const { client, source } = make();
+    client.issueLabels.set(7, ["sf: implementing", "sf: triaging"]);
+    await source.setStatus(issueRef(7), "implementing", null);
+    expect(client.calls.map((c) => c.method)).toEqual(["GET", "DELETE"]);
+    expect(client.issueLabels.get(7)).toEqual(["sf: implementing"]);
   });
 
   it("treats an existing label (422 already exists) as created, and changes nothing on a repeat call", async () => {
