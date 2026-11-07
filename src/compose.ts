@@ -40,7 +40,7 @@ import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedRunners, selectedSources,
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
 } from "./plugins.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
@@ -66,8 +66,11 @@ export interface FileConfig {
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
   /** Human floors (design §3). A per-project setting: may move into `defaults`, and a project may add to it. */
   floors?: { prefix: string; tier: number }[];
-  /** AuthProvider plugin name (docs/plugins.md). */
-  auth: string;
+  /**
+   * AuthProvider plugin name (docs/plugins.md) for GitHub comments, or one per command origin (issue #318):
+   * `{ "github_issue": "github", "local": "local" }`. Local commands use `local` unless `auth.local` says otherwise.
+   */
+  auth: unknown;
   /**
    * Who may act (design 2026-11-01): `grants`, the grant plugins whose union decides (absent: github-permission),
    * and grant settings such as `static` (docs/plugins.md, GrantSource). Checked by selectGrants and each grant.
@@ -411,6 +414,8 @@ export async function build(
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
+  const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
   // Suggests a command for a plain-language comment; never changes state (design §4).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
@@ -449,6 +454,7 @@ export async function build(
     store,
     sources,
     auth,
+    local_auth,
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),

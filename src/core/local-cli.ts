@@ -1,14 +1,55 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { ExternalIdentity } from "../interfaces/auth-provider.js";
+import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
- * `retry`, `revise` and `reject` append one row to the CLI command log (`cli_commands`) and change no item
+ * `retry`, `revise` and `reject` append one row to the CLI command log (`command_inbox`) and change no item
  * state. The `local` source reads that log and the controller applies each command with the same authorize
- * check and the same replies as the GitHub comment. Every command acts as `cli_user` (factory.config.json),
- * a factory user ID; with none configured each command fails. No GitHub call.
+ * check and the same replies as the GitHub comment, through the auth plugin for local commands (`local` by
+ * default, issue #318). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
+ * writing command becomes the local owner; `users` lets the owner give others roles. No GitHub call.
  */
+
+/** Where the CLI identity came from, for `users list`. */
+export type CliIdentitySource = "cli_user" | "git user.email" | "OS user" | "anonymous";
+
+export interface CliIdentity {
+  /** The factory user ID every CLI command acts as: `cli_user`, or `local:<value>`. */
+  user: UserId;
+  from: CliIdentitySource;
+}
+
+/** What the environment says about the operator; each null when unavailable. Read by main.ts, never here. */
+export interface CliEnvironment {
+  gitEmail: string | null;
+  osUser: string | null;
+}
+
+/** The identity used when nothing in the environment names the operator. */
+export const ANONYMOUS = "anonymous";
+
+/**
+ * The CLI identity (issue #318): `cli_user` from factory.config.json when set; else `local:<git user.email>`;
+ * else `local:<OS user name>`; else `local:anonymous`. Keys only (an email or a login name), never a display
+ * name such as git's `user.name`. A value with whitespace is skipped.
+ */
+export function cliIdentity(cliUser: UserId | null, env: CliEnvironment): CliIdentity {
+  if (cliUser !== null) return { user: cliUser, from: "cli_user" };
+  const ok = (v: string | null): v is string => v !== null && /^\S+$/.test(v.trim());
+  if (ok(env.gitEmail)) return { user: `local:${env.gitEmail.trim().toLowerCase()}` as UserId, from: "git user.email" };
+  if (ok(env.osUser)) return { user: `local:${env.osUser.trim()}` as UserId, from: "OS user" };
+  return { user: `local:${ANONYMOUS}` as UserId, from: "anonymous" };
+}
+
+/** The identity a CLI command's actor has at intake: provider `local`, subject the actor after `local:`. */
+export function localIdentity(actor: string): ExternalIdentity {
+  return { provider: "local", subject: actor.startsWith("local:") ? actor.slice("local:".length) : actor };
+}
+
+const ANONYMOUS_USER = `local:${ANONYMOUS}` as UserId;
+const USER_ID = /^[a-z]+:\S+$/;
 
 export interface CliCommandSpec {
   /** The words after `factory`, e.g. `task create`. */
@@ -28,10 +69,13 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   { name: "retry", usage: "retry <id> [text]",description: "Store `/retry` for the item; the controller applies it" },
   { name: "revise", usage: "revise <id> <feedback>", description: "Store `/revise` for the item; the controller applies it" },
   { name: "reject", usage: "reject <id> <reason>", description: "Store `/reject` for the item; the controller applies it" },
+  { name: "users list", usage: "users list", description: "Print your CLI identity and every local user with its role (owner, approver, requester)" },
+  { name: "users add", usage: "users add <user_id> --role approver|requester", description: "Owner only: give a local user a role, e.g. `local:dev@example.com`" },
+  { name: "users remove", usage: "users remove <user_id>", description: "Owner only: remove a local user's role" },
 ];
 
 /** The top-level words `factory` hands to this module. */
-export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject"] as const;
+export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "users"] as const;
 
 export type ItemCommand = "approve" | "retry" | "revise" | "reject";
 
@@ -39,7 +83,10 @@ export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
   | { action: "list" }
   | { action: "show"; id: WorkItemId }
-  | { action: "command"; command: ItemCommand; id: WorkItemId; text: string };
+  | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
+  | { action: "users_list" }
+  | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
+  | { action: "users_remove"; user: UserId };
 
 export function cliUsage(): string {
   return ["usage: npm run factory -- <command>", ...CLI_COMMANDS.map((c) => `  ${c.usage}`)].join("\n");
@@ -83,6 +130,18 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     const text = rest.join(" ").trim();
     return { action: "command", command: word, id: id as WorkItemId, text };
   }
+  if (word === "users") {
+    const [sub, user, ...rest] = args;
+    if (sub === "list") return user === undefined ? { action: "users_list" } : bad("users list takes no arguments");
+    if (sub !== "add" && sub !== "remove") return bad(`unknown users command ${JSON.stringify(sub ?? "")}`);
+    if (!user || !USER_ID.test(user)) return bad(`users ${sub} needs a factory user ID such as local:dev@example.com`);
+    if (sub === "remove") return rest.length === 0 ? { action: "users_remove", user: user as UserId } : bad("users remove takes one user ID");
+    const [flag, role, ...extra] = rest;
+    if (flag !== "--role" || (role !== "approver" && role !== "requester") || extra.length > 0) {
+      return bad("users add needs --role approver or --role requester");
+    }
+    return { action: "users_add", user: user as UserId, role };
+  }
   return bad(`unknown command ${JSON.stringify(word)}`);
 }
 
@@ -90,9 +149,10 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listRuns" | "listItemMessages" | "appendCliCommand"
+    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser"
   >;
-  /** `cli_user` from factory.config.json, or null when none is configured. */
-  user: UserId | null;
+  /** Who every command acts as (`cliIdentity`). */
+  identity: CliIdentity;
   /** The configured repo's project key from the store, or null when none is stored yet. Only `create` asks. */
   project: () => Promise<string | null>;
   /** Reads a body file. */
@@ -106,22 +166,21 @@ export interface CliResult {
   lines: string[];
 }
 
-export const NO_CLI_USER =
-  "no CLI user configured: set `cli_user` in factory.config.json to your factory user ID (e.g. github:12345)";
-
 /** The most items `task list` reads. */
 export const TASK_LIST_LIMIT = 200;
 
 export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliResult> {
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
-  if (d.user === null) return fail(NO_CLI_USER);
-  const user = d.user;
+  const user = d.identity.user;
+  // The first identity to write becomes the local owner (issue #318); anonymous never does.
+  const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimLocalOwner(user));
   switch (a.action) {
     case "create": {
       const project = await d.project();
       if (project === null) {
         return fail("no project is stored yet: start the factory once (`npm run factory -- dev`) so it records the configured repo");
       }
+      await claim();
       const body = (await d.read(a.bodyFile)).trim();
       const sid = `local-${d.newId()}`;
       const source = { type: "local" as const, id: sid, link: `local:${sid}` };
@@ -146,12 +205,38 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
       if (item.source.type !== "local") return fail(`${a.id} is not a local work item: reply \`/${a.command}\` on its issue instead`);
+      await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       const { command } = await d.store.appendCliCommand({ key: `cli:${d.newId()}`, actor: user, command: a.command, args });
       return {
         code: 0,
-        lines: [`stored \`/${a.command}\` for ${item.id} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
+        lines: [`stored \`/${a.command}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
       };
+    }
+    case "users_list": {
+      const users = await d.store.listLocalUsers();
+      return {
+        code: 0,
+        lines: [
+          `you are ${user} (from ${d.identity.from})`,
+          ...(users.length === 0 ? ["no local users yet: the first identity to run a writing command becomes the owner"] : []),
+          ...users.map((u) => [u.user_id, u.role, `added by ${u.added_by}`].join("\t")),
+        ],
+      };
+    }
+    case "users_add":
+    case "users_remove": {
+      const owner = await claim();
+      if (owner?.user_id !== user) return fail(`only the local owner (${owner?.user_id ?? "none yet"}) can change roles; you are ${user}`);
+      if (a.action === "users_remove") {
+        const r = await d.store.removeLocalUser(a.user);
+        if (r === "owner") return fail("the owner cannot be removed");
+        return { code: 0, lines: [r === "removed" ? `removed ${a.user}` : `${a.user} had no role`] };
+      }
+      if (a.user === ANONYMOUS_USER && a.role !== "requester") return fail("anonymous gets read and create only: it cannot be an approver");
+      const r = await d.store.setLocalUserRole(a.user, a.role, user);
+      if (!r.ok) return fail(`${a.user} is the owner; the owner's role does not change`);
+      return { code: 0, lines: [`${a.user} is now ${a.role === "approver" ? "an approver" : "a requester"}`] };
     }
   }
 }
