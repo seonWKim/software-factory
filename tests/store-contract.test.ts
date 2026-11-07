@@ -650,7 +650,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     const user = { kind: "user" as const, id: "github:1" as UserId };
     const verdict = (id: WorkItemId, expected_version: number, comment_id = "c1") => ({
       id, expected_version, actor: user, verdict: "changes" as const, severity: "minor" as const,
-      reason: "rename it", comment_id, target: "pr" as const,
+      reason: "rename it", comment_id, target: "pr" as const, implicit: false, pr_head: null,
     });
 
     it("records a verdict: version + 1, a human_verdict state change with empty changes, and a linked verdict row", async () => {
@@ -698,6 +698,40 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listStateChanges(item.id)).toHaveLength(2);
     });
 
+    it("an implicit verdict: an implicit_verdict state change, implicit and pr_head stored, no other field changed", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const r = await store.recordVerdict({ ...verdict(item.id, 1, "implicit:pushed:h2"), actor: system, implicit: true, pr_head: "h2" });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item).toMatchObject({ version: 2, stage: item.stage, blocked_on: item.blocked_on, blocked_reason: item.blocked_reason });
+      expect(r.state_change).toMatchObject({ version: 2, actor: system, reason: "implicit_verdict", changes: {} });
+      expect(r.verdict).toMatchObject({ implicit: true, pr_head: "h2", comment_id: "implicit:pushed:h2" });
+      expect(await store.listVerdicts(item.id)).toEqual([r.verdict]);
+    });
+
+    it("one verdict per PR head: a second implicit one is a duplicate; an explicit one replaces the implicit one", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const implicit = { ...verdict(item.id, 1, "implicit:pushed:h2"), actor: system, implicit: true, pr_head: "h2" };
+      const first = await store.recordVerdict(implicit);
+      if (!first.ok) throw new Error(first.reason);
+      const again = await store.recordVerdict({ ...implicit, expected_version: 2, comment_id: "implicit:merged:m1", verdict: "accept" });
+      expect(again).toEqual({ ok: false, reason: "duplicate", verdict: first.verdict });
+      // Another head is its own.
+      const other = await store.recordVerdict({ ...implicit, expected_version: 2, comment_id: "implicit:pushed:h3", pr_head: "h3" });
+      expect(other.ok).toBe(true);
+
+      const explicit = await store.recordVerdict({ ...verdict(item.id, 3, "c9"), verdict: "accept", severity: "none", reason: null, pr_head: "h2" });
+      if (!explicit.ok) throw new Error(explicit.reason);
+      expect((await store.listVerdicts(item.id)).map((v) => [v.comment_id, v.pr_head, v.implicit])).toEqual([
+        ["implicit:pushed:h3", "h3", true],
+        ["c9", "h2", false],
+      ]);
+      // An implicit one after the explicit one on that head stores nothing; the replaced one's state change stays.
+      expect(await store.recordVerdict({ ...implicit, expected_version: 4, comment_id: "implicit:merged:m2" })).toMatchObject({ ok: false, reason: "duplicate" });
+      expect((await store.listStateChanges(item.id)).map((c) => c.reason)).toEqual(["intake", "implicit_verdict", "implicit_verdict", "human_verdict"]);
+    });
+
     it("applies only on the expected version; a conflict stores nothing", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);
@@ -711,7 +745,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
   });
 
   describe("listStatsRecords", () => {
-    it("returns every item with its tier, stage, token_cost, the requested reasons and its verdict severities", async () => {
+    it("returns every item with its tier, stage, token_cost, the requested reasons, its explicit verdict severities and its implicit count", async () => {
       const { store, clock } = await make();
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([]);
 
@@ -723,12 +757,16 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       await store.transition({ id: a.id, expected_version: 2, actor: human, reason: "retry_requested", patch: {} });
       await store.recordVerdict({
         id: a.id, expected_version: 3, actor: { kind: "user", id: "github:1" as UserId }, verdict: "changes",
-        severity: "major", reason: "r", comment_id: "c1", target: "pr",
+        severity: "major", reason: "r", comment_id: "c1", target: "pr", implicit: false, pr_head: null,
       });
       await store.transition({ id: a.id, expected_version: 4, actor: human, reason: "retry_requested", patch: {} });
       await store.recordVerdict({
         id: a.id, expected_version: 5, actor: { kind: "user", id: "github:1" as UserId }, verdict: "accept",
-        severity: "none", reason: null, comment_id: "c2", target: "pr",
+        severity: "none", reason: null, comment_id: "c2", target: "pr", implicit: false, pr_head: "h1",
+      });
+      await store.recordVerdict({
+        id: a.id, expected_version: 6, actor: system, verdict: "reverted", severity: "major", reason: "reverted",
+        comment_id: "implicit:reverted:a", target: "pr", implicit: true, pr_head: null,
       });
       await store.transition({
         id: b.id, expected_version: 1, actor: human, reason: "spec_rejected",
@@ -736,8 +774,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
 
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
-        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], origin: "factory" },
-        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], origin: "factory" },
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], implicit: 1, origin: "factory" },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], implicit: 0, origin: "factory" },
       ]);
       expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
     });

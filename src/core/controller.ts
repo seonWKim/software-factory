@@ -92,7 +92,8 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunInput, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type VerdictKind, type VerdictSeverity, type WorkItem,
+  type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -270,6 +271,16 @@ const UNCHANGED_HEAD = "unchanged_head";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
+/** What an implicit verdict says (design §4): its kind and severity, its reason and its event key. */
+interface ImplicitVerdict {
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  reason: string;
+  /** Unique per event: kept as the verdict's comment_id, so a redelivered event records nothing. */
+  key: string;
+  actor: Actor;
+  pr_head: string | null;
+}
 /** The refusal of an `/approve +paths` on a split spec (issue #280): the approval files sub-issues, it implements nothing. */
 const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` files one sub-issue per phase; reply `/approve` without `+paths`, then add paths on a phase's issue";
 /** Characters of an approval note kept on the state change (design §4). */
@@ -1168,6 +1179,7 @@ export class Controller {
     // The human who merged is the approver of record (design §8). The forge already enforced their permission.
     const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
+    if (e.kind === "pr_merged") await this.mergeVerdict(item, e, merger ? actor : null);
     await this.decide(item.id, (it) => {
       if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
       return e.kind === "pr_merged"
@@ -1184,6 +1196,51 @@ export class Controller {
     });
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.guard("dependents", () => this.releaseDependents(item.source.id));
+  }
+
+  /**
+   * The implicit verdict of a merged factory PR (design §4): one `accept`, severity `none`, for the merged head,
+   * when no person pushed to it. Stored before the merge closes the item, so a crash between the two leaves the
+   * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
+   * merger does not resolve to a user.
+   */
+  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
+    if (it.origin !== "factory" || it.stage === "CLOSED" || it.pr_number !== e.pr_number) return;
+    const id = it.id;
+    const log = { work_item_id: id, pr_number: e.pr_number };
+    if (!merger) {
+      this.d.log.warn("no implicit verdict: the merger does not resolve to a user", log);
+      return;
+    }
+    if ((await this.d.store.listRuns(id)).some((r) => r.kind === "manual")) {
+      this.d.log.info("no implicit accept: a person pushed to the PR", log);
+      return;
+    }
+    await this.recordImplicitVerdict(id, {
+      verdict: "accept", severity: "none", reason: "merged with no commits by people", key: `implicit:merged:${id}:${e.merge_sha}`,
+      actor: merger, pr_head: it.last_head_sha,
+    });
+  }
+
+  /**
+   * Stores one implicit verdict (design §4), retrying on version conflicts. Changes no field but the version; a
+   * verdict already stored for the key or the PR head is a no-op.
+   */
+  private async recordImplicitVerdict(id: WorkItemId, v: ImplicitVerdict): Promise<void> {
+    for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
+      const it = await this.d.store.getWorkItem(id);
+      if (!it) return;
+      const r = await this.d.store.recordVerdict({
+        id, expected_version: it.version, actor: v.actor, verdict: v.verdict, severity: v.severity, reason: v.reason,
+        comment_id: v.key, target: "pr", implicit: true, pr_head: v.pr_head,
+      });
+      if (r.ok) {
+        this.d.log.info("implicit verdict recorded", { work_item_id: id, verdict: v.verdict, version: r.item.version });
+        return;
+      }
+      if (r.reason !== "version_conflict") return;
+    }
+    this.d.log.warn("implicit verdict gave up after conflicts", { work_item_id: id });
   }
 
   /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
@@ -1295,7 +1352,25 @@ export class Controller {
     });
     if (r.ok && r.run) {
       this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
+      if (it.origin === "factory") await this.pushVerdict(it.id, it.last_head_sha, e.head_sha, actor);
     }
+  }
+
+  /** A person's push to a factory PR (design §4): one implicit `changes` for the new head, naming its commit count. */
+  private async pushVerdict(id: WorkItemId, from_sha: string, to_sha: string, actor: Actor): Promise<void> {
+    let count: number | null = null;
+    try {
+      count = this.forge ? await this.forge.commitsBetween(from_sha, to_sha) : null;
+    } catch (err) {
+      this.d.log.warn("commit count not read; the verdict says it is unknown", { work_item_id: id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    }
+    const reason =
+      count === null
+        ? "a person pushed to the PR; the commit count is unknown"
+        : `a person pushed ${count} commit${count === 1 ? "" : "s"} to the PR`;
+    await this.recordImplicitVerdict(id, {
+      verdict: "changes", severity: "minor", reason, key: `implicit:pushed:${id}:${to_sha}`, actor, pr_head: to_sha,
+    });
   }
 
   /** The pushed head commit's author as a user: the forge does not name who pushed. Else system:pr-sync. */
@@ -1919,7 +1994,10 @@ export class Controller {
       const it = await this.d.store.getWorkItem(id);
       if (!it) return null;
       if ((await this.d.store.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
-      if (it.stage === "CLOSED") return "the work item is closed";
+      // A merged PR still takes a verdict (design §4); a closed one that was not merged does not.
+      if (it.stage === "CLOSED" && it.merge_sha === null) {
+        return it.pr_number === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
+      }
       if (it.pr_number === null) return "the work item has no PR yet";
       const r = await this.d.store.recordVerdict({
         id,
@@ -1928,6 +2006,9 @@ export class Controller {
         ...v,
         comment_id: e.comment_id,
         target: e.target.kind,
+        implicit: false,
+        // Replaces the implicit verdict on the same head, if any.
+        pr_head: it.last_head_sha,
       });
       if (r.ok) {
         this.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
@@ -2389,6 +2470,13 @@ export class Controller {
           ? null
           : { patch: {}, actor: LINKS, reason: "reverted", detail },
       );
+      // A merged factory PR also gets one implicit `reverted` verdict per reverting commit (design §4).
+      const it = await this.d.store.getWorkItem(id);
+      if (it?.origin !== "factory" || it.close_reason !== "completed" || it.merge_sha === null) continue;
+      await this.recordImplicitVerdict(id, {
+        verdict: "reverted", severity: "major", reason: `reverted by commit ${e.sha}`, key: `implicit:reverted:${id}:${e.sha}`,
+        actor: LINKS, pr_head: null,
+      });
     }
   }
 
