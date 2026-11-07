@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubIssueSource, commentBackoffMs } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource, commentBackoffMs } from "../src/impl/github/github-issue-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system } from "./helpers/store.js";

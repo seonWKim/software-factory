@@ -1,6 +1,6 @@
 import { definePlugin } from "../../plugin-api.js";
 import type { Contexts } from "../../plugin-api.js";
-import { GitHubIssueSource, githubHistorySince } from "../source/github-issue-source.js";
+import { GitHubIssueSource, githubHistorySince } from "./github-issue-source.js";
 import { GitHubForge } from "./github-forge.js";
 
 /**

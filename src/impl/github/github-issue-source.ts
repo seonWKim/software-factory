@@ -12,7 +12,7 @@ import { type FactoryStore, type NewCliCommand, labelTarget } from "../../interf
 import type {
   IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
-import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
 
 export interface GhUser {
   id: number;

@@ -13,7 +13,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";

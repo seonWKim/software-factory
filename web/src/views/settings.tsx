@@ -7,11 +7,12 @@ import { Switch } from "../components/ui/switch.js";
 import { cn } from "../lib/cn.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { StandingSection } from "./standing.js";
 
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
 // applies, an edit control per key and a reset when an override exists, the PR-only keys read-only, and the
-// audit history. Every write is POST /api/v1/settings, which runs the same checks as `factory settings`; a
-// refusal is shown next to the field it came from.
+// audit history, and the standing approvals (standing.tsx). Every key write is POST /api/v1/settings, which runs
+// the same checks as `factory settings`; a refusal is shown next to the field it came from.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
@@ -228,6 +229,7 @@ export function SettingsPage() {
           </ul>
         </Section>
       )}
+      <StandingSection />
       <Section title="Changes by PR only" count={v.pr_only.length}>
         <Table label="Changes by PR only" head={["Key", ""]}>
           {v.pr_only.map((p) => (

@@ -209,7 +209,10 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
     "src/core/merge-check.ts", "src/core/standing.ts",
   ],
   prompts: ["prompts/"],
-  permissions: ["src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/"],
+  permissions: [
+    "src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/",
+    "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
+  ],
   tools: ["src/core/tools/", "src/impl/broker/"],
   guard_settings: [
     "factory.config.json", "src/core/config.ts", "src/core/settings.ts", "src/config-keys.ts", "src/plugins.ts",

@@ -49,7 +49,7 @@ import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/source/github-issue-source.js";
+import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/github/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
   type BaseContext, type Contexts, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,

@@ -10,7 +10,7 @@ import { type CliAction, type LocalCliDeps, localIdentity, runLocalCli } from ".
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Sessions } from "../src/core/session.js";
 import { Worker } from "../src/core/worker.js";
-import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
