@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
+import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -129,11 +129,18 @@ describe("owner defaults (issue #315)", () => {
       const loaded = await loadConfig(root());
       expect(loaded.prompts.triage).toBe("triage");
     });
+
+    it("fills the forge placeholder with plugins.forge, else local", async () => {
+      const dir = root();
+      writeFileSync(join(dir, "prompts", "implement.md"), "on {{forge}}");
+      const loaded = await loadConfig(dir);
+      expect(loaded.prompts.implement).toBe(`on ${loaded.plugins.forge ?? "local"}`);
+    });
   });
 });
 
 describe.each([
-  ["implement", "PR description"],
+  ["implement", "change description"],
   ["resolve", "resolution summary"],
 ])("prompts/%s.md", (name, what) => {
   const text = prompt(name);
@@ -190,10 +197,27 @@ describe.each(CORE)("prompts/%s.md is project-neutral", (name) => {
   });
 
   it("renders for non-npm checks with no npm, no docs/design.md and no unfilled placeholder", () => {
-    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }), "local");
     expect(out).not.toContain("npm");
     expect(out).not.toContain("docs/design.md");
     expect(out).not.toContain("{{");
+  });
+});
+
+// Where the change lives (issue: prompts say "change", not "pull request"): the forge name, filled at load.
+describe.each(CORE)("prompts/%s.md names the forge", (name) => {
+  const text = prompt(name);
+
+  it("has the forge placeholder", () => {
+    expect(text).toContain(FORGE_PLACEHOLDER);
+  });
+
+  it.each(["github", "local"])("renders with forge %s: the name, no placeholder, no pull request or PR", (forge) => {
+    const out = fillPrompt(text, repo({}), forge);
+    expect(out).toContain(`the ${forge} forge`);
+    expect(out).not.toContain("{{");
+    expect(out).not.toMatch(/pull request/i);
+    expect(out).not.toMatch(/\bPR\b/);
   });
 });
 
@@ -205,7 +229,7 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 
   it("puts each check_commands entry in the text, in order", () => {
-    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }), "local");
     expect(out).toContain("`make check`");
     expect(out).toContain("`make test`");
     expect(out.indexOf("`make check`")).toBeLessThan(out.indexOf("`make test`"));
@@ -213,7 +237,7 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 
   it("falls back to test_command when check_commands is absent", () => {
-    const out = fillPrompt(text, repo({}));
+    const out = fillPrompt(text, repo({}), "local");
     expect(out).toContain("`make unit`");
     expect(out).not.toContain("{{");
   });
@@ -224,7 +248,7 @@ describe("on this repo", () => {
   const config = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as FactoryConfig;
 
   it.each(["implement", "review"])("prompts/%s.md renders with npm run typecheck and npm test", (name) => {
-    const out = fillPrompt(prompt(name), config.repo);
+    const out = fillPrompt(prompt(name), config.repo, "github");
     expect(out).toContain("`npm run typecheck`");
     expect(out).toContain("`npm test`");
   });
