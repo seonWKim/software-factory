@@ -59,7 +59,11 @@ export interface BaseContext {
 export interface Contexts {
   store: BaseContext & { secrets: SecretStore; clock: Clock };
   sandbox: BaseContext;
-  runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore };
+  /**
+   * `broker` and `scanner`: what a runner needs to expose granted broker tools to its agent (`tool_grants`). build()
+   * passes both (the broker is built first); callers that grant nothing (canary, golden) may leave them out.
+   */
+  runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore; broker?: ToolBroker; scanner?: EgressScanner };
   llm: BaseContext & { secrets: SecretStore };
   /** `grants`: the selected grant sources (`permissions.grants`), built before the auth plugin. */
   auth: BaseContext & { github: GitHubClient; store: FactoryStore; grants: readonly GrantSource[] };

@@ -60,6 +60,7 @@ export const TOP_LEVEL_KEYS = [
   "max_coordination_cost",
   "hotspot_paths",
   "hotspot_weight",
+  "tool_grants",
   "defaults",
   "projects",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];

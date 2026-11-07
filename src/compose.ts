@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
@@ -132,6 +132,12 @@ export interface FileConfig {
    * settingsLayers (src/core/settings.ts).
    */
   projects?: unknown;
+  /**
+   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["github.preflight"]}.
+   * Absent: no grants. Checked at startup against the broker's tools (toolGrantsConfig, src/core/config.ts): only
+   * read-only tools the broker lists, only run kinds.
+   */
+  tool_grants?: unknown;
 }
 
 export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -338,8 +344,9 @@ export class Plugins {
   githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
     return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
   }
-  runner(sandbox: Sandbox, secrets: SecretStore) {
-    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets });
+  /** `tools`: the broker and scanner a runner exposes granted tools through; left out where nothing is granted. */
+  runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }) {
+    return createPlugin(this.loaded.registry, "runner", this.loaded.plugins.runner, { ...this.base, sandbox, secrets, ...tools });
   }
   testDatabase(secrets: SecretStore) {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
@@ -372,8 +379,15 @@ export async function build(
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Suggests a command for a plain-language comment; never changes state (design §4).
   const llm = await p.llm(secrets);
-  const runner = await p.runner(sandbox, secrets);
+  // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
+  const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
+  const runner = await p.runner(sandbox, secrets, { broker, scanner });
+  const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
+  if (granted.length > 0 && !runner.exposes_tools) {
+    throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${sel.runner} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
+  }
   const storage = await createPlugin(registry, "storage", sel.storage, base);
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
   // The pre-push checks' database (design §4): its URL reaches only the check commands, never an agent.
@@ -385,7 +399,7 @@ export async function build(
   // project key every write uses, and the label refreshed from GitHub (a renamed repo shows its new path).
   const project = await resolveProject(opts.repoLookup ?? github, base.repo);
   await saveProjectLabel(store, project);
-  const config = resolvedConfig(loaded.config, project);
+  const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
   // controller and the worker pool, refreshed each tick. The file's per-project blocks are keyed by project key.
