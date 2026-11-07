@@ -97,7 +97,7 @@ function inline(line: string, repo: RepoRef): string {
       let s = escapeSlack(part);
       s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, t: string, u: string) => `<${u}|${t}>`);
       s = s.replace(/\*\*([^*]+)\*\*/g, "*$1*");
-      s = s.replace(/(^|[^\w/|])PR #(\d+)\b/g, (_m, pre: string, n: string) => `${pre}<${prUrl(repo, Number(n))}|PR #${n}>`);
+      s = s.replace(/(^|[^\w/|])PR #(\d+)\b/g, (_m, pre: string, n: string) => `${pre}<${prUrl(repo, n)}|PR #${n}>`);
       return s;
     })
     .join("");
@@ -106,7 +106,8 @@ function inline(line: string, repo: RepoRef): string {
   return text;
 }
 
-export function prUrl(repo: RepoRef, n: number): string {
+/** The PR link for PR `n`: a number, or a change_ref (the PR number as text). */
+export function prUrl(repo: RepoRef, n: number | string): string {
   return `https://github.com/${repo.owner}/${repo.name}/pull/${n}`;
 }
 

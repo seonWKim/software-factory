@@ -1,3 +1,4 @@
+import { prNumber } from "../../core/change-ref.js";
 import { type CommandPr, githubCommand, githubCommentKey, syncedCommand } from "../../core/command-inbox.js";
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
@@ -312,7 +313,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     if (parsed.kind === "command" && parsed.name === "verdict") {
       const target = await this.verdictTarget(n);
       if (!target) return null;
-      if (target.kind === "pr") pr = { pr_number: target.pr_number, head_branch: target.head_branch };
+      if (target.kind === "pr") pr = { change_ref: target.change_ref, head_branch: target.head_branch };
     } else if (onPr && parsed.kind === "command" && (parsed.name === "revise" || parsed.name === "resolve")) {
       // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
       pr = parsed.name === "revise" ? await this.pullHead(base, n) : await this.factoryPull(base, n);
@@ -355,17 +356,17 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     if (own) return own.id;
     const id = pr ? workItemIdFromBranch(pr.head_branch, this.branchPrefix) : null;
     const it = id ? await this.store!.getWorkItem(id as WorkItemId) : null;
-    return it && it.pr_number === pr?.pr_number ? it.id : null;
+    return it && it.change_ref === pr?.change_ref ? it.id : null;
   }
 
   /**
    * The PR's number and head branch if it is a factory PR; null for another PR or one that is gone (404), so
    * a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
    */
-  private async factoryPull(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
+  private async factoryPull(base: string, n: number): Promise<CommandPr | null> {
     try {
       const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return p.head.ref.startsWith(this.branchPrefix) ? { pr_number: p.number, head_branch: p.head.ref } : null;
+      return p.head.ref.startsWith(this.branchPrefix) ? { change_ref: String(p.number), head_branch: p.head.ref } : null;
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
@@ -376,10 +377,10 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * The PR's number and head branch, whatever the branch; null for one that is gone (404). Other errors are
    * thrown and the poll is retried.
    */
-  private async pullHead(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
+  private async pullHead(base: string, n: number): Promise<CommandPr | null> {
     try {
       const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return { pr_number: p.number, head_branch: p.head.ref };
+      return { change_ref: String(p.number), head_branch: p.head.ref };
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
@@ -564,7 +565,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * One status label on the issue, or on PR `pr_number` (PRs share the issue labels API): read its labels;
+   * One status label on the issue, or on the PR `change_ref` names (PRs share the issue labels API; the ref is
+   * converted to its number with prNumber, and a ref that is not a PR number throws): read its labels;
    * if the target is missing, create the label if missing and add it; then remove the other seven fixed status
    * names. Nothing more when the labels are already right. Any other label, including one a human made under
    * the same prefix, is left alone. Each step is idempotent.
@@ -573,7 +575,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * and a different one (or none stored) is written under a store claim, so of two replicas only one writes it,
    * then stored. A failed write ends its claim and stores nothing.
    */
-  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+  async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
+    const pr_number = change_ref === null ? null : prNumber({ change_ref });
+    if (change_ref !== null && pr_number === null) throw new Error(`not a GitHub PR number: ${change_ref}`);
     if (!this.store) return this.writeStatus(source, status, pr_number);
     const target = labelTarget(pr_number);
     const token = await this.store.claimLabelWrite(source.id, target, status, LABEL_CLAIM_MS);
@@ -626,7 +630,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     if (!issue.pull_request) return { kind: "issue", source: this.ref(number) };
     const pull = await this.client.request<GhPullHead>("GET", `${base}/pulls/${number}`);
     if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
-    return { kind: "pr", pr_number: number, head_branch: pull.head.ref };
+    return { kind: "pr", change_ref: String(number), head_branch: pull.head.ref };
   }
 
   private ref(number: number): SourceRef {

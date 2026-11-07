@@ -1,6 +1,6 @@
 // The local merge check (design §5 Merge check, issue #248): the controller checks each ready-to-merge factory PR
 // against the newest base in the factory repo's object store, stores one latest result per item, and starts the
-// update run at once on a conflict, keyed as GitHub's pr_unmergeable path is. Real git repos for the git side;
+// update run at once on a conflict, keyed as GitHub's change_unmergeable path is. Real git repos for the git side;
 // a counting sandbox for the call counts.
 
 import { execFileSync } from "node:child_process";
@@ -226,14 +226,14 @@ describe("merge check: caching, throttling and the update run", () => {
     expect(sandbox.calls.updateBase).toBe(2);
   });
 
-  it("a conflict enqueues one update run across repeated refreshes and the later GitHub pr_unmergeable event", async () => {
+  it("a conflict enqueues one update run across repeated refreshes and the later GitHub change_unmergeable event", async () => {
     const { clock, controller, sandbox, store, item } = await counted();
     for (let i = 0; i < 3; i++) {
       await controller.tickMergeCheck();
       clock.advance(config.poll_interval_ms);
     }
     const head = "a".repeat(40);
-    await controller.handleEvent({ kind: "pr_unmergeable", pr_number: PR, head_branch: `factory/${item.id}`, head_sha: head, base_sha: sandbox.base });
+    await controller.handleEvent({ kind: "change_unmergeable", change_ref: String(PR), head_branch: `factory/${item.id}`, head_sha: head, base_sha: sandbox.base });
     const runs = await updates(store, item.id);
     expect(runs.map((r) => r.idempotency_key)).toEqual([`${item.id}:update:${PR}:${head}:${sandbox.base}`]);
   });
@@ -241,7 +241,7 @@ describe("merge check: caching, throttling and the update run", () => {
   it("the GitHub event first, then the local check, still makes one update run", async () => {
     const { controller, sandbox, store, item } = await counted();
     const head = "a".repeat(40);
-    await controller.handleEvent({ kind: "pr_unmergeable", pr_number: PR, head_branch: `factory/${item.id}`, head_sha: head, base_sha: sandbox.base });
+    await controller.handleEvent({ kind: "change_unmergeable", change_ref: String(PR), head_branch: `factory/${item.id}`, head_sha: head, base_sha: sandbox.base });
     await controller.tickMergeCheck();
     expect((await updates(store, item.id)).length).toBe(1);
     expect((await store.getMergeCheck(item.id))?.mergeable).toBe(false);

@@ -37,7 +37,7 @@ describe("controller: status labels", () => {
     const f = await setup();
     const item = await intake(f);
     expect(f.source.statusLabels(item.source)).toEqual(["triaging"]);
-    expect(f.source.statusCalls).toEqual([{ source: issueRef(7), status: "triaging", pr_number: null }]);
+    expect(f.source.statusCalls).toEqual([{ source: issueRef(7), status: "triaging", change_ref: null }]);
 
     // Re-delivery of the same issue creates nothing, so it writes no label.
     await intake(f);
@@ -75,11 +75,11 @@ describe("controller: status labels", () => {
     expect(f.source.statusLabels(item.source)).toEqual(["ready_to_merge"]);
     expect(f.forge.prStatus(42)).toBe("ready_to_merge");
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.controller.tickIntake();
     expect(f.source.statusLabels(item.source)).toEqual(["done"]);
     expect(f.forge.prStatus(42)).toBe("done");
-    expect(f.source.statusCalls.some((c) => c.pr_number !== null)).toBe(false);
+    expect(f.source.statusCalls.some((c) => c.change_ref !== null)).toBe(false);
   });
 
   it("does not write a label for an ack-only transition", async () => {
@@ -151,7 +151,7 @@ describe("controller: start-up status catch-up", () => {
     const labelled = [a, b].map((it) => f.source.statusLabels(it.source));
     // Newest first: b (issue on the source, then PR on the forge), then a. The first call (b's issue) threw
     // before reaching the fake.
-    expect(f.source.statusCalls.slice(0, 1)).toEqual([{ source: issueRef(1), status: "triaging", pr_number: null }]);
+    expect(f.source.statusCalls.slice(0, 1)).toEqual([{ source: issueRef(1), status: "triaging", change_ref: null }]);
     expect(f.forge.statusCalls).toEqual([{ source: issueRef(2), status: "ready_to_merge", pr_number: 5 }]);
     expect(labelled).toEqual([["triaging"], []]);
     expect(f.source.statusCalls.some((x) => x.source.id === issueRef(3).id)).toBe(false);

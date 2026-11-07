@@ -21,9 +21,9 @@ function rebuilt(c: NewCliCommand): string {
   return text === "" ? `/${c.command}` : `/${c.command} ${text}`;
 }
 
-/** The PR a command on a PR's conversation was written on, as the forge poll read it. */
+/** The PR a command on a PR's conversation was written on, as the forge poll read it: `change_ref` is its number as text. */
 export interface CommandPr {
-  pr_number: number;
+  change_ref: string;
   head_branch: string;
 }
 
@@ -79,9 +79,15 @@ function sourceRef(v: unknown): SourceRef | null {
     : null;
 }
 
+/**
+ * `args.pr` of a row: `change_ref` as written now, or the legacy `pr_number` (a number) of a row queued before the
+ * rename (design 02), so a row that waited across the upgrade maps to the same event. The legacy read goes once no
+ * stored row can hold it (see design 02, History).
+ */
 function commandPr(v: unknown): CommandPr | null {
-  const p = v as Partial<CommandPr> | null;
-  return p && typeof p === "object" && Number.isSafeInteger(p.pr_number) && typeof p.head_branch === "string"
-    ? { pr_number: p.pr_number!, head_branch: p.head_branch }
-    : null;
+  const p = v as (Partial<CommandPr> & { pr_number?: unknown }) | null;
+  if (!p || typeof p !== "object" || typeof p.head_branch !== "string") return null;
+  if (typeof p.change_ref === "string" && p.change_ref !== "") return { change_ref: p.change_ref, head_branch: p.head_branch };
+  if (typeof p.pr_number === "number" && Number.isSafeInteger(p.pr_number)) return { change_ref: String(p.pr_number), head_branch: p.head_branch };
+  return null;
 }

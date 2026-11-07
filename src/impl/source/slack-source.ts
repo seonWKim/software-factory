@@ -244,15 +244,15 @@ export class SlackSource implements StreamSource {
   async markSeen(_source: SourceRef, _commentId: string | null): Promise<void> {}
 
   /**
-   * One status message per thread, edited in place; it links the PR once the item has one. A PR's own status
-   * (non-null `pr_number`) lives on GitHub: nothing to do here. Idempotent: the same status twice changes nothing.
+   * One status message per thread, edited in place; it links the PR once the item has one, built from its
+   * `change_ref` (the PR number as text). A PR's own status (non-null `change_ref`) lives on GitHub: nothing to do here. Idempotent: the same status twice changes nothing.
    */
-  async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
-    if (pr_number !== null) return;
+  async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
+    if (change_ref !== null) return;
     const t = this.thread(source);
     const me = await this.identity();
     const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
-    const pr = item?.pr_number ? ` · <${prUrl(this.d.repo, item.pr_number)}|PR #${item.pr_number}>` : "";
+    const pr = item?.change_ref ? ` · <${prUrl(this.d.repo, item.change_ref)}|PR #${item.change_ref}>` : "";
     const text = `Status: *${escapeSlack(STATUS_WORDS[status] ?? status)}*${pr}`;
     const scan = await this.d.scanner.scan("comment", text);
     if (!scan.clean) {
