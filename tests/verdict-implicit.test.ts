@@ -18,8 +18,8 @@ import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
 // Implicit verdicts (design §4, issue #316): a merge, a person's push and a revert of a factory PR each record one
 // verdict, one per PR head, that an explicit `/verdict` on that head replaces. Never pin a step as the newest.
 
-const STEP = 38;
-const STEP_FILE = "0038-implicit-verdicts.sql";
+const STEP = 39;
+const STEP_FILE = "0039-implicit-verdicts.sql";
 
 /** An identity FakeAuth does not resolve. */
 const stranger: ExternalIdentity = { provider: "github", subject: "999", login: "stranger" };
@@ -186,7 +186,7 @@ describe("implicit verdict on a revert", () => {
   });
 });
 
-describe("SQLite migration 38 and MySQL step 38: implicit verdicts", () => {
+describe("SQLite migration 39 and MySQL step 39: implicit verdicts", () => {
   it("SQLite: adds implicit (0 on older rows) and pr_head (NULL) to an existing database's verdicts", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
     const raw = new DatabaseSync(":memory:");
@@ -201,7 +201,7 @@ describe("SQLite migration 38 and MySQL step 38: implicit verdicts", () => {
     await store.close();
   });
 
-  it("MySQL: one ALTER right after step 37 with the same columns as SQLite migration 38, and a wider comment_id", () => {
+  it("MySQL: one ALTER right after step 38 with the same columns as SQLite migration 39, and a wider comment_id", () => {
     expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "implicit-verdicts")).toMatchObject({
       number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
     });

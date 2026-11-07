@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WORK_STATUSES } from "../src/core/status-label.js";
+import type { UserId } from "../src/core/types.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
@@ -707,6 +708,38 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
     const { client, source } = make();
     client.linkError = new GitHubError(500, "boom");
     await expect(source.fileSubIssue(input)).rejects.toThrow("boom");
+  });
+
+  describe("fileIssue: a standalone issue (design §7, filed failure patterns)", () => {
+    const one = { project: "p", requester_id: "system:improver" as UserId, title: "Recurring failure", body: "the runs", marker: "<!-- factory:improve:k:ir_1 -->" };
+
+    it("files the issue without the intake label, its marker in the body, after looking the marker up", async () => {
+      const { client, source } = make();
+      expect(await source.fileIssue(one)).toEqual(issueRef(20));
+      expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+        "GET /repos/o/r/issues?state=all&sort=created&direction=desc&per_page=100&page=1",
+        "POST /repos/o/r/issues",
+      ]);
+      expect(writes(client)[0]!.body).toEqual({ title: "Recurring failure", body: "the runs\n\n<!-- factory:improve:k:ir_1 -->" });
+    });
+
+    it("an issue that already carries the marker (a retry after a failure part way) is returned, nothing filed", async () => {
+      const { client, source } = make();
+      client.responses["/repos/o/r/issues"] = [
+        { id: 9030, number: 30, body: "other", pull_request: {} },
+        { id: 9031, number: 31, body: `the runs\n\n${one.marker}`, pull_request: {} },
+        { id: 9032, number: 32, body: `the runs\n\n${one.marker}` },
+      ];
+      expect(await source.fileIssue(one)).toEqual(issueRef(32));
+      expect(writes(client)).toEqual([]);
+    });
+
+    it("a failed lookup is thrown and nothing is filed", async () => {
+      const { client, source } = make();
+      client.request = async () => { throw new GitHubError(502, "bad gateway"); };
+      await expect(source.fileIssue(one)).rejects.toThrow("bad gateway");
+      expect(writes(client)).toEqual([]);
+    });
   });
 
   it("closes an issue as completed when asked", async () => {

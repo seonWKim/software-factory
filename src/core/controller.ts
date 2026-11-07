@@ -12,7 +12,7 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { alarmStep } from "./alarms.js";
+import { RESTART_WINDOW_MS, alarmStep } from "./alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
@@ -74,7 +74,7 @@ import {
 import { commandEvent, syncedCommand } from "./command-inbox.js";
 import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
 import { isCliCommandKey, localIdentity } from "./local-cli.js";
-import { enqueueImprove, utcDay } from "./improver.js";
+import { enqueueImprove, fileReport, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -957,11 +957,23 @@ export class Controller {
     await this.alarmsStep();
   }
 
-  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  /**
+   * Looks across items for the three alarm patterns; reads only the store and the restart list. This host's
+   * restarts are stored first, one conditional insert each (design 05-restarts, restart history), and counted as
+   * the host lists them. A process with no restart list of its own counts the store's restarts of every host.
+   */
   private async alarmsStep(): Promise<void> {
     const c = this.cfg;
+    const store = this.d.store;
+    const own = this.d.restarts;
+    const restarts = async () => {
+      if (!own) return store.listChildRestartsWithin(RESTART_WINDOW_MS);
+      const list = await own();
+      for (const r of list) await store.recordChildRestart(r);
+      return list;
+    };
     await alarmStep(
-      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      { store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, restarts },
       {
         alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
         alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
@@ -2774,6 +2786,30 @@ export class Controller {
     });
   }
 
+  /**
+   * Files the groups of an improve run's report (design §7) through the first source that can file, in
+   * `plugins.source` order. A comment on a filed item the store holds goes through its thread (and the outbox);
+   * one on an item nobody started yet goes straight to the item's source, once per marker.
+   */
+  private async fileImprove(run: Run): Promise<void> {
+    const report = await this.d.store.getImproveReport(run.id);
+    if (!report) return;
+    const filer = this.sources.find((s) => typeof s.fileIssue === "function");
+    const done = await fileReport({
+      store: this.d.store,
+      scanner: this.d.scanner,
+      clock: this.d.clock,
+      file: filer?.fileIssue ? (input) => filer.fileIssue!(input) : null,
+      comment: async (ref, body, marker) => {
+        const it = await this.d.store.getWorkItemBySource(ref.type, ref.id);
+        if (it) await this.post(it, it.source, body, marker);
+        else await this.postWithoutItem(ref, body, marker);
+      },
+    }, report);
+    const count = (status: string) => done.groups.filter((g) => g.filing?.status === status).length;
+    this.d.log.info("improve report filed", { report_id: report.id, filed: count("filed"), commented: count("commented"), skipped: count("skipped") });
+  }
+
   /** After `sourceId`'s item closed: every item waiting on it is re-checked from the store (no forge call). */
   private async releaseDependents(sourceId: string): Promise<void> {
     for (const e of await this.d.store.listDependencyEdges({ depends_on: sourceId })) {
@@ -2808,6 +2844,8 @@ export class Controller {
   }
 
   private async apply(run: Run): Promise<void> {
+    // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
+    if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.guard("improve filing", () => this.fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
     // adds them to each decision that does not set token_cost itself.
