@@ -304,12 +304,3 @@ export function HealthPage() {
     </Section>
   );
 }
-
-export function SettingsPage() {
-  return (
-    <Empty>
-      Settings are read-only here for now. Change them with <code>npm run factory -- settings set &lt;key&gt; &lt;value&gt;</code>;{" "}
-      <code>settings list</code> shows each value and where it comes from.
-    </Empty>
-  );
-}

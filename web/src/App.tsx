@@ -8,7 +8,8 @@ import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, PAGES, type PageDef, TOOL_PAGES, routeFor } from "./pages.js";
 import { type Theme, saveTheme, storedTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
-import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, SettingsPage, WorkersPage } from "./views/pages.js";
+import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } from "./views/pages.js";
+import { SettingsPage } from "./views/settings.js";
 
 /** "updated Ns ago", ticking each second. */
 function useAgo(at: number): string {

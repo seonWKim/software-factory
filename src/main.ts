@@ -220,7 +220,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       }
     }
     case "ui": {
-      const parts = await buildUiParts(loaded);
+      // An ID, never a display name: the OS login of the local owner, as `factory settings` stores it.
+      const parts = await buildUiParts(loaded, { actor: `local:${userInfo().username}` });
       const ui = await startUi(
         {
           store: parts.store,
@@ -237,10 +238,12 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
+          // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
+          settings: parts.settings,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (read-only; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (Settings is the only write; Ctrl-C to stop)`);
       const signal = stopOnSignals();
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
       await ui.close();
