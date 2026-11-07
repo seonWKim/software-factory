@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, toolGrantsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProjectLabel } from "./core/project-labels.js";
@@ -35,6 +35,7 @@ import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
@@ -528,8 +529,16 @@ export interface UiParts {
   scanner: EgressScanner;
   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
   settings: UiSettings;
+  /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
+  pauses: UiPauses;
   close(): Promise<void>;
 }
+
+/** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
+const NO_FORGE = new Proxy({}, {
+  // Not a thenable: awaiting the client itself must not hang.
+  get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error("the UI process makes no forge call"))),
+}) as unknown as GitHubClient;
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -537,9 +546,10 @@ export interface UiParts {
  * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
- * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory.
+ * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The pause
+ * route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
-export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
+export async function buildUiParts(loaded: Loaded, opts: { actor: string; login: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded);
   const clock = await p.clock();
@@ -555,7 +565,24 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: newCsrfToken(),
   };
-  return { clock, store, scanner, settings, close: () => store.close() };
+  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
+  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  const base = p.base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const cliUser = cliUserConfig(loaded.file);
+  const pauses: UiPauses = {
+    // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.login }))?.user_id ?? cliUser,
+    authorize: async (user_id) => {
+      const project = await settings.resolveProject();
+      if (!project) return { allow: false, reason: "no project is stored yet" };
+      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
+    },
+    csrfToken: settings.csrfToken,
+    log: new ConsoleLogger(clock, "ui"),
+  };
+  return { clock, store, scanner, settings, pauses, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

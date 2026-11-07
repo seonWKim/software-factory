@@ -5,8 +5,9 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The one write route, POST
-// /api/v1/settings, is handled in settings-api.ts behind server.ts's write guards; GET /api/v1/settings is here.
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The write routes, POST
+// /api/v1/settings (settings-api.ts) and POST /api/v1/pauses/resume (pause-api.ts), are handled behind
+// server.ts's write guards; GET /api/v1/settings and GET /api/v1/pauses are here.
 
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
@@ -16,6 +17,7 @@ import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js"
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
+import { type PauseDeps, readPauses } from "./pause-api.js";
 import { readSettings } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
@@ -37,7 +39,7 @@ export function isApiPath(pathname: string): boolean {
 }
 
 /** Answers one GET (or HEAD) under /api/v1. */
-export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
+export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
   const path = url.pathname.slice("/api/v1".length);
   const c = new ApiCtx(d);
   switch (path) {
@@ -59,6 +61,8 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/data/tables":
       return data(await dataTables(c.data()));
+    case "/pauses":
+      return readPauses(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
