@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import type { FactoryConfig } from "./config.js";
+import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
@@ -262,6 +262,7 @@ export const SETTABLE_KEYS = [
   "max_diff_lines",
   "max_diff_files",
   "run_timeout_ms",
+  "first_output_ms",
   "models",
   "model_by",
   "poll_interval_ms",
@@ -293,6 +294,7 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   max_diff_lines: "the next run that starts",
   max_diff_files: "the next run that starts",
   run_timeout_ms: "the next run that starts",
+  first_output_ms: "the next run that starts",
   models: "the next run that starts",
   model_by: "the next run that starts",
   poll_interval_ms: "the next tick",
@@ -312,6 +314,7 @@ export interface SettableValues {
   max_diff_lines: number;
   max_diff_files: number;
   run_timeout_ms: number;
+  first_output_ms: number;
   models: ModelNames;
   model_by: ModelTable;
   poll_interval_ms: number;
@@ -332,6 +335,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   max_diff_lines: BUILT_IN_SETTINGS.max_diff_lines,
   max_diff_files: BUILT_IN_SETTINGS.max_diff_files,
   run_timeout_ms: 2_700_000,
+  first_output_ms: STALL_DEFAULTS.first_output_ms,
   models: { cheap: "haiku", standard: "sonnet", strong: "opus" },
   model_by: DEFAULT_MODEL_BY,
   poll_interval_ms: 30_000,
@@ -609,6 +613,7 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     retry_base_ms: config.retry_base_ms,
     retry_max_ms: config.retry_max_ms,
     run_timeout_ms: config.run_timeout_ms,
+    first_output_ms: config.first_output_ms,
     poll_interval_ms: config.poll_interval_ms,
     tick_ms: config.tick_ms,
     heartbeat_ms: config.heartbeat_ms,
@@ -707,6 +712,7 @@ export class LiveSettings {
       retry_base_ms: v.retry_base_ms,
       retry_max_ms: v.retry_max_ms,
       run_timeout_ms: v.run_timeout_ms,
+      first_output_ms: v.first_output_ms,
       poll_interval_ms: v.poll_interval_ms,
       tick_ms: v.tick_ms,
       heartbeat_ms: v.heartbeat_ms,

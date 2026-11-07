@@ -1,3 +1,4 @@
+import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
@@ -125,10 +126,15 @@ export interface LoadedConfig {
    */
   auth_pause_ms?: number;
   /**
-   * Stall detection (design §5 Restarts): an agent run that prints nothing for this long, with no tool call
-   * open, ends `stalled`. Absent: DEFAULT_STALL_MS (300000).
+   * Stall detection (design §5 Restarts): an agent run whose model produces no output for this long, with no
+   * tool call open, ends `stalled`. Absent: STALL_DEFAULTS.stall_ms (300000).
    */
   stall_ms?: number;
+  /**
+   * First-output limit (design §5 Restarts, issue #215): an agent run whose model produces no output within
+   * this long of the start ends `stalled`. Settable live. Absent: STALL_DEFAULTS.first_output_ms (180000).
+   */
+  first_output_ms?: number;
   /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
   probe_interval_ms?: number;
   lease_ms: number;
@@ -158,10 +164,16 @@ export interface LoadedConfig {
    * factory.config.json, checked at load by `coordinationConfig`. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
+  /**
+   * Path companions (design 04-triage.md, issue #224): `path_companions` from factory.config.json, checked at
+   * load by `pathCompanionsConfig` (src/core/companions.ts). The triage branch adds each `also` path to an
+   * answer's `allowed_paths` when its `files_to_change` names the `when` path. Absent: none.
+   */
+  path_companions?: PathCompanion[];
 }
 
-/** `stall_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
-export const STALL_DEFAULTS = { stall_ms: 300_000, probe_interval_ms: 600_000 } as const;
+/** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
+export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;
 
 /** The coordination keys of factory.config.json (design §5, 2026-11-03). */
 export const COORDINATION_KEYS = ["max_coordination_cost", "hotspot_paths", "hotspot_weight"] as const;

@@ -639,6 +639,24 @@ export interface FactoryStore {
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
+  // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
+  // through the same path as a comment command. Nothing creates them yet but tests.
+
+  /**
+   * Records one request, pending (handled_at and refusal null). Its `seq` is greater than every request recorded
+   * before it. A `key` already stored is a no-op that reports the existing request with `created: false`.
+   */
+  recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }>;
+  /** Requests not yet handled, oldest (lowest seq) first, at most `limit`. Read-only. */
+  listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]>;
+  /**
+   * Marks request `seq` handled now, with `refusal` (null: applied). Conditional: only a pending request changes,
+   * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
+   */
+  markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
+  /** The request with `seq`, or null. Read-only. */
+  getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+
   // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
   // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
   // SQL, and a filter value is always a bound parameter. Callers withhold secret columns themselves.
@@ -721,6 +739,27 @@ export interface CliCommand extends NewCliCommand {
   seq: number;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
+}
+
+export interface NewAppCommandRequest {
+  /** Idempotency key, unique across all requests: a repeat with the same key stores nothing. */
+  key: string;
+  /** The factory user who sent the request, never a display name. */
+  actor: UserId;
+  /** The command's name, e.g. `approve`. Only `approve` is applied; any other gets a refusal. */
+  command: string;
+  /** The command's arguments, stored as JSON: `work_item_id`, and for `approve` an optional `note`. */
+  args: Record<string, unknown>;
+}
+
+export interface AppCommandRequest extends NewAppCommandRequest {
+  seq: number;
+  /** Store clock's now when the request was first recorded. */
+  created_at: Timestamp;
+  /** When the controller handled it (applied or refused); null while pending. */
+  handled_at: Timestamp | null;
+  /** The refusal text posted for it; null when applied or pending. */
+  refusal: string | null;
 }
 
 /** What a WorkerPool reports each tick. */

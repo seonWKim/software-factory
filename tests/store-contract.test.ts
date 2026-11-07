@@ -1705,6 +1705,71 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
+  // App command requests (issue #245, migration 23 on both backends).
+  describe("app command requests (migration 23)", () => {
+    const owner = "github:1" as UserId;
+    const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({
+      key, actor: owner, command: over.command ?? "approve", args: over.args ?? { work_item_id: "wi_1" },
+    });
+
+    it("record stores a pending request; the same key again stores nothing and reports the first", async () => {
+      const { store, clock } = await make();
+      const first = await store.recordAppCommandRequest(req("k1", { args: { work_item_id: "wi_1", note: "small" } }));
+      expect(first).toEqual({
+        created: true,
+        request: {
+          seq: first.request.seq, key: "k1", actor: owner, command: "approve", args: { work_item_id: "wi_1", note: "small" },
+          created_at: clock.now().toISOString(), handled_at: null, refusal: null,
+        },
+      });
+      const again = await store.recordAppCommandRequest(req("k1", { command: "reject" }));
+      expect(again).toEqual({ created: false, request: first.request });
+      expect(await store.listPendingAppCommandRequests(10)).toEqual([first.request]);
+      expect(await store.getAppCommandRequest(first.request.seq)).toEqual(first.request);
+      expect(await store.getAppCommandRequest(first.request.seq + 1000)).toBeNull();
+    });
+
+    it("pending read is oldest first, at most `limit`, and leaves out handled requests", async () => {
+      const { store } = await make();
+      const seqs: number[] = [];
+      for (const k of ["a", "b", "c", "d"]) seqs.push((await store.recordAppCommandRequest(req(k))).request.seq);
+      expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
+      expect((await store.listPendingAppCommandRequests(2)).map((r) => r.key)).toEqual(["a", "b"]);
+      expect(await store.listPendingAppCommandRequests(0)).toEqual([]);
+      await store.markAppCommandRequest(seqs[0]!, null);
+      await store.markAppCommandRequest(seqs[2]!, "no");
+      expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["b", "d"]);
+    });
+
+    it("a conditional mark sets handled_at and the refusal once; a second mark changes nothing", async () => {
+      const { store, clock } = await make();
+      const { request } = await store.recordAppCommandRequest(req("k1"));
+      clock.advance(1000);
+      const markedAt = clock.now().toISOString();
+      expect(await store.markAppCommandRequest(request.seq, "`approve` was not applied: no.")).toBe(true);
+      clock.advance(1000);
+      expect(await store.markAppCommandRequest(request.seq, null)).toBe(false);
+      expect(await store.markAppCommandRequest(request.seq, "other")).toBe(false);
+      expect(await store.getAppCommandRequest(request.seq)).toEqual({
+        ...request, handled_at: markedAt, refusal: "`approve` was not applied: no.",
+      });
+      // An applied request keeps a null refusal; an unknown seq marks nothing.
+      const applied = (await store.recordAppCommandRequest(req("k2"))).request;
+      expect(await store.markAppCommandRequest(applied.seq, null)).toBe(true);
+      expect(await store.getAppCommandRequest(applied.seq)).toMatchObject({ handled_at: clock.now().toISOString(), refusal: null });
+      expect(await store.markAppCommandRequest(applied.seq + 1000, null)).toBe(false);
+    });
+
+    it("two concurrent marks of one request: exactly one wins", async () => {
+      const { store } = await make();
+      const { request } = await store.recordAppCommandRequest(req("k1"));
+      const r = await Promise.all([store.markAppCommandRequest(request.seq, "a"), store.markAppCommandRequest(request.seq, "b")]);
+      expect(r.filter(Boolean)).toHaveLength(1);
+      const stored = (await store.getAppCommandRequest(request.seq))!;
+      expect(stored.refusal).toBe(r[0] ? "a" : "b");
+    });
+  });
+
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
   // 18 on both backends); notes and the last finish live in the run's input.
   describe("interactive sessions", () => {

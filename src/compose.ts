@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
+import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProjectLabel } from "./core/project-labels.js";
 import type { Tier, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
@@ -96,6 +97,8 @@ export interface FileConfig {
   max_diff_files?: number;
   /** Stall detection (design §5 Restarts): ms of silence that ends an agent run `stalled`. Absent: 300000. */
   stall_ms?: number;
+  /** First-output limit (design §5 Restarts): ms with no model output from the start that ends a run `stalled`. Absent: 180000. */
+  first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
   lease_ms: number;
@@ -144,6 +147,11 @@ export interface FileConfig {
    * localhost, 127.0.0.1 or [::1]) and a model name per class. Checked at load; no plugin reads it yet.
    */
   openai_compatible?: OpenAICompatibleConfig;
+  /**
+   * Path companions (design 04-triage.md): a list of `{ when, also }`. When triage's `files_to_change` names
+   * `when`, each `also` path is added to `allowed_paths`. Absent: none. Checked by pathCompanionsConfig.
+   */
+  path_companions?: unknown;
 }
 
 export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -259,6 +267,7 @@ export async function loadConfig(
     ],
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
+    path_companions: pathCompanionsConfig(raw),
   };
   const prompts: Prompts = {
     triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
@@ -379,7 +388,7 @@ export async function build(
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
   const sources = [];
-  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github }));
+  for (const name of selectedSources(sel)) sources.push(await createPlugin(registry, "source", name, { ...base, github, store }));
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -643,12 +652,15 @@ export function retryConfig(
 }
 
 /**
- * `stall_ms` and `probe_interval_ms` (design §5 Restarts) with their defaults (STALL_DEFAULTS): positive
- * integers, or startup fails.
+ * `stall_ms`, `first_output_ms` and `probe_interval_ms` (design §5 Restarts) with their defaults
+ * (STALL_DEFAULTS): positive integers, or startup fails.
  */
-export function stallConfig(file: Pick<FileConfig, "stall_ms" | "probe_interval_ms">): { stall_ms: number; probe_interval_ms: number } {
+export function stallConfig(
+  file: Pick<FileConfig, "stall_ms" | "first_output_ms" | "probe_interval_ms">,
+): { stall_ms: number; first_output_ms: number; probe_interval_ms: number } {
   const r = {
     stall_ms: file.stall_ms === undefined ? STALL_DEFAULTS.stall_ms : file.stall_ms,
+    first_output_ms: file.first_output_ms === undefined ? STALL_DEFAULTS.first_output_ms : file.first_output_ms,
     probe_interval_ms: file.probe_interval_ms === undefined ? STALL_DEFAULTS.probe_interval_ms : file.probe_interval_ms,
   };
   for (const [k, v] of Object.entries(r)) {
