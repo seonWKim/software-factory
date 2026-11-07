@@ -1,7 +1,7 @@
 // The `dev` entry point. Resolves the Updater through the plugin registry. Under `none` it runs controller +
-// worker in this process, as before. Under `git-worktree` it runs them in children forked from built version
-// folders: on a new base commit it starts the new child first, then asks the old one to drain (an IPC message);
-// stop (SIGTERM) goes to every live child.
+// worker in this process, between the updater's start and shutdown (which write the status file). Under
+// `git-worktree` it runs them in children forked from built version folders: on a new base commit it starts
+// the new child first, then asks the old one to drain (an IPC message); stop (SIGTERM) goes to every live child.
 
 import { type ChildProcess, fork } from "node:child_process";
 import { type Loaded, Plugins } from "./compose.js";
@@ -42,7 +42,12 @@ export async function supervise(d: SuperviseDeps): Promise<number> {
   const stop = new AbortController();
   for (const sig of ["SIGINT", "SIGTERM"] as const) d.signals.once(sig, () => stop.abort());
   if (d.updater.mode === "in-place") {
-    await d.inPlace(stop.signal);
+    await d.updater.start();
+    try {
+      await d.inPlace(stop.signal);
+    } finally {
+      await d.updater.shutdown();
+    }
     return 0;
   }
   const stopping: { done?: Promise<void> } = {};

@@ -4,6 +4,7 @@ import { incompleteLabel } from "../../core/pr-body.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import { type FactoryStore, labelTarget } from "../../interfaces/factory-store.js";
 import type {
   ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
@@ -193,6 +194,19 @@ const CHECK_PAGES = 3;
 /** Check-run conclusions that do not fail the gate. */
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 
+/** How long a label write's claim holds before another replica may take it over (design §5, GitHub call budget). */
+const LABEL_CLAIM_MS = 60_000;
+/** Pages of an issue's thread read to find a marker the store has no record of. */
+const THREAD_PAGES = 10;
+/** Backoff of a failing comment post: 1 s after the first failure, doubling, at most 5 min. */
+const COMMENT_BACKOFF_BASE_MS = 1_000;
+const COMMENT_BACKOFF_MAX_MS = 5 * 60_000;
+
+/** The wait after failed post number `attempts` (1-based) before the next try. */
+export function commentBackoffMs(attempts: number): number {
+  return Math.min(COMMENT_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), COMMENT_BACKOFF_MAX_MS);
+}
+
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
@@ -207,6 +221,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
     private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
+    /**
+     * Where posted comments and written labels are recorded, shared by every replica (design §5, GitHub call
+     * budget). Without one (the forge's own source) every post reads the thread and every status reads the labels.
+     */
+    private readonly store: FactoryStore | null = null,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {
@@ -529,9 +548,38 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     return events;
   }
 
+  /**
+   * Posts once per marker. A marker the store has a record of costs no call: its stored URL is returned, whatever
+   * the body (the comment is not edited). Otherwise the thread is read once for the marker (a post from before the
+   * store kept records, or one whose record write failed), the comment is posted if it is not there, and its ID,
+   * URL and body hash are stored. A failed post is counted in the store and the next try waits its backoff
+   * (commentBackoffMs): until then this throws without a call, on any replica.
+   */
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
-    const { url } = await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
-    return { url };
+    const stored = await this.store?.getPostedComment(source.id, marker, body);
+    if (stored?.comment_id) return { url: stored.url };
+    if (stored?.waiting) {
+      throw new Error(`comment post waits until ${stored.next_attempt_at} after ${stored.attempts} failed attempts`);
+    }
+    try {
+      const comment = await this.findOrPost(source, body, marker);
+      const url = comment?.html_url ?? null;
+      if (comment?.id !== undefined) {
+        await this.store?.recordPostedComment({ source_id: source.id, marker, comment_id: String(comment.id), url, body });
+      }
+      return { url };
+    } catch (err) {
+      const attempts = (stored?.attempts ?? 0) + 1;
+      await this.store?.recordCommentFailure(source.id, marker, attempts, commentBackoffMs(attempts));
+      throw err;
+    }
+  }
+
+  /** The thread's comment carrying `marker`, else a new one with it. */
+  private async findOrPost(source: SourceRef, body: string, marker: string): Promise<{ id: number; html_url?: string } | undefined> {
+    const path = `/repos/${this.repo.owner}/${this.repo.name}/issues/${issueNumberFromSourceId(source.id)}/comments`;
+    return (await this.client.list<{ id: number; body?: string; html_url?: string }>(path, THREAD_PAGES)).find((c) => c.body?.includes(marker))
+      ?? await this.client.request<{ id: number; html_url?: string } | undefined>("POST", path, { body: `${body}\n\n${marker}` });
   }
 
   /** Closes the issue as "not planned" (or `reason`). GitHub accepts the same PATCH on an issue that is already closed. */
@@ -646,8 +694,26 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * if the target is missing, create the label if missing and add it; then remove the other seven fixed status
    * names. Nothing more when the labels are already right. Any other label, including one a human made under
    * the same prefix, is left alone. Each step is idempotent.
+   *
+   * With a store, the label state stored for the item and target decides first: the same status makes no call,
+   * and a different one (or none stored) is written under a store claim, so of two replicas only one writes it,
+   * then stored. A failed write ends its claim and stores nothing.
    */
   async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    if (!this.store) return this.writeStatus(source, status, pr_number);
+    const target = labelTarget(pr_number);
+    const token = await this.store.claimLabelWrite(source.id, target, status, LABEL_CLAIM_MS);
+    if (token === null) return;
+    try {
+      await this.writeStatus(source, status, pr_number);
+    } catch (err) {
+      await this.store.releaseLabelClaim(source.id, target, token);
+      throw err;
+    }
+    await this.store.recordLabelState(source.id, target, status, token);
+  }
+
+  private async writeStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     const repo = `/repos/${this.repo.owner}/${this.repo.name}`;
     const n = pr_number ?? issueNumberFromSourceId(source.id);
     const all = statusLabels(this.statusPrefix);

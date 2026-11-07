@@ -50,6 +50,15 @@ Rules, checked by `loadConfig` at startup (and again by `build()`):
 
 To switch back to the defaults, set the key back to the default name above, or delete the whole `plugins` object. There is no loading from external packages: a plugin is a descriptor file in this repository.
 
+## Which config file, and where state lives
+
+Since 2026-11-07 (issue #336):
+
+- **Config path.** Every command takes `--config <path>` (or `--config=<path>`, before or after the command); `FACTORY_CONFIG` does the same, and the flag wins when both are set. `src/main.ts` parses it once at startup and makes a relative path absolute against the cwd; that absolute path is what the process loads and what the `git-worktree` supervisor passes to each child and each `migrate` call (as `FACTORY_CONFIG`). Neither set: the checked-in `factory.config.json` under the code root (the version folder under `git-worktree`, else the cwd), as before. A missing, unreadable or invalid file stops startup with an error naming the path. `factory doctor` prints one line naming the file in use. Prompts always come from the code root.
+- **State location.** With an external config, `state_dir` and `worktrees_dir` resolve from the config file's folder. Without one they resolve from the cwd, as before. `repo.path` resolves from the cwd in both cases.
+- **Reviewed keys.** Solo (`store.type` `sqlite`): an external config may set any key. On a shared store (`mysql`, the enterprise case) `dials`, `floors` (also `defaults.floors`), `plugins`, `permissions` and `auth` come only from the checked-in file under the code root, the one a reviewed PR changes; the external file's values for them are ignored.
+- **Not supported:** loading config from a URL or a package, or from any other env var; several projects in one process. The secret file stays at `~/.config/software-factory/.env`.
+
 ## The discovered registry
 
 Since 2026-11-01:
@@ -67,6 +76,8 @@ Since 2026-11-01:
 ## History
 
 - **Checked-in `CapabilitySearch`** (changed 2026-11-07, issue #337). Before, the checked-in config selected `list-all`; now it selects `bm25`. `list-all` stays the registry default when the key is left out.
+
+- **Config path and state location** (changed 2026-11-07, issue #336). Before: `loadConfig` read `factory.config.json` only from the code root, so under `git-worktree` a local edit was ignored, and there was no flag; `state_dir` and `worktrees_dir` always resolved from the cwd.
 
 - **Optional kinds** (changed 2026-11-07, issue #272). Before, every non-guard `plugins` kind needed a `default: true` plugin and every kind had a name in the selection; now an optional kind (`forge`) has no default and may be left unselected.
 
