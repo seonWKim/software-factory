@@ -11,7 +11,17 @@ export interface TriageOutput {
   problem: string;
   done_criteria: string[];
   desired_output: string;
+  /**
+   * What is in and out of scope as one text: the stored `scope`. From `in_scope` and `out_of_scope` when triage
+   * returned them (issue #229), else an older output's own `scope` field.
+   */
   scope: string;
+  /** In-scope items, one per entry. Absent on an older output, which has only `scope`. */
+  in_scope?: string[];
+  /** Out-of-scope items, one per entry. Absent on an older output. */
+  out_of_scope?: string[];
+  /** Decisions the human must make before approving: risky choices, open questions (at most 5 shown). */
+  decisions?: string[];
   allowed_paths: string[];
   /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
   files_to_change: string[];
@@ -80,19 +90,30 @@ const tierSchema = { type: "integer", minimum: 1, maximum: 5 };
 const strings = { type: "array", items: { type: "string" } };
 const count = { type: "integer", minimum: 0 };
 
+/** The most "Decisions for you" lines a spec shows (issue #229). */
+export const MAX_DECISIONS = 5;
+
+/** The stored `scope` text for separate in-scope and out-of-scope lists. */
+export function scopeText(inScope: readonly string[], outOfScope: readonly string[]): string {
+  const list = (xs: readonly string[]) => (xs.length > 0 ? xs.map((x) => `- ${x}`) : ["- (none)"]);
+  return ["In scope:", ...list(inScope), "", "Out of scope:", ...list(outOfScope)].join("\n");
+}
+
 export const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
-    "in_short", "problem", "done_criteria", "desired_output", "scope", "allowed_paths", "files_to_change", "tier", "tier_reason",
-    "estimated_lines", "estimated_files",
+    "in_short", "problem", "decisions", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
+    "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files",
   ],
   properties: {
     in_short: { type: "string" },
     problem: { type: "string" },
     done_criteria: { ...strings, minItems: 1 },
+    decisions: { ...strings, maxItems: MAX_DECISIONS },
     desired_output: { type: "string" },
-    scope: { type: "string" },
+    in_scope: strings,
+    out_of_scope: strings,
     allowed_paths: { ...strings, minItems: 1 },
     files_to_change: strings,
     tier: tierSchema,
@@ -213,9 +234,18 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
     estimated_files,
   } = v;
-  if (!isStr(in_short) || !isStr(problem) || !isStr(desired_output) || !isStr(scope) || !isStr(tier_reason)) {
+  if (!isStr(in_short) || !isStr(problem) || !isStr(desired_output) || !isStr(tier_reason)) {
     return { ok: false, error: "missing text field" };
   }
+  // Separate lists (issue #229) when both are given; an older output's `scope` text otherwise.
+  const lists = v.in_scope !== undefined || v.out_of_scope !== undefined;
+  if (lists && (!isStrs(v.in_scope) || !isStrs(v.out_of_scope))) return { ok: false, error: "in_scope/out_of_scope" };
+  if (!lists && !isStr(scope)) return { ok: false, error: "missing text field" };
+  const scoped = lists
+    ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
+    : { scope: scope as string };
+  const decisions = v.decisions ?? [];
+  if (!isStrs(decisions)) return { ok: false, error: "decisions" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
     return { ok: false, error: "allowed_paths" };
@@ -236,8 +266,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   return {
     ok: true,
     value: {
-      in_short, problem, done_criteria, desired_output, scope, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, ...(phases.value ? { phases: phases.value } : {}),
+      in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
+      estimated_files, ...(decisions.length > 0 ? { decisions } : {}), ...(phases.value ? { phases: phases.value } : {}),
     },
   };
 }

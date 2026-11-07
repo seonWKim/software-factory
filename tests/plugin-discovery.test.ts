@@ -41,9 +41,9 @@ const failure = (p: Promise<unknown>): Promise<string | null> =>
   );
 
 describe("plugin discovery: finding descriptor files", () => {
-  it("the source tree holds 23 *.plugin.ts descriptors, sorted by path, and no other file", () => {
+  it("the source tree holds 24 *.plugin.ts descriptors, sorted by path, and no other file", () => {
     const files = findPluginFiles([IMPL_DIR]);
-    expect(files.length).toBe(23);
+    expect(files.length).toBe(24);
     expect(files).toEqual([...files].sort());
     for (const f of files) expect(f).toMatch(/\.plugin\.ts$/);
     for (const f of files) expect(relative(IMPL_DIR, f).startsWith("..")).toBe(false);

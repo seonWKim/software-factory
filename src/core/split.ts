@@ -66,6 +66,12 @@ export function phaseMarker(parent: WorkItemId, index: number): string {
 /** Any phase marker. Intake leaves an issue carrying one to the split that filed it. */
 export const PHASE_MARKER = /<!-- factory:phase:[^\s>]+:\d+ -->/;
 
+/** `#163` for `owner/repo#163`: GitHub links it in the same repo. Any other id stays as it is. */
+function issueRef(ref: SourceRef): string {
+  const i = ref.id.lastIndexOf("#");
+  return i >= 0 ? ref.id.slice(i) : ref.id;
+}
+
 /** The text of a phase's sub-issue (the source appends the marker). The phase becomes an ordinary work item. */
 export function phaseIssueBody(p: {
   parent: SourceRef;
@@ -75,12 +81,14 @@ export function phaseIssueBody(p: {
   depends_on: SourceRef | null;
 }): string {
   const wait = p.depends_on
-    ? `This phase waits for ${p.depends_on.id} (${p.depends_on.link}). The factory holds it until that phase is closed as completed.`
-    : "This is the first phase, so it starts at once.";
+    ? `It waits for ${issueRef(p.depends_on)}: the factory holds it until that phase is closed as completed.`
+    : "It is the first phase, so it starts at once.";
   return [
-    `Phase ${p.index} of ${p.total} of ${p.parent.id} (${p.parent.link}), filed by the factory when the split spec was approved.`,
+    "## In short",
     "",
-    wait,
+    `Phase ${p.index} of ${p.total}. ${firstSentence(p.phase.problem)}`,
+    "",
+    `Part of ${issueRef(p.parent)}, filed by the factory when the split spec was approved. ${wait}`,
     "",
     "### Problem",
     p.phase.problem,
@@ -93,9 +101,16 @@ export function phaseIssueBody(p: {
   ].join("\n");
 }
 
-/** The issue title of a phase. */
+/** The first sentence of `text` (up to its first ". " or line break), or the whole first line. */
+function firstSentence(text: string): string {
+  const line = text.trim().split("\n")[0] ?? "";
+  const end = line.search(/\.\s/);
+  return end >= 0 ? line.slice(0, end + 1) : line;
+}
+
+/** The issue title of a phase. A "Phase N:" (or "Phase N/M:") the model already wrote is dropped, so it never repeats. */
 export function phaseTitle(index: number, total: number, title: string): string {
-  return `Phase ${index}/${total}: ${title}`;
+  return `Phase ${index}/${total}: ${title.replace(/^\s*phase\s+\d+(?:\s*\/\s*\d+)?\s*[:.\-–]\s*/i, "")}`;
 }
 
 /**

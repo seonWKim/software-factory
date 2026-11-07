@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseTriage, TRIAGE_SCHEMA, type TriageOutput } from "../src/core/outputs.js";
-import { renderSpec } from "../src/core/spec-comment.js";
+import { parseTriage, scopeText, TRIAGE_SCHEMA, type TriageOutput } from "../src/core/outputs.js";
+import { renderSpec, repeatsDone } from "../src/core/spec-comment.js";
 
 const IN_SHORT =
   "AS-IS: a pull request can change any file and nothing stops it.\nTO-BE: CI fails when a pull request changes a file outside its scope.";
@@ -20,9 +20,20 @@ const spec: TriageOutput = {
   estimated_files: 2,
 };
 
-const HEADINGS = ["### In short (AS-IS → TO-BE)", "### What changes", "### Done when", "### Not included", "### Files", "### Risk"];
+const HEADINGS = [
+  "### In short (AS-IS → TO-BE)", "### Problem", "### Decisions for you", "### Done when", "### In scope", "### Out of scope", "### Files", "### Risk",
+];
 const FOOTER =
   "Reply `/approve` to start implementation, `/reject <reason>` to close, or `/revise <feedback>` to get a new spec.";
+
+/** A triage answer in the current shape: separate scope lists and decisions. */
+const listed: TriageOutput = {
+  ...spec,
+  in_scope: ["The CI check."],
+  out_of_scope: ["The review agent."],
+  scope: scopeText(["The CI check."], ["The review agent."]),
+  decisions: ["Fail the job, or only warn, on a docs-only change?"],
+};
 
 function lines(body: string): string[] {
   return body.split("\n");
@@ -38,52 +49,57 @@ describe("renderSpec", () => {
     expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT}\n`);
   });
 
-  it("no longer opens with the first sentences of the problem", () => {
-    const body = renderSpec(spec, 2);
-    const firstHeading = lines(body).slice(1).findIndex((x) => x.startsWith("### "));
-    expect(firstHeading).toBeGreaterThanOrEqual(0);
-    expect(lines(body).slice(1, firstHeading + 1).join("\n")).not.toContain("Pull requests can touch files");
-    expect(body.indexOf("Pull requests can touch files")).toBeGreaterThan(body.indexOf("### Not included"));
-  });
-
-  it("puts the sections in order and the footer last", () => {
-    const body = renderSpec(spec, 2);
-    const at = HEADINGS.map((h) => lines(body).indexOf(h));
-    expect(at.every((i) => i > 0)).toBe(true);
-    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  it("puts Problem second and Decisions for you third, the sections in order and the footer last", () => {
+    const body = renderSpec(listed, 3, { floor: 3, previous: null });
+    const headings = lines(body).filter((x) => x.startsWith("### "));
+    expect(headings).toEqual(HEADINGS);
     expect(lines(body).at(-1)).toBe(FOOTER);
   });
 
   it("fills each section from the spec", () => {
-    const body = renderSpec(spec, 2);
-    expect(body).toContain("### What changes\nA workflow file and a short note in the docs.");
+    const body = renderSpec(listed, 2);
+    expect(body).toContain(`### Problem\n${spec.problem}`);
+    expect(body).toContain("### Decisions for you\n- Fail the job, or only warn, on a docs-only change?");
     expect(body).toContain(
       "### Done when\n- A CI job fails when a file is outside the allowed paths.\n- The job runs on every pull request.",
     );
-    expect(body).toContain("### Not included\nOnly the CI check. Not the review agent.");
+    expect(body).toContain("### In scope\n- The CI check.");
+    expect(body).toContain("### Out of scope\n- The review agent.");
     expect(body).toContain("- `.github/workflows/`\n- `docs/ci.md`");
     expect(body).toContain("`.github/workflows/scope.yml`");
     expect(body).toContain("### Risk\nTier 2: A small CI change.");
+    expect(body).not.toContain("Not included");
   });
 
-  it("omits Please check when the tier was not raised", () => {
-    expect(renderSpec(spec, 2)).not.toContain("Please check");
-    expect(renderSpec(spec, 2, { floor: 2, previous: null })).not.toContain("Please check");
+  it("renders an older output's single scope text under Scope", () => {
+    const body = renderSpec(spec, 2);
+    expect(body).toContain("### Scope\nOnly the CI check. Not the review agent.");
+    expect(body).not.toContain("### Out of scope");
   });
 
-  it("shows Please check after the In short section when a floor raised the tier", () => {
-    const body = renderSpec(spec, 4, { floor: 4, previous: null });
-    const l = lines(body);
-    const check = l.indexOf("### Please check");
-    const inShort = l.indexOf("### In short (AS-IS → TO-BE)");
-    expect(l.slice(1).find((x) => x.trim() !== "")).toBe("### In short (AS-IS → TO-BE)");
-    expect(inShort).toBeGreaterThan(0);
-    expect(check).toBeGreaterThan(inShort);
-    expect(check).toBeLessThan(l.indexOf("### What changes"));
-    expect(l.slice(inShort + 1, check).filter((x) => x.trim() !== "")).toEqual(IN_SHORT.split("\n"));
-    expect(body).toContain("- Tier raised from 2 to 4 because a path is under a floor.");
-    expect(body).toContain("### Risk\nTier 4: A small CI change.");
-    expect(l.at(-1)).toBe(FOOTER);
+  it("shows at most 10 done criteria; the rest go in a collapsed block", () => {
+    const done = Array.from({ length: 13 }, (_, i) => `Criterion ${i + 1} holds.`);
+    const body = renderSpec({ ...spec, done_criteria: done }, 2);
+    const section = body.slice(body.indexOf("### Done when"), body.indexOf("### Scope"));
+    const visible = section.slice(0, section.indexOf("<details>"));
+    expect(visible.match(/^- /gm)).toHaveLength(10);
+    expect(section).toContain("<details><summary>3 more done criteria</summary>");
+    expect(section).toContain("- Criterion 13 holds.");
+    expect(renderSpec(spec, 2)).not.toContain("more done criteria");
+  });
+
+  it("shows at most 5 decision lines, the tier raise first", () => {
+    const decisions = Array.from({ length: 6 }, (_, i) => `Question ${i + 1}?`);
+    const body = renderSpec({ ...listed, decisions }, 4, { floor: 4, previous: null });
+    const section = body.slice(body.indexOf("### Decisions for you"), body.indexOf("### Done when"));
+    expect(section).toContain("### Decisions for you\n- Tier raised from 2 to 4 because a path is under a floor.\n- Question 1?");
+    expect(section.slice(0, section.indexOf("<details>")).match(/^- /gm)).toHaveLength(5);
+    expect(section).toContain("<details><summary>2 more</summary>");
+  });
+
+  it("omits Decisions for you when the tier was not raised and triage named none", () => {
+    expect(renderSpec(spec, 2)).not.toContain("Decisions for you");
+    expect(renderSpec(spec, 2, { floor: 2, previous: null })).not.toContain("Decisions for you");
   });
 
   it("names a previous tier as the reason when no floor applies", () => {
@@ -92,17 +108,53 @@ describe("renderSpec", () => {
     );
   });
 
-  it("keeps the problem in a Problem section after Not included", () => {
+  it("drops What changes when it repeats the done list, and folds it otherwise", () => {
+    const repeat = { ...spec, desired_output: "A CI job that fails on a file outside the allowed paths, on every pull request." };
+    expect(renderSpec(repeat, 2)).not.toContain("What the PR contains");
     const body = renderSpec(spec, 2);
-    expect(body).toContain(`### Problem\n${spec.problem}`);
-    expect(lines(body).indexOf("### Problem")).toBeGreaterThan(lines(body).indexOf("### Not included"));
-    expect(lines(body).indexOf("### Problem")).toBeLessThan(lines(body).indexOf("### Files"));
+    expect(body).toContain("<details><summary>What the PR contains</summary>\n\nA workflow file and a short note in the docs.");
+    expect(body).not.toContain("### What changes");
+    expect(repeatsDone("", spec.done_criteria)).toBe(true);
   });
 
   it("handles an empty files_to_change", () => {
     const body = renderSpec({ ...spec, files_to_change: [] }, 2);
     expect(body).not.toContain("Expected to change:");
     expect(lines(body).at(-1)).toBe(FOOTER);
+  });
+});
+
+describe("triage scope lists and decisions", () => {
+  const { scope: _s, ...noScope } = spec;
+  const current = { ...noScope, in_scope: ["The CI check."], out_of_scope: ["The review agent."], decisions: [] };
+
+  it("the schema asks for in_scope, out_of_scope and decisions, not scope", () => {
+    expect(TRIAGE_SCHEMA.required).toEqual(expect.arrayContaining(["in_scope", "out_of_scope", "decisions"]));
+    expect(TRIAGE_SCHEMA.required).not.toContain("scope");
+    expect(TRIAGE_SCHEMA.properties).not.toHaveProperty("scope");
+  });
+
+  it("the validator keeps both lists and derives the stored scope text from them", () => {
+    const r = parseTriage(current);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.in_scope).toEqual(["The CI check."]);
+    expect(r.value.out_of_scope).toEqual(["The review agent."]);
+    expect(r.value.scope).toBe("In scope:\n- The CI check.\n\nOut of scope:\n- The review agent.");
+    expect(r.value.decisions).toBeUndefined();
+  });
+
+  it("still reads an older output with only scope", () => {
+    const r = parseTriage(spec);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.scope).toBe(spec.scope);
+  });
+
+  it("rejects one list without the other, or bad decisions", () => {
+    const { out_of_scope: _o, ...half } = current;
+    expect(parseTriage(half).ok).toBe(false);
+    expect(parseTriage({ ...current, decisions: "x" }).ok).toBe(false);
+    expect(parseTriage({ ...current, decisions: ["Ship behind a flag?"] })).toMatchObject({ ok: true, value: { decisions: ["Ship behind a flag?"] } });
   });
 });
 

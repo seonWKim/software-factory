@@ -150,7 +150,7 @@ describe("one issue to one merged PR", () => {
     expect(f.source.comments[0]!.body).toContain(
       "### Files\nAllowed to change:\n- `.github/workflows/`\n\nExpected to change:\n- `.github/workflows/scope.yml`",
     );
-    expect(f.source.comments[0]!.body).not.toContain("Please check");
+    expect(f.source.comments[0]!.body).not.toContain("Decisions for you");
 
     // An unauthorized approval is ignored.
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "101", approver: mallory });
@@ -249,7 +249,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "item_requested", source: issueRef(2), requester: alice, title: "t", body: "b" });
     await f.step();
     expect(f.source.comments[0]!.body).toContain(
-      "### Please check\n- Tier raised from 1 to 4 because a path is under a floor.",
+      "### Decisions for you\n- Tier raised from 1 to 4 because a path is under a floor.",
     );
     f.source.queue.push({ kind: "spec_approved", source: issueRef(2), comment_id: "103", approver: alice });
     await f.step();
@@ -537,7 +537,7 @@ describe("one issue to one merged PR", () => {
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
   });
 
-  it("the PR title is `factory: <issue title>`, full length, not cut from the spec", async () => {
+  it("the PR title is the issue title, full length, with no prefix, not cut from the spec", async () => {
     const runner = new FakeRunner({
       triage: () => ({ output: { ...triageSpec, problem: "Add a CI scope gate. It should fail fast." } }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
@@ -551,7 +551,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: issueRef(15), comment_id: "115", approver: alice });
     await f.step();
     const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
-    expect(pr.title).toBe(`factory: ${title}`);
+    expect(pr.title).toBe(title);
   });
 
   it("an item with no stored title (from before titles) keeps the old PR title rule", async () => {
@@ -570,7 +570,7 @@ describe("one issue to one merged PR", () => {
     });
     await f.step();
     const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
-    expect(pr.title).toBe(`factory: ${problem.split("\n")[0]!.slice(0, 80)}`);
+    expect(pr.title).toBe(problem.split("\n")[0]!.slice(0, 80));
   });
 });
 

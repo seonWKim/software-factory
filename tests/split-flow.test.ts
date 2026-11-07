@@ -88,8 +88,9 @@ describe("split spec flow", () => {
     expect(subs.map((s) => s.title)).toEqual(["Phase 1/3: Part 1", "Phase 2/3: Part 2", "Phase 3/3: Part 3"]);
     expect(subs.every((s) => s.linked && s.parent.id === issueRef(70).id)).toBe(true);
     expect(subs.map((s) => s.marker)).toEqual([1, 2, 3].map((n) => phaseMarker(parent.id, n)));
-    expect(subs[1]!.body).toContain(subs[0]!.ref.id);
-    expect(subs[2]!.body).toContain(subs[1]!.ref.id);
+    const num = (id: string) => id.slice(id.lastIndexOf("#"));
+    expect(subs[1]!.body).toContain(`waits for ${num(subs[0]!.ref.id)}:`);
+    expect(subs[2]!.body).toContain(`waits for ${num(subs[1]!.ref.id)}:`);
     expect(subs[0]!.body).toContain("Problem of part 1");
 
     // The first phase starts at once (triage queued); the later ones are held with no run.
@@ -144,7 +145,7 @@ describe("split spec flow", () => {
     const i = f.source.closed.findIndex((s) => s.id === issueRef(70).id);
     expect(i).toBeGreaterThanOrEqual(0);
     expect(f.source.closeReasons[i]).toBe("completed");
-    expect(f.source.comments.some((c) => c.source.id === issueRef(70).id && c.body.includes("All 3 phases"))).toBe(true);
+    expect(f.source.comments.some((c) => c.source.id === issueRef(70).id && c.body.includes("Closed because all 3 phases"))).toBe(true);
   });
 
   it("a small estimate gives a normal spec and /approve files no sub-issues", async () => {

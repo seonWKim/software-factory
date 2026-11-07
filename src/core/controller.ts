@@ -66,6 +66,7 @@ import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
   type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
 } from "./types.js";
+import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -918,7 +919,8 @@ export class Controller {
     if (e.kind === "spec_rejected") {
       input = {
         ...common,
-        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
+        // Like a spec reject, the comment and the issue close follow (finishReject), so the close says why.
+        patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING },
         reason: "budget_rejected",
         answer: "rejected",
         granted_budget: null,
@@ -1459,7 +1461,7 @@ export class Controller {
     const adapter = this.adapterFor(it.source, "closeIssue");
     if (!adapter) return;
     await this.comment(it, `split-done:${it.id}`,
-      `All ${ids.length} phases of this split were closed as completed, so the factory closed this issue as completed.`);
+      `Closed because all ${ids.length} phases of this split were closed as completed.`);
     await adapter.closeIssue(it.source, "completed");
     await this.decide(id, (cur) =>
       splitOpen(cur)
@@ -1519,10 +1521,14 @@ export class Controller {
     // No adapter for the item's source: it stays pending (its state is kept) until one is configured.
     const source = this.adapterFor(it.source, "closeIssue");
     if (!source) return;
-    const reason = it.spec_feedback?.trim() ?? "";
-    const body = reason
-      ? ["The spec was rejected, so the factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
-      : "The spec was rejected with no reason given, so the factory closed this issue as not planned.";
+    const budget = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === "spec_rejected" || c.reason === "budget_rejected").at(-1)
+      ?.reason === "budget_rejected";
+    const reason = budget ? "" : (it.spec_feedback?.trim() ?? "");
+    const body = budget
+      ? "Closed because the work was stopped at its token budget checkpoint (`/reject`). The factory closed this issue as not planned."
+      : reason
+        ? ["Closed because the spec was rejected. The factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
+        : "Closed because the spec was rejected (no reason given). The factory closed this issue as not planned.";
     await this.comment(it, `rejected:${it.id}`, body);
     await source.closeIssue(it.source);
     await this.decide(id, (cur) =>
@@ -2467,13 +2473,19 @@ export class Controller {
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.settings(it.project).max_attempts}), so the factory stopped retrying it.`
       : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
-    const tail = (out?.output_tail || out?.detail || "").trim();
+    const tail = stripAnsi(out?.output_tail || out?.detail || "").trim();
+    const first = firstErrorLine(tail);
+    const tests = failingTests(tail);
     const body = [
       what,
       "",
-      `Last error: \`${code}\`: ${describeFailure(code)}.${out?.detail ? ` ${out.detail}` : ""}`,
+      `Last error: \`${code}\`: ${describeFailure(code)}.${out?.detail ? ` ${stripAnsi(out.detail)}` : ""}`,
       "",
-      ...(tail ? ["Output tail of the last run:", "", fenced(tail), ""] : ["The last run left no output.", ""]),
+      ...(first ? ["First error line:", "", fenced(first), ""] : []),
+      ...(tests.length ? ["Failing tests:", "", ...tests.map((t) => `- \`${t.replace(/`/g, "'")}\``), ""] : []),
+      ...(tail
+        ? ["<details><summary>Output tail of the last run</summary>", "", fenced(tail), "", "</details>", ""]
+        : ["The last run left no output.", ""]),
       "Comment `/retry` to run it again.",
       "",
       footer,
@@ -2896,6 +2908,7 @@ const FAILURES: Record<string, string> = {
   // The implement run's code (design §4, 2026-11-03): a task failure, retried up to max_attempts. Not the
   // CHECKS_FAILED blocked reason above, which is a failed PR check after review (design §5 CI gate).
   checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
+  toolchain_missing: "a check before push could not start its tools (a module under node_modules or a tool binary is missing); an infrastructure failure, retried without spending an attempt",
   test_database_failed: "the run's test database for the checks could not be created",
   unresolved_conflicts: "conflicts were left unresolved",
   head_moved: "the install or test command moved HEAD off the commit the gates checked",

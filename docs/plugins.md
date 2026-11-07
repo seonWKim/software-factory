@@ -21,7 +21,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | ToolBroker (guard) | `github` | [tool-broker.md](plugins/tool-broker.md) |
 | Sandbox | `noop` | [sandbox.md](plugins/sandbox.md) |
 | AgentRunner | `claude-code` | [agent-runner.md](plugins/agent-runner.md) |
-| LLMProvider | `claude-cli` | [llm-provider.md](plugins/llm-provider.md) |
+| LLMProvider | `claude-cli`, `openai-compatible` | [llm-provider.md](plugins/llm-provider.md) |
 | SourceAdapter | `github-issues` | [source-adapter.md](plugins/source-adapter.md) |
 | SharedStorage | `fs` | [shared-storage.md](plugins/shared-storage.md) |
 | CapabilitySearch | `list-all`, `bm25` | [capability-search.md](plugins/capability-search.md) |
