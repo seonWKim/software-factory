@@ -117,6 +117,10 @@ Applied live: `max_attempts`, `max_loops`, `max_restart`, `retry_base_ms`, `retr
 
 Not applied live: every other key, which changes only by a PR to `factory.config.json` and a restart (`plugins`, `repo`, `store`, `floors`, `dials`, `auth`, the guards and secrets are refused outright). The update run's own timeout in the updater keeps the file value until the next restart. On MySQL, run `npm run migrate` first (step 0015 adds the settings tables).
 
+### Gate hooks (`agent_stop_checks`)
+
+Implement runs on the `claude-code` runner get two Claude Code hooks (design `04-pre-push-gates.md`): one refuses an Edit or Write outside the item's `allowed_paths`, and one sends the agent back when it tries to stop with no commits, a diff over the size limits or a failing check. `agent_stop_checks` in `factory.config.json` is how many times per run the stop hook may send it back (default 3; a value that is not a positive integer fails at startup). It is not settable live: change it by PR and restart. The hooks are advisory: the worker's gates still decide. The hook folder is `<state_dir>/agents/claude-config/gate-hooks/<run id>/` while the step runs and holds no secret value.
+
 ## Why agents can't read it
 
 The factory follows one rule: **agents never read secrets; only tools do.** The full design is in [`architecture.md` §5](architecture.md#5-secret-isolation). In short:

@@ -104,8 +104,6 @@ export interface GateHooksOptions {
   sandbox: Sandbox;
   /** The egress scanner a failing check's output tail goes through. Absent: every tail is withheld. */
   scanner?: EgressScanner;
-  /** The node binary the hook runs with. Absent: this process's. */
-  node?: string;
 }
 
 export interface RunningGateHooks {
@@ -137,7 +135,7 @@ export interface GateAnswerer {
  * gates in their order, cheapest first (commits, size, then the check list), while the run's cap allows. Anything
  * that throws allows: the worker's gates decide.
  */
-export async function gateAnswerer(o: Omit<GateHooksOptions, "node">, signal: AbortSignal): Promise<GateAnswerer> {
+export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Promise<GateAnswerer> {
   const g = o.spec.gate_hooks;
   const workdir = o.spec.sandbox.workdir;
   const workdirs = [workdir, await realpath(workdir).catch(() => workdir)];
@@ -226,7 +224,7 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
     await rm(o.dir, { recursive: true, force: true });
     throw err;
   }
-  const command = (event: string) => [o.node ?? process.execPath, script, event].map(shellQuote).join(" ");
+  const command = (event: string) => [process.execPath, script, event].map(shellQuote).join(" ");
   return {
     settings: {
       PreToolUse: [{ matcher: PATH_TOOLS.join("|"), hooks: [{ type: "command", command: command("pre_tool_use"), timeout: PRE_TOOL_TIMEOUT_S }] }],
