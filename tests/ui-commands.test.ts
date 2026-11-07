@@ -8,8 +8,8 @@ import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
-// App command requests (issue #245): a request row in the store is a new entry point to the comment command
-// path. Each controller tick reads pending requests and applies `approve` with the same permission check and
+// App command requests (issues #245, #282): a request row in the store is a new entry point to the comment command
+// path. It lands in the command inbox too; each controller tick reads the inbox and applies `approve` with the same permission check and
 // transition as a `/approve` comment; anything else is refused with one reply, keyed on the request.
 
 /** FakeAuth lets github:1 (alice) approve, nobody else. */
@@ -36,13 +36,19 @@ async function harness() {
   const request = async (key: string, actorId: UserId, command: string, args: Record<string, unknown>): Promise<AppCommandRequest> =>
     (await store.recordAppCommandRequest({ key, actor: actorId, command, args })).request;
   const marker = (r: AppCommandRequest) => `<!-- factory:refused:app-${r.seq} -->`;
+  /** The seqs of `rs` not yet handled, in the order given. */
+  const pending = async (...rs: AppCommandRequest[]): Promise<number[]> => {
+    const out: number[] = [];
+    for (const r of rs) if ((await store.getAppCommandRequest(r.seq))!.handled_at === null) out.push(r.seq);
+    return out;
+  };
   /** What an item's history and runs look like, minus ids and times. */
   const shape = async (it: WorkItem) => ({
     item: await store.getWorkItem(it.id).then((x) => ({ stage: x!.stage, blocked_on: x!.blocked_on, blocked_reason: x!.blocked_reason })),
     changes: (await store.listStateChanges(it.id)).slice(2).map((c) => ({ reason: c.reason, actor: c.actor, changes: c.changes })),
     runs: (await store.listRuns(it.id)).map((r) => ({ kind: r.kind, status: r.status })),
   });
-  return { store, clock, source, controller, itemIn, request, marker, shape };
+  return { store, clock, source, controller, itemIn, request, marker, pending, shape };
 }
 
 describe("app command requests: approve", () => {
@@ -52,7 +58,7 @@ describe("app command requests: approve", () => {
     const byComment = await h.itemIn(SPEC_PENDING, 2);
     const r = await h.request("k1", WRITER, "approve", { work_item_id: byApp.id });
 
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     await h.controller.handleEvent({ kind: "spec_approved", source: issueRef(2), comment_id: "c2", approver: alice });
 
     const app = await h.shape(byApp);
@@ -66,7 +72,6 @@ describe("app command requests: approve", () => {
     const [appRun] = await h.store.listRuns(byApp.id);
     expect(appRun!.idempotency_key).toContain(byApp.id);
     expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ handled_at: h.clock.now().toISOString(), refusal: null });
-    expect(await h.store.listPendingAppCommandRequests(10)).toEqual([]);
     expect(h.source.comments.filter((c) => c.marker === h.marker(r))).toEqual([]);
   });
 
@@ -74,7 +79,7 @@ describe("app command requests: approve", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     await h.request("k1", WRITER, "approve", { work_item_id: it1.id, note: "  keep it small  " });
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     const approval = (await h.store.listStateChanges(it1.id)).find((c) => c.reason === "spec_approved");
     expect(approval?.detail).toMatchObject({ note: "keep it small" });
   });
@@ -83,11 +88,11 @@ describe("app command requests: approve", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const r = await h.request("k1", WRITER, "approve", { work_item_id: it1.id });
-    await h.controller.tickAppCommands();
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
     // The same key recorded again is the same request.
     await h.request("k1", WRITER, "approve", { work_item_id: it1.id });
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     const s = await h.shape(it1);
     expect(s.changes.map((c) => c.reason)).toEqual(["spec_approved"]);
     expect(s.runs).toHaveLength(1);
@@ -108,16 +113,16 @@ describe("app command requests: approve", () => {
       }
       return mark(seq, refusal);
     };
-    await h.controller.tickAppCommands();
-    expect((await h.store.listPendingAppCommandRequests(10)).map((x) => x.seq)).toEqual([r.seq]);
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
+    expect(await h.pending(r)).toEqual([r.seq]);
+    await h.controller.tickCommands();
 
     const s = await h.shape(it1);
     expect(s.changes.map((c) => c.reason)).toEqual(["spec_approved"]);
     expect(s.runs).toHaveLength(1);
     expect(h.source.comments).toEqual([]);
     expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ refusal: null });
-    expect(await h.store.listPendingAppCommandRequests(10)).toEqual([]);
+    expect(await h.pending(r)).toEqual([]);
   });
 
   it("approve on an item not waiting for approval gets the same refusal text the /approve comment gets", async () => {
@@ -125,7 +130,7 @@ describe("app command requests: approve", () => {
     const byApp = await h.itemIn(IMPLEMENTING, 1);
     const byComment = await h.itemIn(IMPLEMENTING, 2);
     const r = await h.request("k1", WRITER, "approve", { work_item_id: byApp.id });
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     await h.controller.handleEvent({ kind: "spec_approved", source: issueRef(2), comment_id: "c2", approver: alice });
 
     const fromApp = h.source.comments.filter((c) => c.marker === h.marker(r));
@@ -146,8 +151,8 @@ describe("app command requests: refusals", () => {
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const runsBefore = await h.store.listRuns(it1.id);
     const r = await h.request("k1", READER, "approve", { work_item_id: it1.id });
-    await h.controller.tickAppCommands();
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
 
     expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
     expect(await h.store.listRuns(it1.id)).toEqual(runsBefore);
@@ -162,8 +167,8 @@ describe("app command requests: refusals", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const r = await h.request("k1", WRITER, "reject", { work_item_id: it1.id, reason: "no" });
-    await h.controller.tickAppCommands();
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
 
     expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
     expect(await h.store.listRuns(it1.id)).toEqual([]);
@@ -178,7 +183,7 @@ describe("app command requests: refusals", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const r = await h.request("k1", WRITER, "@everyone <b>", { work_item_id: it1.id });
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` is applied from an app request."]);
   });
@@ -187,14 +192,14 @@ describe("app command requests: refusals", () => {
     const h = await harness();
     const missing = await h.request("k1", WRITER, "approve", { work_item_id: "wi_nope" });
     const none = await h.request("k2", WRITER, "approve", {});
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     expect((await h.store.getAppCommandRequest(missing.seq))!.refusal).toBe("`/approve` was not applied: the work item was not found.");
     expect((await h.store.getAppCommandRequest(none.seq))!.refusal).toBe("`/approve` was not applied: the request names no work item.");
     expect(h.source.comments).toEqual([]);
-    expect(await h.store.listPendingAppCommandRequests(10)).toEqual([]);
+    expect(await h.pending(missing, none)).toEqual([]);
   });
 
-  it("a refusal whose reply fails to post stays pending; the next tick posts it once and stores it", async () => {
+  it("a refusal is written to the thread and stored on the row at once; a failed post is retried by the outbox, once", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const r = await h.request("k1", READER, "approve", { work_item_id: it1.id });
@@ -207,15 +212,17 @@ describe("app command requests: refusals", () => {
       }
       return real(...args);
     };
-    await h.controller.tickAppCommands();
-    expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ handled_at: null, refusal: null });
-    await h.controller.tickAppCommands();
-    await h.controller.tickAppCommands();
-    expect(h.source.comments.filter((c) => c.marker === h.marker(r))).toHaveLength(1);
+    await h.controller.tickCommands();
     expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
+    expect((await h.store.listItemMessages(it1.id)).map((m) => m.marker)).toContain(h.marker(r));
+    expect(h.source.comments).toEqual([]);
+    h.clock.advance(config.retry_max_ms);
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+    expect(h.source.comments.filter((c) => c.marker === h.marker(r))).toHaveLength(1);
   });
 
-  it("requests are applied oldest first; one failing request does not stop the others", async () => {
+  it("requests are applied oldest first; a failing request holds the ones after it until the next tick", async () => {
     const h = await harness();
     const a = await h.itemIn(SPEC_PENDING, 1);
     const b = await h.itemIn(SPEC_PENDING, 2);
@@ -226,12 +233,13 @@ describe("app command requests: refusals", () => {
       if (id === a.id) throw new Error("boom");
       return get(id);
     };
-    await h.controller.tickAppCommands();
-    expect((await h.store.listPendingAppCommandRequests(10)).map((x) => x.seq)).toEqual([ra.seq]);
-    expect((await h.store.getAppCommandRequest(rb.seq))!.handled_at).not.toBeNull();
+    await h.controller.tickCommands();
+    expect(await h.pending(ra, rb)).toEqual([ra.seq, rb.seq]);
     h.store.getWorkItem = get;
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     expect((await h.store.getWorkItem(a.id))!.stage).toBe("RUNNING");
+    expect((await h.store.getWorkItem(b.id))!.stage).toBe("RUNNING");
+    expect(await h.pending(ra, rb)).toEqual([]);
   });
 });
 
@@ -279,7 +287,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     expect((await post(page(h, WRITER), it1, { command: "approve", note: "keep it small" })).status).toBe(202);
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     const s = await h.shape(it1);
     expect(s.item).toEqual({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
     expect(s.changes).toEqual([expect.objectContaining({ reason: "spec_approved", actor: { kind: "user", id: WRITER } })]);
@@ -292,7 +300,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     expect((await post(page(h, READER), it1, { command: "approve" })).status).toBe(202);
     expect((await post(page(h, WRITER), it1, { command: "reject", note: "no" })).status).toBe(202);
-    await h.controller.tickAppCommands();
+    await h.controller.tickCommands();
     expect((await h.store.getWorkItem(it1.id))!.blocked_reason).toBe("spec_pending");
     const r = await respond(page(h, WRITER), { method: "GET", url: `/api/v1/items/${encodeURIComponent(it1.id)}`, host: HOST });
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;

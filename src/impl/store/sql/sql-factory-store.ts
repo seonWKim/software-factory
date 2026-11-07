@@ -18,6 +18,7 @@ import type {
   RunKind,
   RunOutcome,
   RunStatus,
+  SourceRef,
   SourceType,
   Stage,
   StateChange,
@@ -92,6 +93,8 @@ import type {
   RecordPrHeadInput,
   RecordPrHeadResult,
   RecordVerdictInput,
+  ThreadDelivery,
+  ThreadLinkField,
   RecordVerdictResult,
   LocalRole,
   LocalUser,
@@ -1802,13 +1805,90 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectItemMessage(tx, input.work_item_id, input.marker);
       if (existing) return { created: false, message: existing };
+      const now = this.now();
       const created = await this.insertOnce(
         tx,
         "INSERT INTO item_thread (work_item_id, marker, body, created_at) VALUES (?, ?, ?, ?)",
-        [input.work_item_id, input.marker, input.body, this.now()],
+        [input.work_item_id, input.marker, input.body, now],
       );
-      return { created, message: (await this.selectItemMessage(tx, input.work_item_id, input.marker))! };
+      const message = (await this.selectItemMessage(tx, input.work_item_id, input.marker))!;
+      const d = input.delivery;
+      if (created && d) {
+        await tx.run(
+          `INSERT INTO thread_outbox (thread_seq, work_item_id, source_type, target, link_field, attempts, next_attempt_at, claim_token,
+             created_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?)`,
+          [message.seq, input.work_item_id, d.source_type, JSON.stringify(d.target), d.link_field ?? null, now, now],
+        );
+      }
+      return { created, message };
     });
+  }
+
+  // The thread outbox (issue #282). Claims are fenced by a token that only a claim bumps, like run leases.
+
+  async listPendingDeliveries(source_types: readonly SourceType[], limit: number): Promise<ThreadDelivery[]> {
+    if (source_types.length === 0) return [];
+    const now = this.now();
+    const rows = await this.db.all(
+      `${DELIVERY_SELECT} WHERE o.delivered_at IS NULL AND o.source_type IN (${placeholders(source_types.length)})
+         AND o.next_attempt_at <= ? AND (o.claimed_until IS NULL OR o.claimed_until <= ?)
+       ORDER BY o.seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+      [...source_types, now, now],
+    );
+    return rows.map(rowToDelivery);
+  }
+
+  async listDeliveries(work_item_id: WorkItemId): Promise<ThreadDelivery[]> {
+    const rows = await this.db.all(`${DELIVERY_SELECT} WHERE o.work_item_id = ? ORDER BY o.seq`, [work_item_id]);
+    return rows.map(rowToDelivery);
+  }
+
+  async claimDelivery(seq: number, lease_ms: number): Promise<number | null> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const until = new Date(this.clock.now().getTime() + Math.max(0, lease_ms)).toISOString();
+      const n = await tx.run(
+        `UPDATE thread_outbox SET claim_token = claim_token + 1, claimed_until = ?
+         WHERE seq = ? AND delivered_at IS NULL AND (claimed_until IS NULL OR claimed_until <= ?)`,
+        [until, seq, now],
+      );
+      if (n === 0) return null;
+      const [row] = await tx.all("SELECT claim_token FROM thread_outbox WHERE seq = ?", [seq]);
+      return Number(row!.claim_token);
+    });
+  }
+
+  async finishDelivery(seq: number, token: number, url: string | null): Promise<boolean> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const n = await tx.run(
+        `UPDATE thread_outbox SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
+         WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
+        [now, url, seq, token],
+      );
+      if (n === 0) return false;
+      const [row] = await tx.all("SELECT work_item_id, link_field FROM thread_outbox WHERE seq = ?", [seq]);
+      const field = row!.link_field as string | null;
+      if (url !== null && (field === "spec_comment_url" || field === "failure_comment_url")) {
+        // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
+        await tx.run(
+          `UPDATE work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
+             SELECT 1 FROM thread_outbox n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
+          [url, row!.work_item_id as string, row!.work_item_id as string, field, seq],
+        );
+      }
+      return true;
+    });
+  }
+
+  async failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
+    const next = new Date(this.clock.now().getTime() + Math.max(0, retry_in_ms)).toISOString();
+    const n = await this.db.run(
+      `UPDATE thread_outbox SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, claimed_until = NULL
+       WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
+      [error.slice(0, 1000), next, seq, token],
+    );
+    return n > 0;
   }
 
   async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
@@ -1842,20 +1922,23 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectAppCommandRequest(tx, input.key);
       if (existing) return { created: false, request: existing };
+      const now = this.now();
       const created = await this.insertOnce(
         tx,
         "INSERT INTO app_command_requests (request_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+        [input.key, input.actor, input.command, JSON.stringify(input.args), now],
       );
-      return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
+      const request = (await this.selectAppCommandRequest(tx, input.key))!;
+      // The controller reads every command from the inbox (issue #282): the request goes there too, by its seq.
+      if (created) {
+        await this.insertOnce(
+          tx,
+          "INSERT INTO command_inbox (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
+          [`app:${request.seq}`, input.actor, input.command, JSON.stringify({ app_request: request.seq }), now],
+        );
+      }
+      return { created, request };
     });
-  }
-
-  async listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]> {
-    const rows = await this.db.all(
-      `SELECT * FROM app_command_requests WHERE handled_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-    );
-    return rows.map(rowToAppCommandRequest);
   }
 
   async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
@@ -2206,6 +2289,28 @@ function rowToItemMessage(row: Row): ItemMessage {
     work_item_id: row.work_item_id as WorkItemId,
     marker: row.marker as string,
     body: row.body as string,
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+const DELIVERY_SELECT =
+  "SELECT o.*, t.marker AS thread_marker, t.body AS thread_body FROM thread_outbox o JOIN item_thread t ON t.seq = o.thread_seq";
+
+function rowToDelivery(row: Row): ThreadDelivery {
+  return {
+    seq: Number(row.seq),
+    thread_seq: Number(row.thread_seq),
+    work_item_id: row.work_item_id as WorkItemId,
+    source_type: row.source_type as SourceType,
+    target: JSON.parse(row.target as string) as SourceRef,
+    link_field: (row.link_field as ThreadLinkField | null) ?? null,
+    marker: row.thread_marker as string,
+    body: row.thread_body as string,
+    attempts: Number(row.attempts),
+    next_attempt_at: row.next_attempt_at as Timestamp,
+    delivered_at: (row.delivered_at as Timestamp | null) ?? null,
+    url: (row.url as string | null) ?? null,
+    last_error: (row.last_error as string | null) ?? null,
     created_at: row.created_at as Timestamp,
   };
 }

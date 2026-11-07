@@ -707,8 +707,8 @@ export interface FactoryStore {
   /** The stored label states of the given source ids, in no set order. Read-only. */
   listLabelStates(source_ids: readonly string[]): Promise<LabelState[]>;
 
-  // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
-  // of commands the CLI sends. Store only: nothing calls these yet.
+  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an
+  // item, and the commands the CLI and the app send, which the controller reads by seq.
 
   /**
    * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
@@ -725,6 +725,34 @@ export interface FactoryStore {
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
+  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an
+  // entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
+  // source once, retrying with backoff. Delivery never changes the item's stage, blocked fields or version.
+
+  /**
+   * The undelivered outbox rows of the given source types whose retry time has come and that no live claim
+   * holds, oldest first, at most `limit`. Rows of any other source type stay pending. Read-only.
+   */
+  listPendingDeliveries(source_types: readonly SourceType[], limit: number): Promise<ThreadDelivery[]>;
+  /** Every outbox row of `work_item_id`, delivered or not, oldest first. Read-only. */
+  listDeliveries(work_item_id: WorkItemId): Promise<ThreadDelivery[]>;
+  /**
+   * Claims outbox row `seq` for `lease_ms`, so only one replica posts it. Conditional: only an undelivered row
+   * with no live claim. Returns the claim token, or null when the row is delivered or claimed by another.
+   */
+  claimDelivery(seq: number, lease_ms: number): Promise<number | null>;
+  /**
+   * Marks row `seq` delivered with the comment's `url`, under claim `token`. When the row names a link field and
+   * no newer row of the item names the same field, the item's field is set to `url` (no version change, no
+   * state change). Returns false, changing nothing, when the token is no longer the row's live claim.
+   */
+  finishDelivery(seq: number, token: number, url: string | null): Promise<boolean>;
+  /**
+   * Records a failed delivery of row `seq` under claim `token`: one more attempt, the error, the claim released
+   * and the next try `retry_in_ms` from now. Returns false, changing nothing, when the token is not the claim.
+   */
+  failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
+
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
 
@@ -733,8 +761,6 @@ export interface FactoryStore {
    * before it. A `key` already stored is a no-op that reports the existing request with `created: false`.
    */
   recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }>;
-  /** Requests not yet handled, oldest (lowest seq) first, at most `limit`. Read-only. */
-  listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]>;
   /**
    * Marks request `seq` handled now, with `refusal` (null: applied). Conditional: only a pending request changes,
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
@@ -845,6 +871,44 @@ export interface NewItemMessage {
   /** Unique within the item; a repeat with the same marker stores nothing. */
   marker: string;
   body: string;
+  /**
+   * Present: the entry also gets one outbox row in the same transaction (only when the entry is new), so the
+   * controller's outbox step delivers it to that source. Absent or null: the thread is the only copy.
+   */
+  delivery?: NewThreadDelivery | null;
+}
+
+/** The item fields an outbox delivery fills with the delivered comment's URL. */
+export type ThreadLinkField = "spec_comment_url" | "failure_comment_url";
+
+/** Where a thread entry is delivered: one source, one target on it. */
+export interface NewThreadDelivery {
+  /** The adapter type that delivers it: always the item's own source type. */
+  source_type: SourceType;
+  /** What the adapter posts on: the item's source, or (same type) its PR. */
+  target: SourceRef;
+  /** The item field the delivered URL fills, if any. */
+  link_field?: ThreadLinkField | null;
+}
+
+export interface ThreadDelivery {
+  seq: number;
+  thread_seq: number;
+  work_item_id: WorkItemId;
+  source_type: SourceType;
+  target: SourceRef;
+  link_field: ThreadLinkField | null;
+  /** The thread entry's marker and body, as posted. */
+  marker: string;
+  body: string;
+  /** Failed deliveries so far. */
+  attempts: number;
+  /** When the next try may run. */
+  next_attempt_at: Timestamp;
+  delivered_at: Timestamp | null;
+  url: string | null;
+  last_error: string | null;
+  created_at: Timestamp;
 }
 
 export interface ItemMessage extends NewItemMessage {

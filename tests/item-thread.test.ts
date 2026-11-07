@@ -227,6 +227,7 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0024 on MySQL", () => {
     const items = [(await store.createWorkItem(localItem(1), system)).item.id, (await store.createWorkItem(localItem(2), system)).item.id];
     // Back to state 23: no new tables, rows in the old ones.
     const q = mysqlExec(c);
+    await c.query("DROP TABLE thread_outbox"); // step 0029 references item_thread, so it goes first
     for (const t of NEW_TABLES) await c.query(`DROP TABLE ${t}`);
     await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [STEP - 1]);
     await seedOldTables(q, items);

@@ -16,7 +16,9 @@ function controllerOn(store: FactoryStore, clock: FakeClock) {
   const github = new FakeGitHubClient();
   github.commentError = new Error("GitHub POST comment → 502");
   const source = new GitHubIssueSource(github, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  // The outbox's own backoff (retry_base_ms) set to the tick, so the source's stored schedule is what is measured.
+  const outbox = { ...config, retry_base_ms: 500, retry_max_ms: 500 };
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: outbox, log: silent, scanner: cleanScanner });
   return { github, controller };
 }
 
@@ -34,7 +36,7 @@ async function setup() {
 async function tickUntil(c: ReturnType<typeof controllerOn>, clock: FakeClock, start: number, until: number, seen: number[]) {
   while (clock.now().getTime() - start <= until) {
     const before = c.github.calls.filter((x) => x === POST).length;
-    await c.controller.tickAppCommands();
+    await c.controller.tickCommands();
     if (c.github.calls.filter((x) => x === POST).length > before) seen.push(clock.now().getTime() - start);
     clock.advance(500);
   }

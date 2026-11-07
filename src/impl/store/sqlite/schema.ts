@@ -513,4 +513,33 @@ export const MIGRATIONS: readonly string[] = [
   CREATE INDEX IF NOT EXISTS host_sleeps_woke ON host_sleeps (woke_at);
   CREATE INDEX IF NOT EXISTS host_sleeps_run ON host_sleeps (run_id);
   `,
+  // 29: the thread outbox (issue #282, design 05-sources "Thread first"). One row per thread entry that a source
+  // must get: its source type, the target (JSON SourceRef), the item field its URL fills, the attempts, the next
+  // try, a claim (token and expiry) so one replica posts it, and the delivery. Pending app command requests are
+  // copied into `command_inbox` (key `app:<seq>`, args {"app_request": seq}), where the controller now
+  // reads them. IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the version is set back below 29.
+  `
+  CREATE TABLE IF NOT EXISTS thread_outbox (
+    seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_seq       INTEGER NOT NULL UNIQUE REFERENCES item_thread(seq),
+    work_item_id     TEXT NOT NULL REFERENCES work_items(id),
+    source_type      TEXT NOT NULL,
+    target           TEXT NOT NULL,
+    link_field       TEXT,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL,
+    claim_token      INTEGER NOT NULL DEFAULT 0,
+    claimed_until    TEXT,
+    delivered_at     TEXT,
+    url              TEXT,
+    last_error       TEXT,
+    created_at       TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS thread_outbox_pending ON thread_outbox (delivered_at, source_type, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS thread_outbox_item ON thread_outbox (work_item_id, seq);
+  INSERT INTO command_inbox (command_key, actor, command, args, created_at)
+  SELECT 'app:' || r.seq, r.actor, r.command, json_object('app_request', r.seq), r.created_at FROM app_command_requests r
+  WHERE r.handled_at IS NULL AND NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.command_key = 'app:' || r.seq)
+  ORDER BY r.seq;
+  `,
 ];

@@ -660,8 +660,12 @@ describe("ui api: item commands POST (issue #227)", () => {
     });
   }
 
+  async function appRequestRows(store: FactoryStore): Promise<number | undefined> {
+    return (await store.listTables()).find((t) => t.name === "app_command_requests")?.rows;
+  }
+
   async function nothingWritten(store: FactoryStore) {
-    expect(await store.listPendingAppCommandRequests(1000)).toEqual([]);
+    expect(await appRequestRows(store)).toBe(0);
   }
 
   async function refused(r: UiResponse, status: number, what: string) {
@@ -677,9 +681,8 @@ describe("ui api: item commands POST (issue #227)", () => {
     const got = JSON.parse(r.body) as { request_id: string; seq: number };
     expect(typeof got.request_id).toBe("string");
     expect(got.request_id).not.toBe("");
-    const rows = await store.listPendingAppCommandRequests(1000);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
+    expect(await appRequestRows(store)).toBe(1);
+    expect(await store.getAppCommandRequest(got.seq)).toMatchObject({
       key: got.request_id, seq: got.seq, actor: ACTOR, command: "approve", args: { work_item_id: items.approve.id, note: "keep it small" },
     });
     // localhost with its own origin is accepted too; a note is optional on approve.

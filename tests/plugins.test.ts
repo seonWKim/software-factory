@@ -563,8 +563,13 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
     expect(s.source).toBe("github-issues");
   });
 
-  it("an empty list fails, naming plugins.source", () => {
-    expect(failure([])).toMatch(/plugins\.source/);
+  it("an empty list selects no source (issue #282); an empty runner or llm list still fails, naming its key", () => {
+    expect(failure([])).toBeNull();
+    expect(selectedSources(select([]))).toEqual([]);
+    const other = (key: "runner" | "llm") => () =>
+      selectPlugins(registry, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), [key]: [] } }, { platform: "linux" });
+    expect(other("runner")).toThrow(/plugins\.runner is an empty list/);
+    expect(other("llm")).toThrow(/plugins\.llm is an empty list/);
   });
 
   it("an unknown name in the list fails, naming plugins.source and the name", () => {
@@ -586,7 +591,11 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
 
   it("loadConfig reports the same failures at startup", async () => {
     const cfg = (source: unknown) => root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), source } });
-    await expect(loadConfig(cfg([]), { registry })).rejects.toThrow(/plugins\.source/);
+    // No source at all starts (issue #282); an empty runner or llm chain does not.
+    expect(selectedSources((await loadConfig(cfg([]), { registry })).plugins)).toEqual([]);
+    const chain = (key: "runner" | "llm") => root({ ...REAL, store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), [key]: [] } });
+    await expect(loadConfig(chain("runner"), { registry })).rejects.toThrow(/plugins\.runner/);
+    await expect(loadConfig(chain("llm"), { registry })).rejects.toThrow(/plugins\.llm/);
     await expect(loadConfig(cfg(["github-issues", "github-issues"]), { registry })).rejects.toThrow(/plugins\.source/);
     await expect(loadConfig(cfg(["github-issues", "nope"]), { registry })).rejects.toThrow(/plugins\.source/);
   });

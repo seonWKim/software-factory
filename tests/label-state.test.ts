@@ -165,7 +165,7 @@ describe("solo setup", () => {
     await controller.catchUpStatus();
     // A refused app request posts its reply through the local source.
     await store.recordAppCommandRequest({ key: "k1", actor: "local:someone" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
-    await controller.tickAppCommands();
+    await controller.tickCommands();
     expect(await store.listItemMessages(item.id)).toHaveLength(1);
     for (const table of ["posted_comments", "label_states"]) {
       expect((await store.listTableRows({ table }))?.total, table).toBe(0);

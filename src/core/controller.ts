@@ -61,6 +61,7 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { commandEvent } from "./command-inbox.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -81,7 +82,9 @@ import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
+import type {
+  AppCommandRequest, CliCommand, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, ThreadDelivery, ThreadLinkField, TransitionInput,
+} from "../interfaces/factory-store.js";
 import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
@@ -248,8 +251,15 @@ const EDGES_REFRESH_MS = 30 * 60_000;
 const DEPENDENCY_STATE_REFRESH_MS = 10 * 60_000;
 /** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
-/** Pending app command requests read per tick (design §4, app requests). */
-const APP_COMMAND_BATCH = 20;
+/** Commands read from the command inbox per tick (issue #282). */
+const COMMAND_BATCH = 100;
+/** The command inbox's cursor, and the `local` source's cursor it starts from (issue #282). */
+const COMMANDS_CURSOR = "commands";
+const LEGACY_LOCAL_CURSOR = "intake:local";
+/** Outbox rows delivered per tick at most (issue #282). */
+const OUTBOX_BATCH = 50;
+/** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
+const LOCAL_TYPE: SourceType = "local";
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 /** A command name safe to quote in a reply: anything else is called "the command". */
@@ -268,8 +278,8 @@ const PR_SOURCE_TYPE: SourceType = "github_issue";
  */
 function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
   if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
+  // None is allowed (issue #282): items and commands live in the store, and messages wait in the outbox.
   const sources = d.sources ?? (d.source ? [d.source] : []);
-  if (sources.length === 0) throw new Error("plugins.source selects no SourceAdapter: list at least one source");
   const seen = new Set<SourceType>();
   for (const s of sources) {
     if (seen.has(s.type)) {
@@ -354,11 +364,13 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
-      // App requests are a store read, so every tick, like an inbox.
-      await this.guard("app commands", () => this.appCommandsStep());
+      // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
+      await this.guard("commands", () => this.commandsStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
+      // Last, so the messages this tick wrote go out in it.
+      await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
     await listening;
@@ -382,6 +394,24 @@ export class Controller {
   async tickIntake(): Promise<void> {
     await this.live.refresh();
     await this.intake(true);
+    await this.commandsStep();
+    await this.outboxStep();
+  }
+
+  /**
+   * One outbox step (issue #282): every pending thread entry of a configured source type is delivered to its
+   * target source once. The only caller of a source's postComment.
+   */
+  async tickOutbox(): Promise<void> {
+    await this.live.refresh();
+    await this.outboxStep();
+  }
+
+  /** One command inbox step: the CLI and app commands after the cursor (issue #282). */
+  async tickCommands(): Promise<void> {
+    await this.live.refresh();
+    await this.commandsStep();
+    await this.outboxStep();
   }
 
   /**
@@ -408,7 +438,7 @@ export class Controller {
     const name = `intake:${source.type}`;
     const cursor = await this.d.store.getCursor(name);
     const { events, next_cursor } = await source.poll(cursor);
-    for (const e of events) await this.guard(`event:${e.kind}`, () => this.handleEvent(e));
+    for (const e of events) await this.guard(`event:${e.kind}`, () => this.handle(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
   }
 
@@ -436,7 +466,7 @@ export class Controller {
     const cursor = await this.d.store.getCursor(name);
     const rows = await this.d.store.listInboxAfter(source.type, inboxSeq(cursor), INBOX_BATCH);
     if (rows.length === 0) return;
-    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handleEvent(row.event));
+    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handle(row.event));
     await this.d.store.advanceCursor(name, cursor, String(rows.at(-1)!.seq));
   }
 
@@ -460,18 +490,54 @@ export class Controller {
   async tickRuns(): Promise<void> {
     await this.live.refresh();
     await this.runsStep();
+    await this.outboxStep();
   }
 
-  /** One app command step: the pending requests, oldest first (design §4, app requests). */
-  async tickAppCommands(): Promise<void> {
-    await this.live.refresh();
-    await this.appCommandsStep();
-  }
-
-  private async appCommandsStep(): Promise<void> {
-    for (const r of await this.d.store.listPendingAppCommandRequests(APP_COMMAND_BATCH)) {
-      await this.guard("app command", () => this.applyAppRequest(r));
+  /**
+   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
+   * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
+   * applyAppRequest. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
+   * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
+   */
+  private async commandsStep(): Promise<void> {
+    const cursor = await this.d.store.getCursor(COMMANDS_CURSOR);
+    const start = cursor ?? (await this.d.store.getCursor(LEGACY_LOCAL_CURSOR));
+    const after = start ? Number(start) : 0;
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(start)}`);
+    const commands = await this.d.store.listCliCommandsAfter(after, COMMAND_BATCH);
+    let last: number | null = null;
+    for (const c of commands) {
+      try {
+        await this.handleInboxCommand(c);
+      } catch (err) {
+        // Held, not skipped: the cursor stops before it, so the next tick tries it again (and the ones after it).
+        this.d.log.error("command failed; retried next tick", {
+          command_seq: c.seq,
+          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        });
+        break;
+      }
+      last = c.seq;
     }
+    if (last !== null) await this.d.store.advanceCursor(COMMANDS_CURSOR, cursor, String(last));
+  }
+
+  private async handleInboxCommand(c: CliCommand): Promise<void> {
+    const app = c.args.app_request;
+    if (typeof app === "number") {
+      const r = await this.d.store.getAppCommandRequest(app);
+      if (r && r.handled_at === null) await this.applyAppRequest(r);
+      return;
+    }
+    const id = c.args.item;
+    if (typeof id !== "string" || id === "") return;
+    const item = await this.d.store.getWorkItem(id as WorkItemId);
+    // CLI commands act on local items only; the CLI refuses any other when it writes one.
+    if (!item || item.source.type !== "local") return;
+    const e = commandEvent(c, item.source);
+    if (e) await this.handle(e);
   }
 
   /**
@@ -517,14 +583,14 @@ export class Controller {
   private async finishAppRequest(r: AppCommandRequest, item: WorkItem | null, text: string | null): Promise<void> {
     if (text !== null) {
       this.d.log.info("app command refused", { request_seq: r.seq, work_item_id: item?.id ?? null, command: r.command.slice(0, 64) });
-      if (item) await this.post(item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
+      if (item) await this.post(item, item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
     }
     await this.d.store.markAppCommandRequest(r.seq, text);
   }
 
   private async runsStep(): Promise<void> {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
-      await this.guard(`run:${run.kind}`, () => this.applyRun(run));
+      await this.guard(`run:${run.kind}`, () => this.apply(run));
     }
   }
 
@@ -547,6 +613,7 @@ export class Controller {
   async tickModelProbe(): Promise<void> {
     await this.live.refresh();
     await this.probeStep();
+    await this.outboxStep();
   }
 
   /**
@@ -589,6 +656,7 @@ export class Controller {
   async tickReaper(): Promise<void> {
     await this.live.refresh();
     await this.reaperStep();
+    await this.outboxStep();
   }
 
   private async reaperStep(): Promise<void> {
@@ -628,7 +696,13 @@ export class Controller {
 
   // Source events
 
+  /** One source event, then the outbox step, so its replies go out (issue #282). */
   async handleEvent(e: SourceEvent): Promise<void> {
+    await this.handle(e);
+    await this.outboxStep();
+  }
+
+  private async handle(e: SourceEvent): Promise<void> {
     switch (e.kind) {
       case "item_requested": {
         // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
@@ -638,7 +712,7 @@ export class Controller {
           // On GitHub the intake label is the gate and a refusal stays silent. A chat source has no label: the
           // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
           if (e.source.type !== PR_SOURCE_TYPE) {
-            await this.post(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
+            await this.postWithoutItem(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
           }
           return;
         }
@@ -725,6 +799,7 @@ export class Controller {
   async tickMergeCheck(): Promise<void> {
     await this.live.refresh();
     await this.mergeCheckStep();
+    await this.outboxStep();
   }
 
   private async mergeCheckStep(): Promise<void> {
@@ -932,6 +1007,7 @@ export class Controller {
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
     await this.post(
+      item,
       onPr ? e.source : item.source,
       `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -969,7 +1045,7 @@ export class Controller {
       this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, pr_number: e.pr_number, key: { review_id: e.review_id } }));
     if (refusal === null) return;
     this.d.log.info("review refused", { work_item_id: item.id, pr_number: e.pr_number, reason: refusal });
-    await this.post(e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
+    await this.post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
   }
 
   /**
@@ -1248,6 +1324,7 @@ export class Controller {
     const state = await this.stateOf(item);
     const help = e.kind === "help_requested";
     await this.post(
+      item,
       item.source,
       help ? helpReply(state) : unknownCommandReply(e.command, state),
       `<!-- factory:${help ? "help" : "unknown"}:${e.comment_id} -->`,
@@ -1295,7 +1372,7 @@ export class Controller {
       }
     }
     this.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
-    await this.post(item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await this.post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
   }
 
   /**
@@ -1311,7 +1388,17 @@ export class Controller {
     const body = r.ok
       ? `This account is now linked to factory user \`${r.user_id}\`. Commands from it act as that user.`
       : `This account was not linked: ${LINK_REFUSALS[r.reason]}. Ask for a new code with \`factory link-code <user_id>\`.`;
-    await this.post(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+    const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    if (item) await this.post(item, e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+    else await this.postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
+  }
+
+  /**
+   * A reply on a source that is no work item (a `/link` on a plain issue, a refused chat intake) has no thread to
+   * hold it: the only posts that skip the outbox and go to the source directly.
+   */
+  private async postWithoutItem(source: SourceRef, body: string, marker: string): Promise<void> {
+    await this.adapterFor(source, "postComment")?.postComment(source, body, marker);
   }
 
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
@@ -1343,6 +1430,7 @@ export class Controller {
     if ((await this.d.store.listVerdicts(item.id)).some((v) => v.comment_id === e.comment_id)) return;
     this.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     await this.post(
+      item,
       item.source,
       `\`/verdict\` was not applied: ${refusal}.`,
       `<!-- factory:refused:${e.comment_id} -->`,
@@ -1914,6 +2002,7 @@ export class Controller {
   async tickCoordination(): Promise<void> {
     await this.live.refresh();
     await this.coordinationStep();
+    await this.outboxStep();
   }
 
   private async coordinationStep(): Promise<void> {
@@ -2146,7 +2235,13 @@ export class Controller {
 
   // Run outcomes
 
+  /** One finished run, then the outbox step, so its messages go out (issue #282). */
   async applyRun(run: Run): Promise<void> {
+    await this.apply(run);
+    await this.outboxStep();
+  }
+
+  private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
@@ -2196,7 +2291,7 @@ export class Controller {
                 "The owner approved the split on the parent issue (`phases_auto_approve`), so this phase is implemented without its own `/approve`.",
                 "",
                 footerAfter(it, patch),
-              ].join("\n")));
+              ].join("\n")), "spec_comment_url");
             return {
               patch: { ...patch, spec_comment_url: url },
               actor: SYSTEM,
@@ -2218,7 +2313,7 @@ export class Controller {
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const url = await this.comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)));
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
@@ -2383,7 +2478,7 @@ export class Controller {
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
-      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`);
+      `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2460,7 +2555,7 @@ export class Controller {
       `Comment \`/retry\` to run the ${kind} again, or \`/revise <feedback>\` to get a new spec written.`,
       "",
       footerAfter(it, patch),
-    ].join("\n"));
+    ].join("\n"), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2575,6 +2670,7 @@ export class Controller {
   async tickChecks(): Promise<void> {
     await this.live.refresh();
     await this.checksStep();
+    await this.outboxStep();
   }
 
   private async checksStep(): Promise<void> {
@@ -2756,7 +2852,7 @@ export class Controller {
       return;
     }
     const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
-    await this.post({ type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+    await this.post(it, { type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
   }
 
   /**
@@ -2777,7 +2873,7 @@ export class Controller {
       footerAfter(it, patch),
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2814,7 +2910,7 @@ export class Controller {
     let text0 = body(true, true);
     if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, true);
     if (!(await this.d.scanner.scan("comment", text0)).clean) text0 = body(false, false);
-    const url = await this.comment(it, `run-failed:${run.id}`, text0);
+    const url = await this.comment(it, `run-failed:${run.id}`, text0, "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2855,7 +2951,7 @@ export class Controller {
       footer,
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `needs-human:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `needs-human:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, token_cost: tokens, failure_comment_url: url },
       actor: SYSTEM,
@@ -2923,7 +3019,7 @@ export class Controller {
       ].join("\n");
     };
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -2952,7 +3048,7 @@ export class Controller {
       footerAfter(it, patch),
     ].join("\n");
     const scan = await this.d.scanner.scan("comment", body(true));
-    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean), "failure_comment_url");
     return {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
@@ -3060,7 +3156,7 @@ export class Controller {
       });
       return null;
     }
-    return this.comment(it, `run-failed:${run.id}`, body);
+    return this.comment(it, `run-failed:${run.id}`, body, "failure_comment_url");
   }
 
   // Internals
@@ -3092,7 +3188,7 @@ export class Controller {
       // No adapter for the item's source type here (a source left out of this process's `plugins.source`, e.g.
       // an older version still draining): the item keeps its state for a process that has one, so its replies
       // are not dropped (2026-11-07).
-      if (!this.byType.has(item.source.type)) {
+      if (!this.serves(item.source.type)) {
         this.d.log.warn("no source adapter for the item's source type; transition left to another process", {
           work_item_id: id,
           source_type: item.source.type,
@@ -3259,24 +3355,71 @@ export class Controller {
     }
   }
 
-  /** Posts once per key; returns the comment's URL (the existing one's on a repeat), null if the source has none. */
-  private async comment(it: WorkItem, key: string, body: string): Promise<string | null> {
-    return (await this.post(it.source, body, `<!-- factory:${key} -->`))?.url ?? null;
+  /**
+   * Writes one message to the item's thread, once per key (issue #282); the outbox step delivers it. Returns the
+   * delivered comment's URL when an earlier write of the same key was already delivered, else null: `link` names
+   * the item field the outbox fills with the URL once it delivers.
+   */
+  private async comment(it: WorkItem, key: string, body: string, link: ThreadLinkField | null = null): Promise<string | null> {
+    return this.post(it, it.source, body, `<!-- factory:${key} -->`, link);
   }
 
   /**
-   * postComment through the adapter of `source`'s type; null (and a warning) when none is configured. A marker the
-   * store has a posted record of returns its URL with no call; a changed body is not edited, only logged.
+   * The thread write behind every factory message: the entry, and in the same transaction its outbox row unless
+   * the thread is the item's own surface (a local item). An entry goes only to its item's own source: `target`
+   * (e.g. the item's PR) is used when it is of that source's type, else the item's source.
    */
-  private async post(source: SourceRef, body: string, marker: string): Promise<{ url: string | null } | null> {
-    const adapter = this.adapterFor(source, "postComment");
-    if (!adapter) return null;
-    const stored = await this.d.store.getPostedComment(source.id, marker, body);
-    if (stored?.comment_id) {
-      if (!stored.same_body) this.d.log.warn("comment already posted with another body; not edited", { source_id: source.id, marker });
-      return { url: stored.url };
+  private async post(it: WorkItem, target: SourceRef, body: string, marker: string, link: ThreadLinkField | null = null): Promise<string | null> {
+    const type = it.source.type;
+    const delivery = type === LOCAL_TYPE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+    const { created, message } = await this.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery });
+    if (created || delivery === null) return null;
+    const row = (await this.d.store.listDeliveries(it.id)).find((d) => d.thread_seq === message.seq);
+    return row?.url ?? null;
+  }
+
+  /**
+   * The outbox (issue #282): each pending thread entry of a source type this process has an adapter for, claimed
+   * so one replica posts it, delivered through that adapter, then marked delivered. A failure is retried with
+   * backoff (retry_base_ms doubling up to retry_max_ms); it never touches the item's state. Entries of a source
+   * type with no adapter here stay pending for a process that has one.
+   */
+  private async outboxStep(): Promise<void> {
+    const types = [...this.byType.keys()];
+    for (const row of await this.d.store.listPendingDeliveries(types, OUTBOX_BATCH)) {
+      await this.guard("outbox delivery", () => this.deliver(row));
     }
-    return adapter.postComment(source, body, marker);
+  }
+
+  private async deliver(row: ThreadDelivery): Promise<void> {
+    const adapter = this.byType.get(row.source_type);
+    if (!adapter) return;
+    const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms);
+    if (token === null) return;
+    // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
+    // edited, only logged.
+    const stored = await this.d.store.getPostedComment(row.target.id, row.marker, row.body);
+    if (stored?.comment_id) {
+      if (!stored.same_body) this.d.log.warn("comment already posted with another body; not edited", { source_id: row.target.id, marker: row.marker });
+      await this.d.store.finishDelivery(row.seq, token, stored.url);
+      return;
+    }
+    let url: string | null;
+    try {
+      url = (await adapter.postComment(row.target, row.body, row.marker)).url;
+    } catch (err) {
+      const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
+      const delay = retryDelayMs(row.attempts + 1, this.cfg.retry_base_ms, this.cfg.retry_max_ms);
+      this.d.log.warn("outbox delivery failed; retried later", { work_item_id: row.work_item_id, outbox_seq: row.seq, attempts: row.attempts + 1, retry_in_ms: delay, error });
+      await this.d.store.failDelivery(row.seq, token, error, delay);
+      return;
+    }
+    await this.d.store.finishDelivery(row.seq, token, url);
+  }
+
+  /** Whether this process can apply an item's transitions: it has the item's source adapter, or the item is local. */
+  private serves(type: SourceType): boolean {
+    return type === LOCAL_TYPE || this.byType.has(type);
   }
 
   /**
@@ -3286,6 +3429,8 @@ export class Controller {
   private adapterFor(source: SourceRef, call: string): SourceAdapter | null {
     const adapter = this.byType.get(source.type);
     if (adapter) return adapter;
+    // A local item's surface is the store itself: nothing to call, nothing to warn about.
+    if (source.type === LOCAL_TYPE) return null;
     this.d.log.warn("no source adapter for the item's source type; skipped", { source_type: source.type, source_id: source.id, call });
     return null;
   }

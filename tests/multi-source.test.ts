@@ -207,30 +207,27 @@ describe("multi-source controller: github-issues + local (2026-11-07)", () => {
 
     expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
     expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
-    expect(await f.store.listItemMessages(ghItem.id)).toEqual([]);
+    // Every item's messages are in its thread (issue #282); only the GitHub item's have outbox rows, all delivered.
+    expect(await f.store.listDeliveries(localItem.id)).toEqual([]);
+    const ghRows = await f.store.listDeliveries(ghItem.id);
+    expect(ghRows.length).toBeGreaterThan(0);
+    expect(ghRows.every((r) => r.source_type === "github_issue" && r.delivered_at !== null)).toBe(true);
     expect(f.gh.comments.length).toBeGreaterThan(0);
     expect(sources(f.gh.comments)).toEqual([issueRef(7).id]);
     expect(sources(f.gh.statusCalls)).toEqual([issueRef(7).id]);
   });
 
-  it("a controller without the local source (an older process still draining) leaves a local item's run to one with it", async () => {
+  it("a controller without the local source still applies a local item's run: the store is its surface (issue #282)", async () => {
     const f = await localSetup();
     const localItem = await f.create(localRef(2));
-    const log = recordingLog();
     const gh = new FakeSource();
-    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log, scanner: cleanScanner });
+    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
 
     await f.finishTriage(ghOnly);
-    const kept = (await f.store.getWorkItem(localItem.id))!;
-    expect(kept.version).toBe(localItem.version);
-    expect(kept.stage).toBe("NEW");
-    expect(gh.comments).toEqual([]);
-    expect((await f.store.listUnacknowledgedRuns(20)).map((r) => r.work_item_id)).toEqual([localItem.id]);
-    expect(log.lines.some((l) => l.level === "warn" && l.msg.startsWith("no source adapter"))).toBe(true);
-
-    await f.controller.tickRuns();
     expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
     expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
+    expect(gh.comments).toEqual([]);
+    expect(await f.store.listUnacknowledgedRuns(20)).toEqual([]);
   });
 });
 
@@ -339,8 +336,8 @@ describe("multi-source controller: startup checks", () => {
   const make = (sources: SourceAdapter[]) => () =>
     new Controller({ store: {} as never, sources, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent, scanner: cleanScanner });
 
-  it("no sources fails, naming plugins.source", () => {
-    expect(make([])).toThrow(/plugins\.source/);
+  it("no sources is allowed: items and commands live in the store (issue #282)", () => {
+    expect(make([])).not.toThrow();
   });
 
   it("two sources of the same type fail, naming plugins.source and the type", () => {

@@ -74,7 +74,7 @@ describe("controller: a repeat post with a different body", () => {
     // The same marker was posted earlier with another body.
     await store.recordPostedComment({ source_id: issueRef(7).id, marker, comment_id: "9", url: "https://github.com/o/r/issues/7#issuecomment-9", body: "an older text" });
 
-    await controller.tickAppCommands();
+    await controller.tickCommands();
     expect(github.calls).toEqual([]);
     expect(log.lines.filter((l) => l.level === "warn")).toEqual([
       { level: "warn", msg: "comment already posted with another body; not edited", fields: { source_id: issueRef(7).id, marker } },
