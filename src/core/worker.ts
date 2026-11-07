@@ -16,8 +16,8 @@ import {
   parseTriage,
 } from "./outputs.js";
 import {
-  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, canAutoMerge, failureClass,
-  wipBranchFor,
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
+  failureClass, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { stripAnsi } from "./output-summary.js";
@@ -399,6 +399,20 @@ export class Worker {
       outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
       if (started) {
         this.d.log.warn(`forge auth refused: implement and update runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
+    }
+    if (outcome.status === "failed" && outcome.error_code === PREFLIGHT_ACCESS) {
+      // A push_access or pr_api check failed other than with a 401/403 (issue #216): the same pause as forge_auth,
+      // in its own row, set before the outcome is stored. `started` from the store's conditional write: one log
+      // line and one owner comment per pause. The line names the check only, never the forge's answer.
+      const pause = await this.d.store.pauseClaims(this.after(this.cfg.auth_pause_ms ?? this.cfg.retry_max_ms), PREFLIGHT_ACCESS);
+      const started = pause.started === true;
+      outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
+      if (started) {
+        const check = preflightCheck(outcome.detail);
+        this.d.log.warn(`preflight access failed${check ? ` (${check})` : ""}: implement and update runs paused until ${pause.resume_at}`, {
+          ...log, resume_at: pause.resume_at,
+        });
       }
     }
     const done = await this.d.store.completeRun(run.id, token, outcome);
@@ -882,8 +896,9 @@ export class Worker {
   /**
    * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
    * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
-   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403) or `preflight_failed`; its
-   * detail starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
+   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403, else `preflight_access` for
+   * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
+   * starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
   private async preflight(handle: SandboxHandle, ctx: ToolCallContext, branch: string): Promise<void> {
     const { repo } = this.cfg;

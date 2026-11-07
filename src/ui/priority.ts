@@ -90,7 +90,7 @@ export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
 function humanBadge(i: PriorityInput): string {
   if (i.blocked_on === "budget") return "budget check";
   const r = i.blocked_reason ?? "";
-  if (r.startsWith("run_failed:") || r === "max_attempts" || r === "max_restart") return "failed";
+  if (r.startsWith("run_failed:") || r === "max_attempts" || r === "max_restart" || r === "repeated_failure") return "failed";
   if (r === "max_loops") return "too many loops";
   if (r === "merge_conflict_pending") return "merge conflict";
   return "needs you";
