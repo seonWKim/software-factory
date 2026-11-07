@@ -5,23 +5,23 @@
 
 /** A project as the factory stores it (`key`) and shows it (`label`). */
 export interface ProjectRef {
-  /** `github:github.com:<repo node id>`. What every project column and lookup holds. Never shown. */
+  /** `<provider>:<host>:<repo node id>`. What every project column and lookup holds. Never shown. */
   key: string;
-  /** `github.com/owner/name`, the repository's current path. What the status page, comments and logs show. */
+  /** `<host>/owner/name`, the repository's current path. What the status page, comments and logs show. */
   label: string;
 }
 
-/** Providers the key format names. Only GitHub is implemented; the format leaves room for others. */
+/** Providers the key format names. Only one provider is implemented; the format leaves room for others. */
 export type ProjectProvider = "github";
 
 const KEY = /^([a-z][a-z0-9-]*):([A-Za-z0-9.-]+(?::\d+)?):(.+)$/;
 /** A legacy project value: `owner/name`, as stored before project keys. */
 const OWNER_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-/** The key of a GitHub repository: provider, host and the repository's node ID. */
+/** The key of a forge repository: provider, host and the repository's node ID. */
 export function githubProjectKey(host: string, nodeId: string): string {
   if (!/^[A-Za-z0-9.-]+(?::\d+)?$/.test(host)) throw new Error(`not a host name: ${JSON.stringify(host)}`);
-  if (!/^[A-Za-z0-9_=-]+$/.test(nodeId)) throw new Error(`not a GitHub node ID: ${JSON.stringify(nodeId)}`);
+  if (!/^[A-Za-z0-9_=-]+$/.test(nodeId)) throw new Error(`not a repository node ID: ${JSON.stringify(nodeId)}`);
   return `github:${host}:${nodeId}`;
 }
 
@@ -54,7 +54,7 @@ export function projectLabelCursor(key: string): string {
 
 /**
  * The store cursor that holds the key of the configured repo `owner/name` (design 2026-11-07): written once
- * GitHub resolved it, read at every later startup so starting never waits on GitHub.
+ * the forge resolved it, read at every later startup so starting never waits on the forge.
  */
 export function projectKeyCursor(repo: { owner: string; name: string }): string {
   return `project_key:${repo.owner}/${repo.name}`;

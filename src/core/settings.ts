@@ -297,7 +297,7 @@ export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
  */
 export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   max_attempts: "Task failures of one step before the work item blocks on a human.",
-  max_loops: "Review feedback loops on one pull request before the work item blocks on a human.",
+  max_loops: "Review feedback loops on one change before the work item blocks on a human.",
   max_restart: "Infra failures of one step (lease loss, timeout, crash) before it blocks on a human.",
   retry_base_ms: "Wait before the first automatic retry; each next retry waits twice as long.",
   retry_max_ms: "Longest wait between retries, and the pause after a rate limit with no reset time.",
@@ -430,7 +430,7 @@ export function isPrOnlyKey(key: string): boolean {
 /** Why `settings set` / `reset` refuses `key`, or null when it is settable. */
 export function keyRefusal(key: string): string | null {
   if (isSettableKey(key)) return null;
-  if (isPrOnlyKey(key)) return `"${key}" changes by PR only: edit factory.config.json in a reviewed pull request`;
+  if (isPrOnlyKey(key)) return `"${key}" changes by PR only: edit factory.config.json in a reviewed change`;
   return `"${key}" is not settable; the settable keys are ${SETTABLE_KEYS.join(", ")}`;
 }
 

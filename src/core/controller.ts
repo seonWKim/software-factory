@@ -110,9 +110,9 @@ import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 /**
- * The GitHub core rate limit as one process sees it (design §5 Sources, GitHub call budget): GitHub's limit,
+ * The forge's core rate limit as one process sees it (design §5 Sources, call budget): the forge's limit,
  * remaining calls and reset time, this process's `budget_share`, the calls it may count (`share_limit`, null before
- * GitHub reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
+ * the forge reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
  * optional reads wait (under `min_remaining`, or the share is used).
  */
 export interface GitHubBudgetStatus {
@@ -126,7 +126,7 @@ export interface GitHubBudgetStatus {
   as_of: string;
 }
 
-/** The store cursor the controller writes its GitHub budget to after each poll, for the status page. */
+/** The store cursor the controller writes its forge budget to after each poll, for the status page. */
 export const GITHUB_BUDGET_CURSOR = "github:budget";
 
 /** The reset time a call refused for a used-up rate limit waits for (its `wait_until`), else null. */
@@ -151,11 +151,11 @@ export interface ControllerDeps {
    * comment or status then goes to the item's own source.
    */
   forge?: Forge | null;
-  /** Authorizes commands from GitHub (and every non-local origin). */
+  /** Authorizes commands from the forge (and every non-local origin). */
   auth: AuthProvider;
   /**
    * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
-   * #318: local commands never depend on the GitHub auth plugin. Absent: `auth`.
+   * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
    */
   local_auth?: AuthProvider;
   clock: Clock;
@@ -203,7 +203,7 @@ export interface ControllerDeps {
    */
   restarts?: () => Promise<readonly ChildRestart[]>;
   /**
-   * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
+   * The forge client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
    */
   github_budget?: () => GitHubBudgetStatus | null;
@@ -338,7 +338,7 @@ const STANDING_WINDOW = 200;
 /** The settable key of the run length that proposes a standing rule. */
 const STANDING_THRESHOLD = "standing_approvals.threshold";
 
-/** GitHub's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
+/** The forge's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
 
 /** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
@@ -502,8 +502,8 @@ export class Controller {
 
   /**
    * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
-   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the GitHub
-   * source and GitHub forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
+   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the
+   * matching source and forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
    * no log line, the next due one after the reset polls. The poll sources are read first and the forge after them,
    * and the forge's events are handled first (issue #273): a merge that closed an issue happened before the close,
    * so the forge's read already sees it and the merge is applied before the source's close. Unfinished rejects are
@@ -522,10 +522,10 @@ export class Controller {
     const forge = this.forge;
     if (pollDue && forge && !(githubPaused && forge.ref_type === GITHUB_SOURCE_TYPE)) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
-    if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
+    if (pollDue) await this.guard("forge budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
     await this.guard("source closes", () => this.tickSourceCloses());
-    // Phases are GitHub sub-issues, so their holds and parents move once per poll, after its closes are applied.
+    // Phases are sub-issues on their source, so their holds and parents move once per poll, after its closes are applied.
     await this.guard("phases", () => this.tickPhases());
   }
 
@@ -540,7 +540,7 @@ export class Controller {
     await this.d.store.advanceCursor(`intake:${source.type}`, cursor, result.next_cursor);
   }
 
-  /** This process's GitHub budget, stored for the status page; the stored value is replaced, never merged. */
+  /** This process's forge budget, stored for the status page; the stored value is replaced, never merged. */
   private async recordGitHubBudget(): Promise<void> {
     const status = this.d.github_budget?.();
     if (!status) return;
@@ -614,10 +614,10 @@ export class Controller {
 
   /**
    * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for an
-   * item of any source becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * item of any source becomes the event the same comment gives on the source (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
-   * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * applyAppRequest. A forge comment command the forge poll wrote (key `github:<comment id>`, issue #284) becomes
+   * its comment's event with provider `github`, so that provider's auth plugin judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
    * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
    * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
    */
@@ -663,7 +663,7 @@ export class Controller {
     if (typeof id !== "string" || id === "") return;
     const item = await this.d.store.getWorkItem(id as WorkItemId);
     // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
-    // judges it, and a GitHub item's transition never waits on GitHub. Its mirror on the issue is the mirror step's.
+    // judges it, and a sync source item's transition never waits on its source. Its mirror on the issue is the mirror step's.
     if (!item) return;
     const e = commandEvent(c, item.source);
     if (e) await this.handle(e);
@@ -694,7 +694,7 @@ export class Controller {
 
   /**
    * A CLI command as a comment on its issue: who sent which command, and its note quoted, egress-scanned first (a
-   * flagged note is left out). It never starts with `/`, so the GitHub poll reads it as a plain comment.
+   * flagged note is left out). It never starts with `/`, so the source poll reads it as a plain comment.
    */
   private async mirrorBody(c: CliCommand): Promise<string> {
     const name = QUOTABLE_COMMAND.test(c.command) ? `\`/${c.command}\`` : "A command";
@@ -783,7 +783,7 @@ export class Controller {
     return true;
   }
 
-  /** True while any source's request budget is low (GitHub: `lowBudget`): optional reads wait (issue #254). */
+  /** True while any source's request budget is low (e.g. `lowBudget`): optional reads wait (issue #254). */
   private lowBudget(): boolean {
     return this.sources.some((s) => s.lowBudget?.() === true);
   }
@@ -963,7 +963,7 @@ export class Controller {
         if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
         if ("refuse" in principal) {
-          // A source whose intake label is the gate (GitHub) refuses silently. A chat source has no label: the
+          // A source whose intake label is the gate refuses silently. A chat source has no label: the
           // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
           if (!this.byType.get(e.source.type)?.silent_intake_refusal) {
             await this.postWithoutItem(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
@@ -1032,7 +1032,7 @@ export class Controller {
   }
 
   /**
-   * One update run per (item, PR, head sha, base sha), from GitHub's unmergeable flag or the local merge check
+   * One update run per (item, PR, head sha, base sha), from the forge's unmergeable flag or the local merge check
    * (design §5): both use this key, so either path finding the same conflict first enqueues the only run. None
    * while another update of this item is still in flight; the event repeats on every poll, so a skipped one
    * comes back.
@@ -1081,7 +1081,7 @@ export class Controller {
       if (e.kind === "pr_merged") await this.recordUnreviewedMerge(e);
       return;
     }
-    // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
+    // The human who merged is the approver of record (design §8). The forge already enforced their permission.
     const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
     await this.decide(item.id, (it) => {
@@ -2910,7 +2910,7 @@ export class Controller {
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-    // A GitHub rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
+    // A forge rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
     if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
@@ -3034,7 +3034,7 @@ export class Controller {
       if (it.origin === "adopted") {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
         await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not change a pull request a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
+          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
         return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
       }
       const loop = it.loop_count + 1;
@@ -3171,7 +3171,7 @@ export class Controller {
     if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    // A forge 401/403, a failed access check or a GitHub rate limit also waits for its claim pause to end; a stall
+    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end; a stall
     // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
     const notBefore = retryNotBefore({
       cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
@@ -3521,7 +3521,7 @@ export class Controller {
       "",
       `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
       "",
-      "Check the factory's GitHub credentials (the app installation or token): they need write access to contents and pull requests on this repository. The run is retried after the pause ends.",
+      "Check the factory's forge credentials (the app installation or token): they need write access to contents and changes on this repository. The run is retried after the pause ends.",
     ].join("\n"));
   }
 
@@ -3538,7 +3538,7 @@ export class Controller {
       "",
       `The implement preflight's \`${check}\` check failed during this item's ${run.kind} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
       "",
-      "Check that the factory's GitHub app or token can still read this repository and its pull requests, and that GitHub answers. The run is retried after the pause ends.",
+      "Check that the factory's forge app or token can still read this repository and its changes, and that the forge answers. The run is retried after the pause ends.",
     ].join("\n"));
   }
 
@@ -3902,7 +3902,7 @@ export class Controller {
     try {
       await fn();
     } catch (err) {
-      // A GitHub call refused with no calls left is a wait for the reset, not a failure: the step runs again next
+      // A forge call refused with no calls left is a wait for the reset, not a failure: the step runs again next
       // poll, and every other step (local work) goes on.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
@@ -4154,7 +4154,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
-  github_rate_limited: "GitHub's API rate limit was hit; implement, update and review runs are paused until it resets",
+  github_rate_limited: "the forge's API rate limit was hit; implement, update and review runs are paused until it resets",
   provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

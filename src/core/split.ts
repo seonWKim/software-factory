@@ -74,7 +74,7 @@ export function phaseMarker(parent: WorkItemId, index: number): string {
 /** Any phase marker. Intake leaves an issue carrying one to the split that filed it. */
 export const PHASE_MARKER = /<!-- factory:phase:[^\s>]+:\d+ -->/;
 
-/** `#163` for `owner/repo#163`: GitHub links it in the same repo. Any other id stays as it is. */
+/** `#163` for `owner/repo#163`: the forge links it in the same repo. Any other id stays as it is. */
 function issueRef(ref: SourceRef): string {
   const i = ref.id.lastIndexOf("#");
   return i >= 0 ? ref.id.slice(i) : ref.id;

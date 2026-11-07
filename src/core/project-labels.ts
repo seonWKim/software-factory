@@ -1,6 +1,6 @@
 // Project labels and keys in the store (design 2026-11-01, 2026-11-07): one cursor row per project key,
-// `project_label:<key>` → `github.com/owner/name`, and one per configured repo, `project_key:<owner>/<name>` →
-// its key. Written once GitHub resolved the repo, read by the status page and at startup, so neither a page
+// `project_label:<key>` → `<host>/owner/name`, and one per configured repo, `project_key:<owner>/<name>` →
+// its key. Written once the forge resolved the repo, read by the status page and at startup, so neither a page
 // load nor a start calls the forge. Every write is a conditional set, so two replicas starting at once are safe.
 
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -28,13 +28,13 @@ export function saveProjectLabel(store: CursorStore, ref: ProjectRef): Promise<b
   return setCursor(store, projectLabelCursor(ref.key), ref.label, `the label of project ${ref.label}`);
 }
 
-/** Stores the configured repo's key and label, as GitHub resolved them. Returns true when the key changed. */
+/** Stores the configured repo's key and label, as the forge resolved them. Returns true when the key changed. */
 export async function saveProject(store: CursorStore, repo: { owner: string; name: string }, ref: ProjectRef): Promise<boolean> {
   await saveProjectLabel(store, ref);
   return setCursor(store, projectKeyCursor(repo), ref.key, `the project key of ${repo.owner}/${repo.name}`);
 }
 
-/** The configured repo's stored key, with its stored label; null when GitHub never resolved it here. */
+/** The configured repo's stored key, with its stored label; null when the forge never resolved it here. */
 export async function readStoredProject(store: Pick<FactoryStore, "getCursor">, repo: { owner: string; name: string }): Promise<ProjectRef | null> {
   const key = await store.getCursor(projectKeyCursor(repo));
   if (key === null || !isProjectKey(key)) return null;

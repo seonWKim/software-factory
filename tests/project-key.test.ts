@@ -8,7 +8,7 @@ import {
   UNKNOWN_PROJECT_LABEL, assertProjectKey, githubProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
 } from "../src/core/project.js";
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
-import type { FactoryConfig } from "../src/core/config.js";
+import { type FactoryConfig, cliUserConfig } from "../src/core/config.js";
 import type { UserId } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -56,7 +56,11 @@ describe("ProjectRef: key and label", () => {
     expect(isLegacyProject("o/r")).toBe(true);
     expect(isLegacyProject(KEY)).toBe(false);
     expect(() => assertProjectKey("o/r")).toThrow(/project key/);
-    expect(() => githubProjectKey("github.com", "bad id/x")).toThrow();
+    expect(() => githubProjectKey("github.com", "bad id/x")).toThrow("not a repository node ID");
+  });
+
+  it("a cli_user that is no user ID is refused with a forge-neutral example", () => {
+    expect(() => cliUserConfig({ cli_user: "alice" })).toThrow("(<provider>:<id>, e.g. local:<name>)");
   });
 
   it("the web host comes from the API base URL (github.com, or a GHES host)", () => {
