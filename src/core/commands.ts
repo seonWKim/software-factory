@@ -29,15 +29,19 @@ export type CommandPhase =
   | "max_loops"
   | "merge_conflict"
   | "other_blocked"
+  /** CLOSED with its PR merged: only a `/verdict` still applies (design §4). */
+  | "merged"
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "floor_tier",
   "too_large",
-  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
+  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
 ];
 
-const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
+const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed" && p !== "merged");
+/** Open items and merged ones: where a `/verdict` applies. */
+const VERDICT_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
 
 /** What the human can do depends on the phase and, for `/verdict`, on whether a PR exists yet. */
 export interface CommandState {
@@ -141,8 +145,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "verdict",
     usage: "/verdict accept|changes|reject <severity> <reason>",
-    description: "Record a verdict on the result; it does not change the state",
-    phases: OPEN_PHASES,
+    description:
+      "Record a verdict on the result, also after the merge; it does not change the state. `/verdict accept` alone (or `yes`, `ok`) records severity `none`; " +
+      "it replaces the verdict the factory recorded for the PR's head from a merge or a push",
+    phases: VERDICT_PHASES,
     needs_pr: true,
     changes_state: false,
   },
@@ -201,11 +207,11 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
   return undefined;
 }
 
-type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number">;
+type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "pr_number"> & Partial<Pick<WorkItem, "merge_sha">>;
 
 /** The phase of an item; the same checks, in the same order, as the controller's command handling. */
 export function commandPhase(it: ItemState): CommandPhase {
-  if (it.stage === "CLOSED") return "closed";
+  if (it.stage === "CLOSED") return it.merge_sha ? "merged" : "closed";
   if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
   if (it.blocked_reason === "floor_tier") return "floor_tier";
   if (it.blocked_on === "human") {
@@ -327,6 +333,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   max_loops: "review loop limit reached",
   merge_conflict: "PR has a merge conflict",
   other_blocked: "blocked for another reason",
+  merged: "merged",
   closed: "closed",
 };
 
@@ -337,7 +344,13 @@ export function phaseLabel(p: CommandPhase): string {
 
 function whenText(c: CommandSpec): string {
   const all = (ps: readonly CommandPhase[]) => ps.length === c.phases.length && ps.every((p) => c.phases.includes(p));
-  const where = all(COMMAND_PHASES) ? "any time" : all(OPEN_PHASES) ? "any open item" : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
+  const where = all(COMMAND_PHASES)
+    ? "any time"
+    : all(OPEN_PHASES)
+      ? "any open item"
+      : all(VERDICT_PHASES)
+        ? "any open or merged item"
+        : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
   return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
 }

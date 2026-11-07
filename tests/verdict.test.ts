@@ -25,6 +25,22 @@ describe("parseVerdict", () => {
     expect(parseVerdict("accept minor nit in a comment")).toMatchObject({ ok: true, value: { reason: "nit in a comment" } });
   });
 
+  it("lets accept omit the severity too: it is then none, and any text after accept is the reason", () => {
+    for (const args of ["accept", " accept \n"]) {
+      expect(parseVerdict(args)).toEqual({ ok: true, value: { verdict: "accept", severity: "none", reason: null } });
+    }
+    expect(parseVerdict("accept looks good\nthanks")).toEqual({
+      ok: true, value: { verdict: "accept", severity: "none", reason: "looks good\nthanks" },
+    });
+  });
+
+  it("reads yes and ok as accept", () => {
+    for (const word of ["yes", "ok"]) {
+      expect(parseVerdict(word)).toEqual(parseVerdict("accept"));
+      expect(parseVerdict(`${word} minor a nit`)).toEqual({ ok: true, value: { verdict: "accept", severity: "minor", reason: "a nit" } });
+    }
+  });
+
   it("refuses changes and reject without a reason", () => {
     expect(parseVerdict("changes minor")).toEqual({ ok: false, refuse: "`changes` needs a reason after the severity" });
     expect(parseVerdict("reject major\n  ")).toEqual({ ok: false, refuse: "`reject` needs a reason after the severity" });
@@ -36,10 +52,13 @@ describe("parseVerdict", () => {
   });
 
   it("refuses a missing or unknown verdict word, or missing arguments, with the expected format", () => {
-    for (const args of ["", "accept", "approve none fine", "ACCEPT none"]) {
+    for (const args of ["", "changes", "reverted major undo", "approve none fine", "ACCEPT none", "lgtm"]) {
       const r = parseVerdict(args);
       expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.refuse).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
+      if (!r.ok) {
+        expect(r.refuse).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
+        expect(r.refuse).toContain("`yes` and `ok` mean `accept`");
+      }
     }
   });
 });
@@ -152,7 +171,7 @@ describe("controller: /verdict", () => {
     expect(await refused(f, it0, "512")).toContain("severity `huge` is not one of `none`, `minor`, `major`, `critical`");
   });
 
-  it("refuses a missing or unknown verdict word with the expected format", async () => {
+  it("refuses a missing or unknown verdict word with the usage line, and stores nothing", async () => {
     const f = await setup();
     const it0 = await item(f);
     await f.controller.handleEvent(verdict("", "513"));
@@ -160,6 +179,21 @@ describe("controller: /verdict", () => {
     for (const id of ["513", "514"]) {
       expect(await refused(f, it0, id)).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
     }
+    expect((await f.store.listStateChanges(it0.id)).some((c) => c.reason === "human_verdict")).toBe(false);
+  });
+
+  it("records `/verdict accept` alone as severity none, and `/verdict yes` and `/verdict ok` the same", async () => {
+    const f = await setup();
+    const it0 = await item(f);
+    await f.controller.handleEvent(verdict("accept", "530"));
+    await f.controller.handleEvent(verdict("yes", "531"));
+    await f.controller.handleEvent(verdict("ok", "532"));
+    expect((await f.store.listVerdicts(it0.id)).map((v) => [v.comment_id, v.verdict, v.severity, v.reason, v.implicit])).toEqual([
+      ["530", "accept", "none", null, false],
+      ["531", "accept", "none", null, false],
+      ["532", "accept", "none", null, false],
+    ]);
+    expect(f.source.comments).toEqual([]);
   });
 
   it("refuses a user without write permission", async () => {
@@ -169,7 +203,7 @@ describe("controller: /verdict", () => {
     expect(await refused(f, it0, "515")).toContain("needs write permission");
   });
 
-  it("refuses a verdict on a CLOSED item, and on an item with no PR yet", async () => {
+  it("refuses a verdict on a closed item whose PR was not merged, with one reply, and on an item with no PR yet", async () => {
     const f = await setup();
     const noPr = await item(f, false);
     await f.controller.handleEvent(verdict("accept none", "516"));
@@ -177,11 +211,26 @@ describe("controller: /verdict", () => {
 
     const closed = await f.store.transition({
       id: noPr.id, expected_version: noPr.version, actor: system, reason: "test",
-      patch: { stage: "CLOSED", close_reason: "wont_do", pr_number: 42 },
+      patch: { stage: "CLOSED", close_reason: "rejected", pr_number: 42 },
     });
     if (!closed.ok) throw new Error(closed.reason);
     await f.controller.handleEvent(verdict("accept none", "517"));
-    expect(await refused(f, closed.item, "517")).toContain("the work item is closed");
+    await f.controller.handleEvent(verdict("accept none", "517"));
+    expect(await refused(f, closed.item, "517")).toBe("`/verdict` was not applied: the work item is closed and its PR was not merged.");
+  });
+
+  it("records a verdict on a merged item", async () => {
+    const f = await setup();
+    const it0 = await item(f);
+    const merged = await f.store.transition({
+      id: it0.id, expected_version: it0.version, actor: system, reason: "pr_merged",
+      patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "m1", blocked_on: "none", blocked_reason: null },
+    });
+    if (!merged.ok) throw new Error(merged.reason);
+    await f.controller.handleEvent(verdict("changes major the flag name is wrong", "533"));
+    expect(await f.store.listVerdicts(it0.id)).toEqual([expect.objectContaining({ verdict: "changes", severity: "major", implicit: false })]);
+    expect(await f.store.getWorkItem(it0.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", version: merged.item.version + 1 });
+    expect(f.source.comments).toEqual([]);
   });
 
   it("stores a redelivered verdict comment once and posts no reply, even after the item closed", async () => {

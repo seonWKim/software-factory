@@ -180,7 +180,11 @@ describe("one issue to one merged PR", () => {
 
     const trail = (await f.store.listStateChanges(item.id)).map((c) => c.reason);
     expect(trail).toEqual([
-      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "pr_merged",
+      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "implicit_verdict", "pr_merged",
+    ]);
+    // The merge with no commits by people is one implicit accept (design §4).
+    expect(await f.store.listVerdicts(item.id)).toEqual([
+      expect.objectContaining({ verdict: "accept", severity: "none", implicit: true, pr_head: item.last_head_sha }),
     ]);
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -192,6 +196,37 @@ describe("one issue to one merged PR", () => {
     expect(item.token_cost).toBe(15 * 5);
     expect(await f.store.listHandoffs(item.id)).toHaveLength(2);
     expect(f.sandbox.destroyed).toBe(f.sandbox.created.length);
+  });
+
+  it("a person's push to the factory PR, then the merge: the head ends with a changes verdict and no accept", async () => {
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: review("pass"),
+    });
+    const f = await factory(runner);
+    const src = issueRef(8);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "300", approver: alice });
+    await f.step();
+    const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
+    expect(item).toMatchObject({ blocked_reason: "merge_pending", pr_number: 42 });
+
+    f.forge.commitAuthors.h9 = alice;
+    f.forge.commitCounts[`${item.last_head_sha}..h9`] = 1;
+    const prSource = { type: "github_issue", id: "o/r#42", link: "https://github.com/o/r/pull/42" };
+    f.forge.queue.push({
+      kind: "pr_open", source: prSource, pr_number: 42, head_branch: `factory/${item.id}`, head_sha: "h9", title: "t", body: "b", author: alice, labels: [],
+    });
+    await f.step();
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    await f.step();
+
+    expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect((await f.store.listVerdicts(item.id)).map((v) => [v.verdict, v.implicit, v.pr_head, v.reason])).toEqual([
+      ["changes", true, "h9", "a person pushed 1 commit to the PR"],
+    ]);
   });
 
   it("records a /verdict on the PR through intake; a refused one gets one reply and stores nothing", async () => {

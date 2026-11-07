@@ -1167,6 +1167,7 @@ export class Controller {
     // The human who merged is the approver of record (design §8). The forge already enforced their permission.
     const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
+    if (e.kind === "pr_merged") await this.mergeVerdict(item, e, merger ? actor : null);
     await this.decide(item.id, (it) => {
       if (it.stage === "CLOSED" || it.pr_number !== e.pr_number) return null;
       return e.kind === "pr_merged"
@@ -1181,19 +1182,19 @@ export class Controller {
             reason: "pr_closed_unmerged",
           };
     });
-    if (e.kind === "pr_merged") await this.mergeVerdict(item.id, e, merger ? actor : null);
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.guard("dependents", () => this.releaseDependents(item.source.id));
   }
 
   /**
    * The implicit verdict of a merged factory PR (design §4): one `accept`, severity `none`, for the merged head,
-   * when no person pushed to it. Read from the item after the merge closed it, so a second delivery records
-   * nothing more (the key, and one verdict per head). None when the merger does not resolve to a user.
+   * when no person pushed to it. Stored before the merge closes the item, so a crash between the two leaves the
+   * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
+   * merger does not resolve to a user.
    */
-  private async mergeVerdict(id: WorkItemId, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
-    const it = await this.d.store.getWorkItem(id);
-    if (!it || it.origin !== "factory" || it.close_reason !== "completed" || it.merge_sha !== e.merge_sha) return;
+  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
+    if (it.origin !== "factory" || it.stage === "CLOSED" || it.pr_number !== e.pr_number) return;
+    const id = it.id;
     const log = { work_item_id: id, pr_number: e.pr_number };
     if (!merger) {
       this.d.log.warn("no implicit verdict: the merger does not resolve to a user", log);
@@ -2459,7 +2460,7 @@ export class Controller {
       );
       // A merged factory PR also gets one implicit `reverted` verdict per reverting commit (design §4).
       const it = await this.d.store.getWorkItem(id);
-      if (it?.origin !== "factory" || it.merge_sha === null) continue;
+      if (it?.origin !== "factory" || it.close_reason !== "completed" || it.merge_sha === null) continue;
       await this.recordImplicitVerdict(id, {
         verdict: "reverted", severity: "major", reason: `reverted by commit ${e.sha}`, key: `implicit:reverted:${id}:${e.sha}`,
         actor: LINKS, pr_head: null,
