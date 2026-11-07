@@ -4377,15 +4377,15 @@ function floorCommand(
   };
 }
 
-/**
- * The command footer for a comment posted before its transition: the commands for the state the item will
- * be in once `patch` applies (design §4). Same table as the parser and the controller's checks.
- */
 /** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
 }
 
+/**
+ * The command footer for a comment posted before its transition: the commands for the state the item will
+ * be in once `patch` applies (design §4). Same table as the parser and the controller's checks.
+ */
 function footerAfter(it: WorkItem, patch: Partial<Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref">>): string {
   return commandFooter(commandState({ ...it, ...patch }));
 }
