@@ -30,6 +30,7 @@ import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
+import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
@@ -496,15 +497,20 @@ export interface UiParts {
   clock: Clock;
   store: FactoryStore;
   scanner: EgressScanner;
+  /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
+  settings: UiSettings;
   close(): Promise<void>;
 }
 
 /**
- * What the status page needs and nothing more: no controller, worker, source or runner. Built through
- * Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because the
- * MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches the page.
+ * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
+ * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only
+ * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
+ * the page. The Settings page finds the configured repo's project key from the stored project label
+ * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
+ * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory.
  */
-export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
+export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded);
   const clock = await p.clock();
@@ -512,7 +518,15 @@ export async function buildUiParts(loaded: Loaded): Promise<UiParts> {
   const store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
-  return { clock, store, scanner, close: () => store.close() };
+  const { owner, name } = loaded.config.repo;
+  const settings: UiSettings = {
+    base: settingsBase(loaded),
+    repo: { owner, name },
+    actor: opts.actor,
+    resolveProject: storeProjectResolver(store, { owner, name }),
+    csrfToken: newCsrfToken(),
+  };
+  return { clock, store, scanner, settings, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

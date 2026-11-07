@@ -1,5 +1,8 @@
-// `factory ui`: a read-only status page over FactoryStore (design §9, architecture §1).
-// node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too). The Host header must name
+// `factory ui`: the status page over FactoryStore (design §9, architecture §1).
+// node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
+// except one write route: POST /api/v1/settings (design §8, issue #236), guarded in this order: Host, then an
+// Origin equal to the Host's own http origin, then Content-Type application/json, then the per-process CSRF
+// token in x-csrf-token. Every other method on every other path answers 405. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
@@ -10,6 +13,7 @@ import type { AddressInfo } from "node:net";
 import type { WorkItemId } from "../core/types.js";
 import { api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
+import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
 import { type UiDeps, renderIndex, renderItem } from "./pages.js";
@@ -34,7 +38,17 @@ export interface UiRequest {
   method: string | undefined;
   url: string | undefined;
   host: string | undefined;
+  /** The write route's headers and body; read only for POST /api/v1/settings. */
+  origin?: string | undefined;
+  contentType?: string | undefined;
+  csrfToken?: string | undefined;
+  body?: string | undefined;
+  /** The body was longer than MAX_BODY bytes and was not read. */
+  bodyTooLarge?: boolean;
 }
+
+/** The largest body the write route reads. A set or reset is a few hundred bytes. */
+export const MAX_BODY = 64 * 1024;
 
 export interface UiResponse {
   status: number;
@@ -86,10 +100,46 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-/** The whole request handling, without the socket: reads the store and renders, never writes. */
+/** True for the one write route: POST to exactly /api/v1/settings (a query string is ignored), when settings are wired. */
+function isSettingsWrite(d: UiDeps, req: UiRequest): boolean {
+  return req.method === "POST" && d.settings !== undefined && (req.url ?? "/").split(/[?#]/, 1)[0] === SETTINGS_PATH;
+}
+
+/** The Content-Type's media type, lowercased, without parameters. */
+function mediaType(value: string | undefined): string {
+  return (value ?? "").split(";", 1)[0]!.trim().toLowerCase();
+}
+
+/**
+ * POST /api/v1/settings after the Host check: Origin, then Content-Type, then the CSRF token, then the body.
+ * Every refusal comes before any store write.
+ */
+async function settingsPost(d: UiDeps, req: UiRequest): Promise<UiResponse> {
+  const s = d.settings!;
+  const own = `http://${(req.host ?? "").trim().toLowerCase()}`;
+  if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) {
+    return json(403, apiError(403, "Origin must be this page's own origin.").value);
+  }
+  if (mediaType(req.contentType) !== "application/json") return json(415, apiError(415, "Content-Type must be application/json.").value);
+  if (!csrfMatches(s.csrfToken, req.csrfToken)) {
+    return json(403, apiError(403, `Missing or stale ${CSRF_HEADER}; reload the page.`).value);
+  }
+  if (req.bodyTooLarge) return json(413, apiError(413, "The body is too large.").value);
+  let body: unknown;
+  try {
+    body = JSON.parse(req.body ?? "");
+  } catch {
+    return json(400, apiError(400, "The body must be JSON.").value);
+  }
+  const r = await writeSettings(d, s, body);
+  return json(r.status, r.value);
+}
+
+/** The whole request handling, without the socket. Writes only through POST /api/v1/settings. */
 export async function respond(d: UiDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
+  if (isSettingsWrite(d, req)) return settingsPost(d, req);
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -141,7 +191,21 @@ export interface UiServer {
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
 export async function startUi(d: UiDeps, port: number): Promise<UiServer> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    respond(d, { method: req.method, url: req.url, host: req.headers.host }).then(
+    const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host };
+    const write = isSettingsWrite(d, base);
+    const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+    (write
+      ? readBody(req).then((b) =>
+          respond(d, {
+            ...base,
+            origin: one(req.headers.origin),
+            contentType: one(req.headers["content-type"]),
+            csrfToken: one(req.headers[CSRF_HEADER]),
+            ...b,
+          }),
+        )
+      : respond(d, base)
+    ).then(
       (r) => send(res, req.method === "HEAD", r),
       (err: unknown) => {
         console.error(`ui: request failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -166,6 +230,22 @@ export async function startUi(d: UiDeps, port: number): Promise<UiServer> {
         server.close((err) => (err ? reject(err) : resolve()));
       }),
   };
+}
+
+/** The request body, up to MAX_BODY bytes; past that the rest is drained and `bodyTooLarge` is set. */
+function readBody(req: IncomingMessage): Promise<{ body: string; bodyTooLarge: boolean }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooLarge = false;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY) tooLarge = true;
+      else chunks.push(c);
+    });
+    req.on("end", () => resolve({ body: tooLarge ? "" : Buffer.concat(chunks).toString("utf8"), bodyTooLarge: tooLarge }));
+    req.on("error", reject);
+  });
 }
 
 /** What goes on the wire: the headers with content-length, and no body for HEAD (same length as GET). */

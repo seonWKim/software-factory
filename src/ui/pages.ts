@@ -16,6 +16,7 @@ import type { FactoryStatus } from "./factory-status.js";
 import type { HealthMonitor } from "./health.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { NEEDS_YOU } from "./priority.js";
+import type { UiSettings } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
 export { STAGES } from "./filters.js";
@@ -37,6 +38,11 @@ export interface UiDeps {
   factoryStatus?: () => Promise<FactoryStatus | null>;
   /** The built app served under /app/; absent: web/dist in this checkout. */
   appDir?: string;
+  /**
+   * The Settings routes (GET and POST /api/v1/settings; design §8, issue #236): the config base, the repo, the
+   * actor, a store-only project resolver and the per-process CSRF token. Absent: GET is a 404 and POST a 405.
+   */
+  settings?: UiSettings;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
