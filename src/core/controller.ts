@@ -2243,18 +2243,20 @@ export class Controller {
 
   private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
-    await this.decide(run.work_item_id, async (it) => {
+    // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
+    // adds them to each decision that does not set token_cost itself.
+    const decision = async (it: WorkItem): Promise<Decision> => {
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
       if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
         const ask = parseNeedsHuman(data.needs_human);
         if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
-        if (run.kind === "resolve") return withSpent(await this.resolveFailed(it, run, "invalid_output"), run, it);
-        return withSpent(await this.retryOrBlock(it, run, "task", "invalid_output"), run, it);
+        if (run.kind === "resolve") return this.resolveFailed(it, run, "invalid_output");
+        return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
       switch (run.kind) {
@@ -2447,10 +2449,11 @@ export class Controller {
           }
         }
       }
-    });
+    };
+    await this.decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
   private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
