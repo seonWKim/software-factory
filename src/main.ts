@@ -1,10 +1,16 @@
 #!/usr/bin/env node
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
+import { Sessions } from "./core/session.js";
+import { ConsoleLogger } from "./impl/log/console-logger.js";
+import { baseEnv } from "./impl/process/run-process.js";
+import {
+  FileSessionFiles, SESSION_USAGE, githubIssues, parseSessionArgs, runSession, sessionOwner, sessionsDir,
+} from "./session-cmd.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
@@ -64,6 +70,10 @@ const USAGE = `factory <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  session start | status | note | finish | abandon
+               your own LLM session on a work item, recorded as an interactive run: the same scope, size, floor
+               and test gates as a worker at finish, push and PR only through the broker (factory session for
+               the flags; SET_UP.md)
   issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -317,6 +327,44 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       const { owner, name } = loaded.config.repo;
       console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
       return 0;
+    }
+    case "session": {
+      const action = parseSessionArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${SESSION_USAGE}`);
+        return 1;
+      }
+      const parts = await buildSessionParts(loaded);
+      try {
+        const { owner, name } = parts.config.repo;
+        const sessions = new Sessions({
+          store: parts.store,
+          sandbox: parts.sandbox,
+          broker: parts.broker,
+          scanner: parts.scanner,
+          auth: parts.auth,
+          clock: parts.clock,
+          config: parts.config,
+          log: new ConsoleLogger(parts.clock, "session"),
+          files: new FileSessionFiles(sessionsDir(loaded.stateDir)),
+          issues: githubIssues(parts.github, { owner, name }),
+          toolEnv: baseEnv(),
+          owner: sessionOwner(),
+        });
+        return await runSession(
+          {
+            sessions,
+            config: parts.config,
+            github: parts.github,
+            readSpec: (path) => readFile(path, "utf8"),
+            print: (line) => console.log(line),
+            stop: stopOnSignals(),
+          },
+          action,
+        );
+      } finally {
+        await parts.close();
+      }
     }
     case "canary": {
       const report = await runCanary(loaded);

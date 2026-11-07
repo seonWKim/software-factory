@@ -1,4 +1,8 @@
+import { mkdtempSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { Controller } from "../src/core/controller.js";
 import { SESSION_RELEASED } from "../src/core/policy.js";
@@ -8,6 +12,7 @@ import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import {
   FakeAuth, FakeBroker, FakeIssues, FakeSandbox, FakeSource, MemorySessionFiles, alice, cleanScanner, config, issueRef, mallory, silent,
+  waitFor,
 } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -559,5 +564,82 @@ describe("session flow", () => {
     expect((await h.runs(it0.id, "review")).map((x) => x.status)).toEqual(["queued"]);
     expect((await h.runs(it0.id, "triage")).map((x) => x.status)).toEqual(["cancelled"]);
     expect((await h.runs(it0.id, "interactive"))[0]).toMatchObject({ actor_id: "github:1" as UserId, transcript_url: "https://example.com/t" });
+  });
+});
+
+describe("factory session CLI", () => {
+  it("parses every command and flag; --tokens takes a whole number of 0 or more", () => {
+    expect(parseSessionArgs(["start", "12", "--spec", "s.json", "--transcript", "https://x/t", "--as", "alice"]))
+      .toEqual({ cmd: "start", target: "12", spec: "s.json", transcript: "https://x/t", as: "alice" });
+    expect(parseSessionArgs(["status"])).toEqual({ cmd: "status" });
+    expect(parseSessionArgs(["status", "wi_abc"])).toEqual({ cmd: "status", id: "wi_abc" });
+    expect(parseSessionArgs(["note", "tried", "the", "parser", "--tokens", "40"])).toEqual({ cmd: "note", text: "tried the parser", tokens: 40 });
+    expect(parseSessionArgs(["note", "wi_abc", "hello"])).toEqual({ cmd: "note", id: "wi_abc", text: "hello" });
+    expect(parseSessionArgs(["note", "--transcript", "https://x/t"])).toEqual({ cmd: "note", transcript: "https://x/t" });
+    expect(parseSessionArgs(["finish", "--tokens", "0"])).toEqual({ cmd: "finish", tokens: 0 });
+    expect(parseSessionArgs(["abandon", "wi_abc", "--tokens", "9"])).toEqual({ cmd: "abandon", id: "wi_abc", tokens: 9 });
+    for (const bad of [["finish", "--tokens", "-1"], ["finish", "--tokens", "1.5"], ["finish", "--tokens", "x"]]) {
+      expect(parseSessionArgs(bad)).toEqual({ error: "--tokens takes a whole number of 0 or more" });
+    }
+    expect(parseSessionArgs(["finish", "--spec", "x"])).toMatchObject({ error: expect.stringContaining("not a flag") });
+    expect(parseSessionArgs(["start"])).toMatchObject({ error: expect.any(String) });
+    expect(parseSessionArgs(["note"])).toMatchObject({ error: expect.any(String) });
+    expect(parseSessionArgs(["push"])).toMatchObject({ error: expect.stringContaining("unknown") });
+  });
+
+  it("keeps open sessions as owner-only files under the sessions folder", async () => {
+    const dir = join(mkdtempSync(join(tmpdir(), "sf-sessions-")), "sessions");
+    const files = new FileSessionFiles(dir);
+    expect(await files.list()).toEqual([]);
+    const f = { work_item_id: "wi_a1" as WorkItemId, run_id: "run_1" as Run["id"], token: 1, branch: "factory/wi_a1", folder: { id: "s", workdir: "/w", base_sha: null } };
+    await files.write(f);
+    expect(await files.read(f.work_item_id)).toEqual(f);
+    expect(await files.list()).toEqual([f]);
+    expect(statSync(join(dir, "wi_a1.json")).mode & 0o777).toBe(0o600);
+    await files.remove(f.work_item_id);
+    expect(await files.list()).toEqual([]);
+    await expect(files.read("../x" as WorkItemId)).resolves.toBeNull();
+  });
+
+  it("start maps the login to the GitHub account, prints the folder, keeps the lease until stopped; finish goes through the broker", async () => {
+    const h = await harness();
+    const it0 = await h.running(1);
+    const github = {
+      async request<T>(_m: string, path: string): Promise<T> {
+        if (path === "/users/alice") return { id: 1 } as T;
+        throw new Error(`404 ${path}`);
+      },
+    };
+    const printed: string[] = [];
+    const stop = new AbortController();
+    const deps = { sessions: h.sessions, config: h.cfg, github, readSpec: async () => SPEC_TEXT, print: (l: string) => printed.push(l), stop: stop.signal };
+    const started = runSession(deps, { cmd: "start", target: it0.id, as: "alice" });
+    await waitFor(async () => (await h.runs(it0.id, "interactive")).length === 1, "session start");
+    expect(printed).toContain("run folder: /wt/1");
+    expect((await h.runs(it0.id, "interactive"))[0]!.actor_id).toBe("github:1");
+    stop.abort();
+    expect(await started).toBe(0);
+    expect(printed.at(-1)).toMatch(/stopped keeping the lease/);
+
+    expect(await runSession({ ...deps, stop: new AbortController().signal }, { cmd: "finish" })).toBe(0);
+    expect(h.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
+    // An unknown login is refused before anything is read.
+    expect(await runSession(deps, { cmd: "start", target: "1", as: "nobody" })).toBe(1);
+  });
+
+  it("githubIssues returns an issue with its author's account, and null for a PR or a missing issue", async () => {
+    const github = {
+      async request<T>(_m: string, path: string): Promise<T> {
+        if (path === "/repos/o/r/issues/3") return { title: "T", body: null, html_url: "https://github.com/o/r/issues/3", user: { id: 9, login: "bob" } } as T;
+        if (path === "/repos/o/r/issues/4") return { title: "PR", user: { id: 9 }, pull_request: {} } as T;
+        throw new Error("404");
+      },
+    };
+    const issues = githubIssues(github, { owner: "o", name: "r" });
+    expect(await issues.issue(3)).toEqual({
+      source: { type: "github_issue", id: "o/r#3", link: "https://github.com/o/r/issues/3" }, title: "T", body: "", author: { provider: "github", subject: "9" },
+    });
+    expect(await issues.issue(4)).toBeNull();
+    expect(await issues.issue(5)).toBeNull();
   });
 });
