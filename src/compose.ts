@@ -293,16 +293,16 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
 const GITHUB_SOURCE = "github-issues";
 const GITHUB_FORGE = "github";
 
-/**
- * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
- * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
- * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
- */
 /** Whether factory.config.json's `plugins` names `forge` itself (any value, `"none"` included). */
 function forgeNamed(plugins: unknown): boolean {
   return plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
 }
 
+/**
+ * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
+ * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
+ * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
+ */
 export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
   if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
   const given = forgeNamed(plugins);

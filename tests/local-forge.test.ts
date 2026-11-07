@@ -90,7 +90,11 @@ async function harness(make: (branch: string) => { repo: string; head: string } 
   return { store, controller, forge, it, merge, repo, head, branch };
 }
 
-describe("local forge: merge", () => {
+// Real git work per test (about twenty git processes): fast alone, slower under a full parallel run on a CI runner.
+// Above the global 5 s testTimeout (vitest.config.ts, unchanged), as the other git-heavy test files do.
+const GIT_HEAVY = { timeout: 30_000 };
+
+describe("local forge: merge", GIT_HEAVY, () => {
   it("puts the branch's commits on the base branch and closes the item, with no GitHub call", async () => {
     const h = await harness();
     const { repo, head } = h;
@@ -102,6 +106,9 @@ describe("local forge: merge", () => {
     expect(main).not.toBe(mainBefore);
     expect(git(repo, "rev-list", "--parents", "-n", "1", main).split(" ").slice(1)).toEqual([mainBefore, head]);
     expect(git(repo, "show", "refs/heads/main:feature.txt")).toBe("feature");
+    // The commit and the base's reflog entry name the bot, never an identity git guessed from the host.
+    expect(git(repo, "log", "-1", "--format=%an <%ae>|%cn <%ce>", main)).toBe("bot <bot@example.com>|bot <bot@example.com>");
+    expect(git(repo, "reflog", "-1", "--format=%gn <%ge>", "refs/heads/main")).toBe("bot <bot@example.com>");
     const item = (await h.store.getWorkItem(h.it.id))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main });
     expect((await h.store.listStateChanges(h.it.id)).at(-1)).toMatchObject({ reason: "merged_by_command", actor: { kind: "user", id: WRITER } });
@@ -153,7 +160,7 @@ describe("local forge: merge", () => {
   });
 });
 
-describe("local forge: what it reads", () => {
+describe("local forge: what it reads", GIT_HEAVY, () => {
   it("reports a conflicting branch as not mergeable, and its size", async () => {
     const branch = "factory/wi_conflict";
     const { repo, head } = repoWithBranch(branch, "README.md", "theirs\n");

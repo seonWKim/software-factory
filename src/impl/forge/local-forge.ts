@@ -129,7 +129,7 @@ export class LocalForge implements Forge {
     const made = await this.git(["commit-tree", tree, "-p", base, "-p", head, "-m", message], who);
     if (made.exit_code !== 0) throw gitError("commit-tree", made);
     const commit = made.stdout.trim();
-    const moved = await this.git(["update-ref", "-m", message, `refs/heads/${input.base_ref}`, commit, base]);
+    const moved = await this.git(["update-ref", "-m", message, `refs/heads/${input.base_ref}`, commit, base], who);
     if (moved.exit_code !== 0) return { merged: false, reason: `\`${input.base_ref}\` moved during the merge; merge again` };
     return { merged: true, merge_sha: commit };
   }
