@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+/* Dark mode follows the `dark` class on <html>, set by the theme toggle (web/src/theme.ts). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Nothing moves under prefers-reduced-motion (design §9): state is still shown by words and colour. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
