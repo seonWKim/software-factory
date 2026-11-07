@@ -2621,6 +2621,8 @@ describe("migration 38 (sync leases, forge budget, thread actor)", () => {
     expect(STEP).toBeGreaterThan(0);
     const raw = new DatabaseSync(":memory:");
     for (const m of MIGRATIONS.slice(0, STEP - 1)) raw.exec(m);
+    // Only the thread row matters here: no work item row is built for it.
+    raw.exec("PRAGMA foreign_keys = OFF");
     raw.exec("INSERT INTO item_thread (work_item_id, marker, body, created_at) VALUES ('wi_1', 'm', 'b', 't')");
     raw.exec(MIGRATIONS[STEP - 1]!);
     expect(raw.prepare("SELECT marker, actor FROM item_thread").all().map((r) => ({ ...r }))).toEqual([{ marker: "m", actor: null }]);
