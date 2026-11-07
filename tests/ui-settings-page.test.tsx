@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView } from "../web/src/api.js";
-import { SettingsPage } from "../web/src/views/settings.js";
+
+// tsconfig.test.json checks this file without JSX (only tests/ui-shell.test.tsx is checked with web/tsconfig.json),
+// so the page is built with createElement and its .tsx module is loaded by a specifier the node check skips.
+const PAGE_MODULE = "../web/src/views/settings.js";
+const { SettingsPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { SettingsPage: FunctionComponent };
 
 // The Settings page (issue #236, design §8 and §9): a row per settable key with value, source and "applies at",
 // the PR-only keys read-only, the audit history, and writes as POST /api/v1/settings with the CSRF token, a
@@ -61,11 +68,7 @@ afterEach(() => {
 
 async function show() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={client}>
-      <SettingsPage />
-    </QueryClientProvider>,
-  );
+  render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
   return screen.findByRole("table", { name: "Settable keys" });
 }
 
