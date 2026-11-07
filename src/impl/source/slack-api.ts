@@ -121,7 +121,7 @@ export class HttpSlackApi implements SlackApi {
     if (!secret) throw new SlackApiError(method, `missing_secret_${token.toLowerCase()}`);
     const body = as === "json"
       ? JSON.stringify(args)
-      : new URLSearchParams(Object.entries(args).map(([k, v]) => [k, String(v)])).toString();
+      : new URLSearchParams(Object.entries(args).map(([k, v]): [string, string] => [k, String(v)])).toString();
     const res = await this.fetchFn(`${this.baseUrl}/${method}`, {
       method: "POST",
       headers: {
