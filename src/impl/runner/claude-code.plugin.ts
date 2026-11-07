@@ -7,5 +7,9 @@ export default definePlugin({
   name: "claude-code",
   default: true,
   secrets: MODEL_CREDENTIAL,
-  create: (c) => new ClaudeCodeRunner({ sandbox: c.sandbox, secrets: c.secrets, ...claudeDirs(c), models: c.loaded.file.models }),
+  create: (c) =>
+    new ClaudeCodeRunner({
+      sandbox: c.sandbox, secrets: c.secrets, ...claudeDirs(c), models: c.loaded.file.models,
+      ...(c.broker && c.scanner ? { broker: c.broker, scanner: c.scanner } : {}),
+    }),
 });

@@ -1,9 +1,13 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
-import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES } from "../../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, grantsRefusal } from "../../interfaces/agent-runner.js";
+import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import type { ToolBroker } from "../../interfaces/tool-broker.js";
+import { type ToolSocket, allowedBridgeTools, bridgeMcpConfig, bridgeTools, openToolSocket } from "./tool-bridge.js";
+import { grantedTools } from "./tool-gateway.js";
 
 export interface ClaudeCodeRunnerOptions {
   sandbox: Sandbox;
@@ -16,6 +20,18 @@ export interface ClaudeCodeRunnerOptions {
   claudeBin?: string;
   /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
   now?: () => Date;
+  /**
+   * Granted broker tools (docs/architecture.md §5): the broker the run's socket calls and the scanner its results
+   * pass. Both given: the runner exposes tools (a bridge per run with grants). Either absent: it refuses grants.
+   */
+  broker?: ToolBroker;
+  scanner?: EgressScanner;
+}
+
+/** The bridge of one run: its `--mcp-config` and the tool names `--allowedTools` adds. */
+export interface BridgeArgs {
+  config: Record<string, unknown>;
+  allowed: readonly string[];
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -151,9 +167,10 @@ function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
 }
 
 /** Builds the `claude -p` argument list. Exported for tests. */
-export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude"): string[] {
-  // Exactly the spec's tools, in its order: the runner adds none.
+export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs): string[] {
+  // Exactly the spec's tools, in its order: the runner adds none. Granted broker tools come only from the bridge.
   const tools = spec.tools.map((t) => t.name).join(",");
+  const allowed = [...(tools ? [tools] : []), ...(bridge?.allowed ?? [])].join(",");
   return [
     bin,
     "-p",
@@ -165,11 +182,12 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
     "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
     "--setting-sources", "project",
     "--strict-mcp-config",
+    ...(bridge ? ["--mcp-config", JSON.stringify(bridge.config)] : []),
     ...sessionArgs(spec),
     // Permission mode stays default: with the env scrub on, Claude Code forces it anyway. In -p mode,
     // anything outside --allowedTools is denied (no one can answer a prompt).
     "--tools", tools,
-    ...(tools ? ["--allowedTools", tools] : []),
+    ...(allowed ? ["--allowedTools", allowed] : []),
     "--model", model,
     "--append-system-prompt", spec.system_prompt,
     ...(spec.output_schema ? ["--json-schema", JSON.stringify(spec.output_schema)] : []),
@@ -187,8 +205,27 @@ export async function harnessCredential(secrets: SecretStore): Promise<HarnessCr
 export class ClaudeCodeRunner implements AgentRunner {
   constructor(private readonly opts: ClaudeCodeRunnerOptions) {}
 
+  /** True when built with a broker and a scanner (build() passes both). */
+  get exposes_tools(): boolean {
+    return Boolean(this.opts.broker && this.opts.scanner);
+  }
+
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
-    if (spec.tool_grants.length > 0) throw new Error("broker tools inside agent runs are not supported yet");
+    const refused = grantsRefusal(this, spec);
+    if (refused) return refused;
+    if (spec.tool_grants.length === 0) return this.runWith(spec);
+    // One socket per run, opened here in the worker process, closed when the run ends however it ends.
+    const gateway = grantedTools({ broker: this.opts.broker!, scanner: this.opts.scanner! }, spec);
+    const tools = bridgeTools(gateway.tools);
+    const socket: ToolSocket = await openToolSocket(gateway);
+    try {
+      return await this.runWith(spec, { config: bridgeMcpConfig(socket.path, tools), allowed: allowedBridgeTools(tools) });
+    } finally {
+      await socket.close();
+    }
+  }
+
+  private async runWith(spec: AgentRunSpec, bridge?: BridgeArgs): Promise<AgentRunResult> {
     const home = join(this.opts.homesDir, spec.run_id);
     await mkdir(join(home, "tmp"), { recursive: true });
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
@@ -203,7 +240,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const watch = new StallWatch(stallMs);
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin), {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
