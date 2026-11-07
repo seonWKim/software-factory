@@ -185,6 +185,15 @@ async function factorySection(c: Ctx): Promise<string> {
       );
     case "build_failed":
       return `${open("bad", `Revision ${esc(short(s.target_rev))} failed to build.`)} Still running <code>${esc(short(s.rev))}</code>; its settings stay in effect until main builds.</p></section>`;
+    case "migration_pending": {
+      const steps = s.pending && s.pending.length > 0 ? ` (pending: ${esc(s.pending.join(", "))})` : "";
+      const still = s.child_pid === null ? "No process runs meanwhile." : `Still running <code>${esc(short(s.rev))}</code> with its settings.`;
+      return `${open("warn", `Update to ${esc(short(s.target_rev))} waits for <code>npm run migrate</code>${steps}.`)} ${still}</p></section>`;
+    }
+    case "migration_draining":
+      return `${open("warn", `Migrating to ${esc(short(s.target_rev))}: new runs are paused.`)} Waiting for the running process to finish its in-flight runs (since ${since}).</p></section>`;
+    case "migration_ready":
+      return `${open("warn", `Migrating to ${esc(short(s.target_rev))}: no process runs.`)} The steps are being applied; the new revision starts when <code>npm run migrate</code> finishes (since ${since}).</p></section>`;
   }
 }
 

@@ -670,6 +670,18 @@ describe("ui: factory status banner", () => {
     expect((await get(await startOn(store, clock), "/")).body).not.toContain('<section id="factory">');
   });
 
+  it("an update waiting on npm run migrate names the steps and what still runs; draining and ready say no runs start", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const banner = async (over: Partial<FactoryStatus>) => section((await get(await startOn(store, clock, async () => status(over)), "/")).body, "factory");
+    const pending = await banner({ state: "migration_pending", target_rev: "bbbbbbb2222", pending: ["schema 12", "data project-ids"] });
+    expect(pending).toContain("Update to bbbbbbb waits for <code>npm run migrate</code> (pending: schema 12, data project-ids).");
+    expect(pending).toContain("Still running <code>aaaaaaa</code> with its settings.");
+    expect(await banner({ state: "migration_pending", target_rev: "aaaaaaa1111", child_pid: null, pending: [] })).toContain("No process runs meanwhile.");
+    expect(await banner({ state: "migration_draining", target_rev: "bbbbbbb2222" })).toContain("Migrating to bbbbbbb: new runs are paused.");
+    expect(await banner({ state: "migration_ready", target_rev: "bbbbbbb2222", child_pid: null })).toContain("The steps are being applied");
+  });
+
   it("reads the status file; a dead child pid reads as stopped; a missing file as null", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sf-ui-status-"));
     const file = join(dir, "supervisor.json");

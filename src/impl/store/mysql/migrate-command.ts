@@ -85,3 +85,16 @@ export async function migrateCommand(opts: MysqlOptions, mode: MigrateMode, prin
     await c.end();
   }
 }
+
+/** The pending schema step file names, read-only (for `migrate --status --json`); a refusal is one entry. */
+export async function pendingStepNames(opts: MysqlOptions): Promise<string[]> {
+  const c = await mysql.createConnection({ host: opts.host, port: opts.port, user: opts.user, password: opts.password, database: opts.database });
+  try {
+    const s = await new MysqlMigrations(c).status();
+    if (s.state !== null && s.state > s.latest) return [];
+    if (s.refusal) return [`refused: ${s.refusal}`];
+    return s.pending.map((p) => p.label);
+  } finally {
+    await c.end();
+  }
+}
