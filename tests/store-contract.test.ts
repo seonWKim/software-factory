@@ -1,13 +1,24 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { RunId, RunKind, UserId, WorkItemId } from "../src/core/types.js";
-import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
+import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
+import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
-import { BACKENDS, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
+import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
 
-describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
+describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
+  const make = makeBackend;
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
       const { store } = await make();
@@ -1547,5 +1558,200 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       for (const v of ["1", "2", "3"]) await store.setSettingOverride({ key: "workers", project: "", value: v, actor });
       expect((await store.listSettingChanges(2)).map((c) => c.new_value)).toEqual(["3", "2"]);
     });
+  });
+
+  describe("worker processes (migration 19)", () => {
+    const report = (over: Partial<WorkerProcessReport> = {}): WorkerProcessReport => ({
+      process_id: "host-a:42", pid: 42, host: "host-a", slots: 2, max_slots: 4, busy: 1, index_base: 0,
+      started_at: "2026-01-01T00:00:00.000Z" as Timestamp, ...over,
+    });
+
+    it("a report is stored with reported_at = now; a repeat write for the same process replaces the row", async () => {
+      const { store, clock } = await make();
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([]);
+      const first = await store.reportWorkerProcess(report());
+      expect(first).toEqual({ ...report(), reported_at: clock.now().toISOString() });
+      clock.advance(1000);
+      await store.reportWorkerProcess(report({ slots: 3, busy: 3 }));
+      expect(await store.listWorkerProcesses(LEASE)).toEqual([{ ...report({ slots: 3, busy: 3 }), reported_at: clock.now().toISOString() }]);
+    });
+
+    it("lists one row per process, by host then pid; a row older than max_age_ms is not listed", async () => {
+      const { store, clock } = await make();
+      await store.reportWorkerProcess(report({ process_id: "host-b:7", host: "host-b", pid: 7 }));
+      clock.advance(LEASE / 2);
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      await store.reportWorkerProcess(report());
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42", "host-b:7"]);
+      clock.advance(LEASE / 2);
+      // host-b:7 is exactly LEASE old: still live.
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(3);
+      clock.advance(1);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9", "host-a:42"]);
+    });
+
+    it("remove deletes only that process's row; removing again reports false", async () => {
+      const { store } = await make();
+      await store.reportWorkerProcess(report());
+      await store.reportWorkerProcess(report({ process_id: "host-a:9", pid: 9 }));
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(true);
+      expect(await store.removeWorkerProcess("host-a:42")).toBe(false);
+      expect((await store.listWorkerProcesses(LEASE)).map((p) => p.process_id)).toEqual(["host-a:9"]);
+    });
+
+    it("concurrent first writes for one process leave one row", async () => {
+      const { store } = await make();
+      await Promise.all([store.reportWorkerProcess(report({ busy: 0 })), store.reportWorkerProcess(report({ busy: 2 }))]);
+      const rows = await store.listWorkerProcesses(LEASE);
+      expect(rows).toHaveLength(1);
+      expect([0, 2]).toContain(rows[0]!.busy);
+    });
+  });
+  // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
+  // 18 on both backends); notes and the last finish live in the run's input.
+  describe("interactive sessions", () => {
+    const person = { kind: "user" as const, id: "github:5" as UserId };
+    const seed = async (store: FactoryStore, n: number, paths: string[]) => {
+      const { item } = await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { allowed_paths: paths } });
+      if (!r.ok) throw new Error(r.reason);
+      return r.item;
+    };
+    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }) => store.startSession({
+      id: it.id, expected_version: it.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: { spec_source: "owner" },
+      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t",
+    });
+
+    it("startSession writes one running interactive run and the transition and cancels queued triage; other runs read the fields as null", async () => {
+      const { store } = await make();
+      const it0 = await seed(store, 1, ["src/a/"]);
+      expect((await store.listRuns(it0.id))[0]).toMatchObject({ actor_id: null, transcript_url: null, session_tokens: null, session_notes: [], last_finish: null });
+      const r = await start(store, it0);
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.run).toMatchObject({ kind: "interactive", status: "running", attempt: 1, actor_id: "github:5", transcript_url: "https://example.com/t", lease: { owner: "session:h:1", token: 1 } });
+      expect(r.state_change).toMatchObject({ reason: "session_started", actor: person, detail: { spec_source: "owner", run_id: r.run.id } });
+      expect([r.item.stage, r.cancelled.length]).toEqual(["RUNNING", 1]);
+      expect((await store.listRuns(it0.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "cancelled"], ["interactive", "running"]]);
+      expect((await store.listRunsByKind("interactive", ["running"])).map((x) => x.id)).toEqual([r.run.id]);
+      // Refused with nothing written: stale version, open session, implement-type run, overlap with another item's session.
+      expect(await start(store, { id: it0.id, version: it0.version })).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect(await start(store, r.item)).toMatchObject({ ok: false, reason: "session_open", run_id: r.run.id });
+      const it1 = await seed(store, 2, ["src/b/"]);
+      const q = await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "implement", idempotency_key: "i2" } });
+      if (!q.ok) throw new Error(q.reason);
+      expect(await start(store, q.item)).toMatchObject({ ok: false, reason: "implement_run", run_id: q.enqueued!.id });
+      const it2 = await seed(store, 3, ["src/a/x.ts"]);
+      const before = JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)]);
+      expect(await start(store, it2)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"] });
+      expect(JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)])).toBe(before);
+    });
+
+    it("updateSession writes notes, tokens, transcript and the last finish only while the lease is held", async () => {
+      const { store } = await make();
+      const r = await start(store, await seed(store, 1, ["src/a/"]));
+      if (!r.ok) throw new Error(r.reason);
+      await store.updateSession(r.run.id, 1, { note: "first" });
+      const u = await store.updateSession(r.run.id, 1, { note: "second", tokens: 120, transcript_url: "https://example.com/u", last_finish: { ok: false, reasons: ["tests"], pr_number: null } });
+      if (!u.ok) throw new Error(u.reason);
+      expect(u.run).toMatchObject({ session_tokens: 120, transcript_url: "https://example.com/u", last_finish: { ok: false, reasons: ["tests"], pr_number: null } });
+      expect(u.run.session_notes.map((n) => n.text)).toEqual(["first", "second"]);
+      expect(await store.updateSession(r.run.id, 2, { tokens: 1 })).toEqual({ ok: false, reason: "lease_lost" });
+      await store.completeRun(r.run.id, 1, { status: "failed", error_code: "abandoned", detail: "", infra: false });
+      expect(await store.updateSession(r.run.id, 1, { tokens: 1 })).toEqual({ ok: false, reason: "lease_lost" });
+      expect((await store.getRun(r.run.id))!.session_tokens).toBe(120);
+    });
+
+    it("claims never take a session or an implement run overlapping it; the reaper fails an expired session with session_lost", async () => {
+      const { store, clock } = await make();
+      const s = await start(store, await seed(store, 1, ["src/a/"]));
+      if (!s.ok) throw new Error(s.reason);
+      const it1 = await seed(store, 2, ["src/a/y.ts"]);
+      await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i2" } });
+      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE })).toBeNull();
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(5)).toEqual([s.run.id]);
+      expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
+      // The session start opened the run's one attempt record; the reaper closed it with the run's code.
+      expect((await store.listRunAttempts(s.item.id)).map((a) => [a.attempt, a.status, a.error_code, a.failure_class])).toEqual([
+        [1, "failed", "session_lost", "task"],
+      ]);
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
+    });
+  });
+});
+
+describe("migration 19 on an existing SQLite database", () => {
+  it("adds worker_processes and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig19-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 18; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)").run(
+      "workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z",
+    );
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+      expect(await store.getCursor("poll")).toBe("c1");
+      await store.reportWorkerProcess({
+        process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+      });
+      expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 19 (worker-processes)", () => {
+  const file = "0019-worker-processes.sql";
+  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("is the repo's step after 18, a .sql file", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "worker-processes")).toMatchObject({ number: 19, from: 18, kind: "sql", file });
+  });
+
+  it("creates the same columns as SQLite migration 19, idempotently (IF NOT EXISTS)", () => {
+    const columns = (text: string) =>
+      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|CHAR)/gm)].map((m) => m[1]).sort();
+    const sqlite = MIGRATIONS[18]!;
+    expect(sqlite).toContain("CREATE TABLE worker_processes");
+    expect(columns(sql())).toEqual(columns(sqlite));
+    expect(columns(sqlite)).toEqual(["busy", "host", "index_base", "max_slots", "pid", "process_id", "reported_at", "slots", "started_at"]);
+    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS worker_processes");
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-18 database: worker_processes added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    // Every step before 19 applied, as on a database from before it.
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(18) }).apply(() => undefined);
+    await conn.query(
+      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
+    );
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    const s = await new MysqlMigrations(conn).apply(() => undefined);
+    expect(s.pending[0]?.number).toBe(19);
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+    expect(await store.getCursor("poll")).toBe("c1");
+    await store.reportWorkerProcess({
+      process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
+    });
+    expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
   });
 });

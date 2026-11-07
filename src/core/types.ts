@@ -156,8 +156,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
  * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
+ * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
+ * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -166,7 +168,15 @@ export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" |
 export interface RunInput {
   notes?: string;
   wip?: WipRef;
+  /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
+  session?: SessionRecord;
 }
+
+/** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
+export interface SessionRecord { notes: SessionNote[]; last_finish: SessionFinish | null }
+export interface SessionNote { at: Timestamp; text: string }
+/** One `session finish` attempt: passed and pushed (`ok`), or the reasons it was refused. */
+export interface SessionFinish { at: Timestamp; ok: boolean; reasons: string[]; pr_number: number | null }
 
 /**
  * An implement run's commits kept on the forge after its push or PR failed (design §5 Restarts), on `branch`
@@ -302,6 +312,16 @@ export interface Run {
   session_id: string | null;
   /** Where a paused run's work is (folder, WIP commit, bundle), written by the pause; null when never paused. */
   resume: RunResume | null;
+  /**
+   * An interactive run's session record (design §5, 2026-11-01): the person's user ID (never a display name), the
+   * transcript URL, the latest reported token total (added to token_cost once, when the run ends), the notes and the
+   * last finish. Null (notes empty) on every other run and on older rows.
+   */
+  actor_id: UserId | null;
+  transcript_url: string | null;
+  session_tokens: number | null;
+  session_notes: SessionNote[];
+  last_finish: SessionFinish | null;
   created_at: Timestamp;
   /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;
@@ -338,6 +358,11 @@ export function outcomeTokens(outcome: RunOutcome | null): number {
     return Number.isFinite(t) && t >= 0 ? t : 0;
   }
   return outcome.usage ? usageTokens(outcome.usage) : 0;
+}
+
+/** The tokens a finished run adds to token_cost: an interactive run's reported total, else `outcomeTokens`. */
+export function runTokenCount(run: Pick<Run, "kind" | "outcome" | "session_tokens">): number {
+  return run.kind === "interactive" ? (run.session_tokens ?? 0) : outcomeTokens(run.outcome);
 }
 
 /** The harness cost of an outcome in USD, or null when unknown (no usage stored, or the harness gave none). */

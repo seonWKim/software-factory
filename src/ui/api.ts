@@ -276,14 +276,52 @@ async function queue(c: ApiCtx) {
   };
 }
 
-/** Each current lease owner of a running run once, by id, with how many runs it holds. */
+/**
+ * `workers`: each current lease owner of a running run once, by id, with how many runs it holds. `processes`:
+ * one entry per live worker process (its store row is at most lease_ms old), idle ones included, with its slot
+ * counts and the running runs its worker loops hold (lease owner `<process_id>:<n>`). The processes read is a
+ * report, never a gate: when it fails (e.g. a MySQL database without the worker_processes step) the endpoint
+ * still answers, with `processes: []` and the error text in `processes_error`.
+ */
 async function workers(c: ApiCtx) {
+  const running = await c.d.store.listRunsByStatus(["running"], LIST_LIMIT);
   const count = new Map<string, number>();
-  for (const r of await c.d.store.listRunsByStatus(["running"], LIST_LIMIT)) {
+  for (const r of running) {
     if (r.lease) count.set(r.lease.owner, (count.get(r.lease.owner) ?? 0) + 1);
   }
   const out = [];
   for (const [owner, running] of count) out.push({ owner: (await c.text(owner))!, running });
   out.sort((a, b) => (a.owner < b.owner ? -1 : a.owner > b.owner ? 1 : 0));
-  return { as_of: c.now.toISOString(), workers: out };
+
+  let live: Awaited<ReturnType<typeof c.d.store.listWorkerProcesses>>;
+  try {
+    live = await c.d.store.listWorkerProcesses(c.d.lease_ms);
+  } catch (err) {
+    const processes_error = await c.text(err instanceof Error ? err.message : String(err));
+    return { as_of: c.now.toISOString(), workers: out, processes: [], processes_error };
+  }
+  const processes = [];
+  for (const p of live) {
+    const runs = [];
+    for (const r of running) {
+      const owner = r.lease?.owner;
+      if (!owner?.startsWith(`${p.process_id}:`)) continue;
+      runs.push({ id: r.id, kind: r.kind, work_item_id: r.work_item_id, worker_id: (await c.text(owner))!, started_at: r.started_at });
+    }
+    processes.push({
+      process_id: (await c.text(p.process_id))!,
+      pid: p.pid,
+      host: (await c.text(p.host))!,
+      slots: p.slots,
+      max_slots: p.max_slots,
+      busy: p.busy,
+      /** Claiming slots with no run now; 0 while draining. */
+      idle: Math.max(0, p.slots - p.busy),
+      index_base: p.index_base,
+      started_at: p.started_at,
+      reported_at: p.reported_at,
+      runs,
+    });
+  }
+  return { as_of: c.now.toISOString(), workers: out, processes };
 }

@@ -192,8 +192,41 @@ describe("factory stats", () => {
       },
     });
     await collectStats(spy, config);
-    expect(calls).toEqual(["listStatsRecords"]);
+    expect(calls).toEqual(["listStatsRecords", "listRunsByKind"]);
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe("factory stats: interactive sessions (design §5, 2026-11-01)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  const person = { kind: "user" as const, id: "github:1" as UserId };
+
+  /** One session on a new item, its tokens reported, then ended `end` (or left open with null). */
+  async function session(store: Store, n: number, tokens: number, end: "succeeded" | "failed" | null) {
+    const { item } = await store.createWorkItem(issue(n), system);
+    const patch = { stage: "RUNNING" as const, allowed_paths: [`src/${n}/`] };
+    const r = await store.startSession({ id: item.id, expected_version: 1, actor: person, patch, reason: "session_started", detail: {}, owner: "session:h:1", lease_ms: 60_000, transcript_url: null });
+    if (!r.ok) throw new Error(r.reason);
+    await store.updateSession(r.run.id, 1, { tokens });
+    if (end === "succeeded") await store.completeRun(r.run.id, 1, { status: "succeeded", summary: "", data: { pr_number: n } });
+    if (end === "failed") await store.completeRun(r.run.id, 1, { status: "failed", error_code: "abandoned", detail: "", infra: false });
+  }
+
+  it("counts finished interactive runs and their tokens, in text and in --json, and stays read-only", async () => {
+    const { store } = await newStore();
+    await seedAll(store);
+    await session(store, 20, 300, "succeeded");
+    await session(store, 21, 50, "failed");
+    await session(store, 22, 999, null); // still open: not counted
+    const before = JSON.stringify(await store.listWorkItems(1000));
+    const report = await collectStats(store, config);
+    expect(formatStatsText(report)).toContain("interactive sessions: 2 finished, 350 tokens reported");
+    const json = JSON.stringify(report);
+    expect(JSON.parse(json).interactive).toEqual({ runs: 2, tokens: 350 });
+    expect(json).not.toMatch(/github:|wi_|run_/);
+    expect(report.tiers[0]).toMatchObject({ tier: 1, items: 2, token_cost: 150 }); // the tier rows are unchanged by sessions
+    expect(JSON.stringify(await store.listWorkItems(1000))).toBe(before);
+    expect((await collectStats((await newStore()).store, config)).interactive).toEqual({ runs: 0, tokens: 0 });
   });
 });
 

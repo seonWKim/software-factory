@@ -137,6 +137,23 @@ Items whose allowed paths overlap still wait for each other, so their PRs do not
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
 
+### Your own LLM session (`factory session`)
+
+Work you do with an LLM in your own terminal can go through the factory too, as one `interactive` run on the work item: a lease, your user ID as its actor, your token count and notes, and a worker's gates before anything is pushed. A worker never claims an implement or update run whose item overlaps your open session, and a session does not start over a running one.
+
+```bash
+npm run --silent factory -- session start 12 [--spec spec.json] [--transcript <url>] [--as <github login>]   # issue #12 or a wi_… id
+npm run --silent factory -- session status | note "<text>" [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
+```
+
+- `start` creates the work item if the issue has none (only with `--spec`), records the run, makes a run folder on the item's branch and prints its path: work and commit there. It stays in the foreground and keeps the lease; Ctrl-C stops it, the lease expires, the reaper ends the run (`session_lost`) and the item is released. `--spec <file>`: your own spec for a NEW item, in the triage output format (checked by the same parser; no phases); the queued triage run is cancelled. `--transcript <url>`: an http or https link, stored after the leak scan. `--as <login>`: your GitHub login (default `repo.owner`), mapped to your user ID as for commands; you need write permission. Refused, with nothing changed, for an item that is closed, in review, waiting for `/approve`, without allowed paths, with a queued or running implement or update run or an open session, or overlapping another item's running implement run.
+- `status` prints the item, the run, the lease expiry and the last `finish` result. `note <text>` stores a note after the leak scan (a flagged note is refused with the rule name). `--tokens <n>` (a whole number of 0 or more, on `note`, `finish`, `abandon`) sets your latest total, added to the item's `token_cost` once when the run ends.
+- `finish` runs the scope gate, the size gate (the same `max_diff_lines` and `max_diff_files` as a worker), the floor check and `repo.test_command` in the run folder. Any failure lists the reasons, keeps the session open and pushes nothing; a floor hit is refused (a session cannot raise the tier). When all pass, the factory's broker pushes the branch and opens the PR, and the item goes to review; running `finish` again never opens a second PR or review.
+- `abandon` ends the run as failed (`abandoned`); the pushed branch and the run folder are kept. A session that ended without a PR leaves the item `RUNNING`, blocked on you with `session_released`, nothing queued; `session start` takes it up again.
+- With no work item id first, `status`, `note`, `finish` and `abandon` use the only open session on this machine (recorded under `<state_dir>/sessions/`).
+
+Your LLM runs as you, with your access, outside the factory's sandbox; the gates at `finish` are the factory's check. A `git push` you run yourself bypasses them.
+
 ### Per-project settings
 
 Five settings are gates that can differ per project: `max_attempts`, `max_diff_lines`, `max_diff_files`, `budgets` and `floors`. Put the global values either at top level (as the checked-in config does) or in `defaults`, not both: the same key in both places stops startup. Then tighten them for one project under `projects`, keyed by the configured repo's `owner/name`:

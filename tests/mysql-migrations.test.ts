@@ -17,7 +17,7 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
 import { type Run, type RunUsage, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { MYSQL_URL, issue, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
+import { MYSQL_URL, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
 
 const REPO = process.cwd();
@@ -49,22 +49,21 @@ describe("SQLite behaves as before", () => {
     expect(v.applied).toBe(v.latest);
   });
 
-  it("run attempts (migration 18) backfill one record per claimed run from the run row, none for unclaimed runs", async () => {
+  it("run attempts (migration 20) backfill one record per claimed run from the run row, none for unclaimed runs", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "sf-sqlite-attempts-")), "factory.db");
     const clock = new FakeClock();
     const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
     await seed.migrate();
     const ids = await seedRuns(seed, clock);
     await seed.close();
-    // Back to state 17, as a database from before this change: no run_attempts table, its runs as they were.
+    // Back to state 19, as a database from before this change: no run_attempts table, its runs as they were.
     const raw = new DatabaseSync(path);
-    raw.exec(`DROP TABLE run_attempts; DELETE FROM schema_migrations WHERE version > 17;`);
+    raw.exec(`DROP TABLE run_attempts; DELETE FROM schema_migrations WHERE version > 19;`);
     raw.close();
-    expect(MIGRATIONS.length).toBe(18);
 
     const store = new SqlFactoryStore(new SqliteDriver(path), clock);
     await store.migrate();
-    expect(await store.schemaVersion()).toEqual({ applied: 18, latest: 18 });
+    expect(await store.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     const runs = (await Promise.all(ids.map((id) => store.listRuns(id)))).flat();
     const attempts = (await Promise.all(ids.map((id) => store.listRunAttempts(id)))).flat();
     expect(attempts.map((a) => a.run_id).sort()).toEqual(runs.filter((r) => r.attempt >= 1).map((r) => r.id).sort());
@@ -99,6 +98,33 @@ describe("SQLite behaves as before", () => {
 // --- MySQL ------------------------------------------------------------------------------------------------
 
 describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
+  it("step 0020 backfills run attempts the same way as SQLite migration 20: pending, then applied", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const c = await db.connect();
+    await new MysqlMigrations(c).apply(() => undefined);
+    const clock = new FakeClock();
+    const seed = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => seed.close());
+    const ids = await seedRuns(seed, clock);
+    // Back to state 19, as a database from before this step: no run_attempts table, its runs as they were. The
+    // steps dir stops at 20, so no later step runs again.
+    await c.query("DROP TABLE run_attempts");
+    await c.query("UPDATE schema_state SET state = 19 WHERE id = 1");
+    const dir = mysqlStepsUpTo(20);
+    expect((await new MysqlMigrations(c, { dir }).status()).pending.map((p) => p.label)).toEqual(["0020-run-attempts.sql"]);
+    await new MysqlMigrations(c, { dir }).apply(() => undefined);
+    expect(await state(c)).toBe(20);
+
+    const runs = (await Promise.all(ids.map((id) => seed.listRuns(id)))).flat();
+    const attempts = (await Promise.all(ids.map((id) => seed.listRunAttempts(id)))).flat();
+    expect(attempts.map((a) => a.run_id).sort()).toEqual(runs.filter((r) => r.attempt >= 1).map((r) => r.id).sort());
+    for (const r of runs.filter((x) => x.attempt >= 1)) expect(attempts.find((a) => a.run_id === r.id), r.id).toEqual(expectedBackfill(r));
+    // Safe to rerun (a failure midway leaves the state at 19): running the step again adds nothing.
+    await c.query("UPDATE schema_state SET state = 19 WHERE id = 1");
+    await new MysqlMigrations(c, { dir }).apply(() => undefined);
+    expect((await Promise.all(ids.map((id) => seed.listRunAttempts(id)))).flat()).toHaveLength(attempts.length);
+  });
+
   it("existing database at the current schema: creates schema_state, records 11, runs no schema or data statements", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
@@ -307,7 +333,7 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
 // --- helpers --------------------------------------------------------------------------------------------
 
 /**
- * Runs in every state a run row can be in before migration 18, one item each: queued (never claimed), succeeded,
+ * Runs in every state a run row can be in before migration 20, one item each: queued (never claimed), succeeded,
  * failed (task with usage, rate-limited, infra), running, paused, reaped and requeued, cancelled while running, and
  * a manual run (attempt 0). Returns the item ids.
  */

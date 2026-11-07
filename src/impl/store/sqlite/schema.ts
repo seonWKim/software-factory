@@ -298,7 +298,30 @@ export const MIGRATIONS: readonly string[] = [
     at           TEXT NOT NULL
   );
   `,
-  // 18: run attempts (design §6, issue #207). One row per claim of a run, the claim that resumes a paused run
+  // 18: interactive sessions (design §5, 2026-11-01, issue #112): an interactive run's person (user ID), transcript
+  // URL and reported token total. Every other run, old rows included, keeps all three NULL.
+  `
+  ALTER TABLE runs ADD COLUMN actor_id TEXT;
+  ALTER TABLE runs ADD COLUMN transcript_url TEXT;
+  ALTER TABLE runs ADD COLUMN session_tokens INTEGER;
+  `,
+  // 19: worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
+  // `<host>:<pid>`, replaced each tick and deleted on a clean stop. Readers skip rows older than lease_ms.
+  `
+  CREATE TABLE worker_processes (
+    process_id   TEXT PRIMARY KEY,
+    pid          INTEGER NOT NULL,
+    host         TEXT NOT NULL,
+    slots        INTEGER NOT NULL,
+    max_slots    INTEGER NOT NULL,
+    busy         INTEGER NOT NULL,
+    index_base   INTEGER NOT NULL,
+    started_at   TEXT NOT NULL,
+    reported_at  TEXT NOT NULL
+  );
+  CREATE INDEX worker_processes_reported ON worker_processes (reported_at);
+  `,
+  // 20: run attempts (design §6, issue #207). One row per claim of a run, the claim that resumes a paused run
   // included; `lease_token` is the claim's fencing token, so only that claim's completion closes its row. Never
   // returned by the store. Backfill: every run with attempt >= 1 gets one row numbered by its attempt, from the run
   // row (status, start, finish, lease owner, outcome). A queued run with attempt >= 1 was paused (`paused`) or
