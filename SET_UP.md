@@ -121,7 +121,7 @@ Who may act: local commands (the CLI and the local UI) are checked by the local 
 |---|---|---|
 | Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
 | Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
-| May approve, retry, revise, reject | The owner | The owner and every `approver` |
+| May approve, retry, revise, reject, resolve | The owner | The owner and every `approver` |
 | May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
 | `anonymous` | Read and create only: never the owner, never an approver | The same |
 
@@ -134,11 +134,12 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+- `factory resolve <id> [notes]`: Store `/resolve` for the item; the controller applies it.
 - `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
 - `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
 - `factory users remove <user_id>`: Owner only: remove a local user's role.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
 ### Status labels
 
