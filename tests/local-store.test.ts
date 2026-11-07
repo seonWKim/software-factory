@@ -276,6 +276,23 @@ describe("SQLite migration 23: app command request handling", () => {
   });
 });
 
+describe("SQLite migration 23 run again", () => {
+  it("a database whose recorded version was set back below 23 migrates again and keeps handled_at and refusal", async () => {
+    const driver = new SqliteDriver(":memory:");
+    const store = new SqlFactoryStore(driver, new FakeClock());
+    await store.migrate();
+    const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: {} });
+    await store.markAppCommandRequest(request.seq, "refused");
+    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
+
+    await store.migrate();
+    expect(await driver.schemaVersion()).toEqual({ applied: HANDLING_STEP, latest: HANDLING_STEP });
+    expect(await store.getAppCommandRequest(request.seq)).toMatchObject({ refusal: "refused" });
+    expect((await sqliteColumns(driver)).map((c) => c.name).filter((n) => n === "handled_at")).toHaveLength(1);
+    await store.close();
+  });
+});
+
 describe("MySQL step 0023: app command request handling", () => {
   it("is the last step, a .sql file after 0022, that adds handled_at and refusal", () => {
     const steps = readSteps(STEPS_DIR, INLINE_STEPS);
