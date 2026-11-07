@@ -272,7 +272,7 @@ graph LR
 
 ## 6. Review notes: where the architecture could improve
 
-Open proposals and known pressure points, for the reviewer to weigh. Each RFC is in `~/Desktop/software-factory-rfcs/` (not in this repo).
+Open proposals and known pressure points, for the reviewer to weigh. The RFCs are the owner's design proposals, kept outside this repository; the numbers below are their references. An accepted RFC becomes factory issues.
 
 | Area | Today | Proposal |
 |---|---|---|
