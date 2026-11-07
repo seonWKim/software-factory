@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
+import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -197,6 +198,18 @@ export interface Loaded {
   model_by: ModelTable;
 }
 
+/** The placeholder in prompts/*.md that names the project's pre-push checks. */
+export const CHECK_COMMANDS_PLACEHOLDER = "{{check_commands}}";
+
+/**
+ * A prompt file's text with the check-commands placeholder filled, once at load: each command of `checkCommands`
+ * (so `repo.check_commands`, else `test_command`) in backticks, in order.
+ */
+export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
+  const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
+}
+
 /**
  * `codeRoot` is where config and prompts are read (the updater's runtime copy); `root` is where state lives.
  * `platform` picks the platform-dependent plugin defaults (docs/plugins.md); the host's unless a test passes one.
@@ -290,12 +303,13 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
+  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo);
   const prompts: Prompts = {
-    triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
-    implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
-    review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
+    triage: await readPrompt("triage"),
+    implement: await readPrompt("implement"),
+    review: await readPrompt("review"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
+  const resolvePrompt = await readPrompt("resolve").catch((err: NodeJS.ErrnoException) => {
     if (err.code === "ENOENT") return undefined;
     throw err;
   });
