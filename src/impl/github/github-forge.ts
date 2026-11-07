@@ -1,5 +1,5 @@
 import type { WorkStatus } from "../../core/status-label.js";
-import type { SourceRef } from "../../core/types.js";
+import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
 import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
@@ -87,7 +87,7 @@ interface Cursor {
   history_since?: string | null;
 }
 
-/** Check-run pages read per prChecks call, 100 each. */
+/** Check-run pages read per prCheckResults call, 100 each. */
 const CHECK_PAGES = 3;
 /** Check-run conclusions that do not fail the gate. */
 const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
@@ -327,14 +327,27 @@ export class GitHubForge implements Forge {
   }
 
   /**
-   * The checks on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per
-   * name, GitHub's default) and its commit statuses (older integrations). Three read-only GETs and at most
-   * CHECK_PAGES pages of check runs. A check run with a conclusion other than success, neutral or skipped,
-   * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
+   * The CI gate's summary of prCheckResults: any failed check fails it (with the failed names), else any pending
+   * one keeps it pending, else (none at all included) it passed. Under the budget threshold the gate waits
+   * (pending) and a later pass reads the checks.
    */
   async prChecks(pr_number: number): Promise<PrChecks> {
-    // Under the budget threshold the gate waits (pending) and a later pass reads the checks.
     if (this.client.lowBudget()) return { state: "pending" };
+    const results = await this.prCheckResults(pr_number);
+    const failed = results.filter((r) => r.result === "failed").map((r) => r.name);
+    if (failed.length) return { state: "failed", failed };
+    return results.some((r) => r.result === "pending") ? { state: "pending" } : { state: "passed" };
+  }
+
+  /**
+   * Each check on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per name,
+   * GitHub's default), then its commit statuses (older integrations). Three read-only GETs and at most CHECK_PAGES
+   * pages of check runs. A check run with a conclusion other than success, neutral or skipped, and a status in
+   * `failure` or `error`, is failed; any unfinished one is pending. Under the budget threshold it reads nothing
+   * and throws, so the review prompt says the results could not be read.
+   */
+  async prCheckResults(pr_number: number): Promise<PrCheckResult[]> {
+    if (this.client.lowBudget()) throw new Error("GitHub request budget low: checks not read");
     const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${this.base}/pulls/${pr_number}`);
     const sha = encodeURIComponent(pull.head.sha);
     const runs: GhCheckRun[] = [];
@@ -345,18 +358,15 @@ export class GitHubForge implements Forge {
       if (r.check_runs.length < 100 || runs.length >= r.total_count) break;
     }
     const status = await this.client.request<{ statuses: GhStatus[] }>("GET", `${this.base}/commits/${sha}/status?per_page=100`);
-
-    const failed: string[] = [];
-    let pending = false;
-    for (const r of runs) {
-      if (r.status !== "completed") pending = true;
-      else if (!PASSING_CONCLUSIONS.has(r.conclusion ?? "")) failed.push(r.name);
-    }
-    for (const s of status.statuses) {
-      if (s.state === "pending") pending = true;
-      else if (s.state !== "success") failed.push(s.context);
-    }
-    if (failed.length) return { state: "failed", failed };
-    return pending ? { state: "pending" } : { state: "passed" };
+    return [
+      ...runs.map((r): PrCheckResult => ({
+        name: r.name,
+        result: r.status !== "completed" ? "pending" : PASSING_CONCLUSIONS.has(r.conclusion ?? "") ? "passed" : "failed",
+      })),
+      ...status.statuses.map((s): PrCheckResult => ({
+        name: s.context,
+        result: s.state === "pending" ? "pending" : s.state === "success" ? "passed" : "failed",
+      })),
+    ];
   }
 }

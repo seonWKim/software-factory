@@ -176,6 +176,18 @@ export interface RunInput {
   session?: SessionRecord;
   /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
   improve?: ImproveWindow;
+  /**
+   * A review run's CI results (design §4, issue #223), read through the forge when the review was queued: one
+   * entry per check (empty: no check ran), null when the read failed. Absent (an older row, a human `/retry`):
+   * not read.
+   */
+  ci_checks?: PrCheckResult[] | null;
+}
+
+/** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */
+export interface PrCheckResult {
+  name: string;
+  result: "passed" | "failed" | "pending";
 }
 
 /** The finished runs an improve report covers: finished_at in [window_start, window_end). */
