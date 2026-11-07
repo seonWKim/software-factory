@@ -469,8 +469,8 @@ describe("Floor item links (issue #228)", () => {
 // ---- Why an item waits (issue #310): one sentence from the API, #N linked, on Floor, Items, Queue and the item page ----
 describe("why an item waits (issue #310)", () => {
   const REF_URL = "https://github.com/o/r/issues/";
-  const dep = { code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13], ref_url: REF_URL };
-  const held = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: REF_URL };
+  const dep = { code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item" as const, refs: [12, 13], ref_url: REF_URL };
+  const held = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item" as const, refs: [92], ref_url: REF_URL };
   const refLinks = (el: HTMLElement) => [...el.querySelectorAll("[data-why] a")].map((a) => [a.textContent, a.getAttribute("href")]);
 
   function withWhy(run: () => Promise<void>) {
