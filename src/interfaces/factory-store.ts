@@ -13,6 +13,8 @@ import type {
   Tier,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveWindow,
   Run,
   RunAttempt,
   RunId,
@@ -122,6 +124,14 @@ export interface NewRun {
   not_before?: Timestamp | null;
   /** Stored with the run for the worker to read (e.g. `/resolve` notes). Absent or null: none. */
   input?: RunInput | null;
+}
+
+/** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
+export interface NewImproveReport extends ImproveWindow {
+  run_id: RunId;
+  project: string;
+  groups: ImproveReport["groups"];
+  patterns: ImproveReport["patterns"];
 }
 
 export interface TransitionInput {
@@ -486,6 +496,19 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+  /** Runs whose finished_at is in [start, end), oldest first (finished_at, then insertion order). Read-only. */
+  listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]>;
+  /**
+   * Queues a run on an existing item with no transition (design §7: the improve run of a system work item, whose
+   * state never changes). A run with the same idempotency key already there: that run, `created: false`.
+   */
+  enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
+
+  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+
+  /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
+  recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
+  getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
 
   // Coordination (design §5, 2026-11-03)
 
