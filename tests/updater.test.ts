@@ -10,6 +10,7 @@ import { defaultSecretsFile } from "../src/impl/secrets/env-file-secret-store.js
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, isCodePath, removeWorktree } from "../src/impl/updater/git-worktree.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
+import { autoMigrate } from "../src/impl/updater/auto-migrate.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
@@ -172,6 +173,7 @@ type DrainMode = "ack" | "hold" | "ignore";
 class FakeChild implements ChildHandle {
   drainAcknowledged = false;
   lastError: string | null = null;
+  lastErrorCode?: string;
   readonly exited: Promise<number | null>;
   alive = true;
   kills: string[] = [];
@@ -229,7 +231,12 @@ class FakeLauncher implements ChildLauncher {
   }
 }
 
-function setup(opts: { runTimeoutMs?: number; statusFile?: string; world?: World } = {}) {
+function setup(
+  opts: { runTimeoutMs?: number; statusFile?: string; world?: World } & Pick<
+    GitWorktreeOptions,
+    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile"
+  > = {},
+) {
   const world = opts.world ?? new World();
   const launcher = new FakeLauncher(world);
   const log = recordingLog();
@@ -247,6 +254,10 @@ function setup(opts: { runTimeoutMs?: number; statusFile?: string; world?: World
     runTimeoutMs: opts.runTimeoutMs ?? 1000,
     pidAlive: (pid) => world.alive.has(pid),
     ...(opts.statusFile ? { statusFile: opts.statusFile } : {}),
+    ...(opts.pendingMigrations ? { pendingMigrations: opts.pendingMigrations } : {}),
+    ...(opts.applyMigrations ? { applyMigrations: opts.applyMigrations } : {}),
+    ...(opts.autoMigrate !== undefined ? { autoMigrate: opts.autoMigrate } : {}),
+    ...(opts.requestFile ? { requestFile: opts.requestFile } : {}),
   });
   return { world, launcher, log, clock, updater };
 }
@@ -667,6 +678,237 @@ describe("updater: git-worktree status file", () => {
     await updater.poll();
     launcher.children[2]!.exit(1);
     await waitFor(() => read().error === "exit code 1", "exit code error");
+    await updater.shutdown();
+  });
+});
+
+describe("updater: git-worktree pending migrations", () => {
+  type Status = { state: string; rev: string | null; target_rev: string | null; child_pid: number | null; pending?: string[]; supervisor_pid?: number };
+  /** A pending-steps oracle keyed by revision folder; folders not listed have none. */
+  function migrations(pending: Record<string, string[]>) {
+    const checked: string[] = [];
+    const applied: string[] = [];
+    return {
+      pending,
+      checked,
+      applied,
+      pendingMigrations: async (dir: string) => {
+        checked.push(dir);
+        const rev = dir.split("/").at(-1)!;
+        return pending[rev] ?? [];
+      },
+      applyMigrations: async (dir: string) => {
+        const rev = dir.split("/").at(-1)!;
+        applied.push(rev);
+        pending[rev] = [];
+        return true;
+      },
+    };
+  }
+  const files = () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig-"));
+    const statusFile = join(dir, "supervisor.json");
+    const requestFile = join(dir, "supervisor-request.json");
+    return {
+      statusFile,
+      requestFile,
+      read: () => JSON.parse(readFileSync(statusFile, "utf8")) as Status,
+      send: (action: "drain" | "start" | "cancel") => writeFileSync(requestFile, JSON.stringify({ action, at: "x" })),
+    };
+  };
+
+  for (const step of ["schema:12", "data:project-ids"]) {
+    it(`a pending ${step.split(":")[0]} step: no launch, no drain; the old child keeps running and the status names the step`, async () => {
+      const f = files();
+      const m = migrations({ c2: [step] });
+      const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+      await updater.start();
+      world.events = [];
+      world.push("c2", ["src/core/worker.ts"]);
+      for (let i = 0; i < 3; i++) await updater.poll(); // no restart loop: each poll only re-checks
+      await settle();
+      expect(world.events.filter((e) => e.startsWith("launch") || e.startsWith("drain"))).toEqual([]);
+      expect(world.events.filter((e) => e.startsWith("build"))).toEqual([`build ${V("c2")}@c2`]);
+      expect(launcher.live.map((c) => c.pid)).toEqual([1]);
+      expect(f.read()).toMatchObject({ state: "migration_pending", rev: "c1", target_rev: "c2", child_pid: 1, pending: [step] });
+      expect(f.read().supervisor_pid).toBe(process.pid);
+      await updater.shutdown();
+    });
+  }
+
+  it("once the steps are applied elsewhere, the next poll starts the new revision and drains the old one", async () => {
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup(m);
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    expect(launcher.children).toHaveLength(1);
+    m.pending.c2 = [];
+    world.events = [];
+    await updater.poll();
+    await settle();
+    expect(world.events).toEqual(["fetch", `launch 2 ${V("c2")}/dist/main.js (// built from c2)`, "drain 1", "exit 1"]);
+    expect(updater.migrationState()).toBeNull();
+  });
+
+  it("a newer commit replaces the waiting revision: it is built and checked instead", async () => {
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup(m);
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    world.push("c3", ["src/core/worker.ts"]);
+    await updater.poll();
+    await settle();
+    expect(launcher.children.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`, `${V("c3")}/dist/main.js`]);
+    expect(world.removed).toContain(V("c2"));
+  });
+
+  it("npm run migrate's handshake: drain, then migration_ready only once no child is live, then start", async () => {
+    const f = files();
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    launcher.children[0]!.drainMode = "hold";
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+
+    f.send("drain");
+    await updater.poll();
+    expect(existsSync(f.requestFile)).toBe(false); // read and removed
+    expect(world.events).toContain("drain 1");
+    expect(f.read().state).toBe("migration_draining");
+    f.send("start"); // too early: a child is still live
+    await updater.poll();
+    expect(launcher.children).toHaveLength(1);
+
+    launcher.children[0]!.finishDrain();
+    await settle();
+    await updater.poll();
+    expect(f.read()).toMatchObject({ state: "migration_ready", target_rev: "c2", child_pid: null });
+    m.pending.c2 = [];
+    f.send("start");
+    await updater.poll();
+    await settle();
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c2")}/dist/main.js`]);
+    expect(f.read()).toMatchObject({ state: "running", rev: "c2" });
+    const exit1 = world.events.indexOf("exit 1");
+    expect(exit1).toBeLessThan(world.events.indexOf(`launch 2 ${V("c2")}/dist/main.js (// built from c2)`));
+    await updater.shutdown();
+  });
+
+  it("a cancel after the drain starts the old revision again; the target keeps waiting", async () => {
+    const f = files();
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    f.send("drain");
+    await updater.poll();
+    await settle();
+    await updater.poll();
+    expect(f.read().state).toBe("migration_ready");
+    f.send("cancel");
+    await updater.poll();
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`]);
+    expect(f.read()).toMatchObject({ state: "migration_pending", target_rev: "c2" });
+    await updater.shutdown();
+  });
+
+  it("a drain request with no update waiting migrates the running revision, then starts it again", async () => {
+    const f = files();
+    const m = migrations({});
+    const { world, launcher, updater } = setup({ ...m, statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    f.send("drain");
+    await updater.poll();
+    await settle();
+    await updater.poll();
+    expect(f.read()).toMatchObject({ state: "migration_ready", target_rev: "c1", child_pid: null });
+    f.send("start");
+    await updater.poll();
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`]);
+    await updater.shutdown();
+  });
+
+  it("auto_migrate: drains every child, applies the steps with none live, then starts the new revision", async () => {
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup({ ...m, autoMigrate: true });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    let liveAtApply: number[] = [];
+    const apply = m.applyMigrations;
+    const { updater: u } = { updater };
+    (u as unknown as { o: GitWorktreeOptions }).o.applyMigrations = async (dir) => {
+      liveAtApply = launcher.live.map((c) => c.pid);
+      return apply(dir);
+    };
+    await updater.poll(); // built, waiting
+    await updater.poll(); // drain all
+    await settle();
+    await updater.poll(); // drained: apply, start
+    await settle();
+    expect(m.applied).toEqual(["c2"]);
+    expect(liveAtApply).toEqual([]);
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c2")}/dist/main.js`]);
+  });
+
+  it("auto_migrate: a failed apply starts the old revision again", async () => {
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, launcher, updater } = setup({ ...m, autoMigrate: true, applyMigrations: async () => false });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    await updater.poll();
+    await settle();
+    await updater.poll();
+    await settle();
+    expect(launcher.live.map((c) => relative(world.root, c.spec.entry))).toEqual([`${V("c1")}/dist/main.js`]);
+    expect(updater.migrationState()).toMatchObject({ rev: "c2", phase: "waiting" });
+    const launches = launcher.children.length;
+    for (let i = 0; i < 3; i++) await updater.poll(); // no drain-and-restart loop on the same target
+    await settle();
+    expect(launcher.children).toHaveLength(launches);
+    expect(launcher.live).toHaveLength(1);
+  });
+
+  it("updater.auto_migrate: absent is off; anything but a boolean fails startup", () => {
+    expect(autoMigrate(undefined)).toBe(false);
+    expect(autoMigrate({})).toBe(false);
+    expect(autoMigrate({ auto_migrate: true })).toBe(true);
+    expect(() => autoMigrate({ auto_migrate: "yes" })).toThrow("updater.auto_migrate must be true or false");
+  });
+
+  it("without auto_migrate nothing is applied, however many polls pass", async () => {
+    const m = migrations({ c2: ["schema:12"] });
+    const { world, updater } = setup(m);
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    for (let i = 0; i < 4; i++) await updater.poll();
+    expect(m.applied).toEqual([]);
+  });
+
+  it("a child whose store refused to open (migration_pending code) is not restarted in a loop", async () => {
+    const f = files();
+    const { launcher, clock, updater } = setup({ statusFile: f.statusFile, requestFile: f.requestFile });
+    await updater.start();
+    launcher.children[0]!.lastError = "1 schema step pending (state 11, latest 12): run `npm run migrate`";
+    launcher.children[0]!.lastErrorCode = "migration_pending";
+    launcher.children[0]!.exit(1);
+    await waitFor(() => f.read().state === "migration_pending", "migration_pending status");
+    for (let i = 0; i < 3; i++) {
+      clock.advance(30_000);
+      await updater.poll();
+    }
+    expect(launcher.children).toHaveLength(1);
+    f.send("drain");
+    await updater.poll();
+    await updater.poll();
+    expect(f.read().state).toBe("migration_ready");
+    f.send("start");
+    await updater.poll();
+    expect(launcher.live).toHaveLength(1);
     await updater.shutdown();
   });
 });

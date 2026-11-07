@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
@@ -23,9 +24,12 @@ import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factor
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
-import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs } from "./impl/store/mysql/migrate-command.js";
+import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
-import { type ResolveRepo, runProjectKeyStep } from "./impl/store/project-keys.js";
+import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
+import type { SqlExecutor } from "./impl/store/sql/driver.js";
+import { DRAIN_MARGIN_MS } from "./impl/updater/git-worktree.js";
+import { withDrain } from "./migrate-drain.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
 
 const USAGE = `factory <command>
@@ -237,55 +241,73 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       return 0;
     }
     case "migrate": {
-      const mode = parseMigrateArgs(args, process.env);
+      // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
+      // running `factory dev` to drain first (design: Self-update).
+      const json = args.includes("--json");
+      const noDrain = args.includes("--no-drain");
+      const mode = parseMigrateArgs(args.filter((a) => a !== "--json" && a !== "--no-drain"), process.env);
       if (typeof mode !== "string") {
         console.log(mode.error);
         return 1;
       }
-      const print = (line: string) => console.log(line);
-      // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
-      const resolveRepo = async (): Promise<ResolveRepo> => {
-        const p = new Plugins(loaded);
-        const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
-        return (ownerName) => {
-          const [owner = "", name = ""] = ownerName.split("/");
-          return resolveProject(github, { owner, name });
+      if (json) {
+        if (mode !== "status") {
+          console.log("--json goes with --status");
+          return 1;
+        }
+        console.log(JSON.stringify({ pending: await pendingMigrationNames(loaded) }));
+        return 0;
+      }
+      const run = async (): Promise<number> => {
+        const print = (line: string) => console.log(line);
+        // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
+        const resolveRepo = async (): Promise<ResolveRepo> => {
+          const p = new Plugins(loaded);
+          const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
+          return (ownerName) => {
+            const [owner = "", name = ""] = ownerName.split("/");
+            return resolveProject(github, { owner, name });
+          };
         };
-      };
-      const db = loaded.store;
-      if (db.type !== "mysql") {
-        print(SQLITE_MIGRATE_MESSAGE);
-        await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-        const driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+        const db = loaded.store;
+        if (db.type !== "mysql") {
+          print(SQLITE_MIGRATE_MESSAGE);
+          await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
+          const driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+          try {
+            await driver.migrate();
+            return await runProjectKeyStep(driver, resolveRepo, mode, print);
+          } finally {
+            await driver.close();
+          }
+        }
+        const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+        if (!password) {
+          console.log("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+          return 1;
+        }
+        const { host, port, database, user } = db;
+        const options = { host, port, database, user, password: password.reveal() };
+        const code = await migrateCommand(options, mode, print);
+        if (code !== 0) return code;
+        // After the schema steps: the data step needs the tables they create.
+        const driver = new MysqlDriver(options);
         try {
-          await driver.migrate();
+          // Throws while schema steps are pending (only after --status or --dry-run, which apply none).
+          const ready = await driver.schemaVersion().then(() => true, () => false);
+          if (!ready) {
+            print("project keys: listed once the pending schema steps have run (npm run migrate, then --dry-run again)");
+            return 0;
+          }
           return await runProjectKeyStep(driver, resolveRepo, mode, print);
         } finally {
           await driver.close();
         }
-      }
-      const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
-      if (!password) {
-        console.log("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
-        return 1;
-      }
-      const { host, port, database, user } = db;
-      const options = { host, port, database, user, password: password.reveal() };
-      const code = await migrateCommand(options, mode, print);
-      if (code !== 0) return code;
-      // After the schema steps: the data step needs the tables they create.
-      const driver = new MysqlDriver(options);
-      try {
-        // Throws while schema steps are pending (only after --status or --dry-run, which apply none).
-        const ready = await driver.schemaVersion().then(() => true, () => false);
-        if (!ready) {
-          print("project keys: listed once the pending schema steps have run (npm run migrate, then --dry-run again)");
-          return 0;
-        }
-        return await runProjectKeyStep(driver, resolveRepo, mode, print);
-      } finally {
-        await driver.close();
-      }
+          };
+      if (mode !== "apply" || noDrain) return run();
+      const clock = await new Plugins(loaded).clock();
+      const print = (line: string) => console.log(line);
+      return withDrain({ stateDir: loaded.stateDir, clock, print, timeoutMs: loaded.config.run_timeout_ms + DRAIN_MARGIN_MS }, run);
     }
     case "setup": {
       const rotate: SecretName[] = [];
@@ -367,6 +389,34 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
   return 1;
 }
 
+/**
+ * The steps `npm run migrate` would apply, by name, read-only: pending MySQL schema step files, then
+ * "project keys" while owner/name rows remain (checked only once the schema is current). SQLite builds its
+ * schema on open, so only the data step can be pending there.
+ */
+async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
+  const db = loaded.store;
+  const legacy = async (driver: SqlExecutor & { close(): Promise<void> }): Promise<string[]> => {
+    try {
+      const n = await countLegacyProjectRows(driver);
+      return n > 0 ? [`project keys (${n} row${n === 1 ? "" : "s"})`] : [];
+    } catch {
+      return [];
+    } finally {
+      await driver.close();
+    }
+  };
+  if (db.type !== "mysql") {
+    const file = join(loaded.stateDir, "db", "factory.db");
+    return existsSync(file) ? legacy(new SqliteDriver(file)) : [];
+  }
+  const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+  const options = { host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() };
+  const schema = await pendingStepNames(options);
+  return schema.length > 0 ? schema : legacy(new MysqlDriver(options));
+}
+
 main(process.argv[2], process.argv.slice(3)).then(
   (code) => process.exit(code),
   (err: unknown) => {
@@ -374,7 +424,9 @@ main(process.argv[2], process.argv.slice(3)).then(
     console.error(message);
     // A supervised child tells the supervisor why, so the status page can show it; then exits.
     if (process.env[SUPERVISED_ENV] === "1" && process.send && process.connected) {
-      process.send({ type: CHILD_ERROR_MESSAGE, error: message }, undefined, {}, () => process.exit(1));
+      const raw = err instanceof Error ? (err as Error & { code?: unknown }).code : undefined;
+      const code = typeof raw === "string" ? raw : undefined;
+      process.send({ type: CHILD_ERROR_MESSAGE, error: message, ...(code ? { code } : {}) }, undefined, {}, () => process.exit(1));
     } else process.exit(1);
   },
 );

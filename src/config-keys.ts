@@ -51,6 +51,7 @@ export const TOP_LEVEL_KEYS = [
   "worktrees_dir",
   "agent_git_identity",
   "ui",
+  "updater",
   "stats",
   "budgets",
   "budget_min_sample",
@@ -79,6 +80,7 @@ export const FLOOR_KEYS = ["prefix", "tier"] as const satisfies readonly (keyof 
 export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies readonly (keyof FileConfig["models"])[];
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
+export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
@@ -161,6 +163,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.models, "models", "models", MODELS_KEYS);
   check(raw.agent_git_identity, "agent_git_identity", "agent_git_identity", AGENT_GIT_IDENTITY_KEYS);
   check(raw.ui, "ui", "ui", UI_KEYS);
+  check(raw.updater, "updater", "updater", UPDATER_KEYS);
   check(raw.stats, "stats", "stats", STATS_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project

@@ -20,8 +20,31 @@ export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
 /** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */
 export const DRAIN_MESSAGE = "factory:drain";
 export const DRAINED_MESSAGE = "factory:drained";
-/** Sent by a child before it exits on an error (e.g. pending migrations), with `error`: the message it prints. */
+/**
+ * Sent by a child before it exits on an error, with `error`: the message it prints, and `code` when the error
+ * has one (MIGRATION_PENDING: the store refused to open while schema or data steps are pending).
+ */
 export const CHILD_ERROR_MESSAGE = "factory:error";
+
+/** The stable `code` of the error a store throws while `npm run migrate` has steps to apply. */
+export const MIGRATION_PENDING = "migration_pending";
+
+/** An Error carrying `code: MIGRATION_PENDING`, so the supervisor never has to match the message text. */
+export function migrationPendingError(message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code: MIGRATION_PENDING as string });
+}
+
+/**
+ * `<state_dir>/supervisor-request.json`: what `npm run migrate` asks a running supervisor to do, read on its
+ * next poll and then removed. drain: stop every child and start none. start: the steps applied; start the
+ * waiting revision. cancel: the steps failed; start the old revision again.
+ */
+export const SUPERVISOR_REQUEST_FILE = "supervisor-request.json";
+export interface SupervisorRequest {
+  action: "drain" | "start" | "cancel";
+  /** ISO time the request was written. */
+  at: string;
+}
 
 /** Runs one host command. Same shape as `runProcess`, so tests can pass a fake. */
 export type CommandRunner = (
@@ -48,6 +71,8 @@ export interface ChildHandle {
   readonly drainAcknowledged: boolean;
   /** The error the child sent before exiting on an error, or null. */
   readonly lastError: string | null;
+  /** That error's `code` (e.g. MIGRATION_PENDING), or null. */
+  readonly lastErrorCode?: string | null;
   /** Resolves with the exit code (null if killed by a signal) when the child exits. */
   readonly exited: Promise<number | null>;
   /** SIGTERM: today's hard stop. SIGKILL: when it did not exit in time. */
@@ -88,8 +113,21 @@ export interface SupervisorStatus {
    * new revision builds in its own folder while the child keeps claiming. build_failed: the running child stays
    * on `rev`. crashed: the child exited without being asked to (it is restarted every poll); `error` says why.
    * stopped: no child. draining and restarting are no longer written by git-worktree (start-then-drain) but stay
-   * valid values for readers of older files. */
-  state: "running" | "building" | "draining" | "restarting" | "build_failed" | "crashed" | "stopped";
+   * valid values for readers of older files.
+   * migration_pending: `target_rev` built but needs `npm run migrate` (`pending` names the steps); the child on
+   * `rev` keeps claiming. migration_draining: a migration asked every child to drain; none claims. migration_ready:
+   * no child is live; the steps may be applied, then the target starts. */
+  state:
+    | "running"
+    | "building"
+    | "draining"
+    | "restarting"
+    | "build_failed"
+    | "crashed"
+    | "stopped"
+    | "migration_pending"
+    | "migration_draining"
+    | "migration_ready";
   /** The revision the child runs (null before the first start). */
   rev: string | null;
   /** The revision being built or started, when there is one. */
@@ -101,6 +139,10 @@ export interface SupervisorStatus {
   since: string;
   /** crashed: the child's error, or its exit code when it sent none. */
   error?: string | null;
+  /** migration_*: the pending step names the target revision reported (empty when it could not say). */
+  pending?: string[];
+  /** The supervisor's own pid, so `npm run migrate` can tell a live supervisor from a stale file. */
+  supervisor_pid?: number;
 }
 
 export const SUPERVISOR_STATUS_FILE = "supervisor.json";

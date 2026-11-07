@@ -242,6 +242,10 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
 
       // npm run migrate itself, then the same commands get past the check (status prints and exits 0).
       expect(app.run(work, ["migrate", "--status"], env.vars).stdout).toContain("0011  baseline: record state 11");
+      // The supervisor's check: one JSON line naming the pending steps; --json only with --status.
+      const json = app.run(work, ["migrate", "--status", "--json"], env.vars);
+      expect((JSON.parse(json.stdout.trim().split("\n").at(-1)!) as { pending: string[] }).pending.length).toBeGreaterThan(0);
+      expect(app.run(work, ["migrate", "--json"], env.vars).status).toBe(1);
       const migrated = app.run(work, ["migrate"], env.vars);
       expect(migrated.status).toBe(0);
       expect(migrated.stdout).toContain(BACKUP_REMINDER);
@@ -249,6 +253,7 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
       expect(after.state).toBe(after.latest);
       expect(after.latest).toBeGreaterThan(BASELINE_STATE);
       expect(app.run(work, ["migrate", "--status"], env.vars).stdout).toContain("pending: none (up to date)");
+      expect(JSON.parse(app.run(work, ["migrate", "--status", "--json"], env.vars).stdout.trim().split("\n").at(-1)!)).toEqual({ pending: [] });
       // Past the schema check now: whatever status needs next, it no longer asks for npm run migrate.
       const status = app.run(work, ["status"], env.vars);
       expect(status.stdout + status.stderr).not.toContain("npm run migrate");
