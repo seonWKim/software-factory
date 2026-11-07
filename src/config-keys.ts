@@ -14,9 +14,11 @@ import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatible
  * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
  * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
  * 2026-11-03) are checked here at load (`coordinationProblems`); until compose.ts passes them through, the
- * worker uses their defaults, which equal the checked-in values.
+ * worker uses their defaults, which equal the checked-in values. `cli_user` (issue #200): the factory user ID the
+ * local CLI commands act as, read by src/core/config.ts once #200 lands; listed here first so that change needs no
+ * edit to this file.
  */
-type CoreOnlyKey = "auth_pause_ms" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "auth_pause_ms" | "cli_user" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -68,6 +70,7 @@ export const TOP_LEVEL_KEYS = [
   "projects",
   "openai_compatible",
   "path_companions",
+  "cli_user",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
