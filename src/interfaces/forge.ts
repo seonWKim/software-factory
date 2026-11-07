@@ -8,7 +8,8 @@ import type { ExternalIdentity } from "./auth-provider.js";
 
 /**
  * The PR events a forge reports. Each names the head branch; the controller maps a factory branch back to a work
- * item, and any other PR to its adopted item by number.
+ * item, and any other PR to its adopted item by its `change_ref`: the PR number as text, the same type the store
+ * keeps (design 02). The controller converts it with prNumber (src/core/change-ref.ts) only for a forge call.
  */
 export type ForgeEvent =
   /**
@@ -16,8 +17,8 @@ export type ForgeEvent =
    * recorded as an unreviewed merge. `fork`: present and true when the head is in another repository; such a PR is
    * never a factory or adopted PR.
    */
-  | { kind: "pr_merged"; pr_number: number; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; fork?: true }
-  | { kind: "pr_closed"; pr_number: number; head_branch: string; fork?: true }
+  | { kind: "change_merged"; change_ref: string; head_branch: string; merge_sha: string; merger: ExternalIdentity | null; fork?: true }
+  | { kind: "change_closed"; change_ref: string; head_branch: string; fork?: true }
   /**
    * An open PR against the base branch, from this repository (no forks), delivered on every poll while it is
    * open (design 2026-11-01): every factory-branch PR, and every other PR that is not a draft. `source` is the
@@ -26,9 +27,9 @@ export type ForgeEvent =
    * untrusted; `author` is null when the forge does not name one.
    */
   | {
-      kind: "pr_open";
+      kind: "change_open";
       source: SourceRef;
-      pr_number: number;
+      change_ref: string;
       head_branch: string;
       head_sha: string;
       title: string;
@@ -40,7 +41,7 @@ export type ForgeEvent =
    * An open factory PR the forge reports as not mergeable into its base (e.g. `mergeable === false`).
    * Delivered on every poll while it stays so; the shas let the controller key one update per (head, base).
    */
-  | { kind: "pr_unmergeable"; pr_number: number; head_branch: string; head_sha: string; base_sha: string }
+  | { kind: "change_unmergeable"; change_ref: string; head_branch: string; head_sha: string; base_sha: string }
   /**
    * A "Request changes" review on an open PR (design §4), by a person (never a bot). `source` is the PR,
    * `review_id` the forge's review id, delivered at most once per review by a poll that advanced the cursor;
@@ -50,7 +51,7 @@ export type ForgeEvent =
   | {
       kind: "pr_changes_requested";
       source: SourceRef;
-      pr_number: number;
+      change_ref: string;
       head_branch: string;
       review_id: string;
       reviewer: ExternalIdentity;
@@ -83,7 +84,7 @@ export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "fa
 
 /** What `closePr` needs. */
 export interface ClosePrInput {
-  pr_number: number;
+  pr: number;
   /** The source item that was closed; the forge reads who closed it when it can. */
   closed: SourceRef;
   /** The comment is posted at most once per marker, like postPrComment. */
@@ -106,32 +107,32 @@ export interface Forge {
    * twice across polls that advanced the cursor; other events may repeat, and handling them is idempotent.
    */
   poll(cursor: string | null): Promise<ForgePollResult>;
-  /** PR `pr_number` as a comment target. */
-  prRef(pr_number: number): SourceRef;
+  /** PR `pr` as a comment target. */
+  prRef(pr: number): SourceRef;
   /** The PR number `ref` names if it is one of this forge's PR refs (`prRef`), else null. */
   prNumberOf(ref: SourceRef): number | null;
   /**
-   * One comment on PR `pr_number`. Idempotent: a comment carrying `marker` is posted at most once. Returns its URL,
+   * One comment on PR `pr`. Idempotent: a comment carrying `marker` is posted at most once. Returns its URL,
    * both when it posts it and when one with the marker already exists (null if the forge has no link for it).
    */
-  postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string | null }>;
+  postPrComment(pr: number, body: string, marker: string): Promise<{ url: string | null }>;
   /**
-   * Shows `status` on PR `pr_number` of the item from `source` (e.g. one status label on the PR). Afterwards the
+   * Shows `status` on PR `pr` of the item from `source` (e.g. one status label on the PR). Afterwards the
    * PR carries exactly one of the factory's status markers; others are left alone. Idempotent and best effort:
    * failures are the caller's to log and must not block a transition.
    */
-  setPrStatus(source: SourceRef, status: WorkStatus, pr_number: number): Promise<void>;
-  /** The checks on PR `pr_number`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
-  prChecks(pr_number: number): Promise<PrChecks>;
+  setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void>;
+  /** The checks on PR `pr`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
+  prChecks(pr: number): Promise<PrChecks>;
   /**
-   * Each check on PR `pr_number`'s current head commit with its result; empty when none ran. Read when a review is
+   * Each check on PR `pr`'s current head commit with its result; empty when none ran. Read when a review is
    * queued, for the review prompt (design §4, issue #223). Throws when the forge cannot be read. Read-only.
    */
-  prCheckResults(pr_number: number): Promise<PrCheckResult[]>;
-  /** The paths PR `pr_number` changes (both sides of a rename), read once when the PR is adopted. Read-only. */
-  prFiles(pr_number: number): Promise<string[]>;
-  /** Who last added label `label` to PR `pr_number`, or null when nobody did or the forge does not say. Read-only. */
-  labelAddedBy(pr_number: number, label: string): Promise<ExternalIdentity | null>;
+  prCheckResults(pr: number): Promise<PrCheckResult[]>;
+  /** The paths PR `pr` changes (both sides of a rename), read once when the PR is adopted. Read-only. */
+  prFiles(pr: number): Promise<string[]>;
+  /** Who last added label `label` to PR `pr`, or null when nobody did or the forge does not say. Read-only. */
+  labelAddedBy(pr: number, label: string): Promise<ExternalIdentity | null>;
   /**
    * The forge account that authored commit `sha`, or null when it is not linked to one. The forge does not name who
    * pushed a commit; its author is the closest record (design 2026-11-01). Read-only.
@@ -144,7 +145,7 @@ export interface Forge {
    */
   commitsBetween(from_sha: string, to_sha: string): Promise<number | null>;
   /**
-   * Closes factory PR `pr_number` without merging it, after one comment carrying `input.marker`. Used when a person
+   * Closes factory PR `pr` without merging it, after one comment carrying `input.marker`. Used when a person
    * closes the source item (design §4). A PR that is already merged or closed is left alone with no comment:
    * `not_open`. The comment goes first, so a failed close retried later finds its comment and does not post
    * another. Throws on a forge failure; the caller retries.

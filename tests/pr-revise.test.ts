@@ -22,7 +22,7 @@ function prRef(n: number): SourceRef {
 function revise(it: WorkItem, comment_id: string, feedback: string, pr = PR): SourceEvent {
   return {
     kind: "revise_requested", source: issueRef(pr), comment_id, requester: alice, feedback,
-    pr: { pr_number: pr, head_branch: `${config.branch_prefix}${it.id}` },
+    pr: { change_ref: String(pr), head_branch: `${config.branch_prefix}${it.id}` },
   };
 }
 
@@ -33,7 +33,7 @@ function review(
 ): ForgeEvent {
   const pr = o.pr ?? PR;
   return {
-    kind: "pr_changes_requested", source: prRef(pr), pr_number: pr, head_branch: o.head_branch ?? `${config.branch_prefix}${it.id}`,
+    kind: "pr_changes_requested", source: prRef(pr), change_ref: String(pr), head_branch: o.head_branch ?? `${config.branch_prefix}${it.id}`,
     review_id, reviewer: o.reviewer ?? alice, body: o.body ?? "", comments: o.comments ?? [],
   };
 }
@@ -159,7 +159,7 @@ describe("/revise on a factory PR", () => {
     await f.poll(revise(f.it, "906", "x", 77));
     await f.poll({
       kind: "revise_requested", source: issueRef(PR), comment_id: "907", requester: alice, feedback: "x",
-      pr: { pr_number: PR, head_branch: "feature/someone-else" },
+      pr: { change_ref: String(PR), head_branch: "feature/someone-else" },
     });
     expect(await f.item(f.it)).toEqual(f.it);
     const closed = await f.put({ stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null });
@@ -317,7 +317,7 @@ describe("feedback on an adopted PR", () => {
     const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
     forge.queue.push({
-      kind: "pr_open", source: prRef(50), pr_number: 50, head_branch: "feature/x", head_sha: "h1",
+      kind: "change_open", source: prRef(50), change_ref: "50", head_branch: "feature/x", head_sha: "h1",
       title: "Speed up the poll", body: "It reads fewer pages.", author: bob, labels: [],
     });
     await controller.tickIntake();
@@ -331,7 +331,7 @@ describe("feedback on an adopted PR", () => {
 
     source.queue.push({
       kind: "revise_requested", source: issueRef(50), comment_id: "960", requester: alice, feedback: "drop the second page read",
-      pr: { pr_number: 50, head_branch: "feature/x" },
+      pr: { change_ref: "50", head_branch: "feature/x" },
     });
     await controller.tickIntake();
     expect(await store.getWorkItem(adopted.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: 1 });

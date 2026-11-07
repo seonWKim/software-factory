@@ -393,6 +393,25 @@ describe("slack source: replies, buttons and commands", () => {
     expect(f.gh.statusCalls.filter((c) => c.source.id === item.source.id)).toEqual([]);
   });
 
+  it("the PR link is built from the item's change_ref: text PR #<n>, the same URL as before", async () => {
+    const f = await setup();
+    const ts = "1800000015.000300";
+    const item = await specPending(f, ts);
+    // An item whose change_ref names PR 57 and that has no pr_number: the link can only come from change_ref.
+    const read = f.store.getWorkItemBySource.bind(f.store);
+    f.store.getWorkItemBySource = async (type, id) => {
+      const it = await read(type, id);
+      return it && { ...it, pr_number: null, change_ref: "57" };
+    };
+    await f.slack.setStatus(item.source, "in_review", null);
+    const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
+    expect(status).toHaveLength(1);
+    expect(status[0]!.text).toBe("Status: *in review* · <https://github.com/o/r/pull/57|PR #57>");
+    // A PR's own status (a non-null change_ref) is the forge's: nothing changes in the thread.
+    await f.slack.setStatus(item.source, "done", "57");
+    expect(f.api.thread(ts).filter((m) => m.text?.startsWith("Status:")).map((m) => m.text)).toEqual([status[0]!.text]);
+  });
+
   it("posts a marker at most once, looking in the thread first", async () => {
     const f = await setup();
     const source = { type: "slack_thread" as const, id: sourceId("1800000016.000100"), link: "" };

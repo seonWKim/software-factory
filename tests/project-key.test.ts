@@ -241,7 +241,7 @@ describe("writes use the key", () => {
     await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
     await controller.tickRuns();
     // A merge of a PR no item knows writes an unreviewed_merges row.
-    forge.queue.push({ kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice });
+    forge.queue.push({ kind: "change_merged", change_ref: "77", head_branch: "feature/x", merge_sha: "m77", merger: alice });
     await controller.tickIntake();
 
     expect(await f.projects()).toEqual([PROJECT.key, PROJECT.key]);
@@ -324,7 +324,7 @@ describe("the label, never the key, is shown", () => {
     const run = (await f.store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
     await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
     await controller.tickRuns();
-    forge.queue.push({ kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice });
+    forge.queue.push({ kind: "change_merged", change_ref: "77", head_branch: "feature/x", merge_sha: "m77", merger: alice });
     await controller.tickIntake();
 
     expect(log.lines.find((l) => l.msg === "controller started")?.fields).toEqual({ project: "github.com/o/r" });

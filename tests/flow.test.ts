@@ -193,7 +193,7 @@ describe("one issue to one merged PR", () => {
     expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
@@ -237,10 +237,10 @@ describe("one issue to one merged PR", () => {
     f.forge.commitCounts[`${item.last_head_sha}..h9`] = 1;
     const prSource = { type: "github_issue", id: "o/r#42", link: "https://github.com/o/r/pull/42" };
     f.forge.queue.push({
-      kind: "pr_open", source: prSource, pr_number: 42, head_branch: `factory/${item.id}`, head_sha: "h9", title: "t", body: "b", author: alice, labels: [],
+      kind: "change_open", source: prSource, change_ref: "42", head_branch: `factory/${item.id}`, head_sha: "h9", title: "t", body: "b", author: alice, labels: [],
     });
     await f.step();
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
 
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
@@ -265,7 +265,7 @@ describe("one issue to one merged PR", () => {
     expect(before).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
     const replies = f.source.comments.length;
 
-    const pr = { kind: "pr" as const, pr_number: 42, head_branch: `factory/${before.id}` };
+    const pr = { kind: "pr" as const, change_ref: "42", head_branch: `factory/${before.id}` };
     f.source.queue.push({ kind: "verdict_submitted", target: pr, comment_id: "201", approver: alice, args: "changes extreme too big" });
     await f.step();
     expect(await f.store.listVerdicts(before.id)).toEqual([]);
@@ -1310,7 +1310,7 @@ describe("/resolve on a merge conflict", () => {
   ].join("\n");
 
   /**
-   * An item through triage, /approve, implement and review (merge_pending, PR 42), then a pr_unmergeable whose
+   * An item through triage, /approve, implement and review (merge_pending, PR 42), then a change_unmergeable whose
    * update run conflicts. With `auto` the automatic resolve runs as scripted; without it both automatic
    * attempts time out, so the item ends REVIEW / human / merge_conflict_pending. The sandbox is left set up
    * for a conflicted resolve merge.
@@ -1335,7 +1335,7 @@ describe("/resolve on a merge conflict", () => {
     f.sandbox.files = { "src/gate.ts": CONFLICT, ".github/workflows/scope.yml": "<<<<<<< HEAD\nours: 1\n=======\ntheirs: 2\n>>>>>>> origin/main\n" };
     const resolve = runner.script.resolve!;
     if (!opts.auto) runner.script.resolve = () => ({ status: "timed_out" });
-    f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
+    f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
     if (opts.auto) return { ...f, runner, src, id, item: (await f.store.getWorkItem(id))! };
     await f.step();
     runner.script.resolve = resolve;
@@ -1386,7 +1386,7 @@ describe("/resolve on a merge conflict", () => {
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     f.sandbox.ancestorExit = 1;
     f.sandbox.exits["npm test"] = 1;
-    f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${item.id}`, head_sha: "h1", base_sha: "b1" });
+    f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${item.id}`, head_sha: "h1", base_sha: "b1" });
     await f.step();
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
     expect((await f.store.listRuns(item.id)).filter((r) => r.status === "queued")).toEqual([]);
@@ -1458,7 +1458,7 @@ describe("/resolve on a merge conflict", () => {
       "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "review_passed",
     ]);
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
   });
@@ -1761,7 +1761,7 @@ describe("/resolve on a merge conflict", () => {
     const pr = issueRef(42);
     const onPr = (comment_id: string, who = alice) => ({
       kind: "resolve_requested" as const, source: pr, comment_id, requester: who, notes: "",
-      pr: { pr_number: 42, head_branch: `factory/${f.item.id}` },
+      pr: { change_ref: "42", head_branch: `factory/${f.item.id}` },
     });
     f.source.queue.push(onPr("7901", mallory));
     await f.controller.tickIntake();
@@ -1770,7 +1770,7 @@ describe("/resolve on a merge conflict", () => {
     expect(refusals(f)[0]!.source).toEqual(pr);
 
     // A PR number that is not this item's PR is ignored entirely.
-    f.source.queue.push({ ...onPr("7902"), pr: { pr_number: 41, head_branch: `factory/${f.item.id}` } });
+    f.source.queue.push({ ...onPr("7902"), pr: { change_ref: "41", head_branch: `factory/${f.item.id}` } });
     await f.controller.tickIntake();
     expect(f.source.reactions.some((r) => r.comment_id === "7902")).toBe(false);
 

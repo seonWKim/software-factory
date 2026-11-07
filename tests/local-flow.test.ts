@@ -99,7 +99,7 @@ describe("local task flow", () => {
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
 
@@ -134,7 +134,7 @@ describe("local task flow", () => {
     const ready = (await f.store.getWorkItem(id))!;
     expect(ready).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: ready.pr_number!, head_branch: `factory/${id}`, merge_sha: "m2", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: ready.change_ref!, head_branch: `factory/${id}`, merge_sha: "m2", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     const reasons = (await f.store.listStateChanges(id)).map((c) => c.reason);

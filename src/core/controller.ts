@@ -232,8 +232,8 @@ type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 type StandingEvent = Extract<SourceEvent, { kind: "standing_requested" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
-type PrOpenEvent = Extract<ForgeEvent, { kind: "pr_open" }>;
-type PrFinishedEvent = Extract<ForgeEvent, { kind: "pr_merged" | "pr_closed" }>;
+type PrOpenEvent = Extract<ForgeEvent, { kind: "change_open" }>;
+type PrFinishedEvent = Extract<ForgeEvent, { kind: "change_merged" | "change_closed" }>;
 /** One poll of a poll source, read but not handled yet: its events wait for the forge's (see intake). */
 type Polled = { source: PollSource; cursor: string | null; result: PollResult };
 
@@ -1114,15 +1114,15 @@ export class Controller {
         return this.handlePlainComment(e);
       case "pr_changes_requested":
         return this.handlePrReview(e);
-      case "pr_merged":
-      case "pr_closed":
+      case "change_merged":
+      case "change_closed":
         return this.prFinished(e);
-      case "pr_open":
+      case "change_open":
         return this.prOpen(e);
-      case "pr_unmergeable": {
+      case "change_unmergeable": {
         const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
         if (!id) return;
-        return this.startUpdate(id as WorkItemId, e.pr_number, e.head_sha, e.base_sha);
+        return this.startUpdate(id as WorkItemId, e.change_ref, e.head_sha, e.base_sha);
       }
     }
   }
@@ -1133,10 +1133,10 @@ export class Controller {
    * while another update of this item is still in flight; the event repeats on every poll, so a skipped one
    * comes back.
    */
-  private async startUpdate(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): Promise<void> {
-    const key = `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
+  private async startUpdate(id: WorkItemId, change_ref: string, head_sha: string, base_sha: string): Promise<void> {
+    const key = `${id}:update:${change_ref}:${head_sha}:${base_sha}`;
     await this.decide(id, async (it) => {
-      if (!awaitingMerge(it) || prNumber(it) !== pr_number) return null;
+      if (!awaitingMerge(it) || it.change_ref !== change_ref) return null;
       const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
       if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
       return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
@@ -1162,7 +1162,7 @@ export class Controller {
     const { repo, branch_prefix, poll_interval_ms } = this.cfg;
     await this.merges.step(ready, { repo: repo.path, base_ref: repo.base_branch, branch_prefix, poll_interval_ms }, (it, c) => {
       this.d.log.info("merge check conflict", { work_item_id: it.id, files: c.conflicts.length });
-      return this.startUpdate(it.id, prNumber(it)!, c.head_sha, c.base_sha);
+      return this.startUpdate(it.id, it.change_ref!, c.head_sha, c.base_sha);
     });
   }
 
@@ -1174,16 +1174,16 @@ export class Controller {
   private async prFinished(e: PrFinishedEvent): Promise<void> {
     const item = await this.itemOfFinishedPr(e);
     if (!item) {
-      if (e.kind === "pr_merged") await this.recordUnreviewedMerge(e);
+      if (e.kind === "change_merged") await this.recordUnreviewedMerge(e);
       return;
     }
     // The human who merged is the approver of record (design §8). The forge already enforced their permission.
-    const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
+    const merger = e.kind === "change_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
-    if (e.kind === "pr_merged") await this.mergeVerdict(item, e, merger ? actor : null);
+    if (e.kind === "change_merged") await this.mergeVerdict(item, e, merger ? actor : null);
     await this.decide(item.id, (it) => {
-      if (it.stage === "CLOSED" || prNumber(it) !== e.pr_number) return null;
-      return e.kind === "pr_merged"
+      if (it.stage === "CLOSED" || it.change_ref !== e.change_ref) return null;
+      return e.kind === "change_merged"
         ? {
             patch: { stage: "CLOSED", close_reason: "completed", merge_sha: e.merge_sha, blocked_on: "none", blocked_reason: null },
             actor,
@@ -1205,10 +1205,10 @@ export class Controller {
    * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
    * merger does not resolve to a user.
    */
-  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Actor | null): Promise<void> {
-    if (it.origin !== "factory" || it.stage === "CLOSED" || prNumber(it) !== e.pr_number) return;
+  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "change_merged" }>, merger: Actor | null): Promise<void> {
+    if (it.origin !== "factory" || it.stage === "CLOSED" || it.change_ref !== e.change_ref) return;
     const id = it.id;
-    const log = { work_item_id: id, pr_number: e.pr_number };
+    const log = { work_item_id: id, pr_number: prNumber(e) };
     if (!merger) {
       this.d.log.warn("no implicit verdict: the merger does not resolve to a user", log);
       return;
@@ -1249,21 +1249,21 @@ export class Controller {
     if (e.fork) return null;
     const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) return this.d.store.getWorkItem(id as WorkItemId);
-    const it = await this.d.store.getWorkItemByPr(this.project(), String(e.pr_number));
+    const it = await this.d.store.getWorkItemByPr(this.project(), e.change_ref);
     return it?.origin === "adopted" ? it : null;
   }
 
   /** One row per merged PR with no item; the merger by user ID, null when the forge names none or it does not resolve. */
-  private async recordUnreviewedMerge(e: Extract<PrFinishedEvent, { kind: "pr_merged" }>): Promise<void> {
+  private async recordUnreviewedMerge(e: Extract<PrFinishedEvent, { kind: "change_merged" }>): Promise<void> {
     const merger = e.merger ? await this.d.auth.resolve(e.merger) : null;
     const { created } = await this.d.store.recordUnreviewedMerge({
       project: this.project(),
-      change_ref: String(e.pr_number),
+      change_ref: e.change_ref,
       merge_sha: e.merge_sha,
       merger_id: merger?.user_id ?? null,
     });
     if (created) {
-      this.d.log.warn("unreviewed merge", { pr_number: e.pr_number, merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
+      this.d.log.warn("unreviewed merge", { pr_number: prNumber(e), merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
     }
   }
 
@@ -1275,7 +1275,7 @@ export class Controller {
     const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
     if (id) {
       const it = await this.d.store.getWorkItem(id as WorkItemId);
-      if (it && prNumber(it) === e.pr_number) await this.recordHead(it, e);
+      if (it && it.change_ref === e.change_ref) await this.recordHead(it, e);
       return;
     }
     const known = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
@@ -1290,7 +1290,8 @@ export class Controller {
    * not know yet.
    */
   private async adopt(e: PrOpenEvent): Promise<void> {
-    const log = { pr_number: e.pr_number };
+    const pr = prNumber(e);
+    const log = { pr_number: pr };
     const author = e.author ? await this.d.auth.resolve(e.author) : null;
     if (!author) {
       this.d.log.warn("PR not adopted: its author does not resolve to a user", log);
@@ -1298,7 +1299,7 @@ export class Controller {
     }
     const forge = this.forge;
     if (e.labels.includes(SKIP_LABEL)) {
-      const adder = forge ? await forge.labelAddedBy(e.pr_number, SKIP_LABEL) : null;
+      const adder = forge && pr !== null ? await forge.labelAddedBy(pr, SKIP_LABEL) : null;
       const who = adder ? await this.authorize(adder, "approve_spec", e.source.id) : null;
       if (who && !("refuse" in who)) {
         this.d.log.info("PR skipped: factory: skip label", { ...log, user_id: who.user_id });
@@ -1306,7 +1307,7 @@ export class Controller {
       }
       this.d.log.warn("factory: skip label ignored: not added by a user with write permission; PR adopted", log);
     }
-    const files = forge ? await forge.prFiles(e.pr_number) : [];
+    const files = forge && pr !== null ? await forge.prFiles(pr) : [];
     const { item, created } = await this.d.store.createWorkItem(
       {
         source: e.source,
@@ -1316,7 +1317,7 @@ export class Controller {
         problem: `${e.title}\n\n${e.body}`.trim(),
         resources: [e.source.link],
         adopted: {
-          change_ref: String(e.pr_number),
+          change_ref: e.change_ref,
           head_branch: e.head_branch,
           head_sha: e.head_sha,
           allowed_paths: files,
@@ -1324,7 +1325,7 @@ export class Controller {
         },
       },
       { kind: "user", id: author.user_id },
-      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review`, input: await this.reviewInput(e.pr_number, null) } },
+      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review`, input: await this.reviewInput(pr, null) } },
     );
     if (!created) return;
     this.d.log.info("PR adopted", { ...log, work_item_id: item.id });
@@ -1349,10 +1350,10 @@ export class Controller {
       id: it.id,
       expected_head: it.last_head_sha,
       head_sha: e.head_sha,
-      manual: { actor, change_ref: String(e.pr_number) },
+      manual: { actor, change_ref: e.change_ref },
     });
     if (r.ok && r.run) {
-      this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
+      this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: prNumber(e), actor: actor.id });
       if (it.origin === "factory") await this.pushVerdict(it.id, it.last_head_sha, e.head_sha, actor);
     }
   }
@@ -1434,12 +1435,12 @@ export class Controller {
    * The work item of a PR: a factory PR's from its head branch, any other PR's adopted item by number; null
    * unless that item's PR is this one.
    */
-  private async itemOfPr(pr: { pr_number: number; head_branch: string }): Promise<WorkItem | null> {
+  private async itemOfPr(pr: { change_ref: string; head_branch: string }): Promise<WorkItem | null> {
     const id = workItemIdFromBranch(pr.head_branch, this.cfg.branch_prefix);
     const it = id
       ? await this.d.store.getWorkItem(id as WorkItemId)
-      : await this.d.store.getWorkItemByPr(this.project(), String(pr.pr_number)).then((x) => (x?.origin === "adopted" ? x : null));
-    return it && prNumber(it) === pr.pr_number ? it : null;
+      : await this.d.store.getWorkItemByPr(this.project(), pr.change_ref).then((x) => (x?.origin === "adopted" ? x : null));
+    return it && it.change_ref === pr.change_ref ? it : null;
   }
 
   /**
@@ -1453,14 +1454,14 @@ export class Controller {
     if (!item || item.stage === "CLOSED") return;
     const principal = await this.authorize(e.reviewer, "approve_spec", item.id);
     if ("refuse" in principal) {
-      this.d.log.info("review ignored", { work_item_id: item.id, pr_number: e.pr_number, reason: principal.refuse });
+      this.d.log.info("review ignored", { work_item_id: item.id, pr_number: prNumber(e), reason: principal.refuse });
       return;
     }
     const actor: Actor = { kind: "user", id: principal.user_id };
     const refusal = await this.decide(item.id, (it) =>
-      this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, pr_number: e.pr_number, key: { review_id: e.review_id } }));
+      this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, change_ref: e.change_ref, key: { review_id: e.review_id } }));
     if (refusal === null) return;
-    this.d.log.info("review refused", { work_item_id: item.id, pr_number: e.pr_number, reason: refusal });
+    this.d.log.info("review refused", { work_item_id: item.id, pr_number: prNumber(e), reason: refusal });
     await this.post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
   }
 
@@ -1473,9 +1474,9 @@ export class Controller {
    */
   private async prFeedback(
     it: WorkItem,
-    f: { text: string; actor: Actor; reason: string; pr_number: number; key: { comment_id: string } | { review_id: string } },
+    f: { text: string; actor: Actor; reason: string; change_ref: string; key: { comment_id: string } | { review_id: string } },
   ): Promise<Decision | Refusal> {
-    if (it.stage === "CLOSED" || prNumber(it) !== f.pr_number) return null;
+    if (it.stage === "CLOSED" || it.change_ref !== f.change_ref) return null;
     const [field, value] = Object.entries(f.key)[0] as [string, string];
     const done = (await this.d.store.listStateChanges(it.id)).some(
       (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
@@ -1497,7 +1498,7 @@ export class Controller {
       return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
     }
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { ...f.key, pr_number: f.pr_number };
+    const detail = { ...f.key, pr_number: prNumber(f) };
     const limit = this.cfg.max_loops;
     if (it.loop_count + 1 >= limit) {
       const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -1674,7 +1675,7 @@ export class Controller {
     if (!forge) return;
     try {
       const r = await forge.closePr({
-        pr_number,
+        pr: pr_number,
         closed: it.source,
         marker: `<!-- factory:pr-closed:${it.id} -->`,
         body: (closer) =>
@@ -1983,7 +1984,7 @@ export class Controller {
     if (e.target.kind === "issue") return this.d.store.getWorkItemBySource(e.target.source.type, e.target.source.id);
     const id = workItemIdFromBranch(e.target.head_branch, this.cfg.branch_prefix);
     const item = id ? await this.d.store.getWorkItem(id as WorkItemId) : null;
-    return item && (item.change_ref === null || prNumber(item) === e.target.pr_number) ? item : null;
+    return item && (item.change_ref === null || item.change_ref === e.target.change_ref) ? item : null;
   }
 
   /** Re-read → check → recordVerdict, retrying on version conflicts. Returns the refusal reason, else null. */
@@ -2040,7 +2041,7 @@ export class Controller {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
     }
     if (e.kind === "revise_requested" && e.pr) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr.change_ref, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) {
@@ -4046,24 +4047,25 @@ export class Controller {
   private async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
     if (!current(null)) await this.setStatus(it.source, status, null);
-    const pr_number = prNumber(it);
-    if (pr_number !== null && it.origin !== "adopted" && !current(pr_number)) await this.setStatus(it.source, status, pr_number);
+    const pr = prNumber(it);
+    if (pr !== null && it.origin !== "adopted" && !current(pr)) await this.setStatus(it.source, status, it.change_ref);
   }
 
   /**
    * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
    * itself is labelled through its own source; a PR through the forge, where PRs live (issue #273). With no
-   * forge, the PR call goes to the item's own source.
+   * forge (converted with prNumber), the PR call goes to the item's own source with its change_ref.
    */
-  private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+  private async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
     try {
-      if (pr_number !== null && this.forge) await this.forge.setPrStatus(source, status, pr_number);
-      else await this.adapterFor(source, "setStatus")?.setStatus(source, status, pr_number);
+      const pr = change_ref === null ? null : prNumber({ change_ref });
+      if (pr !== null && this.forge) await this.forge.setPrStatus(source, status, pr);
+      else await this.adapterFor(source, "setStatus")?.setStatus(source, status, change_ref);
     } catch (err) {
       this.d.log.warn("set status failed", {
         source_id: source.id,
         status,
-        pr_number,
+        pr_number: change_ref === null ? null : prNumber({ change_ref }),
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
     }
