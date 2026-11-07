@@ -257,6 +257,8 @@ const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
 const CATCH_UP_LIMIT = 1000;
+/** How long the state of a dependency the store does not track, read from the forge, is reused (issue #254). */
+export const DEPENDENCY_STATE_TTL_MS = 10 * 60_000;
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
 /**
@@ -282,14 +284,6 @@ const CLOSE_BATCH = 50;
 const PHASE_BATCH = 50;
 /** Queued implement runs and dependency-held items looked at per coordination tick (design §5, 2026-11-03). */
 const COORDINATION_BATCH = 50;
-/**
- * How old this process's last forge read of an item's dependency links may get before a coordination pass reads
- * them again (design §5, 2026-11-07). Edits reach the item on intake; this only catches link changes (sub-issues,
- * blocked-by) that GitHub may not count as an issue update.
- */
-const EDGES_REFRESH_MS = 30 * 60_000;
-/** How old the forge's answer for a dependency outside the factory may get before a pass reads it again. */
-const DEPENDENCY_STATE_REFRESH_MS = 10 * 60_000;
 /** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
 /** Commands read from the command inbox per tick (issue #282). */
@@ -361,12 +355,18 @@ export class Controller {
   /** The local merge check; its only in-process state is a fetch throttle no other replica needs. */
   private readonly merges: MergeChecker | null;
   /**
-   * When this process last read an item's dependency links, and an outside dependency's state, from the forge
-   * (ms). A cache only, like the GitHub ETag cache: another replica or a new process without it reads the stored
-   * edges and, at most once per refresh interval, the forge (design §5, 2026-11-07).
+   * The forge's answers for dependencies the store does not track, by source id, each reused for
+   * DEPENDENCY_STATE_TTL_MS (issue #254); `null` for a read that failed, so it is not retried before then. Per
+   * process, only a cache: a replica without it asks the forge once.
    */
-  private readonly edgesReadAt = new Map<string, number>();
-  private readonly stateReadAt = new Map<string, number>();
+  private readonly dependencyStates = new Map<string, { state: DependencyState | null; at: number }>();
+  /**
+   * When each item's last failed link read was, so a coordination pass does not read its stale links again before
+   * DEPENDENCY_STATE_TTL_MS (issue #254). Per process, only a throttle: a replica without it reads once.
+   */
+  private readonly linkFailures = new Map<WorkItemId, number>();
+  /** True until the start-up status catch-up ran in full; a low request budget defers it (issue #254). */
+  private catchUpPending = true;
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   private improveDay: string | null = null;
 
@@ -389,10 +389,11 @@ export class Controller {
     const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
     // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
     const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
-    await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       await this.live.refresh();
+      // Optional reads: while a source's request budget is low the catch-up waits, then runs (issue #254).
+      if (this.catchUpPending) await this.guard("status catch-up", async () => void (await this.catchUpStatus()));
       const now = this.d.clock.now().getTime();
       const due = now - lastPoll >= this.cfg.poll_interval_ms;
       if (due) lastPoll = now;
@@ -668,7 +669,9 @@ export class Controller {
    * Re-applies the status of every open item, so items from before status labels existed, and any label
    * write that failed or landed out of order, are corrected on start. Each call is idempotent and guarded.
    */
-  async catchUpStatus(): Promise<void> {
+  async catchUpStatus(): Promise<boolean> {
+    // An optional read: with the request budget low it waits for the reset (issue #254); run() asks again each tick.
+    if (this.lowBudget()) return false;
     const items = await this.d.store.listWorkItems(CATCH_UP_LIMIT);
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
@@ -677,7 +680,17 @@ export class Controller {
     // One batched read of the stored label states: a target already showing its status costs no call at all.
     const stored = await this.d.store.listLabelStates(open.map((it) => it.source.id));
     const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
-    for (const it of open) await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
+    for (const it of open) {
+      if (this.lowBudget()) return false;
+      await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
+    }
+    this.catchUpPending = false;
+    return true;
+  }
+
+  /** True while any source's request budget is low (GitHub: `lowBudget`): optional reads wait (issue #254). */
+  private lowBudget(): boolean {
+    return this.sources.some((s) => s.lowBudget?.() === true);
   }
 
   async tickModelProbe(): Promise<void> {
@@ -822,11 +835,11 @@ export class Controller {
         if (created) {
           this.d.log.info("intake", { work_item_id: item.id });
           await this.setStatus(item.source, "triaging", null);
-        }
-        // Edges first, so a claim holds the implement run even before the next coordination tick. A poll delivers
-        // an issue again only when it changed, so this is where an edited `Depends on` line is read (design §5).
-        if (created || (item.stage !== "CLOSED" && item.pr_number === null)) {
-          await this.guard("dependencies", async () => void (await this.refreshEdges(item)));
+          // Edges first, so a claim holds the implement run even before the next coordination tick.
+          await this.guard("dependencies", async () => void (await this.refreshEdges(item, this.issueTime(e.updated_at))));
+        } else if (item.stage !== "CLOSED" && item.pr_number === null) {
+          // An edited issue (issue #254): its links are read again only when it changed since they were read.
+          await this.guard("dependencies", () => this.relinkIfChanged(item, e.updated_at));
         }
         await this.markSeen(e.source, null);
         // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
@@ -2094,9 +2107,8 @@ export class Controller {
 
   /**
    * Once per poll: for each item with a queued implement run and each item held by a dependency, apply its stored
-   * dependency edges and their states (re-read from the forge only past the refresh intervals), then hold,
-   * release or block it; and post one
-   * comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
+   * dependency edges and their states (links re-read from the forge only when never read with a time, outside
+   * states at most once per DEPENDENCY_STATE_TTL_MS), then hold, release or block it; and post one comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
    * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
    */
   async tickCoordination(): Promise<void> {
@@ -2106,11 +2118,6 @@ export class Controller {
   }
 
   private async coordinationStep(): Promise<void> {
-    // Forget marks no pass has needed for two intervals; such an item is then treated as just read.
-    const now = this.d.clock.now().getTime();
-    for (const [marks, ttl] of [[this.edgesReadAt, EDGES_REFRESH_MS], [this.stateReadAt, DEPENDENCY_STATE_REFRESH_MS]] as const) {
-      for (const [k, at] of marks) if (now - at >= 2 * ttl) marks.delete(k);
-    }
     const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
       .filter((r) => r.kind === "implement")
       .slice(0, COORDINATION_BATCH);
@@ -2125,8 +2132,8 @@ export class Controller {
   }
 
   /**
-   * Reads the item's edges (from its source when `network` and its last read is older than EDGES_REFRESH_MS, else
-   * the stored ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
+   * Reads the item's edges (from its source when `network` and they were never read with a time, else the stored
+   * ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
    * release, or block on a human for a dependency closed unmerged or a cycle (queued runs cancelled, one comment).
    * Only an implementing item without a PR is changed. A forge that fails changes nothing: stored edges apply.
    */
@@ -2139,15 +2146,18 @@ export class Controller {
 
   /**
    * The item's dependency verdict after its edges and their states are read and stored: `stored` reads only the
-   * store; `due` also reads the forge past the refresh intervals; `now` reads the forge whatever the intervals
-   * (a human `/retry`, one read per edge).
+   * store; `due` also reads the forge for links never read with a time (none within DEPENDENCY_STATE_TTL_MS of a
+   * failed read) and for outside states past DEPENDENCY_STATE_TTL_MS, both skipped under a low request budget (issue #254); `now` reads the forge whatever
+   * the cache (a human `/retry`, one read per edge).
    */
   private async readDependencies(it: WorkItem, read: "stored" | "due" | "now"): Promise<DependencyVerdict> {
-    const edges = read === "now" || (read === "due" && this.readDue(this.edgesReadAt, it.id, EDGES_REFRESH_MS, false))
-      ? await this.refreshEdges(it)
+    const relink = read === "now"
+      || (read === "due" && !this.linkReadFailedRecently(it.id) && (await this.d.store.dependencyLinksReadAt(it.id)) === null && !this.lowBudget());
+    const edges = relink
+      ? await this.refreshEdges(it, iso(this.d.clock.now().getTime()))
       : await this.d.store.listDependencyEdges({ work_item_id: it.id });
     for (const e of edges) {
-      if (read === "now") this.stateReadAt.delete(e.depends_on);
+      if (read === "now") this.dependencyStates.delete(e.depends_on);
       const state = await this.dependencyStateOf(it.source.type, e.depends_on, read !== "stored");
       if (state !== null && state !== e.state) await this.d.store.setDependencyState(it.id, e.depends_on, state);
     }
@@ -2187,40 +2197,57 @@ export class Controller {
   }
 
   /**
-   * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored and marked read;
-   * else (no such source, or the source failed: logged, retried after EDGES_REFRESH_MS) the stored ones.
+   * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored with `read_at`, the
+   * issue's updated_at they were read at; else (no such source, or the source failed: logged, and the links
+   * marked stale so a coordination pass reads them again once DEPENDENCY_STATE_TTL_MS has passed) the stored ones.
    */
-  private async refreshEdges(it: WorkItem): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
+  private async refreshEdges(it: WorkItem, read_at: Timestamp): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
     const adapter = this.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return this.d.store.listDependencyEdges({ work_item_id: it.id });
-    this.edgesReadAt.set(it.id, this.d.clock.now().getTime());
     let links: DependencyLink[];
     try {
       links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
     } catch (err) {
       this.d.log.warn("dependency links not read: stored edges apply", { work_item_id: it.id, error: (err as Error).message });
+      this.linkFailures.set(it.id, this.d.clock.now().getTime());
+      await this.d.store.markDependencyLinksStale(it.id);
       return this.d.store.listDependencyEdges({ work_item_id: it.id });
     }
-    return this.d.store.replaceDependencyEdges(it.id, links);
+    this.linkFailures.delete(it.id);
+    return this.d.store.replaceDependencyEdges(it.id, links, read_at);
+  }
+
+  /** Whether the item's links failed to read less than DEPENDENCY_STATE_TTL_MS ago; older failures are dropped. */
+  private linkReadFailedRecently(id: WorkItemId): boolean {
+    const now = this.d.clock.now().getTime();
+    for (const [k, at] of this.linkFailures) if (now - at >= DEPENDENCY_STATE_TTL_MS) this.linkFailures.delete(k);
+    return this.linkFailures.has(id);
   }
 
   /**
-   * Whether `key`'s forge answer in `marks` is older than `ttl`; if so it is marked read now. A key with no mark
-   * is marked now and read only when `unseen` (edges: no, intake reads them; outside states: yes, only the forge
-   * knows them).
+   * One fresh read of an existing item's links when the issue's `updated_at` moved past the time they were read at
+   * (or they never were with a time, whatever the delivery's `updated_at`); nothing when it did not. A failed read marks them stale (refreshEdges), so
+   * a coordination pass DEPENDENCY_STATE_TTL_MS later reads them again instead of waiting for another edit.
    */
-  private readDue(marks: Map<string, number>, key: string, ttl: number, unseen: boolean): boolean {
-    const now = this.d.clock.now().getTime();
-    const at = marks.get(key);
-    if (at !== undefined && now - at < ttl) return false;
-    marks.set(key, now);
-    return at !== undefined || unseen;
+  private async relinkIfChanged(it: WorkItem, updated_at: string | undefined): Promise<void> {
+    const adapter = this.byType.get(it.source.type);
+    if (!adapter || !isDependencySource(adapter)) return;
+    const readAt = await this.d.store.dependencyLinksReadAt(it.id);
+    // NaN (no or a bad updated_at) is never newer: only links never read with a time are read then.
+    if (readAt !== null && !(Date.parse(updated_at ?? "") > Date.parse(readAt))) return;
+    await this.refreshEdges(it, this.issueTime(updated_at));
+  }
+
+  /** A source's `updated_at` as a store timestamp; the store clock when the source gave none. */
+  private issueTime(updated_at: string | undefined): Timestamp {
+    const ms = updated_at === undefined ? NaN : Date.parse(updated_at);
+    return iso(Number.isFinite(ms) ? ms : this.d.clock.now().getTime());
   }
 
   /**
    * What a dependency's state is now: a work item's from the store (see `itemMerged`), else, with `network`, the
-   * source's answer at most once per DEPENDENCY_STATE_REFRESH_MS. Null when unknown or not read now (no item, no
-   * network, read recently, no capability, or the source failed: logged). `type`: the source type of the item that
+   * source's answer, reused for DEPENDENCY_STATE_TTL_MS. Null when unknown or not read now (no item, no network, no
+   * capability, a low request budget, or the source failed: logged). `type`: the source type of the item that
    * waits, whose source read the link, so the dependency is in its id space.
    */
   private async dependencyStateOf(type: SourceType, dependsOn: string, network: boolean): Promise<DependencyState | null> {
@@ -2231,13 +2258,24 @@ export class Controller {
     }
     const adapter = this.byType.get(type);
     if (!network || !adapter || !isDependencySource(adapter)) return null;
-    if (!this.readDue(this.stateReadAt, dependsOn, DEPENDENCY_STATE_REFRESH_MS, true)) return null;
+    // At most one forge read per dependency per DEPENDENCY_STATE_TTL_MS, and none while the budget is low (issue #254).
+    const now = this.d.clock.now().getTime();
+    const cached = this.dependencyStates.get(dependsOn);
+    if (cached && now - cached.at < DEPENDENCY_STATE_TTL_MS) return cached.state;
+    if (this.lowBudget()) return null;
+    let state: DependencyState | null;
     try {
-      return await adapter.dependencyState(dependsOn);
+      state = await adapter.dependencyState(dependsOn);
     } catch (err) {
       this.d.log.warn("dependency state not read: stored state applies", { depends_on: dependsOn, error: (err as Error).message });
-      return null;
+      state = null;
     }
+    this.dependencyStates.set(dependsOn, { state, at: now });
+    // Keep the cache bounded: drop answers past their time.
+    if (this.dependencyStates.size > COORDINATION_BATCH * 8) {
+      for (const [k, v] of this.dependencyStates) if (now - v.at >= DEPENDENCY_STATE_TTL_MS) this.dependencyStates.delete(k);
+    }
+    return state;
   }
 
   /**

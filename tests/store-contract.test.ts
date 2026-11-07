@@ -1853,6 +1853,42 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
   // App command requests (issue #245, migration 23 on both backends).
+  describe("dependency edges keep the issue updated_at they were read at (migrations 32 and 33)", () => {
+    const T1 = "2026-11-07T10:00:00.000Z" as Timestamp;
+    const T2 = "2026-11-07T11:00:00.000Z" as Timestamp;
+
+    it("replaceDependencyEdges with read_at records it on every edge and on the item; without it both stay", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item.id;
+      expect(await store.dependencyLinksReadAt(a)).toBeNull();
+      const plain = await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }]);
+      expect(plain.map((e) => e.source_updated_at)).toEqual([null]);
+
+      const read = await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }, { depends_on: "o/r#3", kind: "sub_issue" }], T1);
+      expect(read.map((e) => [e.depends_on, e.source_updated_at])).toEqual([["o/r#2", T1], ["o/r#3", T1]]);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T1);
+      expect((await store.listDependencyEdges({ work_item_id: a })).map((e) => e.source_updated_at)).toEqual([T1, T1]);
+
+      // No links: the item still records when they were read.
+      await store.replaceDependencyEdges(a, [], T2);
+      expect(await store.listDependencyEdges({ work_item_id: a })).toEqual([]);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T2);
+      await store.replaceDependencyEdges(a, []);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T2);
+    });
+
+    it("markDependencyLinksStale clears the item's read time, twice as once", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item.id;
+      await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }], T1);
+      await store.markDependencyLinksStale(a);
+      await store.markDependencyLinksStale(a);
+      expect(await store.dependencyLinksReadAt(a)).toBeNull();
+      // The edges keep the time they were read at.
+      expect((await store.listDependencyEdges({ work_item_id: a })).map((e) => e.source_updated_at)).toEqual([T1]);
+    });
+  });
+
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
     const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({
@@ -2077,6 +2113,46 @@ describe("MySQL step 19 (worker-processes)", () => {
       process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
     });
     expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+  });
+});
+
+describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
+  const steps = () => readSteps(STEPS_DIR, INLINE_STEPS);
+  const sql = (file: string) => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("are the repo's steps after 32, in order, .sql files", () => {
+    expect(steps().find((st) => st.name === "edge-source-updated-at")).toMatchObject({ number: 33, from: 32, kind: "sql" });
+    expect(steps().find((st) => st.name === "item-edges-source-updated-at")).toMatchObject({ number: 34, from: 33, kind: "sql" });
+  });
+
+  it("add the same columns as SQLite migrations 33 and 34, each in one ALTER (safe to rerun after a failure)", () => {
+    const added = (text: string) => [...text.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
+    expect(added(MIGRATIONS[32]!)).toEqual(["dependency_edges.source_updated_at"]);
+    expect(added(MIGRATIONS[33]!)).toEqual(["work_items.edges_source_updated_at"]);
+    expect(added(sql("0033-edge-source-updated-at.sql"))).toEqual(added(MIGRATIONS[32]!));
+    expect(added(sql("0034-item-edges-source-updated-at.sql"))).toEqual(added(MIGRATIONS[33]!));
+    for (const f of ["0033-edge-source-updated-at.sql", "0034-item-edges-source-updated-at.sql"]) {
+      const statements = sql(f).split("\n").filter((l) => l.trim() && !l.startsWith("--"));
+      expect(statements, f).toHaveLength(1);
+    }
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades a state-32 database: edges keep their rows and get a NULL read time", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(32) }).apply(() => undefined);
+    const clock = new FakeClock();
+    const s = await new MysqlMigrations(conn).apply(() => undefined);
+    expect(s.pending.map((p) => p.number)).toEqual(expect.arrayContaining([33, 34]));
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const a = (await store.createWorkItem(issue(1), system)).item.id;
+    await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }]);
+    expect(await store.dependencyLinksReadAt(a)).toBeNull();
+    const at = "2026-11-07T10:00:00.000Z" as Timestamp;
+    expect((await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }], at))[0]?.source_updated_at).toBe(at);
+    expect(await store.dependencyLinksReadAt(a)).toBe(at);
   });
 });
 

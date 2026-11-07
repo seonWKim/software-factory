@@ -579,6 +579,11 @@ export interface DependencyEdge {
   depends_on: string;
   kind: DependencyKind;
   state: DependencyState;
+  /**
+   * The source issue's `updated_at` when this edge was read from it (issue #254), or the store time of a read made
+   * without one. Null on edges stored before it was kept.
+   */
+  source_updated_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
