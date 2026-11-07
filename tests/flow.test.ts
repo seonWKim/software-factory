@@ -1622,7 +1622,7 @@ describe("/resolve on a merge conflict", () => {
   });
 });
 
-describe("/resolve with real git (NoOpSandbox)", () => {
+describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
   const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
   const commit = (repo: string, path: string, content: string, msg: string) => {

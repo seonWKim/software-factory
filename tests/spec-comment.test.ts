@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { parseTriage, scopeText, TRIAGE_SCHEMA, type TriageOutput } from "../src/core/outputs.js";
 import { renderSpec, repeatsDone } from "../src/core/spec-comment.js";
 
@@ -128,8 +129,8 @@ describe("triage scope lists and decisions", () => {
   const { scope: _s, ...noScope } = spec;
   const current = { ...noScope, in_scope: ["The CI check."], out_of_scope: ["The review agent."], decisions: [] };
 
-  it("the schema asks for in_scope, out_of_scope and decisions, not scope", () => {
-    expect(TRIAGE_SCHEMA.required).toEqual(expect.arrayContaining(["in_scope", "out_of_scope", "decisions"]));
+  it("the schema asks for in_scope and out_of_scope, not scope", () => {
+    expect(TRIAGE_SCHEMA.required).toEqual(expect.arrayContaining(["in_scope", "out_of_scope"]));
     expect(TRIAGE_SCHEMA.required).not.toContain("scope");
     expect(TRIAGE_SCHEMA.properties).not.toHaveProperty("scope");
   });
@@ -141,7 +142,29 @@ describe("triage scope lists and decisions", () => {
     expect(r.value.in_scope).toEqual(["The CI check."]);
     expect(r.value.out_of_scope).toEqual(["The review agent."]);
     expect(r.value.scope).toBe("In scope:\n- The CI check.\n\nOut of scope:\n- The review agent.");
-    expect(r.value.decisions).toBeUndefined();
+    expect(r.value.decisions).toEqual([]);
+  });
+
+  it("decisions is optional: the schema the runner gets does not require it, and a missing one parses as []", () => {
+    // A cheap model leaves an empty list out; requiring it failed every structured-output retry.
+    expect(TRIAGE_SCHEMA.required).not.toContain("decisions");
+    expect(TRIAGE_SCHEMA.properties).toHaveProperty("decisions");
+    const { decisions: _d, ...without } = current;
+    const r = parseTriage(without);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.decisions).toEqual([]);
+  });
+
+  it("the other triage fields stay required", () => {
+    expect([...TRIAGE_SCHEMA.required].sort()).toEqual([
+      "allowed_paths", "desired_output", "done_criteria", "estimated_files", "estimated_lines", "files_to_change", "in_scope",
+      "in_short", "out_of_scope", "problem", "tier", "tier_reason",
+    ]);
+  });
+
+  it("the prompt's output example includes decisions", () => {
+    const prompt = readFileSync(new URL("../prompts/triage.md", import.meta.url), "utf8");
+    expect(prompt).toContain('"decisions": []');
   });
 
   it("still reads an older output with only scope", () => {
