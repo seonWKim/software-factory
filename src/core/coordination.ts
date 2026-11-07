@@ -35,6 +35,22 @@ export const DEFAULT_HOTSPOTS: readonly string[] = [
   "SET_UP.md",
 ];
 
+/**
+ * Default `mechanical_paths` (design §5, issue #297): files two items usually change only by adding lines or new
+ * files (the MySQL migration runner and its step folder, the design and plugin indexes and topic files). Their
+ * conflicts are merged in code (src/core/mechanical.ts), so they weigh `mechanical_weight` and are never hotspots.
+ */
+export const DEFAULT_MECHANICAL: readonly string[] = [
+  "src/impl/store/mysql/migrations.ts",
+  "migrations/mysql/",
+  "docs/design/",
+  "docs/design.md",
+  "docs/plugins.md",
+  "docs/plugins/",
+];
+/** Default `mechanical_weight`: well below BASE_WEIGHT, so a few index and History lines never hold a run. */
+export const DEFAULT_MECHANICAL_WEIGHT = 0.25;
+
 export interface CoordinationSettings {
   /** `max_coordination_cost`: a cost at or above it holds the run. */
   max_cost: number;
@@ -42,12 +58,18 @@ export interface CoordinationSettings {
   hotspots: readonly string[];
   /** `hotspot_weight`: the fixed weight of a hotspot. */
   hotspot_weight: number;
+  /** `mechanical_paths`: files (or folders ending in `/`) weighed `mechanical_weight`, never hotspots. */
+  mechanical: readonly string[];
+  /** `mechanical_weight`: above 0, below 1.0. */
+  mechanical_weight: number;
 }
 
 export const DEFAULT_COORDINATION: CoordinationSettings = {
   max_cost: DEFAULT_MAX_COORDINATION_COST,
   hotspots: DEFAULT_HOTSPOTS,
   hotspot_weight: DEFAULT_HOTSPOT_WEIGHT,
+  mechanical: DEFAULT_MECHANICAL,
+  mechanical_weight: DEFAULT_MECHANICAL_WEIGHT,
 };
 
 /** A file's weight from its recorded conflicts: 1.0 below two, then 1.0 + 0.5 per conflict, at most 4.0. */
@@ -77,6 +99,14 @@ function isHotspot(path: string, hotspots: readonly string[]): boolean {
   return hotspots.some((h) => h === path || isCovered(h, [path]) || isCovered(path, [h]));
 }
 
+/**
+ * Whether `path` is a mechanical path: equal to one, or under a mechanical folder. A folder that only holds one
+ * (e.g. `docs/`) is not: it covers other files too.
+ */
+export function isMechanical(path: string, mechanical: readonly string[]): boolean {
+  return mechanical.some((m) => m === path || isCovered(path, [m]));
+}
+
 /** Recorded conflicts on `path`; for a folder, the most on any file under it. */
 function conflictsOn(path: string, conflicts: ReadonlyMap<string, number>): number {
   if (!path.endsWith("/")) return conflicts.get(path) ?? 0;
@@ -85,9 +115,17 @@ function conflictsOn(path: string, conflicts: ReadonlyMap<string, number>): numb
   return most;
 }
 
-/** One shared path's weight: the highest of BASE_WEIGHT, its learned weight and, for a hotspot, the hotspot weight. */
+/**
+ * One shared path's weight: the highest of BASE_WEIGHT, its learned weight and, for a hotspot, the hotspot weight.
+ * A mechanical path is never a hotspot: it weighs `mechanical_weight`, or its learned weight when that is higher
+ * (from LEARNED_FROM recorded conflicts, which only real resolve runs add).
+ */
 export function pathWeight(path: string, conflicts: ReadonlyMap<string, number>, s: CoordinationSettings): SharedPath {
   const n = conflictsOn(path, conflicts);
+  if (isMechanical(path, s.mechanical)) {
+    const weight = n >= LEARNED_FROM ? Math.max(s.mechanical_weight, learnedWeight(n)) : s.mechanical_weight;
+    return { path, weight, conflicts: n, hotspot: false, mechanical: true };
+  }
   const hotspot = isHotspot(path, s.hotspots);
   return { path, weight: Math.max(BASE_WEIGHT, learnedWeight(n), hotspot ? s.hotspot_weight : 0), conflicts: n, hotspot };
 }
@@ -100,7 +138,7 @@ export function coordinationCost(
   s: CoordinationSettings,
 ): { shared: SharedPath[]; cost: number } {
   const shared = sharedPaths(a, b).map((p) => pathWeight(p, conflicts, s));
-  // Weights are multiples of 0.5 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
+  // Weights are multiples of 0.25 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
   const cost = Math.round(shared.reduce((sum, p) => sum + p.weight, 0) * 1000) / 1000;
   return { shared, cost };
 }
@@ -153,21 +191,30 @@ export function claimDecision(holds: readonly Hold[]): "free" | "deadlock" | "he
   return holds.every((h) => h.holder.kind === "waiting") ? "deadlock" : "held";
 }
 
-const fmt = (n: number) => n.toFixed(1);
+/** A cost: one decimal (4.0, 2.5), two when a mechanical weight needs them (2.75). */
+const fmt = (n: number) => n.toFixed(Number.isInteger(Math.round(n * 1000) / 100) ? 1 : 2);
 
 function list(parts: readonly string[]): string {
   if (parts.length <= 1) return parts.join("");
   return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
+/** A weight as written in a hold reason: 0.25, 1, 2.5. */
+const weightText = (n: number) => String(Number(n.toFixed(2)));
+
 function describePath(p: SharedPath): string {
+  if (p.mechanical) {
+    const times = p.conflicts === 0 ? "" : `, conflicted ${p.conflicts === 1 ? "once" : `${p.conflicts} times`}`;
+    return `${p.path} (mechanical, ${weightText(p.weight)}${times})`;
+  }
   if (p.conflicts > 0) return `${p.path} (conflicted ${p.conflicts === 1 ? "once" : `${p.conflicts} times`})`;
   return p.hotspot ? `${p.path} (hotspot)` : p.path;
 }
 
 /**
  * The hold reason the item's comment and the dashboard show, e.g.
- * `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5`.
+ * `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5`. A mechanical
+ * path names its weight: `docs/design.md (mechanical, 0.25)`.
  */
 export function holdReason(h: {
   holder_ref: string;

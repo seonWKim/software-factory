@@ -4,7 +4,7 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, toolGrantsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { saveProjectLabel } from "./core/project-labels.js";
@@ -272,6 +272,8 @@ export async function loadConfig(
     agent_git_identity: file.agent_git_identity,
     budget_min_sample: budget.budget_min_sample,
     path_companions: pathCompanionsConfig(raw),
+    // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
+    coordination: coordinationConfig(raw),
   };
   const prompts: Prompts = {
     triage: await readFile(join(codeRoot, "prompts", "triage.md"), "utf8"),
