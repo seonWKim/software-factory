@@ -1,6 +1,7 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
+import { MERGE_COMMAND } from "./local-merge.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
@@ -69,15 +70,21 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   { name: "retry", usage: "retry <id> [text]",description: "Store `/retry` for the item; the controller applies it" },
   { name: "revise", usage: "revise <id> <feedback>", description: "Store `/revise` for the item; the controller applies it" },
   { name: "reject", usage: "reject <id> <reason>", description: "Store `/reject` for the item; the controller applies it" },
+  {
+    name: "merge",
+    usage: "merge <id>",
+    description: "Approver only: merge a local item's branch into the local base branch once its review passed (no push, never automatic); the controller applies it",
+  },
   { name: "users list", usage: "users list", description: "Print your CLI identity and every local user with its role (owner, approver, requester)" },
   { name: "users add", usage: "users add <user_id> --role approver|requester", description: "Owner only: give a local user a role, e.g. `local:dev@example.com`" },
   { name: "users remove", usage: "users remove <user_id>", description: "Owner only: remove a local user's role" },
 ];
 
 /** The top-level words `factory` hands to this module. */
-export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "users"] as const;
+export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "merge", "users"] as const;
 
-export type ItemCommand = "approve" | "retry" | "revise" | "reject";
+/** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
+export type ItemCommand = "approve" | "retry" | "revise" | "reject" | typeof MERGE_COMMAND;
 
 export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
@@ -129,6 +136,11 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
     return { action: "command", command: word, id: id as WorkItemId, text };
+  }
+  if (word === MERGE_COMMAND) {
+    const [id, ...rest] = args;
+    if (!id || rest.length > 0) return bad("merge needs one work item ID");
+    return { action: "command", command: MERGE_COMMAND, id: id as WorkItemId, text: "" };
   }
   if (word === "users") {
     const [sub, user, ...rest] = args;
@@ -204,13 +216,16 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     case "command": {
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
-      if (item.source.type !== "local") return fail(`${a.id} is not a local work item: reply \`/${a.command}\` on its issue instead`);
+      const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
+      if (item.source.type !== "local") {
+        return fail(a.command === MERGE_COMMAND ? `${a.id} is not a local work item: merge its pull request instead` : `${a.id} is not a local work item: reply \`/${a.command}\` on its issue instead`);
+      }
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       const { command } = await d.store.appendCliCommand({ key: `cli:${d.newId()}`, actor: user, command: a.command, args });
       return {
         code: 0,
-        lines: [`stored \`/${a.command}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
+        lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
       };
     }
     case "users_list": {

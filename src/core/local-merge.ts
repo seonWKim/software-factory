@@ -4,6 +4,9 @@
 
 import type { Sandbox } from "../interfaces/sandbox.js";
 
+/** The command inbox name `factory merge <id>` stores; the controller applies it as the local merge. */
+export const MERGE_COMMAND = "merge";
+
 export interface LocalMergeSpec {
   /** The factory repo. */
   repo: string;

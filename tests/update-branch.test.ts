@@ -15,7 +15,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -48,8 +48,9 @@ class GitPushBroker implements ToolBroker {
   listTools(): ToolDescriptor[] {
     return [];
   }
+  /** The GitHub broker's tools: the worker opens a PR and comments only through a broker that lists them. */
   allTools(): ToolDescriptor[] {
-    return [];
+    return [...FAKE_GITHUB_TOOLS];
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
