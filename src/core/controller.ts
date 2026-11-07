@@ -24,10 +24,15 @@ import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, setting
 import { Listener } from "./listener.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
-import { type TriagePhase, parseReview, parseTriage } from "./outputs.js";
+import { type NeedsHuman, type TriagePhase, parseNeedsHuman, parseReview, parseTriage } from "./outputs.js";
 import {
+  AGENT_NEEDS_HUMAN,
   AUTO_RESOLVE_LIMIT,
+  REPEATED_FAILURE,
   type FailureClass,
+  blockingRunKind,
+  failureLine,
+  repeatsLastFailure,
   SKIP_LABEL,
   autoResolveAttempts,
   autoResolveKey,
@@ -102,6 +107,12 @@ export interface ControllerDeps {
    * tick. Absent: `config`, fixed.
    */
   settings?: LiveSettings;
+  /**
+   * The repeated-failure rule (issue #167, design 05-restarts): two task failures in a row in one step with the
+   * same code and detail line block the item with `repeated_failure`. Absent or true: on. False: off, and the step
+   * retries up to max_attempts.
+   */
+  repeated_failure_rule?: boolean;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -473,7 +484,23 @@ export class Controller {
     // One repository per factory today, so the configured repo's limit applies to every lease.
     const { max_attempts } = this.settings(this.project());
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
-    const ids = await this.d.store.expireLeases(max_attempts, (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms));
+    // Each attempt the store's conditional update cut off gets its end line (issue #210): the run's last
+    // heartbeat is its end. The reaper sees only an expired lease, so the reason is always lease_expired.
+    const ids = await this.d.store.expireLeases(
+      max_attempts,
+      (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms),
+      (a) =>
+        this.d.log.warn("run abandoned", {
+          run_id: a.run_id,
+          work_item_id: a.work_item_id,
+          attempt: a.attempt,
+          status: "abandoned",
+          reason: "lease_expired",
+          started_at: a.started_at,
+          ended_at: a.ended_at,
+          duration_ms: a.duration_ms,
+        }),
+    );
     for (const id of ids) this.d.log.warn("lease expired", { run_id: id });
   }
 
@@ -1024,7 +1051,7 @@ export class Controller {
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     await this.markSeen(e.source, e.comment_id);
-    const state = commandState(item);
+    const state = await this.stateOf(item);
     const help = e.kind === "help_requested";
     await this.post(
       item.source,
@@ -1050,7 +1077,7 @@ export class Controller {
     if ("refuse" in principal) return;
     const text = e.body.trim();
     if (text === "" || text.length > SUGGEST_MAX_CHARS || item.stage === "CLOSED") return;
-    const state = commandState(item);
+    const state = await this.stateOf(item);
     const suggestion = await suggestCommand(text, state, llm);
     let body: string;
     if (suggestion === null) {
@@ -1178,7 +1205,7 @@ export class Controller {
     floorNeed: number | null,
     note: string | null,
   ): Promise<Decision | Refusal> {
-    if (e.kind === "resolve_requested") return resolveCommand(e, it, actor);
+    if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
     if (e.kind === "revise_requested" && e.pr) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
     }
@@ -1187,7 +1214,7 @@ export class Controller {
       return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
-    if (e.kind === "retry_requested") return retry(it, actor);
+    if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it));
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {
         refuse: `the item is ${phaseLabel("dependency_hold")} (${it.blocked_reason ?? "a dependency"}), and \`/approve\` does not lift a ` +
@@ -1195,7 +1222,7 @@ export class Controller {
       };
     }
     const phase = commandPhase(it);
-    const afterFailure = phase === "too_large" || phase === "failed_implement";
+    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
       const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
@@ -1758,6 +1785,13 @@ export class Controller {
       if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
+      // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
+      if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
+        const ask = parseNeedsHuman(data.needs_human);
+        if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
+        if (run.kind === "resolve") return withSpent(await this.resolveFailed(it, run, "invalid_output"), run, it);
+        return withSpent(await this.retryOrBlock(it, run, "task", "invalid_output"), run, it);
+      }
 
       switch (run.kind) {
         case "triage": {
@@ -2103,6 +2137,8 @@ export class Controller {
         ack_run: run.id,
       };
     }
+    // The same task failure twice in a row (decided 2026-11-07): a third run would fail the same way.
+    if (cls === "task" && this.d.repeated_failure_rule !== false && repeatsLastFailure(step, run)) return this.repeatedFailure(it, run, code, detail);
     const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
     const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
     // A forge 401/403: the retry also waits for the forge-auth pause to end (design §5 Restarts).
@@ -2230,6 +2266,91 @@ export class Controller {
     }
     const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
     await this.post({ type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+  }
+
+  /**
+   * Two task failures in a row in one step with the same code and detail line (issue #167, decided
+   * 2026-11-07): the item blocks on a human with `repeated_failure` and no third run is queued. One comment,
+   * keyed on the run; the detail line is dropped if the egress scan flags it. `/retry` starts the step afresh.
+   */
+  private async repeatedFailure(it: WorkItem, run: Run, code: string, detail: StateChangeDetail): Promise<Decision> {
+    const line = run.outcome?.status === "failed" ? failureLine(run.outcome.detail) : "";
+    const patch = { blocked_on: "human" as const, blocked_reason: REPEATED_FAILURE };
+    const body = (withDetail: boolean) => [
+      "## Factory check: the same failure twice",
+      "",
+      `The ${run.kind} run failed twice in a row the same way (\`${code}\`): ${describeFailure(code)}.${withDetail && line ? ` ${line}` : ""}`,
+      "",
+      "The factory stopped retrying it, since a third run would most likely fail the same way. Fix the cause, then comment `/retry` to run it again with a fresh attempt budget, `/revise <feedback>` to get a new spec written, or `/reject <reason>` to close.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `run-failed:${run.id}`, body(scan.clean));
+    return {
+      patch: { ...patch, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: REPEATED_FAILURE,
+      detail,
+      ack_run: run.id,
+    };
+  }
+
+  /**
+   * An implement, review or resolve run that returned needs_human (issue #167, decided 2026-11-07). The
+   * worker pushed nothing. The item keeps its stage and blocks on a human with `agent_needs_human`; nothing is
+   * queued. One comment, keyed on the run, gives the agent's reason and question (left out if the egress scan
+   * flags them) and the command footer. The run's tokens are added as for any finished run; the ack fences it.
+   */
+  private async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
+    const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
+    const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
+    const answer = run.kind === "resolve"
+      ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
+      : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
+    const body = (withText: boolean) => [
+      "## Factory: the agent needs a human",
+      "",
+      `The ${run.kind} run stopped and asked for a human instead of going on. Nothing was pushed.`,
+      "",
+      ...(withText
+        ? ["**Reason**", "", quote(ask.reason), "", "**Question**", "", quote(ask.question)]
+        : ["The agent's reason and question were withheld by the leak scanner."]),
+      "",
+      answer,
+      "",
+      footer,
+    ].join("\n");
+    const scan = await this.d.scanner.scan("comment", body(true));
+    const url = await this.comment(it, `needs-human:${run.id}`, body(scan.clean));
+    return {
+      patch: { ...patch, token_cost: tokens, failure_comment_url: url },
+      actor: SYSTEM,
+      reason: AGENT_NEEDS_HUMAN,
+      detail: { run_id: run.id, run_kind: run.kind },
+      ack_run: run.id,
+    };
+  }
+
+  /** The kind of run behind an agent_needs_human or repeated_failure block (from the item's runs); else undefined. */
+  private async blockedBy(it: WorkItem): Promise<RunKind | undefined> {
+    if (it.blocked_on !== "human" || (it.blocked_reason !== AGENT_NEEDS_HUMAN && it.blocked_reason !== REPEATED_FAILURE)) return undefined;
+    return blockingRunKind(it.blocked_reason, await this.d.store.listRuns(it.id));
+  }
+
+  /** At agent_needs_human: the kind of run that asked; else undefined. */
+  private async askedBy(it: WorkItem): Promise<RunKind | undefined> {
+    return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
+  }
+
+  /** The step a `/retry` restarts: the run behind an agent block, else what the item's fields say. */
+  private async retryKind(it: WorkItem): Promise<RunKind | undefined> {
+    return (await this.blockedBy(it)) ?? failedRunKind(it);
+  }
+
+  /** The command state of `it`, with the kind of run that asked at agent_needs_human. */
+  private async stateOf(it: WorkItem) {
+    return commandState(it, await this.askedBy(it));
   }
 
   /**
@@ -2577,8 +2698,7 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
 }
 
-function retry(it: WorkItem, actor: Actor): Decision | Refusal {
-  const kind = failedRunKind(it);
+function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined): Decision | Refusal {
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
   const next = { ...it, restart_count: it.restart_count + 1 };
   // A retried update goes back to waiting for the merge, which is the state an update run expects.
@@ -2590,7 +2710,8 @@ function retry(it: WorkItem, actor: Actor): Decision | Refusal {
     patch: { ...unblocked, restart_count: next.restart_count },
     actor,
     reason: "retry_requested",
-    enqueue: { kind, idempotency_key: runKey(next, kind) },
+    // A resolve run reads its notes from its input; a plain /retry gives none.
+    enqueue: { kind, idempotency_key: runKey(next, kind), ...(kind === "resolve" ? { input: { notes: "" } } : {}) },
   };
 }
 
@@ -2684,12 +2805,15 @@ function quote(text: string): string {
 }
 
 /**
- * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict. Starts a resolve
+ * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
+ * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
  * /resolve would otherwise be a silent no-op. The notes go on the run for the worker; they are untrusted.
  */
-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor): Decision | Refusal {
-  if (!conflictPending(it)) {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean): Decision | Refusal {
+  // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
+  const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
+  if (!conflictPending(it) && !asked) {
     return {
       refuse: `the item is not waiting on a merge conflict (it is ${phaseLabel(commandPhase(it))}); ` +
         `\`/resolve\` applies only when the ${phaseLabel("merge_conflict")}`,

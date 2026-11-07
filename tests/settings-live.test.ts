@@ -35,7 +35,7 @@ async function harness(opts: { triage?: Fn; implement?: Fn; review?: Fn; config?
   });
   const log = recordingLog();
   const settings = new LiveSettings({ config, base: baseFromConfig(config, { table: DEFAULT_MODEL_TABLE, names: NAMES }), source: store, log });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings });
+  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
   const w1 = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
