@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -107,7 +108,9 @@ describe("a .ts step", () => {
         include: ["migrations/**/*.ts"],
       }),
     );
-    execFileSync(join(process.cwd(), "node_modules", ".bin", "tsc"), ["-p", join(root, "tsconfig.json")], { stdio: "pipe" });
+    // Resolved like any import, so a checkout whose packages sit in a parent folder's node_modules works too.
+    const tsc = createRequire(import.meta.url).resolve("typescript/bin/tsc");
+    execFileSync(process.execPath, [tsc, "-p", join(root, "tsconfig.json")], { stdio: "pipe" });
     const compiled = compiledStepPath(join(root, "migrations", "mysql"), "0012-sample.ts");
     expect(compiled).toBe(join(root, "dist", "migrations", "mysql", "0012-sample.js"));
     expect(existsSync(compiled)).toBe(true);
