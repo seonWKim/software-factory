@@ -1,6 +1,6 @@
 // What a waiting item's row says (design §9): the reason in plain words, where to act, and the command to type.
 // One function for the classic page (pages.ts) and the items API (api.ts), so both give the same reason for the
-// same item. Store reads only, no forge call: the PR URL is built from the stored project label by the caller.
+// same item. Store reads only, no forge call: the PR link is the item's stored change_url.
 
 import type { Run, WorkItem } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -13,10 +13,9 @@ export interface Need {
   command: string | null;
 }
 
-/** What needOf reads: the store for a failed run's code, the PR URL, and the egress scan of free text. */
+/** What needOf reads: the store for a failed run's code, and the egress scan of free text. */
 export interface NeedCtx {
   store: Pick<FactoryStore, "listRuns">;
-  prUrl(it: WorkItem): Promise<string | null>;
   /** The value through the Withholder (cut to `max`), as plain text. */
   text(value: string, opts?: { channel?: "run_outcome"; max?: number }): Promise<string>;
 }
@@ -49,9 +48,7 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
     return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
   }
   if (reason === "merge_pending") {
-    const url = await c.prUrl(it);
-    const pr = url === null ? issue : { url, label: `PR #${it.pr_number}` };
-    return { reason: check ? mergeText(check) : "ready to merge", ...pr, command: "merge the PR" };
+    return { reason: check ? mergeText(check) : "ready to merge", ...stored(it.change_url, `PR #${it.change_ref}`), command: "merge the PR" };
   }
   const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" || reason === "repeated_failure" ? await latestErrorCode(c.store, it) : null);
   if (failed !== null) {
