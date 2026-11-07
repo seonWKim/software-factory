@@ -213,3 +213,77 @@ describe("coordination config (design §5, 2026-11-03)", () => {
     await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
   });
 });
+
+describe("config keys: openai_compatible", () => {
+  const MODELS = { cheap: "small-1", standard: "mid-1", strong: "big-1" };
+  const BLOCK = { base_url: "https://api.example.test/v1", models: MODELS };
+  const withBlock = (block: unknown) => ({ ...SQLITE, openai_compatible: block });
+
+  it("is a top-level key", () => {
+    expect(TOP_LEVEL_KEYS).toContain("openai_compatible");
+  });
+
+  it("a valid block loads", async () => {
+    await expect(loadConfig(root(withBlock(BLOCK)))).resolves.toBeTruthy();
+  });
+
+  it("the checked-in config, which has no block, still loads", async () => {
+    expect(REAL).not.toHaveProperty("openai_compatible");
+    await expect(loadConfig(root(SQLITE))).resolves.toBeTruthy();
+  });
+
+  it("a misspelled key in the block names its full path and the valid keys", async () => {
+    const err = await loadError(withBlock({ base_ul: BLOCK.base_url, base_url: BLOCK.base_url, models: MODELS }));
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("openai_compatible.base_ul");
+    expect(err.message).toContain("valid openai_compatible keys: base_url, models");
+    expect(err.message).toContain('did you mean "base_url"?');
+  });
+
+  it("a misspelled key in models names its path", async () => {
+    const err = await loadError(withBlock({ ...BLOCK, models: { ...MODELS, strnog: "x" } }));
+    expect(err.message).toContain("openai_compatible.models.strnog");
+    expect(err.message).toContain("cheap, standard, strong");
+  });
+
+  it("a missing base_url names openai_compatible.base_url", async () => {
+    const err = await loadError(withBlock({ models: MODELS }));
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain("openai_compatible.base_url is required");
+  });
+
+  it.each(["not a url", "://nope", "ftp://api.example.test/v1", "file:///etc/x", 42, ""])(
+    "base_url %j fails and names openai_compatible.base_url",
+    async (base_url) => {
+      const err = await loadError(withBlock({ ...BLOCK, base_url }));
+      expect(err.message).toContain("openai_compatible.base_url");
+    },
+  );
+
+  it.each(["http://api.example.test/v1", "http://10.0.0.5:8080/v1", "http://127.0.0.2/v1", "http://localhost.example.test/v1"])(
+    "plain http to a non-loopback host %s fails",
+    async (base_url) => {
+      const err = await loadError(withBlock({ ...BLOCK, base_url }));
+      expect(err.message).toContain("openai_compatible.base_url");
+      expect(err.message).toContain("https");
+    },
+  );
+
+  it.each(["https://api.example.test/v1", "https://10.0.0.5/v1", "http://localhost:11434/v1", "http://127.0.0.1:8000/v1", "http://[::1]:8000/v1"])(
+    "%s passes",
+    async (base_url) => {
+      await expect(loadConfig(root(withBlock({ ...BLOCK, base_url })))).resolves.toBeTruthy();
+    },
+  );
+
+  it.each(["cheap", "standard", "strong"] as const)("models without %s names the missing one", async (missing) => {
+    const { [missing]: _, ...rest } = MODELS;
+    const err = await loadError(withBlock({ ...BLOCK, models: rest }));
+    expect(err.message).toContain(`openai_compatible.models.${missing}`);
+  });
+
+  it("a missing models block fails", async () => {
+    const err = await loadError(withBlock({ base_url: BLOCK.base_url }));
+    expect(err.message).toContain("openai_compatible.models");
+  });
+});
