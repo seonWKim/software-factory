@@ -21,13 +21,13 @@ function rebuilt(c: NewCliCommand): string {
   return text === "" ? `/${c.command}` : `/${c.command} ${text}`;
 }
 
-/** The PR a command on a PR's conversation was written on, as the GitHub poll read it. */
+/** The PR a command on a PR's conversation was written on, as the forge poll read it. */
 export interface CommandPr {
   pr_number: number;
   head_branch: string;
 }
 
-/** The key of a GitHub comment's row in the command inbox and its entry in the item thread (issue #284). */
+/** The key of a forge comment's row in the command inbox and its entry in the item thread (issue #284). */
 export function githubCommentKey(comment_id: number): string {
   return `github:${comment_id}`;
 }
@@ -36,10 +36,10 @@ const GITHUB_KEY = /^github:(\d+)$/;
 const GITHUB_ACTOR = /^github:(\d+)$/;
 
 /**
- * One GitHub comment command as a command inbox row (issue #284): key `github:<comment id>`, actor
+ * One forge comment command as a command inbox row (issue #284): key `github:<comment id>`, actor
  * `github:<numeric user id>` (never the login), `command` the word after `/`, `args.text` the text after it,
  * `args.source` the issue (or PR) it was written on, and `args.pr` the PR the poll read for a command on a
- * PR's conversation. Only the GitHub source writes these.
+ * PR's conversation. Only the forge's comment poll writes these.
  */
 export function githubCommand(c: {
   comment_id: number; user_id: number; command: string; text: string; source: SourceRef; pr?: CommandPr | null;
@@ -53,9 +53,9 @@ export function githubCommand(c: {
 }
 
 /**
- * The event of a row the GitHub source wrote (key `github:<comment id>`, actor `github:<numeric id>`), else
+ * The event of a row the forge's comment poll wrote (key `github:<comment id>`, actor `github:<numeric id>`), else
  * null: CLI and app rows never get provider `github`. The identity is provider `github` with the numeric id, so
- * the GitHub auth provider judges it; `comment_id` is the GitHub comment id, so its 👀 and refusal replies are
+ * that provider's auth plugin judges it; `comment_id` is the forge's comment id, so its 👀 and refusal replies are
  * keyed as before. A command on a PR's conversation gets the PR the poll read: `/revise` and `/resolve` as `pr`,
  * `/verdict` as its target. `source` is where it was written; `event` is null for a row that maps to no event.
  */

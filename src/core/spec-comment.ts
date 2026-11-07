@@ -29,7 +29,7 @@ const code = (p: string): string => `- \`${p}\``;
 function splitSection(spec: TriageOutput, phases: TriagePhase[]): string[] {
   const out = [
     "### Split into phases",
-    `Triage estimates this change at about ${spec.estimated_lines} lines in ${spec.estimated_files} files, too close to the size limits to review in one pull request.`,
+    `Triage estimates this change at about ${spec.estimated_lines} lines in ${spec.estimated_files} files, too close to the size limits to review in one change.`,
     `\`/approve\` files one sub-issue per phase, in this order, each linked to this issue. Each phase after the first waits until the one before it is closed as completed. Each phase gets its own spec and its own \`/approve\`. This issue closes as completed when the last phase does.`,
   ];
   phases.forEach((p, i) => {

@@ -156,10 +156,10 @@ describe("command table", () => {
       expect(prCommandsFor(s(phase, true)).map((c) => c.name)).toEqual(on ? ["revise"] : []);
     }
     const f = commandFooter(s("merge_pending", true)).split("\n");
-    expect(f[0]).toBe("On the pull request, you can reply with:");
+    expect(f[0]).toBe("On the change, you can reply with:");
     expect(f[1]).toMatch(/^- `\/revise <feedback>`: On the PR: send your feedback to the implementer/);
     expect(f.indexOf("Commands you can reply with now:")).toBe(3);
-    expect(commandFooter(s("merge_pending", false))).not.toContain("On the pull request");
+    expect(commandFooter(s("merge_pending", false))).not.toContain("On the change");
     expect(commandFooter(s("reviewing", true))).not.toContain("/revise");
     expect(helpReply(s("failed_review", true))).toContain("`/revise <feedback>` **(now, on the PR)**: Get a new spec written with your feedback. On the PR:");
     expect(helpReply(s("failed_review", true))).toContain("(blocked by a failed review run)");
@@ -352,7 +352,7 @@ describe("footers match what the controller accepts", () => {
       });
       const after = (await store.getWorkItem(item.id))!;
       const refused = source.comments.filter((c) => c.marker === `<!-- factory:refused:${n} -->`);
-      const listed = commandFooter(state).startsWith("On the pull request") && commandFooter(state).includes("`/revise <feedback>`");
+      const listed = commandFooter(state).startsWith("On the change") && commandFooter(state).includes("`/revise <feedback>`");
       if (phase === "closed") {
         // A closed item's PR: no change and no reply.
         expect(refused).toEqual([]);

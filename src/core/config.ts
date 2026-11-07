@@ -100,10 +100,10 @@ export interface LoadedConfig {
     check_commands?: string[][];
   };
   /**
-   * True when config selects no GitHub plugin (design 05-sources, Local startup; set by the composition root from
-   * the plugin selection, never a config key): no GitHub credential, repo lookup or origin fetch, the base is the
+   * True when config selects no forge plugin (design 05-sources, Local startup; set by the composition root from
+   * the plugin selection, never a config key): no forge credential, repo lookup or origin fetch, the base is the
    * factory repo's local `refs/heads/<base_branch>`, branches stay local and a human merges with `factory merge`.
-   * Absent: a GitHub plugin is selected, everything as before.
+   * Absent: a forge plugin is selected, everything as before.
    */
   local_only?: true;
   intake_label: string;
@@ -309,7 +309,7 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
 
 /**
  * `cli_user` from the top level of factory.config.json (issue #200): the factory user ID the local CLI
- * commands (`factory task …`, `factory approve …`) act as, e.g. `github:12345`. Never a display name. Absent:
+ * commands (`factory task …`, `factory approve …`) act as, e.g. `local:<name>`. Never a display name. Absent:
  * null, and every such command fails with an error. A value that is not `<provider>:<id>` throws.
  */
 export function cliUserConfig(raw: unknown): UserId | null {
@@ -317,7 +317,7 @@ export function cliUserConfig(raw: unknown): UserId | null {
   const v = (raw as Record<string, unknown>).cli_user;
   if (v === undefined || v === null) return null;
   if (typeof v !== "string" || !/^[a-z]+:\S+$/.test(v)) {
-    throw new Error(`cli_user must be a factory user ID (<provider>:<id>, e.g. github:12345), got ${JSON.stringify(v) ?? String(v)}`);
+    throw new Error(`cli_user must be a factory user ID (<provider>:<id>, e.g. local:<name>), got ${JSON.stringify(v) ?? String(v)}`);
   }
   return v as UserId;
 }
