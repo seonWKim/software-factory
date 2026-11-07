@@ -30,7 +30,8 @@ import {
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import {
-  MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
+  MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, staleStepRefs,
+  touchesSqliteSchema,
 } from "./mechanical.js";
 import { runImprove } from "./improver.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
@@ -1956,22 +1957,59 @@ export class Worker {
    * collision is a real one and the gates report it. Returns the moves made.
    */
   private async renumberSteps(run: Run, handle: SandboxHandle, baseSha: string): Promise<Renumbering[]> {
+    const plan = await this.stageRenumbering(run, handle, [baseSha, "HEAD"]);
+    if (plan.length === 0) return [];
+    const message = `Renumber MySQL steps after merging the base: ${plan.map((r) => `${r.from.slice(MYSQL_STEPS_DIR.length)} → ${r.to.slice(MYSQL_STEPS_DIR.length)}`).join(", ")}`;
+    await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-verify", "-m", message], gitIdentity(this.cfg.agent_git_identity));
+    return plan;
+  }
+
+  /**
+   * The renumbering itself, staged in the index with no commit: the branch's side is `range` (`[base, "HEAD"]`
+   * after a committed merge, `["--cached", base]` for a merge still pending). Returns the moves made.
+   */
+  private async stageRenumbering(run: Run, handle: SandboxHandle, range: readonly string[]): Promise<Renumbering[]> {
     const names = async (args: string[]) => (await this.git(handle, args)).split("\0").filter(Boolean);
-    const added = (await names(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", baseSha, "HEAD", "--", MYSQL_STEPS_DIR]))
+    const added = (await names(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", ...range, "--", MYSQL_STEPS_DIR]))
       .filter((p) => p.startsWith(MYSQL_STEPS_DIR));
     if (added.length === 0) return [];
+    const baseSha = range[0] === "--cached" ? range[1]! : range[0]!;
     const plan = renumberPlan(await names(["ls-tree", "-r", "--name-only", "-z", baseSha, "--", MYSQL_STEPS_DIR]), added);
     if (plan.length === 0) return [];
-    const changed = await names(["diff", "--name-only", "-z", "--no-renames", baseSha, "HEAD"]);
+    const changed = await names(["diff", "--name-only", "-z", "--no-renames", ...range]);
     if (touchesSqliteSchema(changed)) {
       this.d.log.warn("migration renumbering skipped: the branch changes a SQLite schema file", { run_id: run.id });
       return [];
     }
     await applyRenumbering(this.mergeIO(handle), plan, changed);
-    const message = `Renumber MySQL steps after merging the base: ${plan.map((r) => `${r.from.slice(MYSQL_STEPS_DIR.length)} → ${r.to.slice(MYSQL_STEPS_DIR.length)}`).join(", ")}`;
-    await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-verify", "-m", message], gitIdentity(this.cfg.agent_git_identity));
     this.d.log.info("migration steps renumbered", { run_id: run.id, moves: plan.map((r) => `${r.from} → ${r.to}`).join(", ") });
     return plan;
+  }
+
+  /**
+   * The resolve run's renumbering (design §5 Merge conflict), after its merge and before its snapshot, so the
+   * moves are part of the merge and never the agent's changes. Staged, not committed: the run commits the checked
+   * tree itself. A failure restores the index and the tracked files from before it, removes any moved step file,
+   * logs, and lets the run go on as if nothing moved.
+   */
+  private async renumberPendingMerge(run: Run, handle: SandboxHandle, baseSha: string, realIndex: string): Promise<Renumbering[]> {
+    const saved = `${realIndex}.sf-renumber`;
+    const cp = (from: string, to: string) => this.d.sandbox.exec(handle, ["cp", "--", from, to], { env: this.d.toolEnv });
+    const copied = await cp(realIndex, saved);
+    if (copied.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${copied.stderr.trim()}`, true);
+    try {
+      return await this.stageRenumbering(run, handle, ["--cached", baseSha]);
+    } catch (err) {
+      const restored = await cp(saved, realIndex);
+      if (restored.exit_code !== 0) throw new RunFailure("git_failed", `restore index: ${restored.stderr.trim()}`, true);
+      await this.git(handle, [...NO_HOOKS, "checkout-index", "-a", "-f"]);
+      await this.git(handle, [...NO_HOOKS, "clean", "-fdq", "--", MYSQL_STEPS_DIR]);
+      this.d.log.warn("migration renumbering failed: the index is restored and the run goes on", {
+        run_id: run.id,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return [];
+    }
   }
 
   /**
@@ -2188,7 +2226,8 @@ export class Worker {
 
   /**
    * The resolve run (design §5 Merge conflict), started by a human's `/resolve`. In the PR branch's sandbox:
-   * merge origin/<base> with --no-commit and leave the conflicts; snapshot the merged tree; let the agent resolve;
+   * merge origin/<base> with --no-commit and leave the conflicts; stage any MySQL step renumbering (issue #297);
+   * snapshot the merged tree; let the agent resolve;
    * snapshot again. The worker never trusts the agent's index, refs or commits: the post-agent snapshot is the
    * tree that is pushed. Gates before any push: the scope gate (every path that differs between the two
    * snapshots, tracked, untracked or tracked-but-ignored, is a conflicting file or under allowed_paths), no
@@ -2230,6 +2269,9 @@ export class Worker {
       // scope gate has nothing to check (no agent changed the tree); markers, the commit and the gates still run.
       const mechanical = conflicts.length > 0 && (await mergeAppendedConflicts(this.mergeIO(handle), conflicts));
       if (conflicts.length > 0 && !mechanical) await this.recordConflicts(item, baseSha, conflicts);
+      // A new MySQL step whose number the base took moves to the next free number (issue #297), staged before the
+      // snapshot on the clean and the conflict path alike.
+      const renumbered = await this.renumberPendingMerge(run, handle, baseSha, realIndex);
 
       // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
       const cp = await this.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: this.d.toolEnv });
@@ -2245,7 +2287,7 @@ export class Worker {
         const notes = run.input?.notes ?? "";
         const result = await this.agent(run, item, handle, signal, {
           system_prompt,
-          prompt: await this.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
+          prompt: await this.withIndex(renderResolvePrompt(item, baseRef, files, notes) + staleStepNote(renumbered, files), specQuery(item)),
           tools: WRITE_TOOLS,
           model_class: model,
           output_schema: IMPLEMENT_SCHEMA,
@@ -2924,6 +2966,25 @@ export function prTitle(item: WorkItem): string {
 }
 
 /** The search query for implement and review: the problem plus the done criteria. */
+/**
+ * The resolve prompt's note on a renumbering (design §5 Merge conflict): the conflicting files that still name a
+ * moved step, which the worker could not rewrite. Empty when there are none.
+ */
+function staleStepNote(plan: readonly Renumbering[], files: readonly ConflictFile[]): string {
+  const stale = staleStepRefs(files, plan);
+  if (stale.length === 0) return "";
+  const name = (p: string) => `\`${p.slice(MYSQL_STEPS_DIR.length)}\``;
+  return [
+    "",
+    "",
+    "## Migration steps renumbered",
+    "",
+    `The factory renumbered this branch's MySQL steps after the merge, because the base took their numbers: ${plan.map((r) => `${name(r.from)} → ${name(r.to)}`).join(", ")}. It renamed the references in every file it could; these conflicting files still name an old step. Use the new name when you resolve them:`,
+    "",
+    ...stale.map((p) => `- \`${p}\``),
+  ].join("\n");
+}
+
 function specQuery(item: WorkItem): string {
   return [item.problem, ...(item.done_criteria ?? [])].join("\n");
 }
