@@ -864,6 +864,7 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
+  /** @deprecated Use claimProbe("model_stall", …); see FactoryStore.takeStallProbe for the removal plan. */
   async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
     return { taken: await this.claimProbe(MODEL_STALL, due, next) };
   }

@@ -469,7 +469,10 @@ export interface FactoryStore {
    * ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
    */
   claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
-  /** claimProbe for `model_stall`. */
+  /**
+   * @deprecated claimProbe("model_stall", due, next) replaces it; no source file calls it. Removal plan in design
+   * §5 Restarts (docs/design/05-restarts.md): move the store contract tests to claimProbe, then delete it.
+   */
   takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
