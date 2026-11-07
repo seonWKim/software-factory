@@ -3,7 +3,7 @@ import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
 import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
-import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "../source/github-issue-source.js";
+import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
   number: number;

@@ -7,7 +7,8 @@ import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
 import type { WorkerDeps } from "../src/core/worker.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { GitHubAuthProvider, NoAuthProvider } from "../src/impl/auth/github-auth-provider.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { NoAuthProvider } from "../src/impl/auth/none-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
@@ -20,7 +21,7 @@ import { ClaudeCliLLMProvider } from "../src/impl/llm/claude-cli-llm-provider.js
 import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";

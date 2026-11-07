@@ -4,7 +4,7 @@ import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, gates, issueRef, silent, triageSpec } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";

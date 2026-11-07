@@ -1,5 +1,5 @@
 import { definePlugin } from "../../plugin-api.js";
-import { NoAuthProvider } from "./github-auth-provider.js";
+import { NoAuthProvider } from "./none-auth-provider.js";
 
 export default definePlugin({
   kind: "auth",

@@ -60,6 +60,7 @@ const ALLOWED: readonly Allowed[] = [
   { token: /\b(?:GITHUB_SOURCE_TYPE|usesGithub|githubPaused)\b/g, files: ["core/controller.ts"], reason: "code names of the rate-limit poll skip" },
   { token: /\bGitHubCredentials\b/g, files: ["interfaces/github-credentials.ts"], reason: "exported interface name and its plugin interface name" },
   { token: /"GitHub rate limit, calls resume at "/g, files: ["core/policy.ts"], reason: "marker stored in run outcome details; githubRateLimitReset parses it back from runs stored before this change" },
+  { token: /"src\/impl\/github\/github(?:-auth-provider\.ts|\.plugin\.ts)"/g, files: ["core/improver.ts", "core/standing.ts"], reason: "gate paths of the moved GitHub auth files (`src/impl/github/github-auth-provider.ts`, `src/impl/github/github.plugin.ts`)" },
   { token: /waiting for the GitHub rate-limit reset/g, files: ["core/controller.ts"], reason: "log message the status page's wait_reason repeats and tests/github-call-budget.test.ts matches; both are outside this layer" },
 ];
 

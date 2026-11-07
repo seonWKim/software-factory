@@ -6,7 +6,7 @@ import { build, loadConfig } from "../src/compose.js";
 import type { SourceRef, UserId, WorkItemId } from "../src/core/types.js";
 import { REGISTRY } from "../src/plugins.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { commandEvent } from "../src/core/command-inbox.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";

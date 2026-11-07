@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WORK_STATUSES } from "../src/core/status-label.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
-import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
+import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { issueRef } from "./helpers/fakes.js";
 import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
