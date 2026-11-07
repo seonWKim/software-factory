@@ -61,7 +61,7 @@ async function seeded() {
   const r = await store.transition({ id: plain.id, expected_version: plain.version, patch: {}, actor: system, reason: "x", enqueue: { kind: "triage", idempotency_key: "t:1" } });
   if (!r.ok) throw new Error(r.reason);
   const run = (await store.claimRun({ worker_id: "host:1:0" as WorkerId, kinds: ["triage"], lease_ms: LEASE }))!;
-  await store.acquireListenerLease("slack", "replica-a", LEASE);
+  await store.acquireListenerLease("slack_thread", "replica-a", LEASE);
   await store.createLinkCode("github:1" as UserId, LINK_CODE);
   await driver.run("UPDATE runs SET lease_token = ?", [RUN_TOKEN]);
   await driver.run("UPDATE run_attempts SET lease_token = ?", [ATTEMPT_TOKEN]);

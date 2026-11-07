@@ -131,6 +131,31 @@ export interface Health {
   checks: { status: string; msg: string }[];
 }
 
+/** `/api/v1/data/tables`: every store table (design §9 Data page). */
+export interface DataTables {
+  as_of: string;
+  tables: { name: string; rows: number; columns: string[]; hidden: string[] }[];
+}
+
+/** A cell as the API returns it: hidden columns are "[hidden]", withheld text "[withheld: <rule>]". */
+export type DataCell = string | number | null;
+
+/** `/api/v1/data/tables/:name`: one page of a table's rows, newest first. */
+export interface DataPageBody {
+  as_of: string;
+  table: string;
+  columns: string[];
+  hidden: string[];
+  order_by: string[];
+  filter: { column: string; value: string | null } | null;
+  total: number;
+  page: number;
+  limit: number;
+  rows: Record<string, DataCell>[];
+  /** Run id → the work item that owns it, for the run ids in this page. */
+  run_items: Record<string, string>;
+}
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -139,6 +164,11 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  dataTables: "/api/v1/data/tables",
+  dataTable: (name: string, params: URLSearchParams) => {
+    const q = params.toString();
+    return `/api/v1/data/tables/${encodeURIComponent(name)}${q ? `?${q}` : ""}`;
+  },
 } as const;
 
 /** Polling interval while the document is visible; TanStack Query stops it while the tab is hidden. */
@@ -157,5 +187,21 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     queryFn: () => getJson<T>(url),
     refetchInterval: pollMs,
     refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * One API read that never refetches on its own: no interval, no refetch on focus, mount or reconnect. Only the
+ * Refresh button (which invalidates every query) reads it again. For the Data page, whose reads are heavier.
+ */
+export function useManualApi<T>(url: string | null) {
+  return useQuery({
+    queryKey: [url],
+    queryFn: () => getJson<T>(url!),
+    enabled: url !== null,
+    refetchInterval: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: Infinity,
   });
 }
