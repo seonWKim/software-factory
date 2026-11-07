@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
-import type { RunKind } from "../src/core/types.js";
+import { type RunKind, usageTokens } from "../src/core/types.js";
 import { CountedKeepAwake, WorkerPool } from "../src/core/worker-pool.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -66,7 +66,7 @@ async function setup(opts: { workers: number; queued: number; awake?: (events: s
     ...(opts.indexBase !== undefined ? { index_base: opts.indexBase } : {}),
   });
   const running = async () => store.listRunsByStatus(["running"], 100);
-  return { store, pool, runner, gates, started, events, running, claimRun, completeRun };
+  return { store, pool, runner, gates, started, events, running, claimRun, completeRun, clock };
 }
 
 describe("workers config", () => {
@@ -255,6 +255,67 @@ describe("worker pool", () => {
     expect(start.fields?.worker_id).toMatch(/^host:42:[01]$/);
     expect(done.fields?.worker_id).toBe(start.fields?.worker_id);
     expect(owner.id).toBe(start.fields?.run_id);
+  });
+  it("run done carries error_code, failure, tokens and duration_ms, and never the outcome's detail", async () => {
+    const log = recordingLog();
+    const s = await setup({ workers: 1, queued: 2, log });
+    let n = 0;
+    s.runner.script.triage = async () => {
+      // The run takes 1500 ms on the fake clock; the first returns output that fails validation.
+      s.clock.advance(1_500);
+      return n++ === 0 ? { output: { not: "a spec" } } : { output: triageSpec };
+    };
+    const stop = new AbortController();
+    const loops = s.pool.run(stop.signal);
+    await waitFor(() => log.lines.filter((l) => l.msg === "run done").length === 2, "two runs done");
+    stop.abort();
+    await loops;
+    const done = log.lines.filter((l) => l.msg === "run done");
+    const keys = ["error_code", "failure", "tokens", "duration_ms"];
+    for (const line of done) {
+      const run = (await s.store.getRun(line.fields!.run_id as never))!;
+      const outcome = run.outcome!;
+      expect(typeof line.fields?.duration_ms).toBe("number");
+      expect(line.fields?.duration_ms).toBeGreaterThanOrEqual(1_500);
+      if (outcome.status === "failed") {
+        expect(line.fields?.error_code).toBe(outcome.error_code);
+        expect(line.fields?.error_code).toBe("invalid_output");
+        expect(line.fields?.failure).toBe("task");
+        expect(line.fields?.tokens).toBe(usageTokens(outcome.usage!));
+        expect(line.fields?.tokens).toBe(15);
+        // Only codes and numbers: the detail text is nowhere in the line.
+        expect(outcome.detail.length).toBeGreaterThan(0);
+        expect(JSON.stringify(line.fields)).not.toContain(outcome.detail);
+      } else {
+        expect(line.fields?.error_code).toBeNull();
+        expect(line.fields?.failure).toBeNull();
+        expect(line.fields?.tokens).toBe((outcome.data as { tokens: number }).tokens);
+        expect(line.fields?.tokens).toBe(15);
+      }
+      for (const k of keys) expect(["string", "number", "object"]).toContain(typeof line.fields?.[k]);
+    }
+    expect(done.map((l) => l.fields?.status).sort()).toEqual(["failed", "succeeded"]);
+  });
+
+  it("lease lost before completion carries the same fields, with the tokens used so far", async () => {
+    const log = recordingLog();
+    const s = await setup({ workers: 1, queued: 1, log });
+    s.completeRun.mockResolvedValueOnce({ ok: false, reason: "lease_lost" });
+    s.runner.script.triage = async () => {
+      s.clock.advance(700);
+      return { output: { not: "a spec" } };
+    };
+    const stop = new AbortController();
+    const loops = s.pool.run(stop.signal);
+    const msg = "lease lost before completion; outcome dropped";
+    await waitFor(() => log.lines.some((l) => l.msg === msg), "lease lost line");
+    stop.abort();
+    await loops;
+    const line = log.lines.find((l) => l.msg === msg)!;
+    expect(line.fields).toMatchObject({ error_code: "invalid_output", failure: "task", tokens: 15 });
+    expect(line.fields?.duration_ms).toBeGreaterThanOrEqual(700);
+    expect(line.fields?.status).toBeUndefined();
+    expect(log.lines.some((l) => l.msg === "run done")).toBe(false);
   });
 });
 

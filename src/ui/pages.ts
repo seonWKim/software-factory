@@ -228,12 +228,12 @@ function filtersSection(f: Filters, n: FacetCounts): string {
   const check = (name: string, label: string, on: boolean) =>
     `<label class="check" for="f-${name}"><input type="checkbox" id="f-${name}" name="${name}" value="1"${on ? " checked" : ""}>${esc(label)}</label>`;
   return (
-    `<section id="filters"><h2>Filters</h2><nav aria-label="Filters"><form class="filters" method="get" action="/">` +
+    `<section id="filters"><h2>Filters</h2><nav aria-label="Filters"><form class="filters" method="get" action="/classic">` +
     `<label for="f-q">Search (number or title)<input type="search" id="f-q" name="q" value="${esc(f.q)}" maxlength="200"></label>` +
     state + stage + tier + kind +
     check("unblocks", `Unblocks others (${n.unblocks})`, f.unblocks) +
     check("closed", "Show closed", f.closed) +
-    `<input type="submit" value="Apply"> <a href="/">Clear filters</a>` +
+    `<input type="submit" value="Apply"> <a href="/classic">Clear filters</a>` +
     `</form></nav></section>`
   );
 }
@@ -265,8 +265,8 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     });
   }
   const empty = isFiltered(f)
-    ? `<p>No items match these filters. <a href="/">Clear filters</a></p>`
-    : `<p>No open work items. <a href="/?closed=1">Show closed items</a></p>`;
+    ? `<p>No items match these filters. <a href="/classic">Clear filters</a></p>`
+    : `<p>No open work items. <a href="/classic?closed=1">Show closed items</a></p>`;
   const body =
     out.length === 0
       ? empty

@@ -121,7 +121,7 @@ describe("ui: read-only status page", () => {
 
   it("GET / shows every section in order: one ranked list, with what to do for items that wait on a person", async () => {
     const { port, items, claimed } = await seeded();
-    const page = await get(port, "/");
+    const page = await get(port, "/classic");
     expect(page.status).toBe(200);
     expect(page.headers["content-type"]).toMatch(/^text\/html; charset=utf-8/);
     expect(page.body).not.toContain('http-equiv="refresh"');
@@ -180,12 +180,12 @@ describe("ui: read-only status page", () => {
 
   it("filters by ?stage= and shows CLOSED only with ?closed=1 or ?stage=CLOSED", async () => {
     const { port } = await seeded();
-    const review = section((await get(port, "/?stage=REVIEW")).body, "items");
+    const review = section((await get(port, "/classic?stage=REVIEW")).body, "items");
     expect(review).toContain("Merge me");
     expect(review).not.toContain("Running item");
-    expect(section((await get(port, "/?closed=1")).body, "items")).toContain("Done item");
-    expect(section((await get(port, "/?stage=CLOSED")).body, "items")).toContain("Done item");
-    expect((await get(port, "/?stage=BOGUS")).status).toBe(400);
+    expect(section((await get(port, "/classic?closed=1")).body, "items")).toContain("Done item");
+    expect(section((await get(port, "/classic?stage=CLOSED")).body, "items")).toContain("Done item");
+    expect((await get(port, "/classic?stage=BOGUS")).status).toBe(400);
   });
 
   it("GET /items/<id> shows the timeline and runs with status, attempt, duration, tokens and error", async () => {
@@ -207,18 +207,18 @@ describe("ui: read-only status page", () => {
 
   it("escapes HTML: a <script> title never appears raw on any page; the only script is the page's own", async () => {
     const { port, items } = await seeded();
-    for (const path of ["/", "/?closed=1", "/?q=script", `/items/${items.waiting.id}`, `/items/${items.done.id}`]) {
+    for (const path of ["/classic", "/classic?closed=1", "/classic?q=script", `/items/${items.waiting.id}`, `/items/${items.done.id}`]) {
       const { body } = await get(port, path);
       expect(body).not.toMatch(/<script>alert/i);
       expect(body.match(/<script/gi), path).toHaveLength(1);
       expect(body).toContain("<script>(function(){");
     }
-    expect((await get(port, "/")).body).toContain("Spec for &lt;script&gt;alert(1)&lt;/script&gt; the gate");
+    expect((await get(port, "/classic")).body).toContain("Spec for &lt;script&gt;alert(1)&lt;/script&gt; the gate");
   });
 
   it("withholds a free-text field with an egress finding and names the rule", async () => {
     const { port, items } = await seeded();
-    for (const path of ["/", "/?closed=1", `/items/${items.done.id}`]) {
+    for (const path of ["/classic", "/classic?closed=1", `/items/${items.done.id}`]) {
       expect((await get(port, path)).body).not.toContain(SECRET);
     }
     expect(section((await get(port, `/items/${items.done.id}`)).body, "runs")).toContain("[withheld: github_token]");
@@ -227,7 +227,7 @@ describe("ui: read-only status page", () => {
   it("accepts only GET and HEAD, 404s unknown paths, and refuses foreign Host headers", async () => {
     const { port, items } = await seeded();
     for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
-      const res = await get(port, "/", { method });
+      const res = await get(port, "/classic", { method });
       expect(res.status, method).toBe(405);
       expect(res.headers.allow).toBe("GET, HEAD");
     }
@@ -244,7 +244,7 @@ describe("ui: read-only status page", () => {
       expect(res.status, host).toBe(403);
       expect(res.body).not.toContain("secret file");
     }
-    const head = await get(port, "/", { method: "HEAD" });
+    const head = await get(port, "/classic", { method: "HEAD" });
     expect(head.status).toBe(200);
     expect(head.body).toBe("");
 
@@ -253,15 +253,15 @@ describe("ui: read-only status page", () => {
     expect((await get(port, `/items/${items.done.id}/x`)).status).toBe(404);
 
     for (const host of [`localhost:${port}`, "localhost", `127.0.0.1:${port}`]) {
-      expect((await get(port, "/", { host })).status, host).toBe(200);
+      expect((await get(port, "/classic", { host })).status, host).toBe(200);
     }
     for (const host of ["evil.example", `evil.example:${port}`, `127.0.0.1.evil.example:${port}`, "localhost.evil.example"]) {
-      const res = await get(port, "/", { host });
+      const res = await get(port, "/classic", { host });
       expect(res.status, String(host)).toBe(403);
       expect(res.body).not.toContain("Merge me");
     }
     // No Host header at all: node:http rejects it with 400 before the handler runs (requireHostHeader).
-    const noHost = await get(port, "/", { host: null });
+    const noHost = await get(port, "/classic", { host: null });
     expect(noHost.status).toBe(400);
     expect(noHost.body).not.toContain("Merge me");
   });
@@ -272,8 +272,8 @@ describe("ui: read-only status page", () => {
     const snapshot = async () =>
       Promise.all(ids.map(async (id) => ({ item: await store.getWorkItem(id), runs: await store.listRuns(id), sc: await store.listStateChanges(id) })));
     const before = await snapshot();
-    for (const path of ["/", "/?closed=1", "/?stage=READY", "/?health=refresh", "/api/health", ...ids.map((id) => `/items/${id}`), "/nope"]) await get(port, path);
-    await get(port, "/", { method: "POST" });
+    for (const path of ["/classic", "/classic?closed=1", "/classic?stage=READY", "/classic?health=refresh", "/api/health", ...ids.map((id) => `/items/${id}`), "/nope"]) await get(port, path);
+    await get(port, "/classic", { method: "POST" });
     expect(await snapshot()).toEqual(before);
   });
 });
@@ -300,14 +300,14 @@ describe("ui: config and intake", () => {
 
   it("a page with no egress findings has no withheld markers", async () => {
     const { port } = await seeded();
-    expect(section((await get(port, "/")).body, "items")).not.toContain("withheld");
+    expect(section((await get(port, "/classic")).body, "items")).not.toContain("withheld");
   });
 
   it("time since heartbeat within the lease is not highlighted", async () => {
     const { port, clock, store, claimed } = await seeded();
     await store.heartbeat(claimed.id, claimed.lease!.token, LEASE);
     clock.advance(1_000);
-    expect(section((await get(port, "/")).body, "running")).not.toContain('class="stale"');
+    expect(section((await get(port, "/classic")).body, "running")).not.toContain('class="stale"');
   });
 });
 
@@ -381,7 +381,7 @@ async function seededNeeds() {
 describe("ui: Needs you (?state=needs)", () => {
   it("one row per waiting item: ready to merge, then needs approval, then the rest, oldest wait first", async () => {
     const { port } = await seededNeeds();
-    const page = await get(port, "/?state=needs");
+    const page = await get(port, "/classic?state=needs");
     expect(page.body).toMatch(/<title>[^<]*\(9\)[^<]*<\/title>/);
     expect(section(page.body, "filters")).toContain("Needs you (9)");
     expect(section(page.body, "items")).not.toContain("Closed item");
@@ -449,7 +449,7 @@ describe("ui: Needs you (?state=needs)", () => {
 
   it("?health=refresh is accepted alongside the filters", async () => {
     const { port } = await seededNeeds();
-    for (const path of ["/?health=refresh", "/?state=needs&health=refresh"]) {
+    for (const path of ["/classic?health=refresh", "/classic?state=needs&health=refresh"]) {
       const page = await get(port, path);
       expect(page.status, path).toBe(200);
       expect(page.body).toContain('<section id="health">');
@@ -460,14 +460,14 @@ describe("ui: Needs you (?state=needs)", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const port = await startOn(store, clock);
-    const page = await get(port, "/");
+    const page = await get(port, "/classic");
     expect(section(page.body, "items")).toContain("No open work items.");
-    expect(section(page.body, "items")).toContain(`<a href="/?closed=1">Show closed items</a>`);
+    expect(section(page.body, "items")).toContain(`<a href="/classic?closed=1">Show closed items</a>`);
     expect(section(page.body, "filters")).toContain("Needs you (0)");
     expect(page.body).toMatch(/<title>[^<]*\(0\)[^<]*<\/title>/);
-    const filtered = section((await get(port, "/?state=needs")).body, "items");
+    const filtered = section((await get(port, "/classic?state=needs")).body, "items");
     expect(filtered).toContain("No items match these filters.");
-    expect(filtered).toContain(`<a href="/">Clear filters</a>`);
+    expect(filtered).toContain(`<a href="/classic">Clear filters</a>`);
   });
 
   it("N counts every waiting item past the 200-row list limit", async () => {
@@ -477,7 +477,7 @@ describe("ui: Needs you (?state=needs)", () => {
       const { item } = await store.createWorkItem(issue(n), system);
       await store.transition({ id: item.id, expected_version: 1, patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: n }, actor: system, reason: "x" });
     }
-    const page = await get(await startOn(store, clock), "/");
+    const page = await get(await startOn(store, clock), "/classic");
     expect(page.body).toMatch(/<title>[^<]*\(205\)[^<]*<\/title>/);
     expect(rows(page.body)).toHaveLength(200);
   });
@@ -487,54 +487,54 @@ describe("ui: filters and search", () => {
   it("each filter narrows the list from the query string, and each option shows its count", async () => {
     const { port } = await seeded();
     const titles = async (q: string) => rows((await get(port, q)).body).map((r) => r[2]!.replace(/<[^>]+>/g, ""));
-    expect(await titles("/?state=needs")).toEqual(["Merge me", expect.stringContaining("Spec for")]);
-    expect(await titles("/?state=ready_to_merge")).toEqual(["Merge me"]);
-    expect(await titles("/?state=stuck")).toEqual(["Running item"]);
-    expect(await titles("/?state=closed")).toEqual(["Done item"]);
-    expect(await titles("/?stage=REVIEW")).toEqual(["Merge me"]);
-    expect(await titles("/?stage=CLOSED")).toEqual(["Done item"]);
-    expect(await titles("/?closed=1")).toContain("Done item");
-    expect(await titles("/?tier=2")).toEqual(["Merge me"]);
-    expect(await titles("/?kind=implement")).toEqual(["Running item"]);
-    expect(await titles("/?kind=triage")).toEqual(["o/r#5"]);
-    expect(await titles("/?unblocks=1")).toEqual([]);
-    expect(await titles("/?state=needs&stage=READY")).toEqual([expect.stringContaining("Spec for")]);
+    expect(await titles("/classic?state=needs")).toEqual(["Merge me", expect.stringContaining("Spec for")]);
+    expect(await titles("/classic?state=ready_to_merge")).toEqual(["Merge me"]);
+    expect(await titles("/classic?state=stuck")).toEqual(["Running item"]);
+    expect(await titles("/classic?state=closed")).toEqual(["Done item"]);
+    expect(await titles("/classic?stage=REVIEW")).toEqual(["Merge me"]);
+    expect(await titles("/classic?stage=CLOSED")).toEqual(["Done item"]);
+    expect(await titles("/classic?closed=1")).toContain("Done item");
+    expect(await titles("/classic?tier=2")).toEqual(["Merge me"]);
+    expect(await titles("/classic?kind=implement")).toEqual(["Running item"]);
+    expect(await titles("/classic?kind=triage")).toEqual(["o/r#5"]);
+    expect(await titles("/classic?unblocks=1")).toEqual([]);
+    expect(await titles("/classic?state=needs&stage=READY")).toEqual([expect.stringContaining("Spec for")]);
 
-    const f = section((await get(port, "/?stage=REVIEW")).body, "filters");
+    const f = section((await get(port, "/classic?stage=REVIEW")).body, "filters");
     expect(f).toContain("Needs you (1)");
     expect(f).toContain("Ready to merge (1)");
     expect(f).toContain("Unblocks others (0)");
     expect(f).toMatch(/<option value="REVIEW" selected>REVIEW \(1\)<\/option>/);
     expect(f).toContain("READY (1)");
-    expect(section((await get(port, "/?unblocks=1")).body, "items")).toContain("No items match these filters.");
+    expect(section((await get(port, "/classic?unblocks=1")).body, "items")).toContain("No items match these filters.");
   });
 
   it("search matches the issue number and the shown title", async () => {
     const { port } = await seeded();
     const titles = async (q: string) => rows((await get(port, q)).body).map((r) => r[2]!.replace(/<[^>]+>/g, ""));
-    expect(await titles("/?q=merge")).toEqual(["Merge me"]);
-    expect(await titles("/?q=MERGE%20ME")).toEqual(["Merge me"]);
-    expect(await titles("/?q=%235")).toEqual(["o/r#5"]);
-    expect(await titles("/?q=4")).toEqual(["Running item"]);
-    expect(await titles("/?q=nothing-like-this")).toEqual([]);
-    expect(section((await get(port, "/?q=merge")).body, "filters")).toContain(`value="merge"`);
+    expect(await titles("/classic?q=merge")).toEqual(["Merge me"]);
+    expect(await titles("/classic?q=MERGE%20ME")).toEqual(["Merge me"]);
+    expect(await titles("/classic?q=%235")).toEqual(["o/r#5"]);
+    expect(await titles("/classic?q=4")).toEqual(["Running item"]);
+    expect(await titles("/classic?q=nothing-like-this")).toEqual([]);
+    expect(section((await get(port, "/classic?q=merge")).body, "filters")).toContain(`value="merge"`);
   });
 
   it("a withheld title can be neither found nor shown in a title attribute", async () => {
     const { port, store } = await seeded();
     await setTitle(store, 7, `leak ${SECRET} here`);
-    const all = (await get(port, "/")).body;
+    const all = (await get(port, "/classic")).body;
     expect(all).not.toContain(SECRET);
     expect(section(all, "items")).toContain("[withheld: github_token]");
-    expect(rows((await get(port, "/?q=leak")).body)).toEqual([]);
-    expect(rows((await get(port, "/?q=%237")).body)).toHaveLength(1); // still found by its number
+    expect(rows((await get(port, "/classic?q=leak")).body)).toEqual([]);
+    expect(rows((await get(port, "/classic?q=%237")).body)).toHaveLength(1); // still found by its number
   });
 
   it("long titles are cut with an ellipsis and keep their full text in a title attribute", async () => {
     const { port, store } = await seeded();
     const long = `A ${"very ".repeat(40)}long title`;
     await setTitle(store, 8, long);
-    const row = rows((await get(port, "/?q=%238")).body)[0]!;
+    const row = rows((await get(port, "/classic?q=%238")).body)[0]!;
     expect(row[2]).toContain('class="title"');
     expect(row[2]).toContain(`title="${long}"`);
     expect(row[2]).toContain("…");
@@ -543,7 +543,7 @@ describe("ui: filters and search", () => {
   it("an unknown filter value is a 400", async () => {
     const { port } = await seeded();
     for (const q of ["stage=BOGUS", "state=bogus", "tier=9", "kind=deploy", "unblocks=2", "closed=yes"]) {
-      const res = await get(port, `/?${q}`);
+      const res = await get(port, `/classic?${q}`);
       expect(res.status, q).toBe(400);
       expect(res.body).not.toContain("Merge me");
     }
@@ -558,7 +558,7 @@ describe("ui: page shell, script and CSP", () => {
 
   it("the CSP allows only the page's own inline script and style by hash, same-origin fetch and GET forms", async () => {
     const { port, items } = await seeded();
-    for (const path of ["/", `/items/${items.done.id}`]) {
+    for (const path of ["/classic", `/items/${items.done.id}`]) {
       const page = await get(port, path);
       const csp = String(page.headers["content-security-policy"]);
       expect(csp).toContain("default-src 'none'");
@@ -574,7 +574,7 @@ describe("ui: page shell, script and CSP", () => {
 
   it("no script, style, image or frame loads from anywhere, and no element has a style attribute", async () => {
     const { port } = await seeded();
-    const { body } = await get(port, "/");
+    const { body } = await get(port, "/classic");
     expect(body).not.toMatch(/\bsrc=/i);
     expect(body).not.toMatch(/<link\b/i);
     expect(body).not.toMatch(/\bstyle="/i);
@@ -583,14 +583,14 @@ describe("ui: page shell, script and CSP", () => {
 
   it("has a GET filter form with labelled controls, a refresh button with an aria-label, and a noscript Refresh link", async () => {
     const { port } = await seeded();
-    const { body } = await get(port, "/?stage=READY&q=spec");
-    expect(body).toContain(`<form class="filters" method="get" action="/">`);
+    const { body } = await get(port, "/classic?stage=READY&q=spec");
+    expect(body).toContain(`<form class="filters" method="get" action="/classic">`);
     for (const id of ["f-q", "f-state", "f-stage", "f-tier", "f-kind", "f-unblocks", "f-closed"]) {
       expect(body, id).toContain(`for="${id}"`);
       expect(body, id).toContain(`id="${id}"`);
     }
     expect(body).toMatch(/<button type="button" id="refresh" aria-label="Refresh now"[^>]* hidden>/);
-    expect(body).toContain(`<noscript><a href="/?stage=READY&amp;q=spec">Refresh</a></noscript>`);
+    expect(body).toContain(`<noscript><a href="/classic?stage=READY&amp;q=spec">Refresh</a></noscript>`);
     expect(body).toContain(`updated <span id="ago">0s</span> ago`);
     expect(body).toMatch(/<header class="top">/);
     expect(body).toMatch(/<main>/);
@@ -600,7 +600,7 @@ describe("ui: page shell, script and CSP", () => {
 
   it("the script polls every 5 s, pauses while the tab is hidden, and swaps only changed sections", async () => {
     const { port } = await seeded();
-    const script = /<script>([\s\S]*?)<\/script>/.exec((await get(port, "/")).body)![1]!;
+    const script = /<script>([\s\S]*?)<\/script>/.exec((await get(port, "/classic")).body)![1]!;
     expect(() => new Function(script)).not.toThrow(); // parses as JavaScript
     expect(script).toContain("PERIOD=5000");
     expect(script).toContain("visibilitychange");
@@ -613,7 +613,7 @@ describe("ui: page shell, script and CSP", () => {
 
   it("the CSS has theme tokens, a dark theme, tabular numbers, a short opacity flash and none for reduced motion", async () => {
     const { port } = await seeded();
-    const css = /<style>([\s\S]*?)<\/style>/.exec((await get(port, "/")).body)![1]!;
+    const css = /<style>([\s\S]*?)<\/style>/.exec((await get(port, "/classic")).body)![1]!;
     expect(css).toMatch(/:root\{--bg:/);
     expect(css).toContain("--radius:");
     expect(css).toContain("--sp1:");
@@ -629,9 +629,23 @@ describe("ui: page shell, script and CSP", () => {
 
   it("rows carry a key and a signature, so the script can highlight the ones that changed", async () => {
     const { port, items } = await seeded();
-    const list = section((await get(port, "/")).body, "items");
+    const list = section((await get(port, "/classic")).body, "items");
     expect(list).toMatch(new RegExp(`data-key="${items.merging.id}" data-sig="\\d+:ready_to_merge:none"`));
     expect(list).toMatch(new RegExp(`data-key="${items.running.id}" data-sig="\\d+:stuck:running"`));
+  });
+});
+
+describe("ui: the app is the default", () => {
+  it("/ sends the browser to /app/ (302, no body); the server-rendered page is at /classic", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const port = await startOn(store, clock);
+    const root = await get(port, "/");
+    expect(root.status).toBe(302);
+    expect(root.headers.location).toBe("/app/");
+    const classic = await get(port, "/classic");
+    expect(classic.status).toBe(200);
+    expect(classic.body).toContain('<a class="home" href="/classic">');
   });
 });
 
@@ -647,7 +661,7 @@ describe("ui: factory status banner", () => {
     await store.transition({ id: item.id, expected_version: 1, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "i" } });
     await store.claimRun({ worker_id: "host:4242:3" as never, kinds: ["implement"], lease_ms: LEASE });
     const port = await startOn(store, clock, async () => status({ state: "draining", target_rev: "bbbbbbb2222", since: clock.now().toISOString() }));
-    const banner = section((await get(port, "/")).body, "factory");
+    const banner = section((await get(port, "/classic")).body, "factory");
     expect(banner).toContain("Updating to bbbbbbb: new runs are paused.");
     expect(banner).toContain("its 1 in-flight run finish");
     expect(banner).toContain("starts with 10 workers");
@@ -657,25 +671,25 @@ describe("ui: factory status banner", () => {
   it("running, build failure and a stopped factory each say so; no status function shows no banner", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const running = section((await get(await startOn(store, clock, async () => status({})), "/")).body, "factory");
+    const running = section((await get(await startOn(store, clock, async () => status({})), "/classic")).body, "factory");
     expect(running).toContain("Factory running.");
     expect(running).toContain("10 workers");
-    const failed = section((await get(await startOn(store, clock, async () => status({ state: "build_failed", target_rev: "ccccccc" })), "/")).body, "factory");
+    const failed = section((await get(await startOn(store, clock, async () => status({ state: "build_failed", target_rev: "ccccccc" })), "/classic")).body, "factory");
     expect(failed).toContain("failed to build");
     const crashed = section(
-      (await get(await startOn(store, clock, async () => status({ state: "crashed", child_pid: null, error: "1 schema step pending: run `npm run migrate`" })), "/")).body,
+      (await get(await startOn(store, clock, async () => status({ state: "crashed", child_pid: null, error: "1 schema step pending: run `npm run migrate`" })), "/classic")).body,
       "factory",
     );
     expect(crashed).toContain("Factory not running");
     expect(crashed).toContain("run `npm run migrate`");
-    expect(section((await get(await startOn(store, clock, async () => null), "/")).body, "factory")).toContain("Factory stopped.");
-    expect((await get(await startOn(store, clock), "/")).body).not.toContain('<section id="factory">');
+    expect(section((await get(await startOn(store, clock, async () => null), "/classic")).body, "factory")).toContain("Factory stopped.");
+    expect((await get(await startOn(store, clock), "/classic")).body).not.toContain('<section id="factory">');
   });
 
   it("an update waiting on npm run migrate names the steps and what still runs; draining and ready say no runs start", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const banner = async (over: Partial<FactoryStatus>) => section((await get(await startOn(store, clock, async () => status(over)), "/")).body, "factory");
+    const banner = async (over: Partial<FactoryStatus>) => section((await get(await startOn(store, clock, async () => status(over)), "/classic")).body, "factory");
     const pending = await banner({ state: "migration_pending", target_rev: "bbbbbbb2222", pending: ["schema 12", "data project-ids"] });
     expect(pending).toContain("Update to bbbbbbb waits for <code>npm run migrate</code> (pending: schema 12, data project-ids).");
     expect(pending).toContain("Still running <code>aaaaaaa</code> with its settings.");
@@ -714,7 +728,7 @@ describe("ui: split phases wait, never stuck", () => {
       0,
     );
     servers.push(ui);
-    const list = rows((await get(ui.port, "/")).body);
+    const list = rows((await get(ui.port, "/classic")).body);
     const badge = (title: string) => list.find((r) => r[2]!.includes(title))![0];
     expect(badge("Phase 2")).toContain("waits on #21");
     expect(badge("Parent")).toContain("waits on 2 issues");
