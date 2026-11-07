@@ -60,6 +60,7 @@ import {
   NO_AUTO_RETRY,
   SESSION_RELEASED,
 } from "./policy.js";
+import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
@@ -81,6 +82,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { AppCommandRequest, FactoryStore, NewBudgetCheckpoint, RedeemLinkResult, TransitionInput } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
+import type { Sandbox } from "../interfaces/sandbox.js";
 import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 export interface ControllerDeps {
@@ -123,6 +125,11 @@ export interface ControllerDeps {
    * retries up to max_attempts.
    */
   repeated_failure_rule?: boolean;
+  /**
+   * The sandbox the worker pool uses (design §5 Merge check): the controller only fetches through it and runs
+   * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
+   */
+  sandbox?: Sandbox;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -287,8 +294,11 @@ export class Controller {
   private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   private readonly live: LiveSettings;
+  /** The local merge check; its only in-process state is a fetch throttle no other replica needs. */
+  private readonly merges: MergeChecker | null;
 
   constructor(private readonly d: ControllerDeps) {
+    this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.live = d.settings ?? LiveSettings.fixed(d.config);
@@ -319,6 +329,8 @@ export class Controller {
       if (due) await this.guard("checks", () => this.checksStep());
       // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
       if (due) await this.guard("coordination", () => this.coordinationStep());
+      // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
+      if (due) await this.guard("merge check", () => this.mergeCheckStep());
       // App requests are a store read, so every tick, like an inbox.
       await this.guard("app commands", () => this.appCommandsStep());
       await this.guard("runs", () => this.runsStep());
@@ -647,18 +659,47 @@ export class Controller {
       case "pr_unmergeable": {
         const id = workItemIdFromBranch(e.head_branch, this.cfg.branch_prefix);
         if (!id) return;
-        const key = `${id}:update:${e.pr_number}:${e.head_sha}:${e.base_sha}`;
-        await this.decide(id as WorkItemId, async (it) => {
-          if (!awaitingMerge(it) || it.pr_number !== e.pr_number) return null;
-          // One update per (head, base), and none while another update of this item is still in flight.
-          // The event repeats on every poll, so a skipped one comes back.
-          const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
-          if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
-          return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
-        });
-        return;
+        return this.startUpdate(id as WorkItemId, e.pr_number, e.head_sha, e.base_sha);
       }
     }
+  }
+
+  /**
+   * One update run per (item, PR, head sha, base sha), from GitHub's unmergeable flag or the local merge check
+   * (design §5): both use this key, so either path finding the same conflict first enqueues the only run. None
+   * while another update of this item is still in flight; the event repeats on every poll, so a skipped one
+   * comes back.
+   */
+  private async startUpdate(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): Promise<void> {
+    const key = `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
+    await this.decide(id, async (it) => {
+      if (!awaitingMerge(it) || it.pr_number !== pr_number) return null;
+      const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
+      if (updates.some((r) => r.idempotency_key === key || r.acknowledged_at === null)) return null;
+      return { patch: {}, actor: SYSTEM, reason: "update_started", enqueue: { kind: "update", idempotency_key: key } };
+    });
+  }
+
+  /**
+   * One local merge check step (design §5 Merge check): every factory PR waiting for a human merge is checked
+   * against the newest base, at most once per (head sha, base sha), and a conflict starts the update run at once.
+   * Off when the controller has no sandbox that can check. Safe on any replica and safe to repeat.
+   */
+  async tickMergeCheck(): Promise<void> {
+    await this.live.refresh();
+    await this.mergeCheckStep();
+  }
+
+  private async mergeCheckStep(): Promise<void> {
+    if (!this.merges) return;
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: MERGE_CHECK_BATCH });
+    // Factory branches only: an adopted PR's branch is a person's, which the factory never updates.
+    const ready = waiting.filter((it) => awaitingMerge(it) && it.pr_number !== null && it.head_branch === null);
+    const { repo, branch_prefix, poll_interval_ms } = this.cfg;
+    await this.merges.step(ready, { repo: repo.path, base_ref: repo.base_branch, branch_prefix, poll_interval_ms }, (it, c) => {
+      this.d.log.info("merge check conflict", { work_item_id: it.id, files: c.conflicts.length });
+      return this.startUpdate(it.id, it.pr_number!, c.head_sha, c.base_sha);
+    });
   }
 
   /**
