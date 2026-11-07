@@ -216,6 +216,40 @@ export interface FailureGroup {
   tails?: ImproveTail[];
   /** The model's draft of cause and fix (groups only, design §7). Absent: the worker had no model to ask. */
   draft?: ImproveDraft;
+  /** What the controller filed or posted for the group (groups only, design §7). Absent: not filed yet. */
+  filing?: ImproveFiling;
+}
+
+/**
+ * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: the group matched an open
+ * filed item, and one comment named `run_ids`, the runs not linked there before. `linked`: it matched one, and
+ * every run was linked already, so nothing was posted. `skipped`: past the issue or comment cap, the matched item
+ * closed in the last 30 days, or no source can file. `withheld`: the egress scan flagged the body, so nothing was
+ * sent; only the rules are kept. `failed`: the source call threw; the next improve run tries again.
+ */
+export type ImproveFiling =
+  | { status: "filed" | "linked"; ref: SourceRef }
+  | { status: "commented"; ref: SourceRef; run_ids: RunId[] }
+  | { status: "skipped"; reason: "issue_cap" | "comment_cap" | "recently_closed" | "no_source" }
+  | { status: "withheld"; rules: string[] }
+  | { status: "failed"; reason: "error" };
+
+export type FiledPatternId = Brand<string, "FiledPatternId">;
+
+/**
+ * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the
+ * report that claimed it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is
+ * claimed but not yet done (a retry looks the marker up first).
+ */
+export interface FiledPattern {
+  id: FiledPatternId;
+  project: string;
+  pattern_key: string;
+  error_code: string;
+  detail: string;
+  report_id: ImproveReportId;
+  filed_ref: SourceRef | null;
+  created_at: Timestamp;
 }
 
 /**

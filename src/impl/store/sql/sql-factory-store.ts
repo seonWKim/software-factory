@@ -9,6 +9,8 @@ import type {
   CloseReason,
   DependencyEdge,
   DependencyState,
+  FiledPattern,
+  FiledPatternId,
   Handoff,
   HostSleep,
   ImproveReport,
@@ -94,6 +96,7 @@ import type {
   NewAppCommandRequest,
   NewCliCommand,
   NewAlert,
+  NewFiledPattern,
   NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
@@ -1209,6 +1212,54 @@ export class SqlFactoryStore implements FactoryStore {
   async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
     const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
     return row ? rowToImproveReport(row) : null;
+  }
+
+  async getLatestImproveReport(project?: string): Promise<ImproveReport | null> {
+    const where = project === undefined ? "" : "WHERE project_key = ? ";
+    const [row] = await this.db.all(
+      `SELECT * FROM improve_reports ${where}ORDER BY created_at DESC, id DESC LIMIT 1`,
+      project === undefined ? [] : [project],
+    );
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  async listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]> {
+    const rows = await this.db.all(
+      "SELECT * FROM improve_reports WHERE project_key = ? AND created_at >= ? ORDER BY created_at, id",
+      [project, since],
+    );
+    return rows.map(rowToImproveReport);
+  }
+
+  async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void> {
+    await this.db.run("UPDATE improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
+  }
+
+  async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
+    const [row] = await this.db.all("SELECT * FROM filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
+    return row ? rowToFiledPattern(row) : null;
+  }
+
+  async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
+    const now = this.now();
+    await this.insertOnce(
+      this.db,
+      `INSERT INTO filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
+      [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now],
+    );
+    if (replace !== undefined && replace !== input.report_id) {
+      await this.db.run(
+        `UPDATE filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
+         WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
+        [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
+      );
+    }
+    return (await this.getFiledPattern(input.project, input.pattern_key))!;
+  }
+
+  async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
+    await this.db.run("UPDATE filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -2697,6 +2748,19 @@ function rowToImproveReport(row: Row): ImproveReport {
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToFiledPattern(row: Row): FiledPattern {
+  return {
+    id: row.id as FiledPatternId,
+    project: row.project_key as string,
+    pattern_key: row.pattern_key as string,
+    error_code: row.error_code as string,
+    detail: row.detail as string,
+    report_id: row.report_id as ImproveReportId,
+    filed_ref: row.filed_ref === null || row.filed_ref === undefined ? null : (JSON.parse(row.filed_ref as string) as SourceRef),
     created_at: row.created_at as Timestamp,
   };
 }

@@ -10,7 +10,7 @@ import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { Clock } from "../../interfaces/clock.js";
 import { type FactoryStore, type NewCliCommand, labelTarget } from "../../interfaces/factory-store.js";
 import type {
-  PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
+  IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
@@ -33,6 +33,10 @@ interface GhIssueRef {
   number: number;
   body?: string | null;
   pull_request?: unknown;
+}
+/** Whether an issue (not a PR) carries `marker` in its body. */
+function carries(marker: string): (i: GhIssueRef) => boolean {
+  return (i) => !i.pull_request && (i.body ?? "").includes(marker);
 }
 interface GhIssueFull extends GhIssue {
   /** Only on the single-issue endpoint. Null when GitHub does not know who closed it. */
@@ -474,16 +478,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const parent = issueNumberFromSourceId(input.parent.id);
     const subs = `${base}/issues/${parent}/sub_issues`;
-    const has = (i: GhIssueRef) => !i.pull_request && (i.body ?? "").includes(input.marker);
-    const linked = (await this.client.list<GhIssueRef>(subs, 1)).find(has);
+    const linked = (await this.client.list<GhIssueRef>(subs, 1)).find(carries(input.marker));
     if (linked) return this.ref(linked.number);
-    const filed = (await this.client.list<GhIssueRef>(
-      `${base}/issues?state=all&labels=${encodeURIComponent(this.label)}&sort=created&direction=desc`, 3)).find(has);
-    const issue = filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
-      title: input.title,
-      body: `${input.body}\n\n${input.marker}`,
-      labels: [this.label],
-    });
+    const issue = await this.findOrFile(input, [this.label]);
     try {
       await this.client.request("POST", subs, { sub_issue_id: issue.id });
     } catch (err) {
@@ -491,6 +488,26 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       if (!(await this.client.list<GhIssueRef>(subs, 1)).some((i) => i.number === issue.number)) throw err;
     }
     return this.ref(issue.number);
+  }
+
+  /**
+   * One standalone issue without the intake label, so a person starts it (design §7). The marker is looked up
+   * first among the newest 300 issues (open or closed), so a retry after a failure part way files no second one.
+   */
+  async fileIssue(input: IssueInput): Promise<SourceRef> {
+    return this.ref((await this.findOrFile(input, [])).number);
+  }
+
+  /** The newest 300 issues with `labels` (open or closed) carrying the marker, else a new issue with them. */
+  private async findOrFile(input: Pick<IssueInput, "title" | "body" | "marker">, labels: string[]): Promise<GhIssueRef> {
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const filter = labels.length === 0 ? "" : `&labels=${encodeURIComponent(labels.join(","))}`;
+    const filed = (await this.client.list<GhIssueRef>(`${base}/issues?state=all${filter}&sort=created&direction=desc`, 3)).find(carries(input.marker));
+    return filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
+      title: input.title,
+      body: `${input.body}\n\n${input.marker}`,
+      ...(labels.length === 0 ? {} : { labels }),
+    });
   }
 
   /**
