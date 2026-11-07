@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
+import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { RunKind } from "../src/core/types.js";
 import { CountedKeepAwake, WorkerPool } from "../src/core/worker-pool.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -255,6 +256,81 @@ describe("worker pool", () => {
     expect(start.fields?.worker_id).toMatch(/^host:42:[01]$/);
     expect(done.fields?.worker_id).toBe(start.fields?.worker_id);
     expect(owner.id).toBe(start.fields?.run_id);
+  });
+});
+
+describe("worker pool: the worker slots line", () => {
+  /** A pool of `max` slots whose live `workers` comes from the store's settings overrides. */
+  async function livePool(max: number) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const log = recordingLog();
+    const cfg: FactoryConfig = { ...config, workers: max };
+    const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store, log: silent });
+    const pool = new WorkerPool({
+      id_prefix: "host:42", store, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(), storage: new MemoryStorage(),
+      clock, config: cfg, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
+    });
+    const slotLines = () => log.lines.filter((l) => l.msg === "worker slots").map((l) => l.fields);
+    const set = (v: number) => store.setSettingOverride({ key: "workers", project: "", value: String(v), actor: "local:test" });
+    /** One pool tick: the next sleep ends, then the pool's loop gets to run. */
+    const tick = async () => {
+      clock.advance(cfg.tick_ms);
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    };
+    return { pool, store, clock, log, slotLines, set, tick, cfg };
+  }
+
+  it("start: one line with pid, the live count, from null and reason start", async () => {
+    const p = await livePool(3);
+    const stop = new AbortController();
+    const loops = p.pool.run(stop.signal);
+    await waitFor(() => p.slotLines().length === 1, "start line");
+    expect(p.slotLines()).toEqual([{ pid: 42, slots: 3, from: null, reason: "start" }]);
+    stop.abort();
+    await loops;
+  });
+
+  it("settings change: one line on the next tick with the new and old count, even when three slots stop", async () => {
+    const p = await livePool(4);
+    const stop = new AbortController();
+    const loops = p.pool.run(stop.signal);
+    await waitFor(() => p.slotLines().length === 1, "start line");
+    await p.set(1);
+    await p.tick();
+    await waitFor(() => p.slotLines().length === 2, "settings change line");
+    expect(p.slotLines()[1]).toEqual({ pid: 42, slots: 1, from: 4, reason: "settings change" });
+    await p.set(3);
+    await p.tick();
+    await waitFor(() => p.slotLines().length === 3, "second settings change line");
+    expect(p.slotLines()[2]).toEqual({ pid: 42, slots: 3, from: 1, reason: "settings change" });
+    expect(p.log.lines.some((l) => l.msg.includes("workers lowered"))).toBe(false);
+    stop.abort();
+    await loops;
+  });
+
+  it("a tick where the live count is unchanged logs no line", async () => {
+    const p = await livePool(2);
+    const stop = new AbortController();
+    const loops = p.pool.run(stop.signal);
+    await waitFor(() => p.slotLines().length === 1, "start line");
+    for (let i = 0; i < 5; i++) await p.tick();
+    expect(p.slotLines()).toHaveLength(1);
+    stop.abort();
+    await loops;
+  });
+
+  it("drain: one line with slots 0, from the last count, reason drain", async () => {
+    const p = await livePool(2);
+    const stop = new AbortController();
+    const loops = p.pool.run(stop.signal);
+    await waitFor(() => p.slotLines().length === 1, "start line");
+    stop.abort();
+    await loops;
+    expect(p.slotLines()).toEqual([
+      { pid: 42, slots: 2, from: null, reason: "start" },
+      { pid: 42, slots: 0, from: 2, reason: "drain" },
+    ]);
   });
 });
 
