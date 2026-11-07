@@ -3,20 +3,20 @@
 // Everything goes through respond(), the server's whole request handling without a socket.
 
 import { describe, expect, it } from "vitest";
-import type { Timestamp, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
+import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
-import { issue, newStore, system, w1 } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
 // Built here so no secret-shaped literal sits in the repository.
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
 const ROUTES = [
-  "/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health",
+  "/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health", "/api/v1/unreviewed-merges",
   "/api/v1/data/tables", "/api/v1/data/tables/work_items", "/api/v1/data/tables/runs", "/api/v1/data/tables/state_changes",
 ];
 
@@ -532,5 +532,63 @@ describe("ui api: plugins, issue and PR links (issue #240)", () => {
     const row = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
     expect(row.pr_number).toBe(42);
     expect(row.pr_url).toBeNull();
+  });
+});
+
+describe("ui api: unreviewed merges", () => {
+  type Merge = { project: string; pr_number: number; pr_url: string | null; merge_sha: string; merged_by: string; recorded_at: string };
+  const list = async (d: UiDeps, q = "") => (await json<{ merges: Merge[] }>(d, `/api/v1/unreviewed-merges${q}`)).merges;
+  const rec = (store: FactoryStore, n: number, merger: string | null = null, sha = `${n}`.repeat(40)) =>
+    store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: n, merge_sha: sha, merger_id: merger as UserId | null });
+
+  it("lists rows newest first with the label, a short sha and the merger id, never the project key", async () => {
+    const { d, store, clock } = await seeded();
+    await saveProjectLabel(store, { key: PROJECT_KEY, label: "github.com/o/r" });
+    await rec(store, 1, "github:7");
+    clock.advance(1000);
+    await rec(store, 2, null);
+    const gh = { ...d, plugins: { issues: "github", prs: "github" } } as UiDeps;
+    const rows = await list(gh);
+    expect(rows.map((r) => r.pr_number)).toEqual([2, 1]);
+    expect(rows[1]).toMatchObject({ project: "github.com/o/r", merge_sha: "1111111", merged_by: "github:7", pr_url: "https://github.com/o/r/pull/1" });
+    expect(rows[0]!.merged_by).toBe("unknown");
+    expect(typeof rows[0]!.recorded_at).toBe("string");
+    expect(JSON.stringify(rows)).not.toContain(PROJECT_KEY);
+  });
+
+  it("limit: default 50, at most 200, and a bad value is a 400", async () => {
+    const { d, store } = await seeded();
+    for (let n = 1; n <= 205; n++) await rec(store, n);
+    expect(await list(d)).toHaveLength(50);
+    expect(await list(d, "?limit=3")).toHaveLength(3);
+    expect(await list(d, "?limit=1000")).toHaveLength(200);
+    for (const bad of ["0", "-1", "x"]) expect((await get(d, `/api/v1/unreviewed-merges?limit=${bad}`)).status).toBe(400);
+  });
+
+  it("no PR link without the GitHub plugin or without a stored label", async () => {
+    const { d, store } = await seeded();
+    await rec(store, 1);
+    expect((await list({ ...d, plugins: { issues: "github", prs: "github" } } as UiDeps))[0]!.pr_url).toBeNull();
+    await saveProjectLabel(store, { key: PROJECT_KEY, label: "github.com/o/r" });
+    expect((await list(d))[0]!.pr_url).toBeNull();
+    expect((await list({ ...d, plugins: { issues: null, prs: null } } as UiDeps))[0]!.pr_url).toBeNull();
+  });
+
+  it("strings from the store go through the Withholder", async () => {
+    const { d, store } = await seeded();
+    await rec(store, 1, `github:${SECRET}`, SECRET);
+    const r = await get(d, "/api/v1/unreviewed-merges");
+    expect(r.body).not.toContain(SECRET);
+    expect((await list(d))[0]).toMatchObject({ merged_by: "[withheld: github_token]", merge_sha: "[withheld: github_token]" });
+  });
+
+  it("overview counts the rows recorded in the last 7 days", async () => {
+    const { d, store, clock } = await seeded();
+    const count = async () => (await json<{ unreviewed_merges_7d: number }>(d, "/api/v1/overview")).unreviewed_merges_7d;
+    expect(await count()).toBe(0);
+    await rec(store, 1);
+    clock.advance(8 * 24 * 3600_000);
+    await rec(store, 2);
+    expect(await count()).toBe(1);
   });
 });

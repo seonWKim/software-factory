@@ -915,6 +915,18 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(rows.map((r) => [r.project, r.pr_number])).toEqual([[OTHER_PROJECT_KEY, 7], [PROJECT_KEY, 8], [PROJECT_KEY, 7]]);
       expect(await store.listUnreviewedMerges(1)).toHaveLength(1);
     });
+
+    it("countUnreviewedMergesSince counts rows recorded inside the window and not outside it", async () => {
+      const { store, clock } = await make();
+      await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 1, merge_sha: "a", merger_id: null });
+      clock.advance(10 * 24 * 3600_000);
+      await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 2, merge_sha: "b", merger_id: null });
+      await store.recordUnreviewedMerge({ project: OTHER_PROJECT_KEY, pr_number: 2, merge_sha: "c", merger_id: null });
+      const since = new Date(clock.now().getTime() - 7 * 24 * 3600_000).toISOString() as Timestamp;
+      expect(await store.countUnreviewedMergesSince(since)).toBe(2);
+      expect(await store.countUnreviewedMergesSince(new Date(clock.now().getTime() + 1000).toISOString() as Timestamp)).toBe(0);
+      expect(await store.countUnreviewedMergesSince("1970-01-01T00:00:00.000Z" as Timestamp)).toBe(3);
+    });
   });
 
   describe("budget checkpoints", () => {
