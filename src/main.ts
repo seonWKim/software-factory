@@ -29,7 +29,7 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { modelStallChecks, modelStallLine, readFactoryStatus } from "./ui/factory-status.js";
+import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
@@ -94,7 +94,7 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
 
 /** Controller and/or worker in this process until `signal` aborts. */
 async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
-  const app = await build(loaded);
+  const app = await build(loaded, { signal });
   const loops = [];
   if (cmd !== "worker") loops.push(app.controller.run(signal));
   if (cmd !== "controller") loops.push(app.worker.run(signal));
@@ -131,7 +131,7 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
         const stop = new AbortController();
         for (const sig of ["SIGINT", "SIGTERM"] as const) process.once(sig, () => stop.abort());
         process.once("disconnect", () => stop.abort()); // the supervisor is gone: never run as an orphan
-        const app = await build(loaded);
+        const app = await build(loaded, { signal: stop.signal });
         await runDevChild(app, channel, stop.signal, new ConsoleLogger(app.clock, "controller"));
         await app.close();
         return 0;
@@ -213,8 +213,10 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
             store,
             base: settingsBase(loaded),
             repo: { owner, name },
-            // Only for --project: the configured repo's key, from the forge (design 2026-11-01).
+            // Only for --project: the configured repo's key, from the store, else the forge (design 2026-11-07).
             resolveProject: async () => {
+              const stored = await storeProjectResolver(store, { owner, name })();
+              if (stored) return stored;
               const p = new Plugins(loaded);
               const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
               return resolveProject(github, { owner, name });
@@ -247,7 +249,11 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           prUrl: (label, n) => `https://${label}/pull/${n}`,
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
-          health: new HealthMonitor(async () => [...(await modelStallChecks(parts.store)), ...(await doctorChecks(loaded))], parts.clock),
+          // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
+          health: new HealthMonitor(
+            async () => [...(await modelStallChecks(parts.store)), ...(await projectKeyChecks(parts.store, loaded.config.repo)), ...(await doctorChecks(loaded))],
+            parts.clock,
+          ),
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
@@ -473,7 +479,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
       const r = await addCase(
         {
           store,
-          project: await resolveProject(github, { owner, name }),
+          project: (await storeProjectResolver(store, { owner, name })()) ?? (await resolveProject(github, { owner, name })),
           github: { pullDiff: (pr) => github.pullDiff({ owner, name }, pr) },
           scanner: await p.scanner(secrets),
           casesDir: join(loaded.root, "golden", "cases"),
