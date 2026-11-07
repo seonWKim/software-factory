@@ -2567,7 +2567,9 @@ export class Controller {
       : cls === "stalled"
         ? iso(failedAt)
         : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
-    // A failed push or PR kept the commits on a wip branch: the retry pushes them with no agent run.
+    // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
+    // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
+    // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
     return {
       patch: restart,
