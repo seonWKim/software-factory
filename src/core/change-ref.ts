@@ -9,3 +9,17 @@ export function prNumber(item: Pick<WorkItem, "change_ref">): number | null {
   const n = Number(item.change_ref);
   return Number.isSafeInteger(n) ? n : null;
 }
+
+/** A local item's source type: its messages are its item thread, so it has no forge issue. */
+const LOCAL_SOURCE = "local";
+
+/**
+ * The forge issue number of an issue item, from its `owner/repo#<digits>` source id (design 05-sources). Null for
+ * a local item, and for any other id (a chat thread, a malformed id): such an item gets no forge comment.
+ */
+export function issueNumber(item: Pick<WorkItem, "source">): number | null {
+  if (item.source.type === LOCAL_SOURCE) return null;
+  const m = /^[^\s#/]+\/[^\s#/]+#(\d+)$/.exec(item.source.id);
+  const n = m ? Number(m[1]) : 0;
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
