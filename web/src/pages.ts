@@ -1,4 +1,4 @@
-import { Activity, Database, Factory, HeartPulse, type LucideIcon, ListOrdered, ListTodo, Settings } from "lucide-react";
+import { Activity, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, Settings } from "lucide-react";
 
 /** The sidebar's pages, in order. */
 export interface PageDef {
@@ -13,6 +13,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "workers", label: "Workers", icon: Activity },
   { path: "queue", label: "Queue", icon: ListOrdered },
   { path: "health", label: "Health", icon: HeartPulse },
+  { path: "failures", label: "Failures", icon: OctagonAlert },
   { path: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -34,7 +35,8 @@ export interface Route {
 
 /** The route for a location path under /app/; unknown paths show the Floor. */
 export function routeFor(pathname: string): Route {
-  const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length).replace(/\/+$/, "") : "";
+  // A query (`failures?window=24h`) selects within a page; it does not change which page.
+  const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length).split("?")[0]!.replace(/\/+$/, "") : "";
   const m = /^items\/([^/]+)$/.exec(rest);
   if (m) {
     let id: string | null = null;

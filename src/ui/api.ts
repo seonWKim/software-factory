@@ -20,7 +20,8 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
-import { readSettings } from "./settings-api.js";
+import { failures } from "./failures.js";
+import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import type { Why } from "./why.js";
@@ -69,6 +70,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return unreviewedMerges(c, url.searchParams);
     case "/health":
       return ok(await health(c));
+    case "/failures":
+      return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
@@ -222,13 +225,16 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const succeeded = recent.filter((r) => r.status === "succeeded");
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
   const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
+  // The effective `workers` setting (file, override or default, capped at max_workers), not the file value the status holds.
+  const workers = status && c.d.settings ? await effectiveWorkers(c.d, c.d.settings) : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
     rev: status.rev,
     target_rev: status.target_rev,
     child_pid: status.child_pid,
     since: status.since,
-    workers: status.workers,
+    workers: workers!.value,
+    workers_source: workers!.source,
     error: await c.text(status.error ?? null),
     pending: status.pending ?? [],
   };

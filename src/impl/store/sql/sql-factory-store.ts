@@ -49,6 +49,7 @@ import {
   type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
+  holdOutcome,
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
@@ -644,7 +645,8 @@ export class SqlFactoryStore implements FactoryStore {
 
   /**
    * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
-   * decision when the cost rule decided it and the decision changed.
+   * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
@@ -660,12 +662,20 @@ export class SqlFactoryStore implements FactoryStore {
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
+    const now = this.now();
+    const since = existing?.decision === "held" ? (existing.held_since ?? existing.at) : now;
+    const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
     if (existing?.approved_by) {
-      await this.writeDecision(tx, it, runId, "approved", holds[0]!, s.max_cost, existing);
+      await write("approved");
       return true;
     }
-    await this.writeDecision(tx, it, runId, verdict === "deadlock" ? "deadlock" : "held", holds[0]!, s.max_cost, existing);
-    return verdict === "deadlock";
+    if (verdict === "deadlock") {
+      await write("deadlock");
+      return true;
+    }
+    const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
+    await write(outcome);
+    return outcome !== "held";
   }
 
   private refFor(c: CoordContext, holderId: string, self: WorkItem): string {
@@ -677,7 +687,7 @@ export class SqlFactoryStore implements FactoryStore {
   /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
   private async writeDecision(
     tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
-    existing: ClaimDecision | null,
+    existing: ClaimDecision | null, held_since: Timestamp,
   ): Promise<void> {
     const row = {
       decision,
@@ -688,27 +698,30 @@ export class SqlFactoryStore implements FactoryStore {
       cost: hold.cost,
       threshold,
       fallback: hold.holder.fallback ? 1 : 0,
+      held_since,
     };
     if (
       existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
       existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
       JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
-      (existing.fallback ? 1 : 0) === row.fallback
+      (existing.fallback ? 1 : 0) === row.fallback && existing.held_since === row.held_since
     ) {
       return;
     }
-    const values = [row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback];
+    const values = [
+      row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback, row.held_since,
+    ];
     const now = this.now();
     const updated = await tx.run(
       `UPDATE claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
-         threshold = ?, fallback = ?, at = ? WHERE run_id = ?`,
+         threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
       [...values, now, runId],
     );
     if (updated === 0) {
       await this.insertOnce(
         tx,
         `INSERT INTO claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
-           threshold, fallback, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [runId, it.id, ...values, now],
       );
     }
