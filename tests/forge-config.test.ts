@@ -9,10 +9,11 @@ import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { silent } from "./helpers/fakes.js";
+import { Controller } from "../src/core/controller.js";
+import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
-import { REGISTRY, declaredSecrets, defaultPlugins, loadRegistry, selectPlugins, withPlugin } from "../src/plugins.js";
+import { REGISTRY, createPlugin, declaredSecrets, defaultPlugins, loadRegistry, selectPlugins, selectedSources, withPlugin } from "../src/plugins.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -194,5 +195,24 @@ describe("forge: building", () => {
     expect(events).toEqual([]);
     // The closed and the open PR list of the configured repository.
     expect(client.calls.map((c) => c.path.split("?")[0]!.replace(/^\/repos\/[^/]+\/[^/]+/, ""))).toEqual(["/pulls", "/pulls"]);
+  });
+});
+
+describe("forge: a setup without GitHub makes no GitHub call (issue #273)", () => {
+  it("only a non-GitHub source and no forge: a poll tick makes zero GitHub API calls and yields no PR event", async () => {
+    const loaded = await loadConfig(root(withSources(["local"])));
+    const client = new RecordingGitHubClient();
+    const p = new Plugins(loaded);
+    const { store, clock } = await newStore();
+    expect(await p.forge(client, { store, clock, log: silent })).toBeNull();
+    const sources = [];
+    for (const name of selectedSources(loaded.plugins)) {
+      sources.push(await createPlugin(loaded.registry, "source", name, { ...p.base, github: client, store, secrets: new MapSecrets(), scanner: cleanScanner, log: silent, clock }));
+    }
+    const controller = new Controller({ store, sources, forge: null, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    await controller.tickIntake();
+    await controller.tickIntake();
+    expect(client.calls).toEqual([]);
+    expect(await store.getCursor("forge:github_issue")).toBeNull();
   });
 });
