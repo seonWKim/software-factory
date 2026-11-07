@@ -1,4 +1,5 @@
-// The app reads only the read-only JSON API under /api/v1 (design §9); nothing else is fetched.
+// The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its one write is
+// POST /api/v1/settings (postSettings), with the per-process CSRF token from GET /api/v1/settings.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -131,6 +132,43 @@ export interface Health {
   checks: { status: string; msg: string }[];
 }
 
+/** One settable key on the Settings page. Values are JSON text, as `factory settings set` takes them. */
+export interface SettingRow {
+  key: string;
+  kind: "number" | "boolean" | "models" | "model_by";
+  value: string;
+  source: "override" | "file" | "default";
+  file_value: string | null;
+  default_value: string;
+  applies_at: string;
+  project_settable: boolean;
+  projects: { project: string; value: string; source: "override" | "file" }[];
+  /** workers only: the file's max_workers, and the cap when the stored value is above it. */
+  max?: number;
+  capped_at?: number | null;
+}
+
+/** `/api/v1/settings`. */
+export interface SettingsView {
+  as_of: string;
+  /** Sent back in x-csrf-token on every write; a reload fetches a new one after a restart. */
+  csrf_token: string;
+  /** The configured repo's owner/name: the `project` a per-project write names. */
+  repo: string;
+  /** Its stored label; null: none stored, so per-project writes go through `factory settings`. */
+  project: string | null;
+  project_keys: string[];
+  keys: SettingRow[];
+  pr_only: { key: string; note: string }[];
+  ignored: { key: string; project: string | null; value: string; reason: string }[];
+  history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
+}
+
+export type SettingsWrite = { action: "set"; key: string; value: string; project?: string } | { action: "reset"; key: string; project?: string };
+
+/** The answer to a write: the CLI's lines, or its refusal. */
+export type WriteResult = { ok: true; lines: string[] } | { ok: false; error: string };
+
 export const API = {
   overview: "/api/v1/overview",
   items: "/api/v1/items",
@@ -139,6 +177,7 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  settings: "/api/v1/settings",
 } as const;
 
 /** Polling interval while the document is visible; TanStack Query stops it while the tab is hidden. */
@@ -158,4 +197,21 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     refetchInterval: pollMs,
     refetchIntervalInBackground: false,
   });
+}
+
+/** POST /api/v1/settings: a set or reset, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
+export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
+  const res = await fetch(API.settings, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": token },
+    body: JSON.stringify(body),
+  });
+  let value: { ok?: boolean; lines?: string[]; error?: string } = {};
+  try {
+    value = (await res.json()) as typeof value;
+  } catch {
+    // An error without a JSON body: say the status.
+  }
+  if (res.ok && value.ok) return { ok: true, lines: value.lines ?? [] };
+  return { ok: false, error: value.error ?? `HTTP ${res.status}` };
 }
