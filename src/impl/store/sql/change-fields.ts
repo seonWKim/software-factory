@@ -1,6 +1,6 @@
 // The change columns written beside pr_number (SQLite migration 35, MySQL step 0035): `change_ref`, the PR number
 // as text, and `change_url`, the PR link. Every store write that sets pr_number takes both from `changeFields`, so
-// the adopted insert, a patch and an unreviewed merge insert never differ. Nothing outside the store reads them yet.
+// the adopted insert, a patch and an unreviewed merge insert never differ. Every work item read returns both.
 
 import { projectLabelCursor } from "../../../core/project.js";
 import type { SqlExecutor } from "./driver.js";

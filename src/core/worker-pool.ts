@@ -204,7 +204,7 @@ export function parseWorkersArgs(args: readonly string[]): WorkersAction | { err
   const at = rest.indexOf("--by");
   if (at !== -1) {
     const v = rest[at + 1];
-    if (!v || v.startsWith("--") || !/^[\w.:@-]{1,255}$/.test(v)) return { error: "--by needs a user or agent ID, e.g. github:12345" };
+    if (!v || v.startsWith("--") || !/^[\w.:@-]{1,255}$/.test(v)) return { error: "--by needs a user or agent ID, e.g. local:<name>" };
     by = v;
     rest.splice(at, 2);
   }

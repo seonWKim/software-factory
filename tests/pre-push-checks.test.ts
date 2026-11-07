@@ -18,7 +18,7 @@ import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runne
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { TestDatabase } from "../src/interfaces/test-database.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // The pre-push checks (design §4, decided 2026-11-03): an implement run runs repo.check_commands after sync and
@@ -66,8 +66,9 @@ class GitPushBroker implements ToolBroker {
   listTools(): ToolDescriptor[] {
     return [];
   }
+  /** The GitHub broker's tools: the worker opens a PR and comments only through a broker that lists them. */
   allTools(): ToolDescriptor[] {
-    return [];
+    return [...FAKE_GITHUB_TOOLS];
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;

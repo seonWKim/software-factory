@@ -58,6 +58,7 @@ import {
   GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
+  branchFor,
   workItemIdFromBranch,
   FORGE_AUTH,
   MODEL_STALL,
@@ -71,7 +72,8 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent, syncedCommand } from "./command-inbox.js";
-import { isCliCommandKey } from "./local-cli.js";
+import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
+import { isCliCommandKey, localIdentity } from "./local-cli.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
@@ -89,7 +91,7 @@ import {
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
-  type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
+  type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunInput, type RunKind, type SourceRef, type SourceType,
   type StateChange, type StateChangeDetail, type Tier, type Timestamp, type UserId, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
@@ -110,9 +112,9 @@ import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 /**
- * The GitHub core rate limit as one process sees it (design §5 Sources, GitHub call budget): GitHub's limit,
+ * The forge's core rate limit as one process sees it (design §5 Sources, call budget): the forge's limit,
  * remaining calls and reset time, this process's `budget_share`, the calls it may count (`share_limit`, null before
- * GitHub reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
+ * the forge reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
  * optional reads wait (under `min_remaining`, or the share is used).
  */
 export interface GitHubBudgetStatus {
@@ -126,7 +128,7 @@ export interface GitHubBudgetStatus {
   as_of: string;
 }
 
-/** The store cursor the controller writes its GitHub budget to after each poll, for the status page. */
+/** The store cursor the controller writes its forge budget to after each poll, for the status page. */
 export const GITHUB_BUDGET_CURSOR = "github:budget";
 
 /** The reset time a call refused for a used-up rate limit waits for (its `wait_until`), else null. */
@@ -151,11 +153,11 @@ export interface ControllerDeps {
    * comment or status then goes to the item's own source.
    */
   forge?: Forge | null;
-  /** Authorizes commands from GitHub (and every non-local origin). */
+  /** Authorizes commands from the forge (and every non-local origin). */
   auth: AuthProvider;
   /**
    * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
-   * #318: local commands never depend on the GitHub auth plugin. Absent: `auth`.
+   * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
    */
   local_auth?: AuthProvider;
   clock: Clock;
@@ -203,7 +205,7 @@ export interface ControllerDeps {
    */
   restarts?: () => Promise<readonly ChildRestart[]>;
   /**
-   * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
+   * The forge client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
    * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
    */
   github_budget?: () => GitHubBudgetStatus | null;
@@ -261,6 +263,10 @@ const INTAKE: Actor = { kind: "system", id: "system:intake" };
 const PR_SYNC: Actor = { kind: "system", id: "system:pr-sync" };
 /** blocked_reason of an adopted PR whose review found bugs: the factory never changes a person's branch. */
 const CHANGES_REQUESTED = "changes_requested";
+/** A review with nothing to review: no commits ahead of the base, or an empty diff (issue #223). */
+const EMPTY_DIFF = "empty_diff";
+/** A review run's `no_agent`: its head is the one the last verdict was for, so it ran no agent (issue #223). */
+const UNCHANGED_HEAD = "unchanged_head";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
 const MAX_CONFLICT_RETRIES = 5;
@@ -304,7 +310,7 @@ const PR_CLOSE_PENDING = "pr_close_pending";
 const CHECKS_PENDING = "checks_pending";
 /** Items waiting on checks looked at per tick. */
 const CHECKS_BATCH = 50;
-/** Failed check names kept per decision, and characters per name. */
+/** Check names kept per decision and per review input, and characters per name. */
 const MAX_CHECK_NAMES = 20;
 const MAX_CHECK_NAME_CHARS = 100;
 /** Rejected items finished per intake tick. */
@@ -338,7 +344,7 @@ const STANDING_WINDOW = 200;
 /** The settable key of the run length that proposes a standing rule. */
 const STANDING_THRESHOLD = "standing_approvals.threshold";
 
-/** GitHub's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
+/** The forge's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
 
 /** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
@@ -502,8 +508,8 @@ export class Controller {
 
   /**
    * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
-   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the GitHub
-   * source and GitHub forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
+   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the
+   * matching source and forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
    * no log line, the next due one after the reset polls. The poll sources are read first and the forge after them,
    * and the forge's events are handled first (issue #273): a merge that closed an issue happened before the close,
    * so the forge's read already sees it and the merge is applied before the source's close. Unfinished rejects are
@@ -522,10 +528,10 @@ export class Controller {
     const forge = this.forge;
     if (pollDue && forge && !(githubPaused && forge.ref_type === GITHUB_SOURCE_TYPE)) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
-    if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
+    if (pollDue) await this.guard("forge budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
     await this.guard("source closes", () => this.tickSourceCloses());
-    // Phases are GitHub sub-issues, so their holds and parents move once per poll, after its closes are applied.
+    // Phases are sub-issues on their source, so their holds and parents move once per poll, after its closes are applied.
     await this.guard("phases", () => this.tickPhases());
   }
 
@@ -540,7 +546,7 @@ export class Controller {
     await this.d.store.advanceCursor(`intake:${source.type}`, cursor, result.next_cursor);
   }
 
-  /** This process's GitHub budget, stored for the status page; the stored value is replaced, never merged. */
+  /** This process's forge budget, stored for the status page; the stored value is replaced, never merged. */
   private async recordGitHubBudget(): Promise<void> {
     const status = this.d.github_budget?.();
     if (!status) return;
@@ -614,10 +620,10 @@ export class Controller {
 
   /**
    * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for an
-   * item of any source becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * item of any source becomes the event the same comment gives on the source (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
-   * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * applyAppRequest. A forge comment command the forge poll wrote (key `github:<comment id>`, issue #284) becomes
+   * its comment's event with provider `github`, so that provider's auth plugin judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
    * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
    * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
    */
@@ -663,10 +669,76 @@ export class Controller {
     if (typeof id !== "string" || id === "") return;
     const item = await this.d.store.getWorkItem(id as WorkItemId);
     // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
-    // judges it, and a GitHub item's transition never waits on GitHub. Its mirror on the issue is the mirror step's.
+    // judges it, and a sync source item's transition never waits on its source. Its mirror on the issue is the mirror step's.
     if (!item) return;
+    // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
+    // CLI refuses it for any other when it writes one.
+    if (c.command === MERGE_COMMAND) {
+      if (item.source.type === LOCAL_TYPE) await this.mergeLocal(item.id, localIdentity(c.actor), c.key);
+      return;
+    }
     const e = commandEvent(c, item.source);
     if (e) await this.handle(e);
+  }
+
+  /**
+   * The local merge (design 05-sources, Local startup): the one merge path for an item with no PR, reached by
+   * `factory merge <id>` through the command inbox (and later by other callers, never a second path). Authorized
+   * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
+   * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push
+   * and no checkout; a conflict leaves the item in merge_pending and the reply names the files. A merge closes the
+   * item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
+   * automatic: only a human's command calls it. Safe to run twice: a branch the base already contains moves
+   * nothing and closes the item with the base's commit; `key` keys the reply.
+   */
+  async mergeLocal(id: WorkItemId, who: ExternalIdentity, key: string): Promise<void> {
+    const item = await this.d.store.getWorkItem(id);
+    if (!item) return;
+    const { repo, branch_prefix } = this.cfg;
+    const branch = branchFor(item, branch_prefix);
+    const principal = await this.authorize(who, "approve_merge", item.id);
+    let refusal: string;
+    if ("refuse" in principal) refusal = principal.refuse;
+    else if (!awaitingMerge(item) || item.pr_number !== null) {
+      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
+      refusal = item.pr_number !== null
+        ? `${item.id} has PR #${item.pr_number}: merge the PR instead`
+        : `${item.id} is not waiting for a merge (${at}); \`factory merge\` applies once its review passed (merge_pending)`;
+    } else if (!canMergeLocal(this.d.sandbox)) refusal = "this controller has no sandbox that can merge locally";
+    else {
+      const r = await this.d.sandbox.mergeLocal({
+        repo: repo.path, base_ref: repo.base_branch, branch, identity: this.cfg.agent_git_identity,
+        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} with \`factory merge\`.`,
+      });
+      if (r.merged) {
+        const actor: Actor = { kind: "user", id: principal.user_id };
+        const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.pr_number === null
+          ? {
+              patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+              actor,
+              reason: "local_merged",
+              detail: { branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}) },
+            }
+          : null));
+        if (lost === null) {
+          this.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: principal.user_id });
+          await this.post(item, item.source, `Merged \`${branch}\` into the local \`${repo.base_branch}\` as \`${r.sha.slice(0, 12)}\` (no push). The item is closed.`, `<!-- factory:local-merged:${key} -->`);
+          await this.guard("dependents", () => this.releaseDependents(item.source.id));
+          return;
+        }
+        refusal = lost;
+      } else if ("conflicts" in r) {
+        refusal = [
+          `\`${branch}\` does not merge cleanly into the local \`${repo.base_branch}\`, so nothing moved and the item still waits for a merge. Conflicting files:`,
+          "",
+          ...r.conflicts.map((f) => `- \`${f}\``),
+          "",
+          `\`${branch}\` is a local branch of this repository: merge \`${repo.base_branch}\` into it and commit the resolution there, then run \`factory merge ${item.id}\` again`,
+        ].join("\n");
+      } else refusal = r.refused;
+    }
+    this.d.log.info("command refused", { work_item_id: item.id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
+    await this.post(item, item.source, `\`factory merge\` was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
   }
 
   /**
@@ -694,7 +766,7 @@ export class Controller {
 
   /**
    * A CLI command as a comment on its issue: who sent which command, and its note quoted, egress-scanned first (a
-   * flagged note is left out). It never starts with `/`, so the GitHub poll reads it as a plain comment.
+   * flagged note is left out). It never starts with `/`, so the source poll reads it as a plain comment.
    */
   private async mirrorBody(c: CliCommand): Promise<string> {
     const name = QUOTABLE_COMMAND.test(c.command) ? `\`/${c.command}\`` : "A command";
@@ -783,7 +855,7 @@ export class Controller {
     return true;
   }
 
-  /** True while any source's request budget is low (GitHub: `lowBudget`): optional reads wait (issue #254). */
+  /** True while any source's request budget is low (e.g. `lowBudget`): optional reads wait (issue #254). */
   private lowBudget(): boolean {
     return this.sources.some((s) => s.lowBudget?.() === true);
   }
@@ -963,7 +1035,7 @@ export class Controller {
         if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
         if ("refuse" in principal) {
-          // A source whose intake label is the gate (GitHub) refuses silently. A chat source has no label: the
+          // A source whose intake label is the gate refuses silently. A chat source has no label: the
           // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
           if (!this.byType.get(e.source.type)?.silent_intake_refusal) {
             await this.postWithoutItem(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
@@ -1032,7 +1104,7 @@ export class Controller {
   }
 
   /**
-   * One update run per (item, PR, head sha, base sha), from GitHub's unmergeable flag or the local merge check
+   * One update run per (item, PR, head sha, base sha), from the forge's unmergeable flag or the local merge check
    * (design §5): both use this key, so either path finding the same conflict first enqueues the only run. None
    * while another update of this item is still in flight; the event repeats on every poll, so a skipped one
    * comes back.
@@ -1081,7 +1153,7 @@ export class Controller {
       if (e.kind === "pr_merged") await this.recordUnreviewedMerge(e);
       return;
     }
-    // The human who merged is the approver of record (design §8). GitHub already enforced their permission.
+    // The human who merged is the approver of record (design §8). The forge already enforced their permission.
     const merger = e.kind === "pr_merged" && e.merger ? await this.d.auth.resolve(e.merger) : null;
     const actor: Actor = merger ? { kind: "user", id: merger.user_id } : { kind: "system", id: "system:post-merge" };
     await this.decide(item.id, (it) => {
@@ -1182,7 +1254,7 @@ export class Controller {
         },
       },
       { kind: "user", id: author.user_id },
-      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review` } },
+      { enqueue: { kind: "review", idempotency_key: `${e.source.type}:${e.source.id}:adopt:review`, input: await this.reviewInput(e.pr_number, null) } },
     );
     if (!created) return;
     this.d.log.info("PR adopted", { ...log, work_item_id: item.id });
@@ -2755,7 +2827,8 @@ export class Controller {
         }
         case "implement": {
           if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
-          const pr = Number(data.pr_number);
+          // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
+          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
           return {
@@ -2769,12 +2842,16 @@ export class Controller {
             actor: SYSTEM,
             reason: "implemented",
             ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+            enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.reviewInput(pr, it.id) },
           };
         }
         case "review": {
           // The worker withheld finding text its scan flagged (issue #222): only the rule names reached here.
           if (Array.isArray(data.egress_rules)) return this.leakBlock(it, run, data.egress_rules.map(String), { token_cost: tokens }, "review");
+          // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
+          // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
+          if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
+          if (data.no_agent === UNCHANGED_HEAD) return ack("review_unchanged_head");
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -2837,7 +2914,7 @@ export class Controller {
             reason: "resolved",
             detail: { run_id: run.id },
             ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}` },
+            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}`, input: await this.reviewInput(it.pr_number, it.id) },
           };
         }
         case "manual":
@@ -2847,9 +2924,10 @@ export class Controller {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+          const input = await this.reviewInput(Number(data.pr_number), it.id);
           return {
             patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
-            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input },
           };
         }
         case "update": {
@@ -2910,7 +2988,7 @@ export class Controller {
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-    // A GitHub rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
+    // A forge rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
     if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
@@ -2921,6 +2999,23 @@ export class Controller {
       reason: "run_failed",
       ack_run: run.id,
     };
+  }
+
+  /**
+   * A review with nothing to review (issue #223): the PR branch has no commits ahead of the base (already merged)
+   * or its diff is empty. No agent ran. The item blocks on a human with `empty_diff`; the one comment is keyed on
+   * the item, so a repeated run posts nothing.
+   */
+  private async emptyDiff(it: WorkItem, run: Run, tokens: number): Promise<Decision> {
+    const patch = { token_cost: tokens, blocked_on: "human" as const, blocked_reason: EMPTY_DIFF };
+    await this.comment(it, EMPTY_DIFF, [
+      `PR #${it.pr_number} has no changes against \`${this.cfg.repo.base_branch}\`: its branch has no commits ahead of the base, or its diff is empty. The factory ran no review (\`${EMPTY_DIFF}\`).`,
+      "",
+      "Close the PR if its change is already on the base, or push the missing commits to its branch.",
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    return { patch, actor: SYSTEM, reason: EMPTY_DIFF, detail: { run_id: run.id }, ack_run: run.id };
   }
 
   /**
@@ -3034,7 +3129,7 @@ export class Controller {
       if (it.origin === "adopted") {
         const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
         await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not change a pull request a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
+          `PR #${it.pr_number} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
         return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
       }
       const loop = it.loop_count + 1;
@@ -3060,7 +3155,11 @@ export class Controller {
     // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
     const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
-    const ready = `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
+    // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
+    const local = it.pr_number === null && it.origin !== "adopted";
+    const ready = local
+      ? `The local branch \`${branchFor(it, this.cfg.branch_prefix)}\` passed review (tier ${tier}).`
+      : `PR #${it.pr_number} passed review (tier ${tier}) and its checks passed.`;
     const text = missing.length > 0
       ? [
         `${ready} It is **incomplete**: the implementer reports work the spec asks for that it does not do. Merging it does not finish this issue.`,
@@ -3069,7 +3168,7 @@ export class Controller {
         "",
         "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
       ].join("\n")
-      : `${ready} A human merge is required.`;
+      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, with no push` : ""}.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
@@ -3087,6 +3186,27 @@ export class Controller {
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
       return { state: "pending" };
+    }
+  }
+
+  /**
+   * A review run's input (design §4, issue #223): the PR's CI results through the forge, at most MAX_CHECK_NAMES
+   * checks of MAX_CHECK_NAME_CHARS. No forge: no checks ran (an empty list). A read error: null (logged), so the
+   * prompt says the results could not be read; the review still runs.
+   */
+  private async reviewInput(pr_number: number | null, work_item_id: WorkItemId | null): Promise<RunInput> {
+    const forge = this.forge;
+    if (!forge || pr_number === null) return { ci_checks: [] };
+    try {
+      const results = await forge.prCheckResults(pr_number);
+      return { ci_checks: results.slice(0, MAX_CHECK_NAMES).map((r) => ({ name: r.name.slice(0, MAX_CHECK_NAME_CHARS), result: r.result })) };
+    } catch (err) {
+      this.d.log.warn("reading PR check results failed", {
+        ...(work_item_id ? { work_item_id } : {}),
+        pr_number,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+      return { ci_checks: null };
     }
   }
 
@@ -3171,7 +3291,7 @@ export class Controller {
     if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    // A forge 401/403, a failed access check or a GitHub rate limit also waits for its claim pause to end; a stall
+    // A forge 401/403, a failed access check or a forge rate limit also waits for its claim pause to end; a stall
     // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
     const notBefore = retryNotBefore({
       cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
@@ -3181,13 +3301,15 @@ export class Controller {
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
     const wip = run.kind === "implement" && run.outcome?.status === "failed" ? run.outcome.wip : undefined;
+    // A retried review keeps the CI results read when it was queued (issue #223).
+    const input = wip ? { wip } : run.kind === "review" ? run.input : null;
     return {
       patch: restart,
       actor: SYSTEM,
       reason: cls === "rate_limited" ? "run_rate_limited" : cls === "stalled" ? "run_stalled" : "run_retry_scheduled",
       detail: { ...detail, not_before: notBefore },
       ack_run: run.id,
-      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(wip ? { input: { wip } } : {}) },
+      enqueue: { kind: run.kind, idempotency_key: retryKey(run.idempotency_key), not_before: notBefore, ...(input ? { input } : {}) },
     };
   }
 
@@ -3521,7 +3643,7 @@ export class Controller {
       "",
       `The forge answered 401 or 403 to the factory's credentials during this item's ${run.kind} run (\`${FORGE_AUTH}\`), so implement and update runs are paused for every worker until ${until}. Triage and review runs go on.`,
       "",
-      "Check the factory's GitHub credentials (the app installation or token): they need write access to contents and pull requests on this repository. The run is retried after the pause ends.",
+      "Check the factory's forge credentials (the app installation or token): they need write access to contents and changes on this repository. The run is retried after the pause ends.",
     ].join("\n"));
   }
 
@@ -3538,7 +3660,7 @@ export class Controller {
       "",
       `The implement preflight's \`${check}\` check failed during this item's ${run.kind} run (\`${PREFLIGHT_ACCESS}\`), so implement and update runs are paused for every worker until ${out.reset_at}. Triage and review runs go on.`,
       "",
-      "Check that the factory's GitHub app or token can still read this repository and its pull requests, and that GitHub answers. The run is retried after the pause ends.",
+      "Check that the factory's forge app or token can still read this repository and its changes, and that the forge answers. The run is retried after the pause ends.",
     ].join("\n"));
   }
 
@@ -3902,7 +4024,7 @@ export class Controller {
     try {
       await fn();
     } catch (err) {
-      // A GitHub call refused with no calls left is a wait for the reset, not a failure: the step runs again next
+      // A forge call refused with no calls left is a wait for the reset, not a failure: the step runs again next
       // poll, and every other step (local work) goes on.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
@@ -4154,7 +4276,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
-  github_rate_limited: "GitHub's API rate limit was hit; implement, update and review runs are paused until it resets",
+  github_rate_limited: "the forge's API rate limit was hit; implement, update and review runs are paused until it resets",
   provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

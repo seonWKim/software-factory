@@ -65,7 +65,7 @@ export interface CommandSpec {
   /** Whether applying it can change the item's stage or block. */
   changes_state: boolean;
   /**
-   * Phases where it is also accepted as a comment on the item's pull request, with the meaning in
+   * Phases where it is also accepted as a comment on the item's change, with the meaning in
    * `pr_description` (design §4). Absent: on the PR it means what it means on the issue, if it is read there.
    */
   pr_phases?: readonly CommandPhase[];
@@ -280,7 +280,7 @@ const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description
 export function commandFooter(s: CommandState): string {
   const cmds = commandsFor(s);
   const onPr = prCommandsFor(s);
-  const out = onPr.length ? ["On the pull request, you can reply with:", ...onPr.map(prLine), ""] : [];
+  const out = onPr.length ? ["On the change, you can reply with:", ...onPr.map(prLine), ""] : [];
   out.push("Commands you can reply with now:", ...cmds.map(line));
   if (!cmds.some((c) => c.changes_state)) out.push("No command changes this item's state now.");
   return out.join("\n");

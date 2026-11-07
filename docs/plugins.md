@@ -18,7 +18,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | GrantSource | `github-permission`, `static` | [grant-source.md](plugins/grant-source.md) |
 | SecretStore (guard) | `env-file` | [secret-store.md](plugins/secret-store.md) |
 | EgressScanner (guard) | `pattern` | [egress-scanner.md](plugins/egress-scanner.md) |
-| ToolBroker (guard) | `github` | [tool-broker.md](plugins/tool-broker.md) |
+| ToolBroker (guard) | `github`, `local` | [tool-broker.md](plugins/tool-broker.md) |
 | Sandbox | `noop` | [sandbox.md](plugins/sandbox.md) |
 | AgentRunner | `claude-code`, `openai-compatible` | [agent-runner.md](plugins/agent-runner.md) |
 | LLMProvider | `claude-cli`, `openai-compatible` | [llm-provider.md](plugins/llm-provider.md) |

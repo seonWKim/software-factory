@@ -1,6 +1,7 @@
 // Composition root: the only place that reads env/files for config and picks implementations.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
+import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -9,7 +10,7 @@ import {
   coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
-import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
+import { type ProjectRef, githubProjectKey, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -387,6 +388,7 @@ export async function loadConfig(
     registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
   );
   const grants = selectGrants(GRANTS, file.permissions);
+  const local = !selectsGitHub(plugins, grants);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
@@ -403,6 +405,7 @@ export async function loadConfig(
       test_command: testCommand(file.repo.test_command),
       ...checkCommandsConfig(rawChecks),
     },
+    ...(local ? { local_only: true as const } : {}),
     intake_label: file.intake_label,
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
@@ -469,6 +472,36 @@ export async function loadConfig(
   const ownerDefaults = await optional("owner-defaults");
   if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
+}
+
+/**
+ * The plugins that call GitHub, per interface, and the grants that do (design 05-sources, Local startup). The
+ * `github_auth` credentials are not on the list: they are read only for a plugin that is.
+ */
+const GITHUB_PLUGINS: Readonly<Partial<Record<keyof Selection, readonly string[]>>> = {
+  auth: ["github"], local_auth: ["github"], broker: ["github"], forge: ["github"],
+};
+const GITHUB_SOURCES: readonly string[] = ["github-issues"];
+const GITHUB_GRANTS: readonly string[] = ["github-permission"];
+
+/**
+ * Whether config selects any GitHub plugin: a GitHub source, auth, broker, forge or grant. The one rule for the
+ * local path (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether
+ * or not the factory repo has a remote.
+ */
+export function selectsGitHub(sel: Selection, grants: readonly string[]): boolean {
+  if (selectedSources(sel).some((s) => GITHUB_SOURCES.includes(s))) return true;
+  if (grants.some((g) => GITHUB_GRANTS.includes(g))) return true;
+  return Object.entries(GITHUB_PLUGINS).some(([kind, names]) => {
+    const name = sel[kind as keyof Selection];
+    return typeof name === "string" && names!.includes(name);
+  });
+}
+
+/** The configured repo as a local project: `local:local:<sha-256 of owner/name>`, labelled `local/owner/name`. */
+export function localProject(repo: RepoRef): ProjectRef {
+  const digest = createHash("sha256").update(`${repo.owner}/${repo.name}`).digest("hex").slice(0, 32);
+  return { key: localProjectKey(digest), label: projectLabel("local", repo.owner, repo.name) };
 }
 
 /** What startup resolution needs from the GitHub client: one read of the repository. */
@@ -555,6 +588,34 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
     }
     await d.clock.sleep(wait, d.signal);
   }
+}
+
+/**
+ * The project at startup: with no GitHub plugin selected, the local project, stored as the configured repo's key
+ * (#350's cursor) with no GitHub call; else startupProject.
+ */
+async function projectAtStartup(loaded: Loaded, d: StartupProjectDeps): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
+  if (loaded.config.local_only !== true) return startupProject(d);
+  const project = localProject(d.repo);
+  await saveProject(d.store, d.repo, project);
+  return { project, refreshed: Promise.resolve() };
+}
+
+/** A stand-in that refuses every call with `why`. Not a thenable: awaiting it must not hang. */
+function refusing<T>(why: string): T {
+  return new Proxy({}, { get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error(why))) }) as T;
+}
+
+const NO_GITHUB = "no GitHub plugin is selected (design 05-sources, Local startup): nothing calls GitHub";
+
+/**
+ * The GitHub credentials and client the plugins get: the configured ones, or, with no GitHub plugin selected,
+ * stand-ins that refuse every call, so no GitHub credential is read and no request is made.
+ */
+async function githubParts(loaded: Loaded, p: Plugins, secrets: SecretStore, clock: Clock): Promise<{ credentials: GitHubCredentials; github: GitHubClient }> {
+  if (loaded.config.local_only === true) return { credentials: refusing<GitHubCredentials>(NO_GITHUB), github: refusing<GitHubClient>(NO_GITHUB) };
+  const credentials = await p.githubCredentials(secrets, clock);
+  return { credentials, github: new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock)) };
 }
 
 /** The loaded config with the resolved project, and the per-project settings re-keyed from `owner/name` to its key. */
@@ -658,8 +719,7 @@ export async function build(
   const scanner = await p.scanner(secrets);
   // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
   await checkToolchainEnv(loaded.config.toolchain, scanner);
-  const credentials = await p.githubCredentials(secrets, clock);
-  const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
+  const { credentials, github } = await githubParts(loaded, p, secrets, clock);
   const sandbox = await p.sandbox();
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
@@ -697,8 +757,9 @@ export async function build(
   const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
-  // project key every write uses, from the store; GitHub refreshes the label in the background (a rename).
-  const { project, refreshed } = await startupProject({
+  // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
+  // no GitHub plugin: the local project key, and no GitHub call.
+  const { project, refreshed } = await projectAtStartup(loaded, {
     store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
@@ -733,7 +794,8 @@ export async function build(
     // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
     restarts: () => readRestarts(join(loaded.stateDir, SUPERVISOR_STATUS_FILE)),
     // This process's GitHub budget, stored after each poll for the status page (design §5, GitHub call budget).
-    github_budget: () => github.status(),
+    // With no GitHub plugin selected (Local startup) there is no GitHub client and no budget to record.
+    ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status() }),
   });
 
   const worker = new WorkerPool({
@@ -825,10 +887,7 @@ export interface UiParts {
 }
 
 /** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
-const NO_FORGE = new Proxy({}, {
-  // Not a thenable: awaiting the client itself must not hang.
-  get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error("the UI process makes no forge call"))),
-}) as unknown as GitHubClient;
+const NO_FORGE = refusing<GitHubClient>("the UI process makes no forge call");
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -898,12 +957,11 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const [base, clock, secrets] = [p.base, await p.clock(), await p.secrets()];
   const store = await p.store(secrets, clock);
   await store.migrate();
-  const [scanner, credentials, sandbox] = [await p.scanner(secrets), await p.githubCredentials(secrets, clock), await p.sandbox()];
-  const github = new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock));
+  const [scanner, { credentials, github }, sandbox] = [await p.scanner(secrets), await githubParts(loaded, p, secrets, clock), await p.sandbox()];
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
-  const { project, refreshed } = await startupProject({ store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
+  const { project, refreshed } = await projectAtStartup(loaded, { store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();

@@ -60,6 +60,12 @@ export interface GitWorktreeOptions {
   /** `<state_dir>/deps`: node_modules installs, `deps/<hash of package-lock.json>/node_modules`. */
   depsDir?: string;
   baseBranch: string;
+  /**
+   * No GitHub plugin selected (design 05-sources, Local startup): nothing fetches origin. The version folders
+   * follow the main checkout's local `refs/heads/<baseBranch>`, which `factory merge` moves; the main checkout is
+   * never fast-forwarded (it already is that branch, or another one the owner chose).
+   */
+  local?: boolean;
   run: CommandRunner;
   launcher: ChildLauncher;
   clock: Clock;
@@ -858,7 +864,7 @@ export class GitWorktreeUpdater implements Updater {
    */
   private async fastForwardMain(origin: string): Promise<void> {
     const { repoPath, baseBranch, log } = this.o;
-    if (this.mainTriedFor === origin) return;
+    if (this.o.local || this.mainTriedFor === origin) return;
     this.mainTriedFor = origin;
     if ((await this.head(repoPath)) === origin) return;
     const skip = (reason: string) => log.info("main checkout not fast-forwarded", { reason, rev: origin });
@@ -870,8 +876,10 @@ export class GitWorktreeUpdater implements Updater {
     log.info("main checkout fast-forwarded", { rev: origin });
   }
 
+  /** The revision to run: origin/<base> after a fetch, or the local base branch with no fetch (`local`). */
   private async fetch(): Promise<string> {
     const { repoPath, baseBranch } = this.o;
+    if (this.o.local) return (await this.git(repoPath, ["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`])).trim();
     await this.git(repoPath, ["fetch", "--quiet", "origin", baseBranch]);
     return (await this.git(repoPath, ["rev-parse", "--verify", `refs/remotes/origin/${baseBranch}^{commit}`])).trim();
   }

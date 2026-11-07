@@ -64,7 +64,7 @@ export interface NewWorkItem {
   problem: string;
   resources: string[];
   /**
-   * Adoption of a pull request a person opened (design 2026-11-01). Present: the item starts at REVIEW with
+   * Adoption of a change a person opened (design 2026-11-01). Present: the item starts at REVIEW with
    * origin `adopted`, these fields set, done_criteria null, and the state change reason `pr_adopted`.
    */
   adopted?: AdoptedPr;
@@ -464,7 +464,7 @@ export interface FactoryStore {
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
-   * refused the credentials), `github_rate_limit` stops implement-type and review claims (GitHub's rate limit, until
+   * refused the credentials), `github_rate_limit` stops implement-type and review claims (the forge's rate limit, until
    * its reset). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
    * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
    * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
@@ -784,9 +784,9 @@ export interface FactoryStore {
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
-  // GitHub sync records (design §5, GitHub call budget): the comments a source posted and the status labels it
+  // Sync source records (design §5, call budget): the comments a source posted and the status labels it
   // wrote, shared by every replica, so a restart or another replica needs no thread or label read to know them.
-  // Keyed by the item's source id. Only the GitHub source writes them, so a setup without it writes no rows.
+  // Keyed by the item's source id. Only a sync source with this need writes them, so a setup without it writes no rows.
 
   /**
    * The comment with `marker` on `source_id`, or a row of failed posts only (`comment_id` null). `same_body`
@@ -837,7 +837,7 @@ export interface FactoryStore {
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
   /**
    * Commands appended with `mirror` and not marked mirrored yet, in seq order, at most `limit` (the CLI's commands
-   * on items of a sync source such as GitHub). Read-only.
+   * on items of a sync source). Read-only.
    */
   listUnmirroredCliCommands(limit: number): Promise<CliCommand[]>;
   /**
@@ -1049,7 +1049,7 @@ export interface NewCliCommand {
   /** The command's arguments, stored as JSON. */
   args: Record<string, unknown>;
   /**
-   * The command is to be mirrored once to its item's sync source (a CLI command on a GitHub item), best effort:
+   * The command is to be mirrored once to its item's sync source (a CLI command on a sync source's item), best effort:
    * listed by `listUnmirroredCliCommands` until `markCliCommandMirrored`. Absent or false: nothing to mirror.
    */
   mirror?: boolean;

@@ -364,7 +364,7 @@ export interface DependencyLink {
 }
 
 /**
- * What a source offers for dependencies (GitHub: `Depends on` lines, sub-issues, blocked-by links). Optional:
+ * What a source offers for dependencies (e.g. `Depends on` lines, sub-issues, blocked-by links). Optional:
  * a source without it gives no edges. The controller calls it outside the claim lock and stores the result.
  */
 export interface DependencySource {

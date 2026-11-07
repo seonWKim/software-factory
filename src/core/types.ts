@@ -28,7 +28,7 @@ export type SourceType = string;
 
 /**
  * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the
- * PR. `adopted`: a pull request a person opened, taken in at REVIEW; its source is that pull request.
+ * PR. `adopted`: a change a person opened, taken in at REVIEW; its source is that change.
  */
 export type WorkItemOrigin = "factory" | "adopted";
 
@@ -47,7 +47,7 @@ export interface WorkItem {
   /** The source's title (issue title), recorded at intake. Null on items created before it existed. */
   title: string | null;
   requester_id: UserId;
-  /** The project key, `github:<host>:<repo node id>` (design 2026-11-01). Never shown: show its label. */
+  /** The project key, `<provider>:<host>:<repo node id>` (design 2026-11-01). Never shown: show its label. */
   project: string;
   problem: string;
   resources: string[];
@@ -64,6 +64,13 @@ export interface WorkItem {
   restart_count: number;
   token_cost: number;
   pr_number: number | null;
+  /**
+   * The change columns the store writes with pr_number (migration 35): `change_ref` is the PR number as text,
+   * `change_url` the PR link when the project is a forge key with a stored label. Both null without a PR number,
+   * and on rows written before migration 35. Store-derived: never patched directly.
+   */
+  change_ref: string | null;
+  change_url: string | null;
   merge_sha: string | null;
   fixes_pr: number | null;
   /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
@@ -122,7 +129,7 @@ export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "parent_id" | "phase" | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "change_ref" | "change_url" | "created_at" | "updated_at"
   >
 >;
 
@@ -176,6 +183,18 @@ export interface RunInput {
   session?: SessionRecord;
   /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
   improve?: ImproveWindow;
+  /**
+   * A review run's CI results (design §4, issue #223), read through the forge when the review was queued: one
+   * entry per check (empty: no check ran), null when the read failed. Absent (an older row, a human `/retry`):
+   * not read.
+   */
+  ci_checks?: PrCheckResult[] | null;
+}
+
+/** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */
+export interface PrCheckResult {
+  name: string;
+  result: "passed" | "failed" | "pending";
 }
 
 /** The finished runs an improve report covers: finished_at in [window_start, window_end). */
@@ -323,8 +342,8 @@ export interface WorkerPause {
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update). `preflight_access`:
 the push_access or pr_api preflight check failed another way (issue #216), so no implement-type claim either.
- * `github_rate_limit`: GitHub's REST rate limit was hit (2026-11-07), so no implement, update or review claim and no
- * GitHub poll until the reset its row holds; triage and resolve still claim.
+ * `github_rate_limit`: the forge's REST rate limit was hit (2026-11-07), so no implement, update or review claim and no
+ * forge poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
  * it ends only when `model_answered` (the last answered probe, written by `endClaimPause("model_stall")`) is not
@@ -586,7 +605,7 @@ export interface BudgetCheckpoint {
 export type UnreviewedMergeId = Brand<string, "UnreviewedMergeId">;
 
 /**
- * A pull request that merged with no work item (design 2026-11-01): skipped with `factory: skip`, from a fork,
+ * A change that merged with no work item (design 2026-11-01): skipped with `factory: skip`, from a fork,
  * never adopted, or merged before the first poll. One row per (project, pr_number).
  */
 export interface UnreviewedMerge {

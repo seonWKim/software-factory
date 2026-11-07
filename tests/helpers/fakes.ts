@@ -3,7 +3,7 @@ import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
 import { WORK_STATUSES, type WorkStatus } from "../../src/core/status-label.js";
-import type { SourceRef, SourceType, UserId } from "../../src/core/types.js";
+import type { PrCheckResult, SourceRef, SourceType, UserId } from "../../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
@@ -294,6 +294,16 @@ export class FakeForge implements Forge {
     if (this.checksError) throw this.checksError;
     return this.checkResults.shift() ?? { state: "passed" };
   }
+  /** What prCheckResults answers (each check's name and result); every PR asked for is recorded in `checkResultCalls`. */
+  checkList: PrCheckResult[] = [];
+  checkResultCalls: number[] = [];
+  /** When set, prCheckResults records the call, then throws this. */
+  checkListError: Error | null = null;
+  async prCheckResults(pr_number: number): Promise<PrCheckResult[]> {
+    this.checkResultCalls.push(pr_number);
+    if (this.checkListError) throw this.checkListError;
+    return this.checkList;
+  }
   /** What prFiles answers per PR number (absent: []). Every PR asked for is recorded in `fileCalls`. */
   prFileMap: Record<number, string[]> = {};
   fileCalls: number[] = [];
@@ -487,8 +497,12 @@ export class FakeSandbox implements Sandbox {
   resolveChanged: string[] = [];
   /** Exit codes of non-git commands by argv joined with spaces, e.g. { "npm test": 1 }. Default 0. */
   exits: Record<string, number> = {};
+  /** What a plain `git diff` prints, e.g. a review run's diff against the base ("": an empty diff). */
+  diff = "+ a change\n";
   /** What `git rev-parse HEAD` prints. A resolve run's checkout makes it its commit-tree result. */
   head = "base\n";
+  /** What `git rev-parse origin/<branch>` prints, by branch (e.g. a PR's pushed head); a branch not listed prints nothing. */
+  branchHeads: Record<string, string> = {};
   /** Commits `git rev-parse --verify --end-of-options <ref>^{commit}` resolves, by ref (e.g. a wip branch). */
   refs: Record<string, string> = {};
   /** Git argv prefixes (joined by spaces) that exit 1 with a `fatal:` stderr, e.g. "fetch" for a failed base fetch. */
@@ -532,6 +546,8 @@ export class FakeSandbox implements Sandbox {
     this.gitEnvs.push({ ...o.env });
     if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: this.failGitStderr ?? `fatal: ${args.split(" ")[0]} failed` };
     if (args === "rev-parse HEAD") return out(this.head);
+    const branch = args.match(/^rev-parse origin\/(.+)$/)?.[1];
+    if (branch !== undefined && branch in this.branchHeads) return out(`${this.branchHeads[branch]}\n`);
     const ref = args.match(/^rev-parse --verify --end-of-options (.+)\^\{commit\}$/)?.[1];
     if (ref !== undefined && ref in this.refs) return out(`${this.refs[ref]}\n`);
     if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
@@ -555,7 +571,7 @@ export class FakeSandbox implements Sandbox {
     if (args.startsWith("diff --name-only -z --diff-filter=U")) return out(this.conflicts.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff --name-only -z --no-renames tree")) return out(this.resolveChanged.map((f) => `${f}\0`).join(""));
     if (args.startsWith("diff --name-only")) return out(this.changedFiles.map((f) => `${f}\0`).join(""));
-    if (args.startsWith("diff")) return out("+ a change\n");
+    if (args.startsWith("diff")) return out(this.diff);
     return out("");
   }
   async copyIn(): Promise<void> {}
@@ -828,6 +844,10 @@ export class FakeGitHubClient extends GitHubClient {
   comments = new Map<number, { id: number; body: string; html_url: string }[]>();
   /** When set, a comment POST throws this. */
   commentError: Error | null = null;
+  /** The head sha of each PR (`GET /pulls/N`), and the check runs and commit statuses of each sha. */
+  pullHeads = new Map<number, string>();
+  checkRuns = new Map<string, { name: string; status: string; conclusion: string | null }[]>();
+  statuses = new Map<string, { context: string; state: string }[]>();
   private nextId = 1;
 
   constructor() {
@@ -872,6 +892,15 @@ export class FakeGitHubClient extends GitHubClient {
       const c = { id, body: (body as { body: string }).body, html_url: `https://github.com/o/r/issues/${n}#issuecomment-${id}` };
       this.comments.set(n, [...thread, c]);
       return c as T;
+    }
+    m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(bare);
+    const head = m && this.pullHeads.get(Number(m[1]));
+    if (method === "GET" && head) return { number: Number(m![1]), head: { ref: "factory/wi_a", sha: head } } as T;
+    m = /^\/repos\/o\/r\/commits\/([^/]+)\/(check-runs|status)$/.exec(bare);
+    if (method === "GET" && m) {
+      const runs = this.checkRuns.get(m[1]!) ?? [];
+      if (m[2] === "check-runs") return { total_count: runs.length, check_runs: firstPage ? runs : [] } as T;
+      return { statuses: this.statuses.get(m[1]!) ?? [] } as T;
     }
     throw new Error(`unexpected ${method} ${path}`);
   }
