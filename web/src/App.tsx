@@ -8,6 +8,7 @@ import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, PAGES, type PageDef, TOOL_PAGES, routeFor } from "./pages.js";
 import { type Theme, saveTheme, storedTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
+import { FailuresPage } from "./views/failures.js";
 import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } from "./views/pages.js";
 import { SettingsPage } from "./views/settings.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
@@ -29,6 +30,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   workers: WorkersPage,
   queue: QueuePage,
   health: HealthPage,
+  failures: FailuresPage,
   settings: SettingsPage,
   data: DataPage,
 };
