@@ -1128,7 +1128,7 @@ export class Controller {
   private async handleInfo(e: InfoEvent): Promise<void> {
     const item = await this.d.store.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
-    // Outside GitHub (a Slack thread, issue #109) the person is checked first, like every other command: an
+    // Outside GitHub (a Slack thread, issue #109; a local item) the person is checked first, like every other command: an
     // unknown account gets the refusal and no list. On GitHub `/help` answers anyone, as it always did.
     if (item.source.type !== PR_SOURCE_TYPE) {
       const principal = await this.authorize(e.requester, "submit_work", item.id);
@@ -2995,7 +2995,7 @@ export class Controller {
 
   /**
    * The PR's link in the item's own thread, once per PR, for an item from a source other than GitHub (a Slack
-   * thread): on GitHub the PR already links its issue. Implement, review and the human gate stay on GitHub.
+   * thread, a local item): on GitHub the PR already links its issue. Implement, review and the human gate stay on GitHub.
    */
   private async prLink(it: WorkItem): Promise<void> {
     if (it.source.type === PR_SOURCE_TYPE || it.origin === "adopted" || it.pr_number === null) return;
