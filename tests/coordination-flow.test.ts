@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
 import { Controller } from "../src/core/controller.js";
 import { statusOf } from "../src/core/status-label.js";
@@ -8,7 +9,8 @@ import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
+import type { ExecResult } from "../src/interfaces/sandbox.js";
+import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
@@ -303,5 +305,241 @@ describe("GitHub source: dependency links (fake GitHub client)", () => {
     expect(await Promise.all(["o/r#1", "o/r#2", "o/r#3", "x/y#4", "x/y#5"].map((d) => gh.dependencyState(d)))).toEqual([
       "open", "merged", "closed_unmerged", "merged", "closed_unmerged",
     ]);
+  });
+});
+
+/** One conflicted file's index stages: the common ancestor, the work branch (HEAD) and the merged-in base. */
+interface Stages {
+  ancestor: string;
+  branch: string;
+  base: string;
+}
+
+/**
+ * Makes the fake sandbox answer the index, blob and tree reads a mechanical merge or a migration renumbering
+ * makes (`ls-files -s`, `cat-file`, `hash-object`, `update-index`, `ls-tree`, the added-steps diff, `mv`).
+ * `log` has every command in order, git and not; `index` is the merged text each written path got.
+ */
+function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; baseSteps?: string[]; added?: string[]; changed?: string[]; tree?: Record<string, string> }) {
+  const blobs = new Map<string, string>();
+  const index: Record<string, string> = {};
+  const tree: Record<string, string> = { ...o.tree };
+  const log: string[] = [];
+  const moves: string[] = [];
+  const blob = (text: string) => {
+    const sha = createHash("sha1").update(text).digest("hex");
+    blobs.set(sha, text);
+    return sha;
+  };
+  const ok = (stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
+  const z = (xs: readonly string[]) => xs.map((x) => `${x}\0`).join("");
+  const exec = sandbox.exec.bind(sandbox);
+  sandbox.exec = async (h, cmd, opts) => {
+    log.push(cmd.join(" "));
+    if (cmd[0] !== "git") return exec(h, cmd, opts);
+    const a = cmd.slice(1);
+    const line = a.join(" ");
+    // The sync's merge runs with hooks off (`-c core.hooksPath=…`); it conflicts like any other merge.
+    if (/^-c \S+ merge --no-ff /.test(line) && sandbox.mergeExit) return { ...ok(), exit_code: sandbox.mergeExit };
+    if (line.startsWith("ls-files -s -z -- ")) {
+      const path = a.at(-1)!;
+      if (path in index) return ok(`100644 ${blob(index[path]!)} 0\t${path}\0`);
+      const st = o.stages?.[path];
+      if (st) return ok([[1, st.ancestor], [2, st.branch], [3, st.base]].map(([n, t]) => `100644 ${blob(t as string)} ${n}\t${path}\0`).join(""));
+      return ok(path in tree ? `100644 ${blob(tree[path]!)} 0\t${path}\0` : "");
+    }
+    if (a[0] === "cat-file") return ok(blobs.get(a[2]!) ?? "");
+    if (a[0] === "hash-object") return ok(`${blob(opts.stdin ?? "")}\n`);
+    if (a[0] === "update-index") {
+      const [, sha, path] = a[2]!.split(",");
+      index[path!] = blobs.get(sha!)!;
+      return ok();
+    }
+    if (a[0] === "checkout-index") return ok();
+    if (line.startsWith("diff --name-only -z --no-renames --diff-filter=A")) return ok(z(o.added ?? []));
+    if (a[0] === "diff" && a.length === 6 && a[5] === "HEAD") return ok(z(o.changed ?? []));
+    if (a[0] === "ls-tree") return ok(z(o.baseSteps ?? []));
+    if (a[0] === "mv") {
+      const [from, to] = [a.at(-2)!, a.at(-1)!];
+      moves.push(`${from} → ${to}`);
+      if (from in tree) {
+        tree[to] = tree[from]!;
+        delete tree[from];
+      }
+      return ok();
+    }
+    return exec(h, cmd, opts);
+  };
+  return { index, log, moves };
+}
+
+/** Only appended lines on both sides: the base adds one History line, the branch another, at the same place. */
+const APPENDED: Stages = {
+  ancestor: "# Design\n\n## History\n\n- one\n",
+  base: "# Design\n\n## History\n\n- one\n- from the base\n",
+  branch: "# Design\n\n## History\n\n- one\n- from the branch\n",
+};
+const MERGED = "# Design\n\n## History\n\n- one\n- from the base\n- from the branch\n";
+
+describe("mechanical merges and migration renumbering (design §5, issue #297)", () => {
+  /** An item through triage, implement and review: PR 42 waits for a human merge. */
+  async function withPr() {
+    const f = await pipeline();
+    const it = await f.submit();
+    await f.step();
+    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    f.broker.calls = [];
+    const unmergeable = async () => {
+      f.source.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
+      await f.controller.tickIntake();
+    };
+    return { ...f, it, unmergeable };
+  }
+  const outcome = async (f: Awaited<ReturnType<typeof withPr>>, kind: RunKind) => {
+    const o = (await f.runs(f.it, kind)).at(-1)?.outcome;
+    return o?.status === "succeeded" ? o.data : o;
+  };
+
+  it("an update after a base that took the branch's migration number: the step is renumbered before the tests, they pass, no resolve run", async () => {
+    const f = await withPr();
+    f.sandbox.ancestorExit = 1; // the base moved on; the merge itself is clean (different step file names)
+    const g = gitIndex(f.sandbox, {
+      baseSteps: ["migrations/mysql/0024-item-thread.sql", "migrations/mysql/0025-from-base.sql", "migrations/mysql/README.md"],
+      added: ["migrations/mysql/0025-mine.sql"],
+      changed: ["migrations/mysql/0025-mine.sql", "docs/design/05-coordination.md"],
+      tree: {
+        "migrations/mysql/0025-mine.sql": "CREATE TABLE IF NOT EXISTS mine (id INT);\n",
+        "docs/design/05-coordination.md": "MySQL step `migrations/mysql/0025-mine.sql` adds the table.\n",
+      },
+    });
+    await f.unmergeable();
+    await f.step();
+    expect(g.moves).toEqual(["migrations/mysql/0025-mine.sql → migrations/mysql/0026-mine.sql"]);
+    expect(g.index["docs/design/05-coordination.md"]).toBe("MySQL step `migrations/mysql/0026-mine.sql` adds the table.\n");
+    // Renumbered and committed before the check list ran.
+    const mv = g.log.findIndex((l) => l.startsWith("git mv "));
+    const commit = g.log.findIndex((l, i) => i > mv && / commit --no-verify -m Renumber MySQL steps/.test(l));
+    expect(mv).toBeGreaterThan(-1);
+    expect(commit).toBeGreaterThan(mv);
+    expect(g.log.indexOf("npm test", commit)).toBeGreaterThan(commit);
+    expect(await outcome(f, "update")).toMatchObject({ result: "pushed" });
+    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+    expect(await f.runs(f.it, "resolve")).toEqual([]);
+    expect(f.agentCalls("resolve")).toBe(0);
+  });
+
+  it("no renumbering when the branch also changes a SQLite schema file", async () => {
+    const f = await withPr();
+    f.sandbox.ancestorExit = 1;
+    const g = gitIndex(f.sandbox, {
+      baseSteps: ["migrations/mysql/0025-from-base.sql"],
+      added: ["migrations/mysql/0025-mine.sql"],
+      changed: ["migrations/mysql/0025-mine.sql", "src/impl/store/sqlite/schema.ts"],
+    });
+    await f.unmergeable();
+    await f.step();
+    expect(g.moves).toEqual([]);
+    expect(f.log.lines.some((l) => l.msg.startsWith("migration renumbering skipped"))).toBe(true);
+  });
+
+  it("an update whose conflict has only appended lines: merged in code, base lines first, no learned weight, no resolve run", async () => {
+    const f = await withPr();
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design/05-coordination.md"];
+    const g = gitIndex(f.sandbox, { stages: { "docs/design/05-coordination.md": APPENDED } });
+    const record = vi.spyOn(f.store, "recordConflicts");
+    await f.unmergeable();
+    await f.step();
+    expect(g.index["docs/design/05-coordination.md"]).toBe(MERGED);
+    expect(record).not.toHaveBeenCalled();
+    expect(await f.store.conflictCounts(PROJECT_KEY)).toEqual(new Map());
+    expect(await outcome(f, "update")).toMatchObject({ result: "pushed" });
+    expect(g.log.indexOf("npm test")).toBeGreaterThan(g.log.findIndex((l) => l.startsWith("git update-index")));
+    expect(await f.runs(f.it, "resolve")).toEqual([]);
+    expect(f.agentCalls("resolve")).toBe(0);
+  });
+
+  it("a conflict that changes a line on one side still records the conflict and starts the resolve run", async () => {
+    const f = await withPr();
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design.md", "docs/design/05-coordination.md"];
+    const g = gitIndex(f.sandbox, {
+      stages: {
+        "docs/design/05-coordination.md": APPENDED,
+        // The branch rewrote a line the base kept: not appended lines only.
+        "docs/design.md": { ancestor: "- a\n- b\n", base: "- a\n- b\n- c\n", branch: "- a\n- B\n" },
+      },
+    });
+    await f.unmergeable();
+    expect(await f.w1.tick()).toBe(true);
+    await f.controller.tickRuns();
+    // All or nothing: the appendable file was not written either.
+    expect(g.index).toEqual({});
+    expect(await outcome(f, "update")).toMatchObject({ result: "conflict" });
+    expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
+    expect((await f.store.conflictCounts(PROJECT_KEY)).get("docs/design.md")).toBe(1);
+  });
+
+  it("a resolve run whose conflicts are only appended lines merges them in code: no agent step, the gates run, then the push", async () => {
+    const f = await withPr();
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design.md"];
+    const stages: Record<string, Stages> = { "docs/design.md": { ancestor: "- a\n", base: "- a\n- b\n", branch: "- A\n" } };
+    const g = gitIndex(f.sandbox, { stages });
+    await f.unmergeable();
+    expect(await f.w1.tick()).toBe(true);
+    await f.controller.tickRuns();
+    expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
+    // By the time the resolve run merges, the branch's side only appends too.
+    stages["docs/design.md"] = APPENDED;
+    f.broker.calls = [];
+    const record = vi.spyOn(f.store, "recordConflicts");
+    expect(await f.w1.tick()).toBe(true);
+    await f.controller.tickRuns();
+    expect(g.index["docs/design.md"]).toBe(MERGED);
+    expect(f.agentCalls("resolve")).toBe(0);
+    expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed", conflicts: ["docs/design.md"] });
+    expect(g.log.indexOf("npm test")).toBeGreaterThan(g.log.findIndex((l) => l.startsWith("git update-index")));
+    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+    // Only the update's conflict was recorded; the mechanical resolve recorded none.
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it("the implement sync merges appended lines in code; the scope gate and the check list still run before the push", async () => {
+    const f = await pipeline();
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design.md"];
+    f.sandbox.changedFiles = [".github/workflows/scope.yml", "docs/design.md"];
+    const g = gitIndex(f.sandbox, { stages: { "docs/design.md": APPENDED } });
+    const it = await f.submit();
+    await f.step();
+    expect(g.index["docs/design.md"]).toBe(MERGED);
+    // One implement step: the conflict got no agent step of its own.
+    expect(f.agentCalls("implement")).toBe(1);
+    const written = g.log.findIndex((l) => l.startsWith("git update-index"));
+    const scope = g.log.findIndex((l, i) => i > written && l.startsWith("git diff --name-only"));
+    expect(scope).toBeGreaterThan(written);
+    expect(g.log.indexOf("npm test", written)).toBeGreaterThan(written);
+    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.store.conflictCounts(PROJECT_KEY)).toEqual(new Map());
+  });
+
+  it("a tree merged in code with a file outside allowed_paths is still stopped by the scope gate: nothing is pushed", async () => {
+    const f = await pipeline();
+    f.sandbox.ancestorExit = 1;
+    f.sandbox.mergeExit = 1;
+    f.sandbox.conflicts = ["docs/design.md"];
+    f.sandbox.changedFiles = [".github/workflows/scope.yml", "docs/design.md", "src/outside.ts"];
+    gitIndex(f.sandbox, { stages: { "docs/design.md": APPENDED } });
+    const it = await f.submit();
+    await f.step();
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.push_branch");
+    const [run] = await f.runs(it, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed" });
+    expect(JSON.stringify(run!.outcome)).toContain("scope");
   });
 });

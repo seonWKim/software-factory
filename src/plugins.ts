@@ -47,7 +47,8 @@ export type {
   SecretDeclaration,
   Selection,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedRunners, selectedSources } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
+import { authByOrigin } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -364,8 +365,10 @@ export function selectPlugins(
     }
   }
   chosen.store = raw.store.type;
-  chosen.auth = raw.auth;
+  const auth = authByOrigin(raw.auth);
+  chosen.auth = auth.github_issue;
   const out = {} as Selection;
+  if (auth.local !== undefined) out.local_auth = checkPlugin(registry, "auth", auth.local);
   for (const kind of PLUGIN_KINDS) {
     if ((LIST_KINDS as readonly string[]).includes(kind)) continue;
     // An optional kind left out or set to an off value selects nothing: the key stays out of the selection.

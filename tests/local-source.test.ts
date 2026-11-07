@@ -89,6 +89,15 @@ describe("local source: commands become events", () => {
     expect(revise.pr).toBeUndefined();
   });
 
+  it("retry text is its note, a +paths line included, as on GitHub (issue #280)", async () => {
+    const { source, cmd, item } = await setup();
+    await cmd("retry", { item: item.id, text: "+paths src/a.ts\nkeep it small" });
+    await cmd("approve", { item: item.id, text: "+paths src/a.ts" });
+    const { events } = await source.poll(null);
+    expect(events[0]).toMatchObject({ kind: "retry_requested", note: "+paths src/a.ts\nkeep it small" });
+    expect(events[1]).toMatchObject({ kind: "spec_approved", note: "+paths src/a.ts" });
+  });
+
   it("no text: approve has an empty note and budget a null amount", async () => {
     const { source, cmd } = await setup();
     await cmd("approve");

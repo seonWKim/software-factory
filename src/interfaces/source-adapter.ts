@@ -12,7 +12,8 @@ export type SourceEvent =
   | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
   /**
    * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
-   * empty; untrusted. The controller caps and egress-scans it before storing it. Absent means no note.
+   * empty; untrusted. The controller splits a leading `+paths <path>...` line off it (parseCommandPaths), then
+   * caps and egress-scans the rest before storing it. Absent means no note.
    */
   | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity; note?: string }
   /** `reason` is the text after `/reject`, possibly empty. */
@@ -47,7 +48,11 @@ export type SourceEvent =
       body: string;
       comments: PrLineComment[];
     }
-  | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
+  /**
+   * `/retry [notes]`. `note`: the trimmed text after the command, as for `spec_approved` (a leading `+paths`
+   * line included); untrusted. Absent or empty means no note.
+   */
+  | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; note?: string }
   /** `/help`: the controller replies once with every command, marking the ones that apply now. */
   | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
   /** A command word the factory does not know, as typed (letters only, without the `/`). */

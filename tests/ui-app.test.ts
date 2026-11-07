@@ -5,7 +5,16 @@
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { type ItemDetail, type ItemRow, type MergeCheckView, API, mergeBlocked, mergeCheckLabel } from "../web/src/api.js";
+// TS6142: tsconfig.test.json has no JSX, so these .tsx views stay untyped here; web/tsconfig.json checks them.
+// @ts-expect-error -- see above
+import { ItemsTable } from "../web/src/views/common.js";
+// @ts-expect-error -- see above
+import { ItemPage } from "../web/src/views/pages.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { APP_CSP, DEFAULT_APP_DIR, contentType } from "../src/ui/app.js";
@@ -196,5 +205,64 @@ describe("ui app: not built", () => {
   it("by default the app is web/dist of this checkout", () => {
     expect(DEFAULT_APP_DIR.replace(/\\/g, "/")).toMatch(/\/web\/dist\/?$/);
     expect(DEFAULT_APP_DIR).not.toMatch(/\/src\/web\//);
+  });
+});
+
+// The ready-to-merge row label and the item page's merge check detail (design §5 Merge check, issue #248),
+// rendered to static markup in the node environment.
+describe("ui app: merge check labels", () => {
+  const AT = "2026-11-07T00:00:00.000Z";
+  const BASE = "b".repeat(40);
+  const check = (state: MergeCheckView["state"], conflicts: string[] = []): MergeCheckView =>
+    ({ state, conflicts, head_sha: state === "checking" ? null : "a".repeat(40), base_sha: state === "checking" ? null : BASE, checked_at: state === "checking" ? null : AT });
+  const row = (id: string, merge_check: MergeCheckView | null): ItemRow => ({
+    id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
+    stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, pr_number: 1,
+    pr_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge_check,
+  });
+
+  it("the row shows Mergeable, Conflicts: N files with the names on hover, or Checking… next to its state", () => {
+    const html = renderToStaticMarkup(createElement(ItemsTable, {
+      items: [row("1", check("mergeable")), row("2", check("conflicts", ["src/a.ts", "docs/b.md"])), row("3", check("checking")), row("4", null)],
+      now: Date.parse(AT), label: "Needs you", empty: "none",
+    }));
+    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));
+    expect(cell("1")).toContain("Mergeable");
+    expect(cell("2")).toContain("Conflicts: 2 files");
+    expect(cell("2")).toContain('title="src/a.ts\ndocs/b.md"');
+    expect(cell("3")).toContain("Checking…");
+    expect(cell("4")).not.toContain("data-merge-check");
+    expect(cell("1").indexOf("Ready to merge")).toBeLessThan(cell("1").indexOf("Mergeable"));
+  });
+
+  it("labels count files and the Merge button is disabled while conflicts or checking", () => {
+    expect(mergeCheckLabel(check("conflicts", ["x"]))).toBe("Conflicts: 1 file");
+    expect(mergeBlocked(check("conflicts", ["x"]))).toBe(true);
+    expect(mergeBlocked(check("checking"))).toBe(true);
+    expect(mergeBlocked(check("mergeable"))).toBe(false);
+    expect(mergeBlocked(null)).toBe(false);
+  });
+
+  it("the item page shows the conflicting files, the base sha it was checked against and when", () => {
+    const detail: ItemDetail = {
+      as_of: AT,
+      item: {
+        id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
+        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: 1, pr_url: null,
+        version: 1, created_at: AT, updated_at: AT, merge_check: check("conflicts", ["src/a.ts", "docs/b.md"]),
+      },
+      timeline: [],
+      runs: [],
+    };
+    const client = new QueryClient();
+    client.setQueryData([API.item("wi_1")], detail);
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
+    expect(html).toContain("Merge check");
+    expect(html).toContain("Conflicts: 2 files");
+    expect(html).toContain("<li>src/a.ts</li>");
+    expect(html).toContain("<li>docs/b.md</li>");
+    expect(html).toContain(BASE.slice(0, 12));
+    expect(html).toContain(`title="${BASE}"`);
+    expect(html).toMatch(/checked \S+ ago/);
   });
 });

@@ -20,7 +20,10 @@ export interface TriageOutput {
   in_scope?: string[];
   /** Out-of-scope items, one per entry. Absent on an older output. */
   out_of_scope?: string[];
-  /** Decisions the human must make before approving: risky choices, open questions (at most 5 shown). */
+  /**
+   * Decisions the human must make before approving: risky choices, open questions (at most 5 shown). Optional in
+   * the schema (a cheap model often leaves it out when there are none); the validator defaults it to [].
+   */
   decisions?: string[];
   allowed_paths: string[];
   /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
@@ -54,10 +57,17 @@ export interface TriagePhase {
 export interface NeedsHuman {
   reason: string;
   question: string;
+  /**
+   * Implement only (issue #280): paths the agent needs outside the allowed paths. Shown to the owner as the exact
+   * `/retry +paths ...` reply, never applied: only the owner's reply widens allowed_paths. Absent when none.
+   */
+  paths?: string[];
 }
 
 /** The longest `needs_human.reason` or `needs_human.question` the validators accept. */
 export const NEEDS_HUMAN_MAX_CHARS = 500;
+/** The most `needs_human.paths` the validators accept: one `/retry +paths` reply's worth. */
+export const NEEDS_HUMAN_MAX_PATHS = 10;
 
 export interface ImplementOutput {
   /** "" when the agent returned needs_human without it. */
@@ -144,7 +154,7 @@ export const TRIAGE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
-    "in_short", "problem", "decisions", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
+    "in_short", "problem", "done_criteria", "desired_output", "in_scope", "out_of_scope", "allowed_paths",
     "files_to_change", "tier", "tier_reason", "estimated_lines", "estimated_files",
   ],
   properties: {
@@ -192,6 +202,20 @@ const NEEDS_HUMAN_SCHEMA = {
   },
 };
 
+/** The implementer's needs_human: also the paths outside the allowed paths it needs, for the owner to allow (issue #280). */
+const IMPLEMENT_NEEDS_HUMAN_SCHEMA = {
+  ...NEEDS_HUMAN_SCHEMA,
+  properties: {
+    ...NEEDS_HUMAN_SCHEMA.properties,
+    paths: {
+      type: "array",
+      maxItems: NEEDS_HUMAN_MAX_PATHS,
+      items: { type: "string", maxLength: NEEDS_HUMAN_MAX_CHARS },
+      description: "Only when the work needs files outside the allowed paths: those repo-relative paths, so the owner can allow them. They change nothing by themselves.",
+    },
+  },
+};
+
 // summary and next_steps are not schema-required: they may be left out when needs_human is set. parseImplement
 // still requires both on every other answer.
 export const IMPLEMENT_SCHEMA = {
@@ -213,7 +237,7 @@ export const IMPLEMENT_SCHEMA = {
       items: { type: "string", maxLength: PR_NOTE_MAX_CHARS },
       description: "Where the change differs from the spec on purpose. Empty or absent when it does not.",
     },
-    needs_human: NEEDS_HUMAN_SCHEMA,
+    needs_human: IMPLEMENT_NEEDS_HUMAN_SCHEMA,
     spec_conflict: {
       type: "string",
       maxLength: SPEC_CONFLICT_MAX_CHARS,
@@ -304,6 +328,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   const scoped = lists
     ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
     : { scope: scope as string };
+  // Optional: a triage output without `decisions` means none (the schema does not require it).
   const decisions = v.decisions ?? [];
   if (!isStrs(decisions)) return { ok: false, error: "decisions" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
@@ -327,7 +352,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, ...(decisions.length > 0 ? { decisions } : {}), ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
 }
@@ -344,7 +369,12 @@ export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> 
   if (!isObj(v) || !isShort(v.reason) || !isShort(v.question)) {
     return { ok: false, error: `needs_human: reason and question must be non-empty and at most ${NEEDS_HUMAN_MAX_CHARS} characters` };
   }
-  return { ok: true, value: { reason: v.reason.trim(), question: v.question.trim() } };
+  const paths = v.paths ?? [];
+  if (!isStrs(paths) || paths.length > NEEDS_HUMAN_MAX_PATHS || paths.some((p) => p.length > NEEDS_HUMAN_MAX_CHARS)) {
+    return { ok: false, error: `needs_human: paths must be at most ${NEEDS_HUMAN_MAX_PATHS} strings` };
+  }
+  const kept = paths.map((p) => p.trim()).filter(Boolean);
+  return { ok: true, value: { reason: v.reason.trim(), question: v.question.trim(), ...(kept.length ? { paths: kept } : {}) } };
 }
 
 /**

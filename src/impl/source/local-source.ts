@@ -1,7 +1,7 @@
 import { parseComment } from "../../core/commands.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItemId } from "../../core/types.js";
-import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import { localIdentity } from "../../core/local-cli.js";
 import type { CliCommand, FactoryStore } from "../../interfaces/factory-store.js";
 import type { PollResult, PollSource, SourceCloseReason, SourceEvent } from "../../interfaces/source-adapter.js";
 
@@ -64,17 +64,13 @@ export class LocalSource implements PollSource {
   }
 }
 
-/** Provider `local`, subject the actor after `local:`. */
-function identity(actor: string): ExternalIdentity {
-  return { provider: "local", subject: actor.startsWith("local:") ? actor.slice("local:".length) : actor };
-}
 
 /** One command as the event the same comment on GitHub gives (src/impl/source/github-issue-source.ts). */
 function toEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
   const text = typeof c.args.text === "string" ? c.args.text : "";
   const body = text === "" ? `/${c.command}` : `/${c.command} ${text}`;
   const comment_id = c.key;
-  const who = identity(c.actor);
+  const who = localIdentity(c.actor);
   const parsed = parseComment(body);
   if (parsed === null) return { kind: "plain_comment", source, comment_id, author: who, body };
   if (parsed.kind === "unknown") return { kind: "unknown_command", source, comment_id, requester: who, command: parsed.word };
@@ -87,7 +83,7 @@ function toEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
     case "revise":
       return { kind: "revise_requested", source, comment_id, requester: who, feedback: t };
     case "retry":
-      return { kind: "retry_requested", source, comment_id, requester: who };
+      return { kind: "retry_requested", source, comment_id, requester: who, ...(t ? { note: t } : {}) };
     case "budget": {
       const amount = (t.split(/\r?\n/)[0] ?? "").trim();
       return { kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount };
