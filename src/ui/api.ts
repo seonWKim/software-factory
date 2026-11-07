@@ -14,7 +14,7 @@ import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
-import { itemCommands, itemReplies, readSession } from "./commands.js";
+import { type UiCommands, itemCommands, itemReplies, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -351,6 +351,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       dependents: r.dependents,
       conflicts: r.conflicts,
       merge_check,
+      merge: await mergeView(c, it),
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
     });
@@ -439,6 +440,36 @@ async function item(c: ApiCtx, id: WorkItemId) {
     })),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
+    merge: await mergeView(c, it, changes),
+  };
+}
+
+/**
+ * The commands route's deps as compose.ts builds them for `factory ui`: `merge` is the merge command's switch
+ * (FactoryConfig.forge_merge, design §4). Absent or false: no item gets a Merge button.
+ */
+export type MergeCommands = UiCommands & { merge?: boolean };
+
+/**
+ * What the Merge button needs (design §9, merge button), on a factory PR waiting for a human merge in a project
+ * with the merge command on; null on every other item. The confirmation shows the title, tier, size and PR link:
+ * lines and files as the controller read them when the item became ready (its `review_passed` change), files
+ * from the stored PR files when that read is missing, lines then null. `replies`: the item's merge requests.
+ */
+async function mergeView(c: ApiCtx, it: WorkItem, changes?: readonly StateChange[]) {
+  if ((c.d.commands as MergeCommands | undefined)?.merge !== true) return null;
+  if (!readyToMerge(it) || it.pr_number === null || it.origin !== "factory") return null;
+  const passed = (changes ?? (await c.d.store.listStateChanges(it.id))).filter((sc) => sc.reason === "review_passed").at(-1)?.detail;
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
+  const replies = (await itemReplies(c.d, it.id, (v) => c.text(v))).filter((r) => r.command === "merge");
+  return {
+    pr_number: it.pr_number,
+    pr_url: await c.prUrl(it),
+    title: await c.text(it.title || null),
+    tier: it.tier,
+    files: num(passed?.files_changed) ?? it.pr_files?.length ?? null,
+    lines: num(passed?.lines_changed),
+    replies,
   };
 }
 

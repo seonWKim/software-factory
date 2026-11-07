@@ -6,6 +6,7 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { MergeButton } from "./merge.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -99,6 +100,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
           <Td>
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
+            {it.merge && <MergeButton id={it.id} merge={it.merge} check={it.merge_check} />}
           </Td>
           <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>

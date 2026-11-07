@@ -33,7 +33,8 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
   return { tone: "status", text: latest.handled_at === null ? "sent" : "Done" };
 }
 
-function OutcomeText({ outcome }: { outcome: Outcome }) {
+/** A command's outcome next to its button: a refusal as an alert, anything else as a status. */
+export function OutcomeText({ outcome }: { outcome: Outcome }) {
   if (!outcome) return null;
   return (
     <span

@@ -36,7 +36,7 @@ import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
-import type { UiCommands } from "./ui/commands.js";
+import type { MergeCommands } from "./ui/api.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -760,8 +760,11 @@ export interface UiParts {
   scanner: EgressScanner;
   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
   settings: UiSettings;
-  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
-  commands: UiCommands;
+  /**
+   * The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token,
+   * and `merge`, the merge command's switch (forge_merge), which the item API reads for the Merge button (issue #246).
+   */
+  commands: MergeCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
   close(): Promise<void>;
@@ -801,7 +804,7 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     csrfToken: token,
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
-  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
+  const commands: MergeCommands = { actor: uiUserId(loaded.file.ui), token, merge: loaded.config.forge_merge === true };
   // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
   // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
   const base = p.base;

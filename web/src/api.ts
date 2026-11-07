@@ -75,6 +75,21 @@ export function mergeCheckLabel(m: MergeCheckView): string {
   return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
 }
 
+/**
+ * The Merge button's data (design §9, issue #246): present only on a factory PR waiting for a human merge in a
+ * project with the merge command on. The confirmation shows the title, tier, size and PR link; `files` and `lines`
+ * are null when the server does not know them. `replies`: the item's merge requests.
+ */
+export interface MergeView {
+  pr_number: number;
+  pr_url: string | null;
+  title: string | null;
+  tier: number | null;
+  files: number | null;
+  lines: number | null;
+  replies: CommandReply[];
+}
+
 /** Whether the Merge button (#246) is disabled: while the item has conflicts or is being checked. */
 export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
   return !!m && m.state !== "mergeable";
@@ -115,6 +130,7 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  merge?: MergeView | null;
   /** What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows. */
   need?: { reason: string; command: string | null };
   why?: Why;
@@ -219,6 +235,7 @@ export interface ItemDetail {
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
+  merge?: MergeView | null;
 }
 
 /** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */

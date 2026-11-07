@@ -14,6 +14,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
+import { MergeButton } from "./merge.js";
 import { SystemActions } from "./system-banner.js";
 import { transcriptPath } from "./transcript.js";
 
@@ -312,6 +313,7 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
+      {q.data.merge && <MergeButton id={item.id} merge={q.data.merge} check={item.merge_check} />}
       <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
