@@ -58,6 +58,7 @@ import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import type {
+  AbandonedAttempt,
   AppendInboxResult,
   AnswerBudgetCheckpointInput,
   ApproveClaimHoldInput,
@@ -856,13 +857,19 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToRun);
   }
 
-  async expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]> {
+  async expireLeases(
+    max_attempts: number,
+    backoff_ms?: (attempt: number) => number,
+    onAbandoned?: (attempt: AbandonedAttempt) => void,
+  ): Promise<RunId[]> {
     const { forUpdateSkipLocked } = this.db.dialect;
-    return this.db.transaction(async (tx) => {
+    const { ids, abandoned } = await this.db.transaction(async (tx) => {
       const now = this.now();
-      // A run another reaper holds right now is left for the next tick.
+      // A run another reaper holds right now is left for the next tick. started_at and updated_at (the last
+      // heartbeat on a running run) are read here, before this transaction's write rewrites updated_at.
       const expired = await tx.all(
-        `SELECT id, kind, attempt, lease_token, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, kind, attempt, lease_token, work_item_id, started_at, updated_at FROM runs
+         WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -871,11 +878,14 @@ export class SqlFactoryStore implements FactoryStore {
         detail: `lease expired after ${max_attempts} attempts`,
         infra: true,
       };
+      const abandoned: AbandonedAttempt[] = [];
       for (const run of expired) {
         const item = await this.selectItem(tx, run.work_item_id as WorkItemId);
+        let outcome: AbandonedAttempt["outcome"];
         let moved: number;
         if (item?.stage === "CLOSED") {
           // A closed item never runs again: its expired run is cancelled, not requeued.
+          outcome = "cancelled";
           moved = await tx.run(
             `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
@@ -884,13 +894,18 @@ export class SqlFactoryStore implements FactoryStore {
         } else if (run.kind === INTERACTIVE) {
           // A closed terminal does not come back (design §5, 2026-11-01): never requeued, whatever the attempt count.
           const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
+          outcome = "failed";
           moved = await tx.run(
             "UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
             [JSON.stringify(lost), now, now, run.id as string],
           );
-          if (moved === 1) await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "failed", now, lost);
+          if (moved === 1) {
+            abandoned.push(abandonedAttempt(run, outcome));
+            await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "failed", now, lost);
+          }
           continue;
         } else if (Number(run.attempt) >= max_attempts) {
+          outcome = "failed";
           moved = await tx.run(
             `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
@@ -900,17 +915,25 @@ export class SqlFactoryStore implements FactoryStore {
         } else {
           // Same backoff as any other retry, so a lasting outage does not use up the attempts at once.
           const not_before = backoff_ms ? this.after(backoff_ms(Number(run.attempt))) : null;
+          outcome = "queued";
           moved = await tx.run(
             `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [not_before, now, run.id as string],
           );
         }
-        // Whatever happens to the run, the claim whose lease ran out ended there (design §6).
-        if (moved === 1) await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
+        // Only a run this update changed was cut off here (issue #210): one abandoned attempt, never two. Whatever
+        // happens to the run, the claim whose lease ran out ended there (design §6).
+        if (moved === 1) {
+          abandoned.push(abandonedAttempt(run, outcome));
+          await this.closeAttempt(tx, run.id as RunId, Number(run.lease_token), "lease_expired", now);
+        }
       }
-      return expired.map((r) => r.id as RunId);
+      return { ids: expired.map((r) => r.id as RunId), abandoned };
     });
+    // After the commit, so a rolled-back expiry reports nothing.
+    if (onAbandoned) for (const a of abandoned) onAbandoned(a);
+    return ids;
   }
 
   async getRun(id: RunId): Promise<Run | null> {
@@ -1826,6 +1849,22 @@ function placeholders(n: number): string {
 /** Link codes are stored only as this hash (design 2026-11-01). */
 function hashCode(code: string): string {
   return createHash("sha256").update(code.trim().toUpperCase()).digest("hex");
+}
+
+function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): AbandonedAttempt {
+  const started_at = (row.started_at as Timestamp | null) ?? null;
+  const ended_at = (row.updated_at as Timestamp | null) ?? null;
+  const start = started_at ? Date.parse(started_at) : NaN;
+  const end = ended_at ? Date.parse(ended_at) : NaN;
+  return {
+    run_id: row.id as RunId,
+    work_item_id: row.work_item_id as WorkItemId,
+    attempt: Number(row.attempt),
+    outcome,
+    started_at,
+    ended_at,
+    duration_ms: Number.isFinite(start) && Number.isFinite(end) ? end - start : null,
+  };
 }
 
 function rowToWorkerProcess(row: Row): WorkerProcess {
