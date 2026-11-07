@@ -804,6 +804,59 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       clock.advance(1);
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
     });
+
+    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const later = (clock: { now(): Date }, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+
+    it.each(["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const)(
+      "endClaimPause ends an active %s pause, and the next claim takes a queued triage run",
+      async (pause) => {
+        const { store, clock } = await make();
+        await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+        await store.pauseClaims(later(clock, 60_000), pause);
+        expect(await store.getClaimPause(pause)).not.toBeNull();
+        expect(await store.endClaimPause(pause)).toEqual({ ended: true });
+        expect(await store.getClaimPause(pause)).toBeNull();
+        expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("t");
+      },
+    );
+
+    it("ending a model_stall pause also clears model_stall_since, even after the probe time passed", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 1_000), "model_stall");
+      clock.advance(5_000);
+      expect(await store.getClaimPause("model_stall_since")).not.toBeNull();
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.getClaimPause("model_stall_since")).toBeNull();
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
+    it("a second endClaimPause, or one with no pause in effect, succeeds and changes no claim_pauses row", async () => {
+      const { store, clock } = await make();
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+      }
+      expect(await pauseRows(store)).toEqual([]);
+
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        await store.pauseClaims(later(clock, 60_000), pause);
+        await store.endClaimPause(pause);
+      }
+      // A pause that ran out by itself is not in effect either.
+      const sorted = async () => (await pauseRows(store)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const before = await sorted();
+      clock.advance(1_000);
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+      }
+      expect(await sorted()).toEqual(before);
+    });
+
+    it("endClaimPause refuses model_stall_since and model_answered, which are not pauses of their own", async () => {
+      const { store } = await make();
+      await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
+      await expect(store.endClaimPause("model_answered")).rejects.toThrow(/not a pause/);
+    });
   });
 
   describe("run input", () => {
