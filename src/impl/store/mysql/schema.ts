@@ -193,3 +193,4 @@ export const BASELINE: readonly (readonly string[])[] = [
   // 11: run input, e.g. the notes of a /resolve (design §5 Merge conflict). Old rows keep input NULL.
   ["ALTER TABLE runs ADD COLUMN input MEDIUMTEXT NULL"],
 ];
+

@@ -269,6 +269,7 @@ export const SETTABLE_KEYS = [
   "heartbeat_ms",
   "lease_ms",
   "workers",
+  "phases_auto_approve",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -299,6 +300,7 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   heartbeat_ms: "the next lease renewal",
   lease_ms: "the next claim or lease renewal",
   workers: "the worker pool's next tick",
+  phases_auto_approve: "the next phase spec triage writes",
 };
 
 export interface SettableValues {
@@ -317,6 +319,7 @@ export interface SettableValues {
   heartbeat_ms: number;
   lease_ms: number;
   workers: number;
+  phases_auto_approve: boolean;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -336,6 +339,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   heartbeat_ms: 60_000,
   lease_ms: 300_000,
   workers: 1,
+  phases_auto_approve: false,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -382,6 +386,12 @@ export function maxWorkers(workers: number, value: unknown): number {
   return value;
 }
 
+/** A boolean, or the config loader's message for `key`. */
+export function booleanSetting(key: string, value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error(`${key} must be true or false`);
+  return value;
+}
+
 /** A positive integer, or the config loader's message for `key`. */
 export function positiveInteger(key: string, value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new Error(`${key} must be a positive integer`);
@@ -403,6 +413,8 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "workers":
       if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
+    case "phases_auto_approve":
+      return booleanSetting(key, value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -602,6 +614,7 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     heartbeat_ms: config.heartbeat_ms,
     lease_ms: config.lease_ms,
     workers: config.workers,
+    phases_auto_approve: config.phases_auto_approve ?? false,
   };
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
@@ -698,6 +711,7 @@ export class LiveSettings {
       tick_ms: v.tick_ms,
       heartbeat_ms: v.heartbeat_ms,
       lease_ms: v.lease_ms,
+      phases_auto_approve: v.phases_auto_approve,
       workers: v.workers,
     };
   }

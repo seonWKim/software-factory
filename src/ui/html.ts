@@ -149,7 +149,7 @@ export const SCRIPT_HASH = sha256(SCRIPT);
 export function page(title: string, body: string, self = "/"): string {
   const href = self.startsWith("/") && !self.startsWith("//") ? self : "/";
   const bar =
-    `<header class="top"><a class="home" href="/">software-factory</a>` +
+    `<header class="top"><a class="home" href="/classic">software-factory</a>` +
     `<span class="updated">updated <span id="ago">0s</span> ago</span>` +
     `<button type="button" id="refresh" aria-label="Refresh now" title="Refresh now" hidden>&#8635;</button>` +
     `<noscript><a href="${esc(href)}">Refresh</a></noscript></header>`;

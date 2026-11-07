@@ -145,7 +145,7 @@ describe("ui app: CSP and guards", () => {
 
   it("the HTML page keeps its hash-based CSP", async () => {
     const d = await deps(builtApp().dist);
-    const csp = (await get(d, "/")).headers["content-security-policy"]!;
+    const csp = (await get(d, "/classic")).headers["content-security-policy"]!;
     expect(csp).toMatch(/^default-src 'none'; script-src 'sha256-[^']+'; style-src 'sha256-[^']+'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'$/);
   });
 
@@ -182,7 +182,7 @@ describe("ui app: not built", () => {
       expect(r.headers["content-type"]).toBe("text/plain; charset=utf-8");
       expect(text(r)).toContain("run npm run build");
     }
-    expect((await get(d, "/")).status).toBe(200);
+    expect((await get(d, "/classic")).status).toBe(200);
     expect((await get(d, "/api/v1/overview")).status).toBe(200);
   });
 

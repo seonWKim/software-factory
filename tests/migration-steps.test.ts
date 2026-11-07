@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import { tscArgs } from "./helpers/toolchain.js";
 import {
   BASELINE_STATE,
   INLINE_STEPS,
@@ -104,7 +105,7 @@ describe("a .ts step", () => {
         include: ["migrations/**/*.ts"],
       }),
     );
-    execFileSync(join(process.cwd(), "node_modules", ".bin", "tsc"), ["-p", join(root, "tsconfig.json")], { stdio: "pipe" });
+    execFileSync(process.execPath, tscArgs("-p", join(root, "tsconfig.json")), { stdio: "pipe" });
     const compiled = compiledStepPath(join(root, "migrations", "mysql"), "0012-sample.ts");
     expect(compiled).toBe(join(root, "dist", "migrations", "mysql", "0012-sample.js"));
     expect(existsSync(compiled)).toBe(true);

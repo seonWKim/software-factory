@@ -191,13 +191,14 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     clock.advance(1000);
     await run(d, "set", "max_attempts", "2", "--project", "o/r");
     const list = (await run(d, "list")).lines;
-    expect(list).toHaveLength(15 + 3);
+    expect(list).toHaveLength(16 + 3);
     const line = (k: string) => list.find((l) => l.trimStart().startsWith(`${k} `))!.split(/\s+/).filter(Boolean);
     expect(line("tick_ms")).toEqual(["tick_ms", "override", "500"]);
     expect(line("workers")).toEqual(["workers", "file", "5"]);
+    expect(line("phases_auto_approve")).toEqual(["phases_auto_approve", "default", "false"]);
     expect(line("max_attempts")).toEqual(["max_attempts", "file", "3"]);
     expect(line("run_timeout_ms")).toEqual(["run_timeout_ms", "default", "2700000"]);
-    expect(list.slice(15)).toEqual([
+    expect(list.slice(16)).toEqual([
       "project github.com/o/r:",
       expect.stringMatching(/^ {2}max_attempts\s+override\s+2$/),
       expect.stringMatching(/^ {2}max_diff_files\s+file\s+10$/),

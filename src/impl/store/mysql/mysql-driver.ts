@@ -1,5 +1,6 @@
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
 import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../sql/driver.js";
+import { migrationPendingError } from "../../../interfaces/updater.js";
 import { MysqlMigrations, pendingMessage } from "./migrations.js";
 
 export interface MysqlOptions {
@@ -63,7 +64,7 @@ export class MysqlDriver implements SqlDriver {
     const s = await new MysqlMigrations(this.pool, this.steps).status();
     if (s.state !== null && s.state > s.latest) return;
     if (s.refusal) throw new Error(`MySQL schema: ${s.refusal}`);
-    if (s.pending.length > 0) throw new Error(pendingMessage(s));
+    if (s.pending.length > 0) throw migrationPendingError(pendingMessage(s));
   }
 
   /**
@@ -74,7 +75,7 @@ export class MysqlDriver implements SqlDriver {
     const s = await new MysqlMigrations(this.pool, this.steps).status();
     if (s.state !== null && s.state > s.latest) return { applied: s.state, latest: s.latest };
     if (s.refusal) throw new Error(`MySQL schema: ${s.refusal}`);
-    if (s.pending.length > 0) throw new Error(pendingMessage(s));
+    if (s.pending.length > 0) throw migrationPendingError(pendingMessage(s));
     return { applied: s.state ?? 0, latest: s.latest };
   }
 

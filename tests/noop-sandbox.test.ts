@@ -3,7 +3,8 @@ import { chmodSync, existsSync, mkdtempSync, realpathSync, statSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import type { ExecResult } from "../src/interfaces/sandbox.js";
+import { EMPTY_HOOKS_DIR, NoOpSandbox, type ProcessRunner } from "../src/impl/sandbox/noop-sandbox.js";
 
 function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
@@ -84,5 +85,187 @@ describe("NoOpSandbox", () => {
     const h = await sbx.create({ repo, branch: "factory/wi_2", base_ref: "main" });
     expect(existsSync(join(h.workdir, "work.txt"))).toBe(true);
     await sbx.destroy(h);
+  });
+
+  describe("updateBase", () => {
+    const ok = (stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
+    const fail = (stderr: string): ExecResult => ({ exit_code: 1, signal: null, stdout: "", stderr, timed_out: false });
+    const isFetch = (cmd: readonly string[]) => cmd.includes("fetch");
+    const noWait = async () => {};
+
+    it("fetches only the base branch, with no --prune", async () => {
+      const calls: (readonly string[])[] = [];
+      const run: ProcessRunner = async (cmd) => {
+        calls.push(cmd);
+        return ok(isFetch(cmd) ? "" : "abc\n");
+      };
+      const sbx = new NoOpSandbox("/nowhere", run, noWait);
+      expect(await sbx.updateBase({ repo: "/repo-refspec", base_ref: "main" })).toBe("abc");
+      const fetches = calls.filter(isFetch);
+      expect(fetches).toEqual([
+        ["git", "-C", "/repo-refspec", "fetch", "--quiet", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"],
+      ]);
+    });
+
+    it("never runs two fetches for the same repo at once", async () => {
+      let inFlight = 0;
+      let max = 0;
+      const run: ProcessRunner = async (cmd) => {
+        if (!isFetch(cmd)) return ok("abc\n");
+        inFlight++;
+        max = Math.max(max, inFlight);
+        await new Promise((r) => setTimeout(r, 5));
+        inFlight--;
+        return ok();
+      };
+      const sbx = new NoOpSandbox("/nowhere", run, noWait);
+      const other = new NoOpSandbox("/nowhere", run, noWait);
+      await Promise.all([
+        sbx.updateBase({ repo: "/repo-serial", base_ref: "main" }),
+        sbx.updateBase({ repo: "/repo-serial", base_ref: "main" }),
+        other.updateBase({ repo: "/repo-serial", base_ref: "main" }),
+      ]);
+      expect(max).toBe(1);
+    });
+
+    it("keeps serializing after a failed fetch", async () => {
+      let first = true;
+      const run: ProcessRunner = async (cmd) => {
+        if (isFetch(cmd) && first) {
+          first = false;
+          return fail("fatal: repository not found");
+        }
+        return ok("abc\n");
+      };
+      const sbx = new NoOpSandbox("/nowhere", run, noWait);
+      const [a, b] = await Promise.allSettled([
+        sbx.updateBase({ repo: "/repo-failchain", base_ref: "main" }),
+        sbx.updateBase({ repo: "/repo-failchain", base_ref: "main" }),
+      ]);
+      expect(a.status).toBe("rejected");
+      expect(b).toEqual({ status: "fulfilled", value: "abc" });
+    });
+
+    for (const msg of [
+      "error: cannot lock ref 'refs/remotes/origin/main': is at 1 but expected 2",
+      "error: update_ref failed for ref 'refs/remotes/origin/main': incorrect old value provided",
+      "error: unable to update local ref",
+    ]) {
+      it(`retries a ref-lock failure (${msg.slice(0, 30)}...) and succeeds when a later attempt works`, async () => {
+        let fetches = 0;
+        const waits: number[] = [];
+        const run: ProcessRunner = async (cmd) => {
+          if (!isFetch(cmd)) return ok("abc\n");
+          fetches++;
+          return fetches < 3 ? fail(msg) : ok();
+        };
+        const sbx = new NoOpSandbox("/nowhere", run, async (ms) => void waits.push(ms));
+        expect(await sbx.updateBase({ repo: "/repo-retry", base_ref: "main" })).toBe("abc");
+        expect(fetches).toBe(3);
+        expect(waits).toHaveLength(2);
+      });
+    }
+
+    it("throws a persistent ref-lock error after 3 retries, in the usual message format", async () => {
+      let fetches = 0;
+      const run: ProcessRunner = async (cmd) => {
+        if (!isFetch(cmd)) return ok("abc\n");
+        fetches++;
+        return fail("error: cannot lock ref 'refs/remotes/origin/main'\n");
+      };
+      const sbx = new NoOpSandbox("/nowhere", run, noWait);
+      await expect(sbx.updateBase({ repo: "/repo-persist", base_ref: "main" })).rejects.toThrow(
+        new Error("git fetch failed: error: cannot lock ref 'refs/remotes/origin/main'"),
+      );
+      expect(fetches).toBe(4);
+    });
+
+    it("throws any other git error on the first attempt", async () => {
+      let fetches = 0;
+      const run: ProcessRunner = async (cmd) => {
+        if (!isFetch(cmd)) return ok("abc\n");
+        fetches++;
+        return fail("fatal: repository not found");
+      };
+      const sbx = new NoOpSandbox("/nowhere", run, noWait);
+      await expect(sbx.updateBase({ repo: "/repo-other", base_ref: "main" })).rejects.toThrow(
+        "git fetch failed: fatal: repository not found",
+      );
+      expect(fetches).toBe(1);
+    });
+
+    it("create's fetch keeps --prune for all origin branches, serialized and retried", async () => {
+      const { root, repo } = repoWithOrigin();
+      let lockFailures = 1;
+      const fetches: (readonly string[])[] = [];
+      const real = (await import("../src/impl/process/run-process.js")).runProcess;
+      const run: ProcessRunner = async (cmd, opts) => {
+        if (isFetch(cmd) && cmd[2] === repo) {
+          fetches.push(cmd);
+          if (lockFailures-- > 0) return fail("error: cannot lock ref 'refs/remotes/origin/main'");
+        }
+        return real(cmd, opts);
+      };
+      const sbx = new NoOpSandbox(join(root, "worktrees"), run, noWait);
+      const h = await sbx.create({ repo, branch: null, base_ref: "main" });
+      expect(fetches).toEqual([
+        ["git", "-C", repo, "fetch", "--quiet", "--prune", "origin"],
+        ["git", "-C", repo, "fetch", "--quiet", "--prune", "origin"],
+      ]);
+      await sbx.destroy(h);
+    });
+
+    it("changes only refs/remotes/origin/<base>", async () => {
+      // A symref (origin/HEAD) is compared by its target, not by the commit it resolves to.
+      const refs = (cwd: string) =>
+        git(cwd, "for-each-ref", "--format=%(refname) %(if)%(symref)%(then)-> %(symref)%(else)%(objectname)%(end)", "refs/remotes/origin/");
+      const { root, repo, origin } = repoWithOrigin();
+      for (const b of ["feature-a", "feature-b"]) git(repo, "push", "--quiet", "origin", `main:${b}`);
+      git(repo, "fetch", "--quiet", "origin");
+      const before = refs(repo);
+
+      // The remote moves main and feature-a and deletes feature-b; only main may change locally.
+      const pusher = join(root, "pusher");
+      git(root, "clone", "--quiet", origin, pusher);
+      git(pusher, "config", "user.email", "t@example.com");
+      git(pusher, "config", "user.name", "t");
+      git(pusher, "commit", "--quiet", "--allow-empty", "-m", "move");
+      git(pusher, "push", "--quiet", "origin", "HEAD:main", "HEAD:feature-a", ":feature-b");
+      const newMain = git(origin, "rev-parse", "main").trim();
+
+      const sbx = new NoOpSandbox(join(root, "worktrees"));
+      expect(await sbx.updateBase({ repo, base_ref: "main" })).toBe(newMain);
+      const after = refs(repo);
+      const withoutMain = (s: string) => s.split("\n").filter((l) => !l.startsWith("refs/remotes/origin/main ")).join("\n");
+      expect(withoutMain(after)).toBe(withoutMain(before));
+      expect(git(repo, "rev-parse", "refs/remotes/origin/main").trim()).toBe(newMain);
+    });
+
+    it("10 parallel calls all succeed against a remote whose branches are moving", async () => {
+      const { root, repo, origin } = repoWithOrigin();
+      const pusher = join(root, "pusher");
+      git(root, "clone", "--quiet", origin, pusher);
+      git(pusher, "config", "user.email", "t@example.com");
+      git(pusher, "config", "user.name", "t");
+      git(pusher, "commit", "--quiet", "--allow-empty", "-m", "base");
+      git(pusher, "push", "--quiet", "origin", "HEAD:main");
+      const mainSha = git(origin, "rev-parse", "main").trim();
+
+      let moving = true;
+      const mover = (async () => {
+        const { runProcess } = await import("../src/impl/process/run-process.js");
+        const env = { PATH: process.env.PATH!, GIT_CONFIG_GLOBAL: "/dev/null", HOME: root };
+        for (let i = 0; moving && i < 50; i++) {
+          await runProcess(["git", "commit", "--quiet", "--allow-empty", "-m", `m${i}`], { cwd: pusher, env });
+          await runProcess(["git", "push", "--quiet", "--force", "origin", `HEAD:side-${i % 3}`], { cwd: pusher, env });
+        }
+      })();
+
+      const sbx = new NoOpSandbox(join(root, "worktrees"));
+      const results = await Promise.all(Array.from({ length: 10 }, () => sbx.updateBase({ repo, base_ref: "main" })));
+      moving = false;
+      await mover;
+      expect(results).toEqual(Array(10).fill(mainSha));
+    }, 30_000);
   });
 });

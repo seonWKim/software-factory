@@ -51,6 +51,8 @@ const COST_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolv
  * run's data.tokens, a failed run's usage. Null when the run stored none (unfinished, or an older failed row).
  */
 export function runTokens(run: Run): number | null {
+  // A person's session reports its own total (design §5, 2026-11-01).
+  if (run.kind === "interactive") return run.session_tokens;
   if (run.outcome?.status === "succeeded") {
     const t = Number(run.outcome.data.tokens);
     return Number.isFinite(t) && t >= 0 ? t : null;
@@ -185,6 +187,15 @@ async function factorySection(c: Ctx): Promise<string> {
       );
     case "build_failed":
       return `${open("bad", `Revision ${esc(short(s.target_rev))} failed to build.`)} Still running <code>${esc(short(s.rev))}</code>; its settings stay in effect until main builds.</p></section>`;
+    case "migration_pending": {
+      const steps = s.pending && s.pending.length > 0 ? ` (pending: ${esc(s.pending.join(", "))})` : "";
+      const still = s.child_pid === null ? "No process runs meanwhile." : `Still running <code>${esc(short(s.rev))}</code> with its settings.`;
+      return `${open("warn", `Update to ${esc(short(s.target_rev))} waits for <code>npm run migrate</code>${steps}.`)} ${still}</p></section>`;
+    }
+    case "migration_draining":
+      return `${open("warn", `Migrating to ${esc(short(s.target_rev))}: new runs are paused.`)} Waiting for the running process to finish its in-flight runs (since ${since}).</p></section>`;
+    case "migration_ready":
+      return `${open("warn", `Migrating to ${esc(short(s.target_rev))}: no process runs.`)} The steps are being applied; the new revision starts when <code>npm run migrate</code> finishes (since ${since}).</p></section>`;
   }
 }
 
@@ -217,12 +228,12 @@ function filtersSection(f: Filters, n: FacetCounts): string {
   const check = (name: string, label: string, on: boolean) =>
     `<label class="check" for="f-${name}"><input type="checkbox" id="f-${name}" name="${name}" value="1"${on ? " checked" : ""}>${esc(label)}</label>`;
   return (
-    `<section id="filters"><h2>Filters</h2><nav aria-label="Filters"><form class="filters" method="get" action="/">` +
+    `<section id="filters"><h2>Filters</h2><nav aria-label="Filters"><form class="filters" method="get" action="/classic">` +
     `<label for="f-q">Search (number or title)<input type="search" id="f-q" name="q" value="${esc(f.q)}" maxlength="200"></label>` +
     state + stage + tier + kind +
     check("unblocks", `Unblocks others (${n.unblocks})`, f.unblocks) +
     check("closed", "Show closed", f.closed) +
-    `<input type="submit" value="Apply"> <a href="/">Clear filters</a>` +
+    `<input type="submit" value="Apply"> <a href="/classic">Clear filters</a>` +
     `</form></nav></section>`
   );
 }
@@ -254,8 +265,8 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     });
   }
   const empty = isFiltered(f)
-    ? `<p>No items match these filters. <a href="/">Clear filters</a></p>`
-    : `<p>No open work items. <a href="/?closed=1">Show closed items</a></p>`;
+    ? `<p>No items match these filters. <a href="/classic">Clear filters</a></p>`
+    : `<p>No open work items. <a href="/classic?closed=1">Show closed items</a></p>`;
   const body =
     out.length === 0
       ? empty
@@ -329,7 +340,7 @@ async function runningSection(c: Ctx): Promise<string> {
         esc(r.kind),
         await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
         esc(r.attempt),
-        r.lease ? await c.w.text(r.lease.owner) : `<span class="muted">unknown</span>`,
+        await workerCell(c, r),
         c.ago(r.started_at),
         esc(c.ago(r.updated_at)) + (stale ? " <strong>(past lease)</strong>" : ""),
       ],
@@ -340,6 +351,12 @@ async function runningSection(c: Ctx): Promise<string> {
     rows,
     "no runs in progress",
   )}</section>`;
+}
+
+/** The worker's lease owner, or for a session (design §5, 2026-11-01) the person's user ID, never a display name. */
+async function workerCell(c: Ctx, r: Run): Promise<string> {
+  const id = r.kind === "interactive" ? r.actor_id : (r.lease?.owner ?? null);
+  return `${r.kind === "interactive" ? "session: " : ""}${id ? await c.w.text(id) : `<span class="muted">unknown</span>`}`;
 }
 
 async function queueSection(c: Ctx): Promise<string> {
@@ -500,7 +517,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     }
     runRows.push({
       cells: [
-        esc(r.kind),
+        esc(r.kind) + (r.actor_id ? ` <span class="muted">(${await c.w.text(r.actor_id)})</span>` : ""),
         esc(r.status),
         esc(r.attempt),
         r.started_at ? esc(r.started_at) : `<span class="muted">unknown</span>`,

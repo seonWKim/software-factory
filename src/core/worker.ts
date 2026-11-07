@@ -1,7 +1,8 @@
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
-import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
+import { type FloorHit, requiredTier } from "./diff-gate.js";
+import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import type { Logger } from "./log.js";
 import { CHECKS_FAILED_RUN, type CheckResult, type CheckRound, checkCommands, checkedLines, commandText, redact, runChecks } from "./checks.js";
 import {
@@ -12,7 +13,9 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
+import {
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, failureClass, wipBranchFor,
+} from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -145,6 +148,9 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_VALUE_3: "false",
   GIT_NO_REPLACE_OBJECTS: "1",
   GIT_GRAFT_FILE: "/dev/null",
+  // Without it, every git call prints the grafts deprecation hint (GIT_GRAFT_FILE above) to stderr, and a stored
+  // error (cut to 500 characters) holds only the hint, not git's message.
+  GIT_ADVICE: "0",
   GIT_TERMINAL_PROMPT: "0",
 };
 
@@ -293,6 +299,7 @@ export class Worker {
 
   private async execute(run: Run, token: number): Promise<void> {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
+    const startedAt = this.d.clock.now().getTime();
     this.d.log.info("run start", log);
     const lease = new AbortController();
     const stopHeartbeat = new AbortController();
@@ -387,8 +394,16 @@ export class Worker {
       }
     }
     const done = await this.d.store.completeRun(run.id, token, outcome);
-    if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", log);
-    else this.d.log.info("run done", { ...log, status: outcome.status });
+    // Codes and numbers only, never the outcome's detail text: a failed attempt reads from the log alone.
+    const result = {
+      error_code: outcome.status === "failed" ? outcome.error_code : null,
+      // failureClass reads a succeeded run as "task", so a succeeded run gets null here.
+      failure: outcome.status === "failed" ? failureClass(outcome) : null,
+      tokens: usageTokens(usage),
+      duration_ms: this.d.clock.now().getTime() - startedAt,
+    };
+    if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", { ...log, ...result });
+    else this.d.log.info("run done", { ...log, status: outcome.status, ...result });
   }
 
   /**
@@ -804,8 +819,7 @@ export class Worker {
       this.d.log.warn("paused run: the WIP bundle did not restore; starting from the branch", { run_id: run.id });
       return false;
     }
-    await this.git(handle, ["read-tree", state.head]);
-    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, state.head]);
+    await this.checkoutClean(handle, branch, state.head);
     return true;
   }
 
@@ -845,9 +859,20 @@ export class Worker {
       this.d.log.warn("wip branch missing or moved; running the agent again", { run_id: run.id, wip_branch: wip.branch });
       return null;
     }
-    await this.git(handle, ["read-tree", wip.head]);
-    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, wip.head]);
+    await this.checkoutClean(handle, branch, wip.head);
     return wip;
+  }
+
+  /**
+   * Puts `branch` on `head` with a fresh index and no untracked files (ignored ones, such as node_modules, stay).
+   * The clone starts on the base: after read-tree, files the base added since `head` are no longer tracked, so
+   * checkout leaves them on disk, and the sync's `git merge` of the base then aborts on them ("untracked working
+   * tree files would be overwritten"), with no unmerged path, as `git_failed` on every retry.
+   */
+  private async checkoutClean(handle: SandboxHandle, branch: string, head: string): Promise<void> {
+    await this.git(handle, ["read-tree", head]);
+    await this.git(handle, [...NO_HOOKS, "checkout", "--quiet", "-f", "-B", branch, head]);
+    await this.git(handle, [...NO_HOOKS, "clean", "-ffdq"]);
   }
 
   /**
@@ -1274,19 +1299,18 @@ export class Worker {
     conflicts: readonly string[] = [],
   ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
     await this.scopeGate(run, item, handle, ctx, baseSha, conflicts);
-    const numstat = await this.git(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...HEAD`]);
-    let stat;
-    try {
-      stat = diffStat(numstat);
-    } catch (err) {
-      throw new RunFailure("git_failed", `git diff --numstat: ${err instanceof Error ? err.message : "unparsable"}`, true);
-    }
-    // The item's project's gate settings (design 2026-11-01), read only through settingValues.
+    // The item's project's gate settings (design 2026-11-01), read only through settingValues. The gates themselves
+    // are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
     const s = settingValues(item.project, this.cfg.settings, this.d.learned);
-    const limits = { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
-    if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
-    const hits = floorHits(stat.paths, s.floors, item.tier ?? 1);
-    return { floor: hits.length > 0 ? hits : null, paths: stat.paths };
+    let gates;
+    try {
+      gates = await diffGates((args) => this.git(handle, args), baseSha, item, s);
+    } catch (err) {
+      if (err instanceof NumstatError) throw new RunFailure("git_failed", err.message, true);
+      throw err;
+    }
+    if (gates.size !== null) throw new RunFailure("diff_too_large", gates.size);
+    return { floor: gates.floor, paths: gates.paths };
   }
 
   /**
@@ -1314,8 +1338,7 @@ export class Worker {
     baseSha: string,
     conflicts: readonly string[],
   ) {
-    const diff = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`]);
-    const outside = scopeViolations(diff, item.allowed_paths, conflicts);
+    const outside = await scopeGate((args) => this.git(handle, args), baseSha, item.allowed_paths, conflicts);
     if (outside.length === 0) return;
     const body = [
       "## Factory scope check: push blocked",

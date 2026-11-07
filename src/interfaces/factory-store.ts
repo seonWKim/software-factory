@@ -19,6 +19,7 @@ import type {
   RunOutcome,
   RunResume,
   RunStatus,
+  SessionFinish,
   SourceRef,
   SourceType,
   StateChange,
@@ -252,6 +253,25 @@ export interface RecordConflictsInput {
 
 export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
+/** `session start` (design §5, 2026-11-01): the item's transition plus one `interactive` run, written running. */
+/** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
+export interface StartSessionInput {
+  id: WorkItemId; expected_version: number; actor: Extract<Actor, { kind: "user" }>; patch: WorkItemPatch; reason: string; detail: StateChangeDetail;
+  owner: string; lease_ms: number; transcript_url: string | null;
+}
+
+export type StartSessionResult =
+  /** `cancelled`: the item's queued triage runs. */
+  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[] }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "version_conflict"; current: WorkItem }
+  | { ok: false; reason: "session_open" | "implement_run"; run_id: RunId }
+  /** A running implement-type or interactive run of another item shares `paths` with this item's allowed_paths. */
+  | { ok: false; reason: "overlap"; work_item_id: WorkItemId; run_id: RunId; paths: string[] };
+
+/** What `session note`, `--tokens`, `--transcript` and `finish` write (scanned by the caller). `note` is appended, the rest replace. */
+export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
+
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion {
   applied: number;
@@ -350,6 +370,8 @@ export interface FactoryStore {
    * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
    * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
+   * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while
+   * its item has an open session (a running interactive run) or its allowed_paths overlap one's.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
    */
@@ -397,9 +419,22 @@ export interface FactoryStore {
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
    * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
+   * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01).
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
+
+  /**
+   * `session start` (design §5, 2026-11-01), one transaction under the claim lock. Refused with nothing written while
+   * the item has a running interactive run or a queued or running implement-type run, or a running implement-type or
+   * interactive run of another item overlaps its allowed_paths (after `patch`). Else: the transition, the item's
+   * queued triage runs cancelled, and one `interactive` run inserted running (attempt 1, lease token 1).
+   */
+  startSession(input: StartSessionInput): Promise<StartSessionResult>;
+  /** Writes `update` on the interactive run while it is `running` with this `token`; lease_lost otherwise. */
+  updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult>;
+  /** Runs of `kind` in one of `statuses`, any item, oldest first. Read-only. */
+  listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]>;
   listRuns(id: WorkItemId): Promise<Run[]>;
   /** Runs (any item) in one of `statuses`, oldest first by created_at. Read-only. */
   listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]>;
@@ -535,6 +570,44 @@ export interface FactoryStore {
   resetSettingOverride(input: ResetSettingInput): Promise<SettingChange | null>;
   /** Audit rows, newest first, at most `limit`. Read-only. */
   listSettingChanges(limit: number): Promise<SettingChange[]>;
+
+  // Worker processes (design §5 Coordination, 2026-11-07). One row per running WorkerPool, keyed by its
+  // `process_id`, written once per tick, so a reader on any host sees every process's slots.
+
+  /**
+   * Writes the snapshot of one process, keyed by `process_id`: a repeat write replaces the row. `reported_at`
+   * is the store clock's now. Returns the stored row.
+   */
+  reportWorkerProcess(report: WorkerProcessReport): Promise<WorkerProcess>;
+  /**
+   * Live processes: rows whose `reported_at` is at most `max_age_ms` old (a row a dead process left behind is
+   * not listed once it is older). Ordered by host, then pid, then process_id. Read-only.
+   */
+  listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
+  /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
+  removeWorkerProcess(process_id: string): Promise<boolean>;
+}
+
+/** What a WorkerPool reports each tick. */
+export interface WorkerProcessReport {
+  /** `<host>:<pid>`, the pool's worker id prefix: the row's key. */
+  process_id: string;
+  pid: number;
+  host: string;
+  /** Slots that may claim now: the live `workers`, capped at `max_slots`. 0 while draining. */
+  slots: number;
+  /** The slot count: the file's `max_workers` (absent: `workers`). */
+  max_slots: number;
+  /** Slots holding a run at the moment of the write. */
+  busy: number;
+  /** The first worker index; the process's worker ids are `<process_id>:<index_base … index_base + max_slots - 1>`. */
+  index_base: number;
+  /** When the pool started. */
+  started_at: Timestamp;
+}
+
+export interface WorkerProcess extends WorkerProcessReport {
+  reported_at: Timestamp;
 }
 
 /** One stored override. `project` is "" for a global override, else a project key. `value` is JSON text. */

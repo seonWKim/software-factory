@@ -15,7 +15,8 @@ import type {
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
 import { Worker } from "../../src/core/worker.js";
-import type { Run, WorkItem, WorkerId } from "../../src/core/types.js";
+import type { Run, WorkItem, WorkItemId, WorkerId } from "../../src/core/types.js";
+import type { IssueLookup, SessionFile, SessionFiles, SessionIssue } from "../../src/core/session.js";
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
@@ -552,10 +553,13 @@ export class FakeBroker implements ToolBroker {
   listTools(): ToolDescriptor[] {
     return [];
   }
+  /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
+  remote = new Map<string, string>();
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
+    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
     if (scripted) return scripted;
     if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
@@ -650,4 +654,20 @@ export async function pipeline(opts: {
   const runs = async (it: WorkItem, kind?: Run["kind"]) => (await store.listRuns(it.id)).filter((r) => !kind || r.kind === kind);
   const agentCalls = (role: AgentRunSpec["role"]) => runner.specs.filter((s) => s.role === role).length;
   return { config: cfg, clock, store, source, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
+}
+
+/** `factory session`'s local records (src/core/session.ts), in memory instead of under state_dir. */
+export class MemorySessionFiles implements SessionFiles {
+  files = new Map<string, SessionFile>();
+  read = async (id: WorkItemId) => this.files.get(id) ?? null;
+  list = async () => [...this.files.values()];
+  write = async (f: SessionFile) => void this.files.set(f.work_item_id, f);
+  remove = async (id: WorkItemId) => void this.files.delete(id);
+}
+
+/** The repo's issues by number, for `session start` on an issue with no work item. Records each number asked. */
+export class FakeIssues implements IssueLookup {
+  asked: number[] = [];
+  constructor(readonly issues: Record<number, SessionIssue> = {}) {}
+  issue = async (n: number) => (this.asked.push(n), this.issues[n] ?? null);
 }

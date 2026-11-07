@@ -131,9 +131,28 @@ By default the factory builds one item at a time. To build several in parallel, 
 
 To change the count while the factory runs, without a PR, set `max_workers` in the file once (a whole number of at least `workers`; absent means `workers`), then use `npm run factory -- settings set workers <n>` with any n from 1 to `max_workers`. The pool starts or stops worker loops on its next tick; a stopped loop finishes its current run first. `npm run factory -- settings reset workers` goes back to the file's `workers`.
 
+To let the phases of a split you approved run without an `/approve` each, run `npm run factory -- settings set phases_auto_approve true` (`settings reset phases_auto_approve` turns it off again).
+
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
+
+### Your own LLM session (`factory session`)
+
+Work you do with an LLM in your own terminal can go through the factory too, as one `interactive` run on the work item: a lease, your user ID as its actor, your token count and notes, and a worker's gates before anything is pushed. A worker never claims an implement or update run whose item overlaps your open session, and a session does not start over a running one.
+
+```bash
+npm run --silent factory -- session start 12 [--spec spec.json] [--transcript <url>] [--as <github login>]   # issue #12 or a wi_… id
+npm run --silent factory -- session status | note "<text>" [--tokens <n>] [--transcript <url>] | finish [--tokens <n>] | abandon [--tokens <n>]
+```
+
+- `start` creates the work item if the issue has none (only with `--spec`), records the run, makes a run folder on the item's branch and prints its path: work and commit there. It stays in the foreground and keeps the lease; Ctrl-C stops it, the lease expires, the reaper ends the run (`session_lost`) and the item is released. `--spec <file>`: your own spec for a NEW item, in the triage output format (checked by the same parser; no phases); the queued triage run is cancelled. `--transcript <url>`: an http or https link, stored after the leak scan. `--as <login>`: your GitHub login (default `repo.owner`), mapped to your user ID as for commands; you need write permission. Refused, with nothing changed, for an item that is closed, in review, waiting for `/approve`, without allowed paths, with a queued or running implement or update run or an open session, or overlapping another item's running implement run.
+- `status` prints the item, the run, the lease expiry and the last `finish` result. `note <text>` stores a note after the leak scan (a flagged note is refused with the rule name). `--tokens <n>` (a whole number of 0 or more, on `note`, `finish`, `abandon`) sets your latest total, added to the item's `token_cost` once when the run ends.
+- `finish` runs the scope gate, the size gate (the same `max_diff_lines` and `max_diff_files` as a worker), the floor check and `repo.test_command` in the run folder. Any failure lists the reasons, keeps the session open and pushes nothing; a floor hit is refused (a session cannot raise the tier). When all pass, the factory's broker pushes the branch and opens the PR, and the item goes to review; running `finish` again never opens a second PR or review.
+- `abandon` ends the run as failed (`abandoned`); the pushed branch and the run folder are kept. A session that ended without a PR leaves the item `RUNNING`, blocked on you with `session_released`, nothing queued; `session start` takes it up again.
+- With no work item id first, `status`, `note`, `finish` and `abandon` use the only open session on this machine (recorded under `<state_dir>/sessions/`).
+
+Your LLM runs as you, with your access, outside the factory's sandbox; the gates at `finish` are the factory's check. A `git push` you run yourself bypasses them.
 
 ### Per-project settings
 
@@ -213,17 +232,17 @@ For `npm run test:mysql` on your own machine, the same URL can go in `.factory/t
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
-| MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first) | `npm run migrate` |
+| MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | MySQL: see the schema state and the pending steps | `npm run migrate -- --status` |
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
-| Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> |
+| Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
 
-`npm run factory -- ui` serves a read-only page at <http://127.0.0.1:4310/> (the port is `ui.port` in `factory.config.json`). The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+`npm run factory -- ui` serves the factory app at <http://127.0.0.1:4310/> (it redirects to `/app/`; the port is `ui.port` in `factory.config.json`): Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue and Health. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
 
 The list's order:
 1. Ready to merge
