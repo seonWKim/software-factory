@@ -3,15 +3,16 @@ import { Controller } from "../src/core/controller.js";
 import type { Logger } from "../src/core/log.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, labelTarget, recordingLog, silent, triageSpec, waitFor, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, labelTarget, recordingLog, silent, triageSpec, waitFor, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 async function setup(log: Logger = silent) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
-  return { clock, store, source, controller };
+  const forge = new FakeForge(source);
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  return { clock, store, source, forge, controller };
 }
 
 type F = Awaited<ReturnType<typeof setup>>;
@@ -63,20 +64,22 @@ describe("controller: status labels", () => {
     await finish(f, "triage", { spec: triageSpec });
     f.source.queue.push({ kind: "spec_approved", source: item.source, comment_id: "100", approver: alice });
     await f.controller.tickIntake();
-    expect(f.source.statusCalls.some((c) => c.pr_number !== null)).toBe(false);
+    expect(f.forge.statusCalls).toEqual([]);
 
+    // The PR's label goes through the forge (issue #273), the issue's through the source.
     await finish(f, "implement", { pr_number: 42 });
     expect(f.source.statusLabels(item.source)).toEqual(["in_review"]);
-    expect(f.source.statusLabels(item.source, 42)).toEqual(["in_review"]);
+    expect(f.forge.prStatus(42)).toBe("in_review");
 
     await finish(f, "review", { review: { verdict: "pass", tier: 2, findings: [], summary: "ok" } });
     expect(f.source.statusLabels(item.source)).toEqual(["ready_to_merge"]);
-    expect(f.source.statusLabels(item.source, 42)).toEqual(["ready_to_merge"]);
+    expect(f.forge.prStatus(42)).toBe("ready_to_merge");
 
-    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.controller.tickIntake();
     expect(f.source.statusLabels(item.source)).toEqual(["done"]);
-    expect(f.source.statusLabels(item.source, 42)).toEqual(["done"]);
+    expect(f.forge.prStatus(42)).toBe("done");
+    expect(f.source.statusCalls.some((c) => c.pr_number !== null)).toBe(false);
   });
 
   it("does not write a label for an ack-only transition", async () => {
@@ -141,17 +144,16 @@ describe("controller: start-up status catch-up", () => {
 
     const ac = new AbortController();
     const running = f.controller.run(ac.signal);
-    await waitFor(() => calls >= 3, "catch-up");
+    await waitFor(() => calls >= 2 && f.forge.statusCalls.length >= 1, "catch-up");
     ac.abort();
     await running;
 
-    const labelled = [a, b].map((it) => f.source.statusLabels(it.source)).concat([f.source.statusLabels(b.source, 5)]);
-    // Newest first: b (issue, then PR), then a. The first call (b's issue) threw before reaching the fake.
-    expect(f.source.statusCalls.slice(0, 2)).toEqual([
-      { source: issueRef(2), status: "ready_to_merge", pr_number: 5 },
-      { source: issueRef(1), status: "triaging", pr_number: null },
-    ]);
-    expect(labelled).toEqual([["triaging"], [], ["ready_to_merge"]]);
+    const labelled = [a, b].map((it) => f.source.statusLabels(it.source));
+    // Newest first: b (issue on the source, then PR on the forge), then a. The first call (b's issue) threw
+    // before reaching the fake.
+    expect(f.source.statusCalls.slice(0, 1)).toEqual([{ source: issueRef(1), status: "triaging", pr_number: null }]);
+    expect(f.forge.statusCalls).toEqual([{ source: issueRef(2), status: "ready_to_merge", pr_number: 5 }]);
+    expect(labelled).toEqual([["triaging"], []]);
     expect(f.source.statusCalls.some((x) => x.source.id === issueRef(3).id)).toBe(false);
   });
 

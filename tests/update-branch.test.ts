@@ -13,9 +13,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -129,12 +129,13 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
     repo: { ...config.repo, path: repo, test_command: opts.testCommand ?? ["sh", "-c", "exit 0"] },
   };
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   // Inside the checkout, as in production (.worktrees): each run clones into its own folder there.
   const sandbox = new RecordingSandbox(join(repo, ".worktrees"));
   const broker = new GitPushBroker();
   const runner = new FakeRunner({}); // no script: any agent start throws
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts: {
       triage: "T", implement: "I", review: "R",
@@ -145,7 +146,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
     while (await worker.tick()) await controller.tickRuns();
     await controller.tickRuns();
   };
-  const event = (head_sha = "h1", base_sha = "b1"): SourceEvent => ({
+  const event = (head_sha = "h1", base_sha = "b1"): ForgeEvent => ({
     kind: "pr_unmergeable", pr_number: 42, head_branch: branch, head_sha, base_sha,
   });
   const remoteSha = () => git(origin, "rev-parse", `refs/heads/${branch}`);
@@ -171,7 +172,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
   const reasons = async () =>
     (await store.listStateChanges(id)).map((c) => c.reason).filter((r) => r.startsWith("update_") || r.startsWith("run_") || r === "retry_requested");
   return {
-    store, source, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
+    store, source, forge, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
     origin, branchSha, mainSha, remoteSha, updateRuns, resolveRuns, reasons, toolEnv, waitForMerge, moveMain,
   };
 }
@@ -179,9 +180,9 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
 describe("update run: pr_unmergeable", () => {
   it("enqueues exactly one update run with the event's key, however often the event arrives", async () => {
     const f = await setup("clean");
-    f.source.queue.push(f.event(), f.event());
+    f.forge.queue.push(f.event(), f.event());
     await f.controller.tickIntake();
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.controller.tickIntake();
 
     const runs = await f.updateRuns();
@@ -193,7 +194,7 @@ describe("update run: pr_unmergeable", () => {
 
     // Delivered again after the run finished: still one run, one update_started.
     await f.step();
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
     expect(await f.updateRuns()).toHaveLength(1);
     expect((await f.store.listStateChanges(f.id)).filter((c) => c.reason === "update_started")).toHaveLength(1);
@@ -212,7 +213,7 @@ describe("update run: pr_unmergeable", () => {
       const it0 = (await f.store.getWorkItem(f.id))!;
       const r = await f.store.transition({ id: f.id, expected_version: it0.version, patch, actor: system, reason: "test_setup" });
       if (!r.ok) throw new Error("transition failed");
-      f.source.queue.push(f.event());
+      f.forge.queue.push(f.event());
       await f.controller.tickIntake();
       expect((await f.store.getWorkItem(f.id))!.version, JSON.stringify(patch)).toBe(r.item.version);
     }
@@ -223,7 +224,7 @@ describe("update run: pr_unmergeable", () => {
 describe("update run: worker", () => {
   it("clean merge with passing tests: pushes the merge commit, comments, stays merge_pending", async () => {
     const f = await setup("clean");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     const head = f.remoteSha();
@@ -267,7 +268,7 @@ describe("update run: worker", () => {
     await f.store.completeRun(impl.id, impl.lease!.token, {
       status: "succeeded", summary: "", data: { pr_summary: "## In short\n\nthe change", missing: ["the MySQL step"], deviations: [] },
     });
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     const refresh = f.broker.calls.filter((c) => c.name === "github.open_pr");
@@ -282,7 +283,7 @@ describe("update run: worker", () => {
 
   it("conflict: no push, a comment listing every conflicting file, and a resolve run starts on its own", async () => {
     const f = await setup("conflict");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.controller.tickIntake();
     await f.worker.tick(); // the update run only
     await f.controller.tickRuns();
@@ -311,7 +312,7 @@ describe("update run: worker", () => {
 
   it("a failed automatic resolve starts the next one; after 2 for one base commit the item waits on merge_conflict_pending", async () => {
     const f = await setup("conflict"); // no resolve prompt: every resolve run fails prompt_missing
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     const resolves = await f.resolveRuns();
@@ -326,9 +327,9 @@ describe("update run: worker", () => {
     expect(trail.slice(-4)).toEqual(["update_started", "auto_resolve_started", "auto_resolve_retry", "resolve_failed"]);
     expect(f.remoteSha()).toBe(f.branchSha);
     // One comment for the final failure, on the PR, with both counts; none for the first failure.
-    const final = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:run-failed:"));
+    const final = f.forge.comments.filter((c) => c.marker.startsWith("<!-- factory:run-failed:"));
     expect(final).toHaveLength(1);
-    expect(final[0]!.source.id).toBe("o/r#42");
+    expect(final[0]!.pr_number).toBe(42);
     expect(final[0]!.marker).toBe(`<!-- factory:run-failed:${resolves[1]!.id} -->`);
     expect(final[0]!.body).toContain("attempt 2 of 2");
     expect(final[0]!.body).toContain("0 resolved automatically, 1 needed a person");
@@ -336,26 +337,26 @@ describe("update run: worker", () => {
 
   it("a third unmergeable event for the same base commit starts no run; a new base commit gets its own 2 attempts", async () => {
     const f = await setup("conflict");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
     expect(await f.resolveRuns()).toHaveLength(2);
 
     // Back to waiting for a merge (say, a person pushed an unrelated fix); the PR conflicts with the same base again.
     await f.waitForMerge();
-    f.source.queue.push(f.event("h2", "b1"));
+    f.forge.queue.push(f.event("h2", "b1"));
     await f.step();
     expect(await f.resolveRuns()).toHaveLength(2);
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
     const limit = (await f.store.listStateChanges(f.id)).at(-1)!;
     expect(limit).toMatchObject({ reason: "update_conflict", detail: { base_sha: f.mainSha, auto_resolve_attempts: 2 } });
-    const note = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:auto-resolve-limit:"))!;
-    expect(note.source.id).toBe("o/r#42");
+    const note = f.forge.comments.find((c) => c.marker.startsWith("<!-- factory:auto-resolve-limit:"))!;
+    expect(note.pr_number).toBe(42);
     expect(note.body).toContain("0 resolved automatically, 2 needed a person");
 
     // main moves on: a new base commit, two fresh automatic attempts.
     const newMain = f.moveMain("a.txt", "main a again\n");
     await f.waitForMerge();
-    f.source.queue.push(f.event("h3", "b2"));
+    f.forge.queue.push(f.event("h3", "b2"));
     await f.step();
     const keys = (await f.resolveRuns()).map((r) => r.idempotency_key);
     expect(keys.slice(2)).toEqual([`${f.id}:resolve:auto:${newMain}:1`, `${f.id}:resolve:auto:${newMain}:2`]);
@@ -363,7 +364,7 @@ describe("update run: worker", () => {
 
   it("applying the same unmergeable update outcome twice enqueues one resolve run", async () => {
     const f = await setup("conflict");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.controller.tickIntake();
     await f.worker.tick();
     const [run] = await f.updateRuns();
@@ -376,7 +377,7 @@ describe("update run: worker", () => {
 
   it("applying the same failed automatic resolve twice enqueues one next attempt", async () => {
     const f = await setup("conflict");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.controller.tickIntake();
     await f.worker.tick();
     await f.controller.tickRuns();
@@ -392,7 +393,7 @@ describe("update run: worker", () => {
 
   it("a human /resolve still starts a resolve run past the automatic limit, and does not count toward it", async () => {
     const f = await setup("conflict");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
     const item = (await f.store.getWorkItem(f.id))!;
     expect(item.blocked_reason).toBe("merge_conflict_pending");
@@ -406,7 +407,7 @@ describe("update run: worker", () => {
 
   it("clean merge but failing tests: no push, merge_conflict_pending, comment says the tests failed", async () => {
     const f = await setup("clean", { testCommand: ["sh", "-c", "exit 1"] });
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     expect(f.remoteSha()).toBe(f.branchSha);
@@ -426,14 +427,14 @@ describe("update run: worker", () => {
 
   it("base already in the branch (after our own push): pushes nothing, posts nothing, stays merge_pending", async () => {
     const f = await setup("clean");
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
     const pushed = f.remoteSha();
     expect(f.broker.pushes()).toHaveLength(1);
     expect(f.broker.comments()).toHaveLength(1);
 
     // GitHub has not recomputed mergeability yet and reports our new head as unmergeable.
-    f.source.queue.push(f.event("h2", "b1"));
+    f.forge.queue.push(f.event("h2", "b1"));
     await f.step();
 
     const runs = await f.updateRuns();
@@ -450,7 +451,7 @@ describe("update run: worker", () => {
   it("push error: run fails, run_failed:update:<code>; /retry re-enqueues an update run that then pushes", async () => {
     const f = await setup("clean");
     f.broker.pushError = { error_code: "push_failed", message: "remote rejected" };
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     let runs = await f.updateRuns();
@@ -477,7 +478,7 @@ describe("update run: worker", () => {
   it("origin unreachable: run fails with a git error and blocks on a human", async () => {
     const f = await setup("clean");
     rmSync(f.origin, { recursive: true, force: true });
-    f.source.queue.push(f.event());
+    f.forge.queue.push(f.event());
     await f.step();
 
     const [run] = await f.updateRuns();

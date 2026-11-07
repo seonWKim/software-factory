@@ -30,4 +30,4 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | KeepAwake | `caffeinate`, `none` | [keep-awake.md](plugins/keep-awake.md) |
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
 | TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
-| Forge (optional, no default) | `github` | [forge.md](plugins/forge.md) |
+| Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github` | [forge.md](plugins/forge.md) |

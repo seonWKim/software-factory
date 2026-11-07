@@ -38,12 +38,13 @@ function pidAlive(pid: number): boolean {
 }
 
 /**
- * The stall pause line (design §5 Restarts): `agents paused: model not answering since <time>` while the
- * `model_stall` claim pause is in effect, else null. `factory status` prints it above the item table.
+ * The stall pause line (design §5 Restarts): `agents paused: model not answering since <time>, next probe at
+ * <time>` while the `model_stall` claim pause is in effect, else null. `factory status` prints it above the
+ * item table.
  */
 export async function modelStallLine(store: Pick<FactoryStore, "getClaimPause">): Promise<string | null> {
-  const since = await store.getClaimPause("model_stall_since");
-  return since === null ? null : `agents paused: model not answering since ${since}`;
+  const [since, next] = await Promise.all([store.getClaimPause("model_stall_since"), store.getClaimPause("model_stall")]);
+  return since === null || next === null ? null : `agents paused: model not answering since ${since}, next probe at ${next}`;
 }
 
 /**
