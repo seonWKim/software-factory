@@ -28,6 +28,8 @@ describe("statusOf", () => {
     ["unknown reason, blocked on human", item("RUNNING", "human", "something_new"), "needs_human"],
     ["unknown reason with no reason at all", item("NEW", "human", null), "needs_human"],
     ["blocked on upstream", item("RUNNING", "upstream", "x"), "needs_human"],
+    ["a phase held until the one before it merges", item("NEW", "upstream", "phase_hold"), "implementing"],
+    ["a split parent whose phases are open", item("READY", "upstream", "phases_open"), "implementing"],
     ["blocked on ci", item("REVIEW", "ci", null), "needs_human"],
     ["blocked on budget", item("NEW", "budget", null), "needs_human"],
   ];
