@@ -1,5 +1,7 @@
 import { type ToolContext, type ToolResult, type ToolSpec, guardPolicy } from "../../core/tools/index.js";
-import { type AgentRunResult, type AgentRunSpec, type AgentRunner, toolsNotExposedMessage } from "../../interfaces/agent-runner.js";
+import {
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, toolsNotExposedMessage,
+} from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import type { SecretStore } from "../../interfaces/secret-store.js";
 import { OPENAI_COMPATIBLE_API_KEY } from "../llm/openai-compatible-llm-provider.js";
@@ -155,6 +157,7 @@ export class OpenAICompatibleRunner implements AgentRunner {
           lines.push(JSON.stringify({ type: "error", round, code: r.code, ...(r.status !== undefined && { status: r.status }), message: r.message }));
           if (r.code === "aborted" || stop.signal.aborted) return ended();
           if (r.code === "rate_limited") return result("rate_limited", { error: r.message, ...(r.reset_at && { reset_at: r.reset_at }) });
+          if (r.code === PROVIDER_SETUP) return result("failed", { code: PROVIDER_SETUP, error: `openai-compatible: ${r.code}: ${r.message}` });
           return result("failed", { error: `openai-compatible: ${r.code}: ${r.message}` });
         }
         usage.input_tokens += r.usage.input_tokens;

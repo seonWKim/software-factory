@@ -20,7 +20,8 @@ export function transcriptSeparator(name: string): string {
 
 /**
  * Whether the next member may take the run. Only when this member did no real work: a rate limit, a stall or a
- * failure with no model output (an up-front refusal such as a missing secret or config fails the same way).
+ * failure with no model output (an up-front refusal such as a missing secret or config fails the same way, and
+ * so does `provider_setup`: the provider refused this member's quota, key or model, so the next may still answer).
  * Completed (also with invalid output), timed out, aborted, or failed after output: the result stands.
  */
 export function canFallOver(r: AgentRunResult): boolean {

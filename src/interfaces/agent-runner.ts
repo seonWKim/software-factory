@@ -90,6 +90,12 @@ export interface AgentRunResult {
     model?: string | null;
   };
   error?: string;
+  /**
+   * Why a `failed` run failed, when the runner can tell it needs a person: `provider_setup` (the provider's quota,
+   * API key or model name, design §5 Restarts). The worker records it as the error code and the run is not
+   * retried. Absent: the worker's own code for the status.
+   */
+  code?: typeof PROVIDER_SETUP;
   /** For `rate_limited`: when the limit resets (ISO-8601 UTC), if the runner could tell. */
   reset_at?: string;
   /**
@@ -102,6 +108,9 @@ export interface AgentRunResult {
   /** Each fall-over in this run, in order: the member that gave up, the next one tried, and why. */
   fallbacks?: { from: string; to: string; reason: string }[];
 }
+
+/** The error code of a run the provider refused for its account or config: quota, API key or model name. */
+export const PROVIDER_SETUP = "provider_setup";
 
 export interface AgentRunner {
   run(spec: AgentRunSpec): Promise<AgentRunResult>;
