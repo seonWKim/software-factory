@@ -73,7 +73,8 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type VerdictKind, type VerdictSeverity, type WorkItem, type WorkItemId,
+  type WorkItemPatch, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -732,6 +733,52 @@ export class Controller {
     });
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.guard("dependents", () => this.releaseDependents(item.source.id));
+    if (e.kind === "pr_merged") await this.mergeVerdict(item.id, e, merger);
+  }
+
+  /**
+   * The implicit verdict of a merge (design §4): one `accept`, severity `none`, on the merged head, by the merger,
+   * when nobody but the factory committed to the PR (no `manual` run). Nothing when the merger does not resolve to
+   * a user, or the head already has a verdict (a person's push recorded `changes` on it). Safe to run twice: keyed
+   * on the merge sha, and one verdict per head.
+   */
+  private async mergeVerdict(id: WorkItemId, e: Extract<PrFinishedEvent, { kind: "pr_merged" }>, merger: Principal | null): Promise<void> {
+    const it = await this.d.store.getWorkItem(id);
+    if (!it || it.stage !== "CLOSED" || it.close_reason !== "completed" || it.merge_sha !== e.merge_sha) return;
+    const log = { work_item_id: id, pr_number: e.pr_number };
+    if (!merger) {
+      this.d.log.warn("no implicit verdict for the merge: the merger does not resolve to a user", log);
+      return;
+    }
+    if ((await this.d.store.listRuns(id)).some((r) => r.kind === "manual")) {
+      this.d.log.info("no implicit accept for the merge: the PR has commits by people", log);
+      return;
+    }
+    // Linked to the merge's own row, whose actor is the merger.
+    const row = (await this.d.store.listStateChanges(id)).filter((c) => c.reason === "pr_merged").at(-1);
+    await this.implicitVerdict(it, row, {
+      verdict: "accept", severity: "none", reason: null, key: `implicit:merged:${id}:${e.merge_sha}`, pr_head: it.last_head_sha,
+    });
+  }
+
+  /**
+   * Stores one implicit verdict (design §4), linked to the item's state_changes row `row` (the event it comes from).
+   * Writes no state change and no version, so it changes no stage or block. A repeat (same key), or a head that
+   * already has a verdict, stores nothing. Items from GitHub issues and adopted PRs only: Slack and local items
+   * get none (out of scope, issue #316).
+   */
+  private async implicitVerdict(
+    it: WorkItem,
+    row: StateChange | undefined,
+    v: { verdict: VerdictKind; severity: VerdictSeverity; reason: string | null; key: string; pr_head: string | null },
+  ): Promise<void> {
+    if (!row || it.source.type !== PR_SOURCE_TYPE) return;
+    const id = it.id;
+    const r = await this.d.store.recordImplicitVerdict({
+      id, state_change_id: row.id, verdict: v.verdict, severity: v.severity, reason: v.reason, key: v.key, target: "pr", pr_head: v.pr_head,
+    });
+    if (r.ok) this.d.log.info("implicit verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity });
+    else if (r.reason === "head_taken") this.d.log.info("no implicit verdict: the head already has one", { work_item_id: id, verdict: v.verdict });
   }
 
   /** A factory branch's item (the decide checks its PR number), else the adopted item with this PR number. Forks have none. */
@@ -843,6 +890,18 @@ export class Controller {
     });
     if (r.ok && r.run) {
       this.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: e.pr_number, actor: actor.id });
+      // A person's push to a factory PR: one implicit `changes` (minor) on the pushed head (design §4).
+      if (it.origin !== "adopted") {
+        // The forge gives no commit count between two shas: each person's head the poll saw counts as one commit.
+        const commits = (await this.d.store.listRuns(it.id)).filter((x) => x.kind === "manual").length;
+        // No row of its own: linked to the item's newest row; the key names the manual run, which holds the pusher.
+        const row = (await this.d.store.listStateChanges(it.id)).at(-1);
+        await this.implicitVerdict(it, row, {
+          verdict: "changes", severity: "minor",
+          reason: `${commits} commit${commits === 1 ? "" : "s"} by a person on the factory PR (latest push ${it.last_head_sha.slice(0, 12)}..${e.head_sha.slice(0, 12)})`,
+          key: `implicit:push:${r.run.id}`, pr_head: e.head_sha,
+        });
+      }
     }
   }
 
@@ -1330,7 +1389,10 @@ export class Controller {
       const it = await this.d.store.getWorkItem(id);
       if (!it) return null;
       if ((await this.d.store.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
-      if (it.stage === "CLOSED") return "the work item is closed";
+      // A closed item takes a verdict only to replace the implicit one on its PR's last head (design §4).
+      if (it.stage === "CLOSED" && !(await this.hasImplicitAtHead(it))) {
+        return "the work item is closed (on a closed item, `/verdict` only replaces the implicit verdict on its PR's last head)";
+      }
       if (it.pr_number === null) return "the work item has no PR yet";
       const r = await this.d.store.recordVerdict({
         id,
@@ -1339,15 +1401,23 @@ export class Controller {
         ...v,
         comment_id: e.comment_id,
         target: e.target.kind,
+        pr_head: it.last_head_sha,
       });
       if (r.ok) {
-        this.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
+        this.d.log.info("verdict recorded", {
+          work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version, replaced: r.replaced.length,
+        });
         return null;
       }
       if (r.reason !== "version_conflict") return null;
     }
     this.d.log.warn("verdict gave up after conflicts", { work_item_id: id });
     return null;
+  }
+
+  private async hasImplicitAtHead(it: WorkItem): Promise<boolean> {
+    if (it.pr_number === null || it.last_head_sha === null) return false;
+    return (await this.d.store.listVerdicts(it.id)).some((v) => v.implicit && v.pr_head === it.last_head_sha && v.verdict !== "reverted");
   }
 
   /**
@@ -1792,6 +1862,15 @@ export class Controller {
           ? null
           : { patch: {}, actor: LINKS, reason: "reverted", detail },
       );
+      // A merged PR's revert is also one implicit `reverted` verdict per reverting commit (design §4, §6).
+      const it = await this.d.store.getWorkItem(id);
+      if (!it || it.merge_sha === null || it.close_reason !== "completed") continue;
+      const row = (await this.d.store.listStateChanges(id)).find((c) => c.reason === "reverted" && c.detail?.reverting_commit === e.sha);
+      await this.implicitVerdict(it, row, {
+        verdict: "reverted", severity: "critical",
+        reason: `reverted on the base branch by ${e.sha.slice(0, 12)}${refs.reverting_pr === null ? "" : ` (PR #${refs.reverting_pr})`}`,
+        key: `implicit:reverted:${id}:${e.sha}`, pr_head: it.last_head_sha,
+      });
     }
   }
 

@@ -137,7 +137,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "verdict",
     usage: "/verdict accept|changes|reject <severity> <reason>",
-    description: "Record a verdict on the result; it does not change the state",
+    description:
+      "Record a verdict on the result; it does not change the state. `yes` and `ok` mean `accept`, and `accept` alone records severity `none`. " +
+      "It replaces the earlier verdict on the same PR head; on a closed item it is taken only to replace the implicit verdict on the PR's last head",
     phases: OPEN_PHASES,
     needs_pr: true,
     changes_state: false,

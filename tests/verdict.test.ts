@@ -22,7 +22,17 @@ describe("parseVerdict", () => {
 
   it("lets accept omit the reason", () => {
     expect(parseVerdict("accept none")).toEqual({ ok: true, value: { verdict: "accept", severity: "none", reason: null } });
+    expect(parseVerdict("accept")).toEqual({ ok: true, value: { verdict: "accept", severity: "none", reason: null } });
+    expect(parseVerdict("  accept \n ")).toEqual({ ok: true, value: { verdict: "accept", severity: "none", reason: null } });
     expect(parseVerdict("accept minor nit in a comment")).toMatchObject({ ok: true, value: { reason: "nit in a comment" } });
+  });
+
+  it("reads `yes` and `ok` as `accept`", () => {
+    for (const word of ["yes", "ok"]) {
+      expect(parseVerdict(word)).toEqual(parseVerdict("accept"));
+      expect(parseVerdict(`${word} none`)).toEqual(parseVerdict("accept none"));
+      expect(parseVerdict(`${word} minor one nit`)).toEqual({ ok: true, value: { verdict: "accept", severity: "minor", reason: "one nit" } });
+    }
   });
 
   it("refuses changes and reject without a reason", () => {
@@ -36,7 +46,7 @@ describe("parseVerdict", () => {
   });
 
   it("refuses a missing or unknown verdict word, or missing arguments, with the expected format", () => {
-    for (const args of ["", "accept", "approve none fine", "ACCEPT none"]) {
+    for (const args of ["", "changes", "reject", "approve none fine", "ACCEPT none", "reverted critical r", "lgtm", "constructor", "toString none"]) {
       const r = parseVerdict(args);
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.refuse).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
@@ -159,6 +169,30 @@ describe("controller: /verdict", () => {
     await f.controller.handleEvent(verdict("lgtm none", "514"));
     for (const id of ["513", "514"]) {
       expect(await refused(f, it0, id)).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
+    }
+  });
+
+  it("`/verdict accept` alone records severity none; `yes` and `ok` record the same as `accept`", async () => {
+    const f = await setup();
+    const it0 = await item(f);
+    await f.controller.handleEvent(verdict("accept", "530"));
+    await f.controller.handleEvent(verdict("yes", "531"));
+    await f.controller.handleEvent(verdict("ok", "532"));
+    expect((await f.store.listVerdicts(it0.id)).map((v) => [v.comment_id, v.verdict, v.severity, v.reason, v.implicit])).toEqual([
+      ["530", "accept", "none", null, false], ["531", "accept", "none", null, false], ["532", "accept", "none", null, false],
+    ]);
+    expect(f.source.comments).toEqual([]);
+  });
+
+  it("an unknown word gets the usage line and stores nothing; `reverted` cannot be typed", async () => {
+    const f = await setup();
+    const it0 = await item(f);
+    await f.controller.handleEvent(verdict("maybe", "533"));
+    await f.controller.handleEvent(verdict("reverted critical it broke", "534"));
+    for (const id of ["533", "534"]) {
+      const body = await refused(f, it0, id);
+      expect(body).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
+      expect(body).toContain("`yes` and `ok` mean `accept`");
     }
   });
 
