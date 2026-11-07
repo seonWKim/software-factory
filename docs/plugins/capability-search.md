@@ -7,7 +7,7 @@ Finding a doc is not permission: the index changes nothing about tools, `deny_pa
 Plugins:
 
 - `list-all`: `ListAllCapabilitySearch`. Returns the first N entries of a list of capabilities.
-  - Enable: `"plugins": { "capability": "list-all", ... }` (the checked-in default). Secrets: none.
+  - Enable: `"plugins": { "capability": "list-all", ... }` (the fallback: also what you get when the key is left out). Secrets: none.
   - **Not wired in yet:** nothing fills its list (`build()` passes an empty one), so it always returns nothing and agents get no index section. Prompts are the same as before the index existed.
 - `bm25`: `Bm25CapabilitySearch` (`src/impl/capability/bm25-capability-search.ts`). BM25 ranking over the repo's markdown.
   - Indexes: `*.md` files under `docs/` and `skills/` below the code root (the runtime copy under the `git-worktree` updater). Skipped: `prompts/` (already the system prompt), `node_modules/`, dot-directories, symlinks, and anything outside those two roots. A file under `skills/` has kind `skill`; the rest have kind `doc`. The id is the repo-relative path.
@@ -15,17 +15,19 @@ Plugins:
   - Snippet: the first paragraph after the title on one line, at most 200 characters, ending in `…` when cut.
   - Index size in the prompt: 8 results (fixed).
   - Rebuild: the index is built at startup, and every search rebuilds it when an indexed file's mtime or size changes or a file is added or removed. It is a per-process cache of the files; nothing is stored or shared, so replicas need no coordination.
-  - Enable: `"plugins": { "capability": "bm25", ... }`. Secrets: none.
+  - Enable: `"plugins": { "capability": "bm25", ... }` (the checked-in default). Secrets: none.
+
+The checked-in `factory.config.json` selects `bm25` (since 2026-11-07), so every agent prompt gets the doc index. Solo and enterprise get the same default: each process builds the index from its own checkout and shares nothing.
 
 Switch with the `plugins.capability` key:
 
 ```jsonc
-// factory.config.json: turn the doc index on
+// factory.config.json: the checked-in default, the doc index on
 "plugins": { ..., "capability": "bm25" }
 ```
 
-Switch back / disable: `"capability": "list-all"` (or leave the key out: `list-all` is the default). Agents then get no index section again.
+Switch back / disable: `"capability": "list-all"` (or leave the key out: `list-all` is the registry default for a config without it). Agents then get no index section again.
 
 ## History
 
-No earlier decision is recorded for this topic.
+- 2026-11-07: the checked-in default changed from `list-all` (no doc index in any prompt) to `bm25`; `list-all` stays as the fallback.

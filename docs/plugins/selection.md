@@ -19,7 +19,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 | LLMProvider | `plugins.llm` | `claude-cli` | no |
 | SourceAdapter | `plugins.source` (a name, or a list of names; see [source-adapter.md](source-adapter.md)) | `github-issues` | no |
 | SharedStorage | `plugins.storage` | `fs` | no |
-| CapabilitySearch | `plugins.capability` | `list-all` (`bm25` available) | no |
+| CapabilitySearch | `plugins.capability` | `bm25` (checked in; `list-all` when the key is left out) | no |
 | Clock | `plugins.clock` | `system` | no |
 | Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
@@ -32,7 +32,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 "plugins": {
   "secrets": "env-file", "egress": "pattern", "broker": "github",
   "sandbox": "noop", "runner": "claude-code", "llm": "claude-cli",
-  "source": "github-issues", "storage": "fs", "capability": "list-all", "clock": "system",
+  "source": "github-issues", "storage": "fs", "capability": "bm25", "clock": "system",
   "updater": "git-worktree"
   // "awake" is left out on purpose: it defaults per platform (see keep-awake.md)
 }
@@ -74,6 +74,8 @@ Since 2026-11-01:
 **Declared secrets.** Each descriptor lists the secret names its plugin reads, each with a one-line purpose (`secrets` in the `*.plugin.ts` file; `withPlugin` takes the same list as an optional last argument). A name is checked by `secretName()`: upper-case letters, digits and `_`, starting with a letter. The secret set is the union of the names the **selected** plugins declare (`declaredSecretNames`): the `SecretStore` loads, returns and scans exactly those, so switching a plugin in config changes the set with no code edit (for example `store.type` `sqlite` drops `MYSQL_PASSWORD`). Any other key in the secret file, a plain setting such as `MYSQL_HOST` or a secret no selected plugin declares, is never returned and never scanned. A declared secret missing from the file does not stop startup; `npm run factory -- doctor` reports it as FAIL and `npm run setup` asks for it. Declarations that share a `oneOf` label are alternatives (the model credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Each plugin's **Secrets:** line in its interface's topic file lists exactly its declared names; `tests/secret-names.test.ts` fails when they drift, and checks that `.env.example` lists every name the default selection declares.
 
 ## History
+
+- **Checked-in `CapabilitySearch`** (changed 2026-11-07, issue #337). Before, the checked-in config selected `list-all`; now it selects `bm25`. `list-all` stays the registry default when the key is left out.
 
 - **Config path and state location** (changed 2026-11-07, issue #336). Before: `loadConfig` read `factory.config.json` only from the code root, so under `git-worktree` a local edit was ignored, and there was no flag; `state_dir` and `worktrees_dir` always resolved from the cwd.
 
