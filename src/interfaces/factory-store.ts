@@ -522,6 +522,8 @@ export interface FactoryStore {
   recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }>;
   /** Newest first. Read-only. */
   listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>;
+  /** How many rows were recorded at or after `since`. Read-only. */
+  countUnreviewedMergesSince(since: Timestamp): Promise<number>;
 
   // Handoffs
 

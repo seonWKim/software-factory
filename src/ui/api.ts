@@ -11,7 +11,7 @@
 import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
-import type { Run, RunAttempt, Stage, StateChange, WorkItem, WorkItemId } from "../core/types.js";
+import type { Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
@@ -51,6 +51,8 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return ok(await queue(c));
     case "/workers":
       return ok(await workers(c));
+    case "/unreviewed-merges":
+      return unreviewedMerges(c, url.searchParams);
     case "/health":
       return ok(await d.health.report(d.scanner));
     case "/settings":
@@ -108,12 +110,17 @@ class ApiCtx {
 
   private readonly labels = new Map<string, Promise<string>>();
 
+  /** The stored label of a project key; the unknown-project text when none is stored. */
+  projectLabel(key: string): Promise<string> {
+    let p = this.labels.get(key);
+    if (!p) this.labels.set(key, (p = readProjectLabel(this.d.store, key)));
+    return p;
+  }
+
   /** The PR's URL, built from the project's stored label (never its key); null with no PR or no stored label. */
   async prUrl(it: WorkItem): Promise<string | null> {
     if (it.pr_number === null) return null;
-    let p = this.labels.get(it.project);
-    if (!p) this.labels.set(it.project, (p = readProjectLabel(this.d.store, it.project)));
-    const label = await p;
+    const label = await this.projectLabel(it.project);
     return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, it.pr_number);
   }
 
@@ -158,7 +165,36 @@ async function overview(c: ApiCtx) {
       failed: recent.filter((r) => r.status === "failed").length,
       tokens: succeeded.reduce((sum, r) => sum + (runTokens(r) ?? 0), 0),
     },
+    unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
+}
+
+const MERGES_DEFAULT = 50;
+const MERGES_MAX = 200;
+
+/** PRs that merged with no work item, newest first. The project is its stored label, never its key. */
+async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
+  let limit = MERGES_DEFAULT;
+  const raw = params.get("limit");
+  if (raw !== null) {
+    if (!/^\d+$/.test(raw) || Number(raw) < 1) return apiError(400, "limit must be a whole number from 1 to 200.");
+    limit = Math.min(Number(raw), MERGES_MAX);
+  }
+  const out = [];
+  for (const m of await c.d.store.listUnreviewedMerges(limit)) {
+    const label = await c.projectLabel(m.project);
+    // Scan the whole sha, then shorten it: a cut-off secret would no longer match a rule.
+    const sha = await c.text(m.merge_sha);
+    out.push({
+      project: await c.text(label),
+      pr_number: m.pr_number,
+      pr_url: c.d.plugins?.prs === "github" && label !== UNKNOWN_PROJECT_LABEL ? await c.text(c.d.prUrl(label, m.pr_number)) : null,
+      merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
+      merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
+      recorded_at: m.at,
+    });
+  }
+  return ok({ as_of: c.now.toISOString(), merges: out });
 }
 
 async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {

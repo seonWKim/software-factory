@@ -24,6 +24,8 @@ export interface Overview {
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
+  /** PRs recorded as merged with no work item in the last 7 days. */
+  unreviewed_merges_7d?: number;
   /** Which plugins are in use: the tables show Issue and PR columns only for "github". */
   plugins?: { issues: "github" | null; prs: "github" | null };
   /** Absent when the server has no status function. */
@@ -162,6 +164,12 @@ export interface Health {
   checks: { status: string; msg: string }[];
 }
 
+/** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */
+export interface UnreviewedMerges {
+  as_of: string;
+  merges: { project: string | null; pr_number: number; pr_url: string | null; merge_sha: string | null; merged_by: string | null; recorded_at: string }[];
+}
+
 /** One settable key on the Settings page. Values are JSON text, as `factory settings set` takes them. */
 export interface SettingRow {
   key: string;
@@ -234,6 +242,7 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {

@@ -415,9 +415,40 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE app_command_requests ADD COLUMN refusal TEXT;
   CREATE INDEX IF NOT EXISTS app_command_requests_pending ON app_command_requests (handled_at, seq);
   `,
-  // 24: merge checks (issue #248, design §5 Merge check). One row per item: its latest local merge check against
+  // 24: one thread table for every item and one command inbox (issue #281). `item_thread`: an item's messages, one
+  // per (item, marker); `command_inbox`: the commands the CLI sends, read in `seq` order, `command_key` the
+  // idempotency key. Each copies the rows of migration 21's table (`item_messages`, `cli_commands`) with their `seq`,
+  // so a saved intake cursor still points at the same next command. The old tables stay; nothing reads or writes them.
+  // IF NOT EXISTS and NOT EXISTS on the copy: safe to run again after the recorded version is set back below 24.
+  `
+  CREATE TABLE IF NOT EXISTS item_thread (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id  TEXT NOT NULL REFERENCES work_items(id),
+    marker        TEXT NOT NULL,
+    body          TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE (work_item_id, marker)
+  );
+  CREATE TABLE IF NOT EXISTS command_inbox (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  );
+  INSERT INTO item_thread (seq, work_item_id, marker, body, created_at)
+  SELECT m.seq, m.work_item_id, m.marker, m.body, m.created_at FROM item_messages m
+  WHERE NOT EXISTS (SELECT 1 FROM item_thread t WHERE t.seq = m.seq OR (t.work_item_id = m.work_item_id AND t.marker = m.marker))
+  ORDER BY m.seq;
+  INSERT INTO command_inbox (seq, command_key, actor, command, args, created_at)
+  SELECT c.seq, c.command_key, c.actor, c.command, c.args, c.created_at FROM cli_commands c
+  WHERE NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.seq = c.seq OR i.command_key = c.command_key)
+  ORDER BY c.seq;
+  `,
+  // 25: merge checks (issue #248, design §5 Merge check). One row per item: its latest local merge check against
   // the base. `mergeable` is 0 or 1; `conflicts` is JSON text (the conflicting paths). Every replica reads it.
-  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 24.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 25.
   `
   CREATE TABLE IF NOT EXISTS merge_checks (
     work_item_id  TEXT PRIMARY KEY REFERENCES work_items(id),

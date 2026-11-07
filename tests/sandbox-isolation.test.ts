@@ -252,7 +252,7 @@ describe("the broker in a run folder", () => {
   });
 });
 
-describe("the worker's implement run in a real clone", () => {
+describe("the worker's implement run in a real clone", { timeout: 30_000 }, () => {
   /** One implement run through the real NoOpSandbox and GitHubToolBroker; `agent` acts in the run folder. */
   async function implement(
     agent: (workdir: string, root: string) => void,

@@ -1,4 +1,4 @@
--- Merge checks (issue #248, design §5 Merge check): the same table as SQLite migration 24. One row per item, its
+-- Merge checks (issue #248, design §5 Merge check): the same table as SQLite migration 25. One row per item, its
 -- latest local merge check against the base. `mergeable` is 0 or 1; `conflicts` is JSON text (the conflicting paths).
 -- Safe to rerun: the table is created only when missing.
 
