@@ -97,6 +97,8 @@ export interface FileConfig {
   max_diff_files?: number;
   /** Stall detection (design §5 Restarts): ms of silence that ends an agent run `stalled`. Absent: 300000. */
   stall_ms?: number;
+  /** First-output limit (design §5 Restarts): ms with no model output from the start that ends a run `stalled`. Absent: 180000. */
+  first_output_ms?: number;
   /** How often a stall pause probes the cheap model. Absent: 600000. */
   probe_interval_ms?: number;
   lease_ms: number;
@@ -650,12 +652,15 @@ export function retryConfig(
 }
 
 /**
- * `stall_ms` and `probe_interval_ms` (design §5 Restarts) with their defaults (STALL_DEFAULTS): positive
- * integers, or startup fails.
+ * `stall_ms`, `first_output_ms` and `probe_interval_ms` (design §5 Restarts) with their defaults
+ * (STALL_DEFAULTS): positive integers, or startup fails.
  */
-export function stallConfig(file: Pick<FileConfig, "stall_ms" | "probe_interval_ms">): { stall_ms: number; probe_interval_ms: number } {
+export function stallConfig(
+  file: Pick<FileConfig, "stall_ms" | "first_output_ms" | "probe_interval_ms">,
+): { stall_ms: number; first_output_ms: number; probe_interval_ms: number } {
   const r = {
     stall_ms: file.stall_ms === undefined ? STALL_DEFAULTS.stall_ms : file.stall_ms,
+    first_output_ms: file.first_output_ms === undefined ? STALL_DEFAULTS.first_output_ms : file.first_output_ms,
     probe_interval_ms: file.probe_interval_ms === undefined ? STALL_DEFAULTS.probe_interval_ms : file.probe_interval_ms,
   };
   for (const [k, v] of Object.entries(r)) {

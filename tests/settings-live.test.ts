@@ -160,6 +160,15 @@ describe("diff, timeout and model keys apply at the next run that starts", () =>
     expect(h.runner.specs.at(-1)).toMatchObject({ role: "implement", timeout_ms: 1234 });
   });
 
+  it("first_output_ms", async () => {
+    const h = await harness();
+    await h.toImplement();
+    expect(h.runner.specs.at(-1)!.first_output_ms).toBe(180_000);
+    await h.set("first_output_ms", 4321);
+    await h.w1.tick();
+    expect(h.runner.specs.at(-1)).toMatchObject({ role: "implement", first_output_ms: 4321 });
+  });
+
   it("run_timeout_ms set during a run does not change that run", async () => {
     let setDuring: Promise<unknown> | null = null;
     const h = await harness({

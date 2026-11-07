@@ -32,13 +32,13 @@ function probeLLM(answers: (boolean | "throw")[]) {
 }
 
 /** A pipeline whose first implement run stalls, and a second controller that runs the probes with `llm`. */
-async function stalled(answers: (boolean | "throw")[] = []) {
+async function stalled(answers: (boolean | "throw")[] = [], error = "no model output for stall_ms (300000 ms) with no tool call open") {
   let first = true;
   const f = await pipeline({
     implement: () => {
       if (first) {
         first = false;
-        return { status: "stalled", output: null, error: "no output for 300000 ms with no tool call open" };
+        return { status: "stalled", output: null, error };
       }
       return { output: { summary: "the summary", next_steps: "the next steps" } };
     },
@@ -80,6 +80,14 @@ describe("stalled runs", () => {
     // Applying it again enqueues nothing more.
     await f.controller.applyRun(run!);
     expect(await f.runs(f.a, "implement")).toHaveLength(2);
+  });
+
+  it("a first-output stall records agent_stalled and starts the model_stall pause, as a silence stall does", async () => {
+    const f = await stalled([], "no model output within first_output_ms (180000 ms)");
+    const [run, retry] = await f.runs(f.a, "implement");
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: AGENT_STALLED, infra: false });
+    expect(retry).toMatchObject({ status: "queued", idempotency_key: retryKey(run!.idempotency_key) });
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
   });
 
   it("many stalls never reach max_attempts or max_restart", async () => {
@@ -189,15 +197,16 @@ describe("the stall pause line", () => {
 });
 
 describe("stall config", () => {
-  it("stall_ms defaults to 300000 and probe_interval_ms to 600000", () => {
-    expect(stallConfig({})).toEqual({ stall_ms: 300_000, probe_interval_ms: 600_000 });
-    expect(stallConfig({ stall_ms: 60_000, probe_interval_ms: 120_000 })).toEqual({ stall_ms: 60_000, probe_interval_ms: 120_000 });
+  it("stall_ms defaults to 300000, first_output_ms to 180000 and probe_interval_ms to 600000", () => {
+    expect(stallConfig({})).toEqual({ stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 });
+    expect(stallConfig({ stall_ms: 60_000, first_output_ms: 30_000, probe_interval_ms: 120_000 })).toEqual({ stall_ms: 60_000, first_output_ms: 30_000, probe_interval_ms: 120_000 });
   });
 
   it("a value that is not a positive integer fails at startup", () => {
     for (const bad of [0, -1, 1.5, "300000", null]) {
       expect(() => stallConfig({ stall_ms: bad as never })).toThrow(/stall_ms must be a positive integer/);
       expect(() => stallConfig({ probe_interval_ms: bad as never })).toThrow(/probe_interval_ms must be a positive integer/);
+      expect(() => stallConfig({ first_output_ms: bad as never })).toThrow(/first_output_ms must be a positive integer/);
     }
   });
 });

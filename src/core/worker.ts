@@ -1773,6 +1773,7 @@ export class Worker {
       writable_paths: [],
       timeout_ms: this.cfg.run_timeout_ms,
       stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
+      first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },

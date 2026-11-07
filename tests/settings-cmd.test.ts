@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { stallConfig } from "../src/compose.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import type { SettingsBase } from "../src/core/settings.js";
+import { SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { type SettingsDeps, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { PROJECT } from "./helpers/fakes.js";
@@ -130,6 +131,26 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     expect(await store.listSettingChanges(10)).toEqual([]);
   });
 
+  it("first_output_ms takes a positive integer and is refused with the config loader's message otherwise", async () => {
+    const { store } = await make();
+    const d = deps(store);
+    for (const bad of [0, -1, 1.5]) {
+      let loader = "";
+      try {
+        stallConfig({ first_output_ms: bad });
+      } catch (err) {
+        loader = (err as Error).message;
+      }
+      expect(loader).toBe("first_output_ms must be a positive integer");
+      expect(await run(d, "set", "first_output_ms", String(bad))).toEqual({ ok: false, lines: [`refused: ${loader}`] });
+    }
+    expect(await store.listSettingChanges(10)).toEqual([]);
+    expect(await run(d, "set", "first_output_ms", "60000")).toEqual({
+      ok: true,
+      lines: ["first_output_ms = 60000 (override; was 180000, default)", "applies at the next run that starts, with no restart"],
+    });
+  });
+
   it("--project: only for the three gate keys, only with the configured repo's ID, and only to tighten", async () => {
     const { store } = await make();
     const d = deps(store);
@@ -191,14 +212,16 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
     clock.advance(1000);
     await run(d, "set", "max_attempts", "2", "--project", "o/r");
     const list = (await run(d, "list")).lines;
-    expect(list).toHaveLength(16 + 3);
+    const n = SETTABLE_KEYS.length;
+    expect(list).toHaveLength(n + 3);
     const line = (k: string) => list.find((l) => l.trimStart().startsWith(`${k} `))!.split(/\s+/).filter(Boolean);
     expect(line("tick_ms")).toEqual(["tick_ms", "override", "500"]);
     expect(line("workers")).toEqual(["workers", "file", "5"]);
     expect(line("phases_auto_approve")).toEqual(["phases_auto_approve", "default", "false"]);
     expect(line("max_attempts")).toEqual(["max_attempts", "file", "3"]);
     expect(line("run_timeout_ms")).toEqual(["run_timeout_ms", "default", "2700000"]);
-    expect(list.slice(16)).toEqual([
+    expect(line("first_output_ms")).toEqual(["first_output_ms", "default", "180000"]);
+    expect(list.slice(n)).toEqual([
       "project github.com/o/r:",
       expect.stringMatching(/^ {2}max_attempts\s+override\s+2$/),
       expect.stringMatching(/^ {2}max_diff_files\s+file\s+10$/),
