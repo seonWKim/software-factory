@@ -638,6 +638,59 @@ export interface FactoryStore {
   appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+
+  // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
+  // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
+  // SQL, and a filter value is always a bound parameter. Callers withhold secret columns themselves.
+
+  /** Every table of the backend's schema, by name, with its row count, columns and the order a page uses. */
+  listTables(): Promise<StoreTable[]>;
+  /**
+   * One page of `table`'s rows, newest first by its `order_by` columns, with the total row count (after the
+   * filter). `limit` defaults to TABLE_PAGE_DEFAULT and is capped at TABLE_PAGE_MAX; `offset` defaults to 0.
+   * Null, with no row read, when the table or the filter's column is not in the schema.
+   */
+  readTablePage(input: TablePageInput): Promise<TablePage | null>;
+}
+
+/** Rows a table page returns when no limit is given. */
+export const TABLE_PAGE_DEFAULT = 50;
+/** The most rows one table page returns. */
+export const TABLE_PAGE_MAX = 200;
+
+/** One table of the store's schema. */
+export interface StoreTable {
+  name: string;
+  rows: number;
+  /** Column names in schema order. */
+  columns: string[];
+  /** Primary-key columns in key order; empty when the table has none. */
+  primary_key: string[];
+  /**
+   * Columns a page sorts by, all descending: the first of created_at, at, started_at, updated_at the table
+   * has, then its primary key; empty for a table with neither (rows in the database's own order).
+   */
+  order_by: string[];
+}
+
+/** A cell as read: text, a number, or null. Other driver types (dates, big integers, bytes) become text. */
+export type TableCell = string | number | null;
+
+export interface TablePageInput {
+  table: string;
+  limit?: number;
+  offset?: number;
+  /** Exact-value match on one column, bound as a parameter. */
+  filter?: { column: string; value: string };
+}
+
+export interface TablePage {
+  rows: Record<string, TableCell>[];
+  /** Rows matching the filter (all rows without one). */
+  total: number;
+  /** The limit applied, after the default and the cap. */
+  limit: number;
+  offset: number;
 }
 
 export interface NewItemMessage {
