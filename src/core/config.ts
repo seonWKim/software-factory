@@ -105,6 +105,12 @@ export interface LoadedConfig {
   branch_prefix: string;
   dials: { spec_gate_min_tier: Tier; auto_merge_max_tier: 0 };
   /**
+   * The merge command (design §4, issue #246): true when factory.config.json names a forge itself in
+   * `plugins.forge` (not one derived from `plugins.source`), so a project turns it on by writing that setting.
+   * Absent or false: no Merge button, and an app `merge` request is refused with a pointer to GitHub.
+   */
+  forge_merge?: boolean;
+  /**
    * The per-project gate settings in layers: max_attempts, max_diff_lines, max_diff_files, budgets, floors
    * (design 2026-11-01). Read only through settingsFor / settingValues (src/core/settings.ts), never directly.
    */

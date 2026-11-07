@@ -285,9 +285,14 @@ const GITHUB_FORGE = "github";
  * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
  * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
  */
+/** Whether factory.config.json's `plugins` names `forge` itself (any value, `"none"` included). */
+function forgeNamed(plugins: unknown): boolean {
+  return plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
+}
+
 export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
   if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
-  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
+  const given = forgeNamed(plugins);
   if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
   if (selection.forge !== undefined) return selection;
   const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
@@ -366,6 +371,8 @@ export async function loadConfig(
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
+    // The merge command's per-project switch: a forge named in plugins.forge, never one derived from the sources.
+    forge_merge: forgeNamed(file.plugins) && plugins.forge !== undefined,
     settings,
     max_loops: file.max_loops,
     phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),

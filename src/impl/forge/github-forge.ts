@@ -1,7 +1,10 @@
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
+import type {
+  ClosePrInput, Forge, ForgeEvent, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrLineComment, PrMergeState,
+} from "../../interfaces/forge.js";
+import { mergePullRequest } from "../broker/github-tool-broker.js";
 import { type GitHubClient, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "../source/github-issue-source.js";
 
@@ -23,6 +26,11 @@ interface GhPullFull extends GhPull {
   /** null while GitHub is still computing it. */
   mergeable: boolean | null;
   merged_by: GhUser | null;
+  state: string;
+  merged: boolean;
+  additions: number;
+  deletions: number;
+  changed_files: number;
 }
 /** A PR review. `state`: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING. */
 interface GhReview {
@@ -324,6 +332,26 @@ export class GitHubForge implements Forge {
     await this.client.commentOnce(this.repo, input.pr_number, input.body(closer), input.marker);
     await this.client.request("PATCH", `${this.base}/pulls/${input.pr_number}`, { state: "closed" });
     return "closed";
+  }
+
+  /** One GET of the PR: its state, head, `mergeable`, merge commit and size. `branch` is GitHub's to know. */
+  async prMergeState(pr_number: number): Promise<PrMergeState> {
+    const p = await this.client.request<GhPullFull>("GET", `${this.base}/pulls/${pr_number}`);
+    return {
+      state: p.merged ? "merged" : p.state === "open" ? "open" : "closed",
+      head_sha: p.head.sha,
+      mergeable: p.mergeable,
+      merge_sha: p.merged ? p.merge_commit_sha : null,
+      lines: typeof p.additions === "number" && typeof p.deletions === "number" ? p.additions + p.deletions : null,
+      files: typeof p.changed_files === "number" ? p.changed_files : null,
+    };
+  }
+
+  /** Through the broker's merge (`mergePullRequest`): the bot merges, only at the reviewed head. */
+  async mergePr(input: MergePrInput): Promise<MergePrResult> {
+    const r = await mergePullRequest(this.client, this.repo, { number: input.pr_number, head_sha: input.head_sha });
+    if (!r.ok) return { merged: false, reason: r.message };
+    return { merged: true, merge_sha: (r.content as { sha: string }).sha };
   }
 
   /**

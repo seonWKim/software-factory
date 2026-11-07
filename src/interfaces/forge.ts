@@ -92,6 +92,34 @@ export interface ClosePrInput {
   body(closer: ExternalIdentity | null): string;
 }
 
+/**
+ * What the merge command re-reads before it merges (design §4, merge command): the PR's state, its current head,
+ * whether it merges cleanly into its base (null while the forge is still working that out), the merge commit once
+ * merged, and its size (added plus deleted lines, changed files; null when the forge does not say).
+ */
+export interface PrMergeState {
+  state: "open" | "merged" | "closed";
+  head_sha: string | null;
+  mergeable: boolean | null;
+  merge_sha: string | null;
+  lines: number | null;
+  files: number | null;
+}
+
+/**
+ * What `mergePr` needs: the PR, its branch and base, and the head that was reviewed (the merge refuses any other).
+ * No text from the item goes along: the merge commit gets the forge's own subject.
+ */
+export interface MergePrInput {
+  pr_number: number;
+  branch: string;
+  base_ref: string;
+  head_sha: string;
+}
+
+/** A merge the forge made, or why it refused one (fixed words, never forge text). */
+export type MergePrResult = { merged: true; merge_sha: string } | { merged: false; reason: string };
+
 /** The PR events, facts and writes the factory reads from and makes on a forge. Agents never call it. */
 export interface Forge {
   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
@@ -139,4 +167,11 @@ export interface Forge {
    * another. Throws on a forge failure; the caller retries.
    */
   closePr(input: ClosePrInput): Promise<"closed" | "not_open">;
+  /** PR `pr_number` (head branch `branch`) as the merge command re-checks it. Read-only. */
+  prMergeState(pr_number: number, branch: string): Promise<PrMergeState>;
+  /**
+   * Merges PR `input.pr_number` into its base, only while its head is still `input.head_sha` (design §4, merge
+   * command). Called by the controller after its re-checks, never by an agent. A refusal changes nothing.
+   */
+  mergePr(input: MergePrInput): Promise<MergePrResult>;
 }

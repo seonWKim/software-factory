@@ -12,7 +12,9 @@ import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
+import type {
+  ClosePrInput, Forge, ForgeEvent, ForgePollResult, MergePrInput, MergePrResult, PrChecks, PrMergeState,
+} from "../../src/interfaces/forge.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
 import { Worker } from "../../src/core/worker.js";
@@ -309,6 +311,29 @@ export class FakeForge implements Forge {
   commitAuthors: Record<string, ExternalIdentity> = {};
   async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
     return this.commitAuthors[sha] ?? null;
+  }
+  /**
+   * What prMergeState answers per PR, over an open, clean PR of 12 lines in 2 files (absent: that, with head
+   * null). The state follows `prStates`, so a merge made here reads back as merged.
+   */
+  mergeStates = new Map<number, Partial<PrMergeState>>();
+  /** Every mergePr call, refused ones included, in order. */
+  mergeCalls: MergePrInput[] = [];
+  /** When set, mergePr refuses with this reason. */
+  mergeRefusal: string | null = null;
+  async prMergeState(pr_number: number): Promise<PrMergeState> {
+    const state = this.prStates.get(pr_number) ?? "open";
+    const merged = this.mergeCalls.find((c) => c.pr_number === pr_number && state === "merged");
+    return {
+      state, head_sha: null, mergeable: true, merge_sha: merged ? `merge-${pr_number}` : null, lines: 12, files: 2,
+      ...this.mergeStates.get(pr_number),
+    };
+  }
+  async mergePr(input: MergePrInput): Promise<MergePrResult> {
+    this.mergeCalls.push(input);
+    if (this.mergeRefusal) return { merged: false, reason: this.mergeRefusal };
+    this.prStates.set(input.pr_number, "merged");
+    return { merged: true, merge_sha: `merge-${input.pr_number}` };
   }
 }
 

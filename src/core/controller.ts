@@ -35,6 +35,7 @@ import {
   REPEATED_FAILURE,
   type FailureClass,
   blockingRunKind,
+  branchFor,
   failureLine,
   repeatsFastInfraFailure,
   repeatsLastFailure,
@@ -245,6 +246,8 @@ const MAX_NOTE_CHARS = 2000;
 const MAX_FEEDBACK_CHARS = 8000;
 /** State change reasons of PR feedback that started an implement run (design §4). */
 const PR_REVISE = "pr_revise_requested";
+/** The state change reason of a merge made by the merge command (design §4, issue #246). */
+const MERGED_BY_COMMAND = "merged_by_command";
 const PR_CHANGES = "pr_changes_requested";
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 const FLOOR_TIER = "floor_tier";
@@ -629,7 +632,9 @@ export class Controller {
     if (await applied()) return this.finishAppRequest(r, item, null);
 
     let refusal: string | null;
-    if (r.command !== "approve") {
+    if (r.command === "merge") {
+      refusal = await this.mergeRequest(r, item);
+    } else if (r.command !== "approve") {
       refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
       const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
@@ -647,6 +652,76 @@ export class Controller {
     // Refused here, but applied by a concurrent try of the same request: that one stands.
     if (refusal !== null && (await applied())) refusal = null;
     await this.finishAppRequest(r, item, refusal === null ? null : say(refusal));
+  }
+
+  /**
+   * An app `merge` request (design §4, merge command): the refusal reason, else null. Off unless config names a
+   * forge in `plugins.forge` (`forge_merge`). Then the `/approve` permission check, the item's state (waiting for a
+   * human merge, a factory PR), and the forge's re-checks (mergeReady); only then one merge through the forge at the
+   * reviewed head, and the item closes as completed with the requester as actor and the request on the state change.
+   * Safe to run twice: an item already merged is left alone, and a PR the forge already reports merged (a crash
+   * between the merge and the close) is closed with no second merge.
+   */
+  private async mergeRequest(r: AppCommandRequest, item: WorkItem): Promise<string | null> {
+    if (item.stage === "CLOSED" && item.merge_sha !== null) return null;
+    const forge = this.forge;
+    if (!forge || this.cfg.forge_merge !== true) {
+      const pr = item.pr_number === null ? "the PR" : `PR #${item.pr_number}`;
+      return `merging from the factory is off for this project (\`plugins.forge\` is not set in factory.config.json); merge ${pr} on GitHub`;
+    }
+    const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
+    if ("refuse" in principal) return principal.refuse;
+    const ready = await this.mergeReady(forge, item);
+    if ("refuse" in ready) return ready.refuse;
+    let merge_sha = ready.merged;
+    if (merge_sha === null) {
+      const m = await forge.mergePr({ pr_number: ready.pr_number, branch: ready.branch, base_ref: this.cfg.repo.base_branch, head_sha: ready.head_sha });
+      if (!m.merged) return m.reason;
+      merge_sha = m.merge_sha;
+    }
+    this.d.log.info("merged from the factory", { work_item_id: item.id, pr_number: ready.pr_number, user_id: principal.user_id });
+    const sha = merge_sha;
+    await this.decide(item.id, (it) => {
+      if (it.stage === "CLOSED" || it.pr_number !== ready.pr_number) return null;
+      return {
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: sha, blocked_on: "none", blocked_reason: null },
+        actor: { kind: "user", id: principal.user_id },
+        reason: MERGED_BY_COMMAND,
+        detail: { [APP_REQUEST]: r.seq, pr_number: ready.pr_number, merge_sha: sha },
+      };
+    });
+    await this.guard("dependents", () => this.releaseDependents(item.source.id));
+    return null;
+  }
+
+  /**
+   * The merge command's re-check, in order, each refusal before any write: waiting for a human merge (so its review
+   * passed), a PR the factory opened, the PR's checks passed (not failed, not pending), its head still the reviewed
+   * head (`last_head_sha`), and it merges cleanly into the base. A PR the forge reports merged skips the rest.
+   */
+  private async mergeReady(
+    forge: Forge,
+    it: WorkItem,
+  ): Promise<{ pr_number: number; branch: string; head_sha: string; merged: string | null } | Refusal> {
+    const phase = commandPhase(it);
+    if (phase !== "merge_pending" || it.pr_number === null) {
+      return { refuse: `the item is ${phaseLabel(phase)}; \`merge\` applies only when it is ${phaseLabel("merge_pending")}` };
+    }
+    if (it.origin !== "factory") return { refuse: `the factory merges only the PRs it opened; merge PR #${it.pr_number} on GitHub` };
+    if (it.last_head_sha === null) return { refuse: "the factory has no record of the head its review read; merge on GitHub" };
+    const pr = { pr_number: it.pr_number, branch: branchFor(it, this.cfg.branch_prefix), head_sha: it.last_head_sha };
+    const state = await forge.prMergeState(pr.pr_number, pr.branch);
+    if (state.state === "merged") return { ...pr, merged: state.merge_sha ?? it.last_head_sha };
+    if (state.state === "closed") return { refuse: `PR #${pr.pr_number} is closed` };
+    const checks = await forge.prChecks(pr.pr_number);
+    if (checks.state === "pending") return { refuse: "the PR's checks are still running; merge once they pass" };
+    if (checks.state === "failed") return { refuse: `${checks.failed.length} of the PR's checks failed` };
+    if (state.head_sha !== pr.head_sha) {
+      return { refuse: "commits arrived after the reviewed head; they need a review before the PR can merge" };
+    }
+    if (state.mergeable === false) return { refuse: `the branch does not merge cleanly into \`${this.cfg.repo.base_branch}\`` };
+    if (state.mergeable === null) return { refuse: "the forge is still working out whether the branch merges cleanly; try again in a minute" };
+    return { ...pr, merged: null };
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
@@ -2741,7 +2816,25 @@ export class Controller {
       ].join("\n")
       : `${ready} A human merge is required.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
-    return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
+    const size = await this.prSize(it);
+    return { patch, actor: SYSTEM, reason: "review_passed", ...(size ? { detail: size } : {}), ...ack };
+  }
+
+  /**
+   * The PR's size for the app's merge confirmation (design §9, merge button), read once as the item becomes ready
+   * to merge and kept on that state change: only on a project with the merge command on, so no other project makes
+   * the read. Null when off, when the forge does not say, or when the read fails (logged).
+   */
+  private async prSize(it: WorkItem): Promise<{ lines_changed: number; files_changed: number } | null> {
+    const forge = this.forge;
+    if (!forge || this.cfg.forge_merge !== true || it.pr_number === null || it.origin !== "factory") return null;
+    try {
+      const s = await forge.prMergeState(it.pr_number, branchFor(it, this.cfg.branch_prefix));
+      return s.lines === null || s.files === null ? null : { lines_changed: s.lines, files_changed: s.files };
+    } catch (err) {
+      this.d.log.warn("reading the PR size failed", { work_item_id: it.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      return null;
+    }
   }
 
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */

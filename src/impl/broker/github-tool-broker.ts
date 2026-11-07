@@ -102,6 +102,36 @@ interface CommentArgs {
   body: string;
   marker: string;
 }
+export interface MergePrArgs {
+  number: number;
+  head_sha: string;
+}
+
+/**
+ * The broker's merge (design §4, merge command): `PUT /pulls/N/merge` with the reviewed head as `sha`, so GitHub
+ * merges only that head, through the bot, with GitHub's own merge commit subject (no item text is sent). Not a
+ * listed tool: no agent run may call it (tools are fenced by a run lease and a merge is the controller's, after its
+ * re-checks), so the GitHub forge's `mergePr` calls it directly. GitHub's 405 (not mergeable: a
+ * branch rule, a check, the merge method) and 409 (the head moved) are refusals in fixed words, never GitHub's
+ * text; a 401/403 is `forge_auth`; anything else throws, as the other tools do.
+ */
+export async function mergePullRequest(client: GitHubClient, repo: RepoRef, a: MergePrArgs): Promise<ToolResult> {
+  if (!/^[0-9a-f]{40,64}$/.test(a.head_sha)) return { ok: false, error_code: "bad_head", message: "head_sha is not a commit sha" };
+  try {
+    const r = await client.request<{ sha: string; merged: boolean }>("PUT", `/repos/${repo.owner}/${repo.name}/pulls/${a.number}/merge`, { sha: a.head_sha });
+    return { ok: true, content: { sha: r.sha } };
+  } catch (err) {
+    const status = refusedStatus(err);
+    if (status) return { ok: false, error_code: FORGE_AUTH, message: `merge_pr: GitHub refused the credentials (${status})` };
+    if (err instanceof GitHubError && err.status === 405) {
+      return { ok: false, error_code: "merge_refused", message: "GitHub refused the merge: a branch rule, a required check or the repository's merge method does not allow it" };
+    }
+    if (err instanceof GitHubError && err.status === 409) {
+      return { ok: false, error_code: "head_changed", message: "the PR's head moved after the review, so GitHub did not merge it" };
+    }
+    throw err;
+  }
+}
 
 /**
  * G2: credentialed GitHub actions, in the worker process. Every call checks the caller still holds

@@ -50,7 +50,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "merge" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -73,6 +73,12 @@ export interface CommandSpec {
   pr_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
+  /**
+   * Sent from the app only (the command inbox), never read from a comment (design §4, merge command): the comment
+   * parser treats its word as unknown, footers and the SET_UP.md table leave it out, and `/help` names it as an app
+   * command, never marked as applying now.
+   */
+  app_only?: true;
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -145,6 +151,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     phases: OPEN_PHASES,
     needs_pr: true,
     changes_state: false,
+  },
+  {
+    name: "merge",
+    usage: "/merge",
+    description:
+      "In the app only, on a project that sets `plugins.forge`: merge the PR through the forge after the factory checks again that it is ready (review passed, checks green, no newer commits, merges cleanly)",
+    phases: ["merge_pending"],
+    needs_pr: true,
+    changes_state: true,
+    app_only: true,
   },
   {
     name: "link",
@@ -248,7 +264,7 @@ const ACCOUNT_COMMANDS: readonly CommandName[] = ["link"];
 
 /** The commands that apply in `s`, in table order; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  return COMMANDS.filter((c) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && applies(c, s)).concat(commandSpec("help"));
+  return COMMANDS.filter((c) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !c.app_only && applies(c, s)).concat(commandSpec("help"));
 }
 
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
@@ -282,7 +298,7 @@ export function helpReply(s: CommandState): string {
     `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
     "",
     ...COMMANDS.map((c) => {
-      const now = applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
+      const now = c.app_only ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
       return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
     }),
     "",
@@ -325,12 +341,12 @@ function whenText(c: CommandSpec): string {
   return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
 }
 
-/** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
+/** The command table in SET_UP.md, generated from COMMANDS (comment commands only); a test keeps the two equal. */
 export function commandTableMarkdown(): string {
   return [
     "| Command | What it does | Applies when |",
     "|---|---|---|",
-    ...COMMANDS.map((c) =>
+    ...COMMANDS.filter((c) => !c.app_only).map((c) =>
       `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""} | ${whenText(c)} |`),
   ].join("\n");
 }
@@ -352,7 +368,7 @@ export function parseComment(body: string): ParsedComment {
   if (!m) return null;
   const word = m[1]!;
   const name = word.toLowerCase();
-  if (!BY_NAME.has(name as CommandName)) return { kind: "unknown", word };
+  if (!BY_NAME.has(name as CommandName) || BY_NAME.get(name as CommandName)!.app_only) return { kind: "unknown", word };
   // An account command is not an item command: sources pass it on as a plain comment, read by parseLink.
   if (ACCOUNT_COMMANDS.includes(name as CommandName)) return null;
   const same = first.trim().slice(m[0].length).replace(/^[.,:;!?]/, "").trim();
