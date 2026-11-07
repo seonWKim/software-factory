@@ -65,7 +65,9 @@ async function seedAll(store: Store): Promise<void> {
   await seed(store, { n: 6, tier: null, closed: true, token_cost: 5, severities: ["minor"] });
 }
 
-const empty = (tier: Tier | null) => ({ tier, items: 0, feedback_weight: 0, rate: null, sufficient: false, reject: 0, retry: 0, token_cost: 0 });
+const empty = (tier: Tier | null) => ({
+  tier, items: 0, feedback_weight: 0, explicit: 0, implicit: 0, rate: null, sufficient: false, reject: 0, retry: 0, token_cost: 0,
+});
 
 describe("factory stats", () => {
   const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
@@ -76,12 +78,12 @@ describe("factory stats", () => {
     const report = await collectStats(store, config);
     expect(report.config).toEqual(config);
     expect(report.tiers).toEqual([
-      { tier: 1, items: 2, feedback_weight: 14, rate: 7, sufficient: true, reject: 1, retry: 1, token_cost: 150 },
+      { tier: 1, items: 2, feedback_weight: 14, explicit: 3, implicit: 0, rate: 7, sufficient: true, reject: 1, retry: 1, token_cost: 150 },
       empty(2),
-      { tier: 3, items: 1, feedback_weight: 0, rate: null, sufficient: false, reject: 0, retry: 2, token_cost: 30 },
+      { tier: 3, items: 1, feedback_weight: 0, explicit: 1, implicit: 0, rate: null, sufficient: false, reject: 0, retry: 2, token_cost: 30 },
       empty(4),
       empty(5),
-      { tier: null, items: 2, feedback_weight: 1, rate: 0.5, sufficient: true, reject: 1, retry: 0, token_cost: 5 },
+      { tier: null, items: 2, feedback_weight: 1, explicit: 1, implicit: 0, rate: 0.5, sufficient: true, reject: 1, retry: 0, token_cost: 5 },
     ]);
   });
 
@@ -90,14 +92,14 @@ describe("factory stats", () => {
     await seedAll(store);
     const text = formatStatsText(await collectStats(store, config));
     const lines = text.split("\n");
-    expect(lines[0]).toMatch(/^tier\s+items\s+feedback\s+rate\s+\/reject\s+\/retry\s+token_cost$/);
+    expect(lines[0]).toMatch(/^tier\s+items\s+feedback\s+explicit\s+implicit\s+rate\s+\/reject\s+\/retry\s+token_cost$/);
     expect(lines.slice(1, 7).map((l) => l.split(/\s{2,}/))).toEqual([
-      ["1", "2", "14", "7.00", "1", "1", "150"],
-      ["2", "0", "0", "not enough data", "0", "0", "0"],
-      ["3", "1", "0", "not enough data", "0", "2", "30"],
-      ["4", "0", "0", "not enough data", "0", "0", "0"],
-      ["5", "0", "0", "not enough data", "0", "0", "0"],
-      ["untiered", "2", "1", "0.50", "1", "0", "5"],
+      ["1", "2", "14", "3", "0", "7.00", "1", "1", "150"],
+      ["2", "0", "0", "0", "0", "not enough data", "0", "0", "0"],
+      ["3", "1", "0", "1", "0", "not enough data", "0", "2", "30"],
+      ["4", "0", "0", "0", "0", "not enough data", "0", "0", "0"],
+      ["5", "0", "0", "0", "0", "not enough data", "0", "0", "0"],
+      ["untiered", "2", "1", "1", "0", "0.50", "1", "0", "5"],
     ]);
     expect(text).toContain("min_sample 2");
     expect(text).toContain("weights: none 0, minor 1, major 3, critical 10");
@@ -122,12 +124,12 @@ describe("factory stats", () => {
     const rows = (n: number) => aggregateStats(Array.from({ length: n }, (_, i) => record(i)), cfg);
 
     const under = rows(9)[1]!;
-    expect(under).toEqual({ tier: 2, items: 9, feedback_weight: 27, rate: null, sufficient: false, reject: 0, retry: 0, token_cost: 9 });
-    expect(formatStatsText({ config: cfg, tiers: rows(9) }).split("\n")[2]).toMatch(/^2\s+9\s+27\s+not enough data\s+0\s+0\s+9$/);
+    expect(under).toEqual({ tier: 2, items: 9, feedback_weight: 27, explicit: 9, implicit: 0, rate: null, sufficient: false, reject: 0, retry: 0, token_cost: 9 });
+    expect(formatStatsText({ config: cfg, tiers: rows(9) }).split("\n")[2]).toMatch(/^2\s+9\s+27\s+9\s+0\s+not enough data\s+0\s+0\s+9$/);
 
     const at = rows(10)[1]!;
-    expect(at).toEqual({ tier: 2, items: 10, feedback_weight: 30, rate: 3, sufficient: true, reject: 0, retry: 0, token_cost: 10 });
-    expect(formatStatsText({ config: cfg, tiers: rows(10) }).split("\n")[2]).toMatch(/^2\s+10\s+30\s+3\.00\s+0\s+0\s+10$/);
+    expect(at).toEqual({ tier: 2, items: 10, feedback_weight: 30, explicit: 10, implicit: 0, rate: 3, sufficient: true, reject: 0, retry: 0, token_cost: 10 });
+    expect(formatStatsText({ config: cfg, tiers: rows(10) }).split("\n")[2]).toMatch(/^2\s+10\s+30\s+10\s+0\s+3\.00\s+0\s+0\s+10$/);
   });
 
   it("adopted items get their own `adopted` row (CLOSED ones only); factory items keep their tier rows", async () => {
@@ -151,11 +153,34 @@ describe("factory stats", () => {
 
     const report = await collectStats(store, config);
     // Tier 1 is unchanged by the two closed tier-1 adopted items.
-    expect(report.tiers[0]).toEqual({ tier: 1, items: 2, feedback_weight: 14, rate: 7, sufficient: true, reject: 1, retry: 1, token_cost: 150 });
-    expect(report.adopted).toEqual({ tier: null, items: 2, feedback_weight: 0, rate: 0, sufficient: true, reject: 0, retry: 0, token_cost: 10 });
+    expect(report.tiers[0]).toEqual({ tier: 1, items: 2, feedback_weight: 14, explicit: 3, implicit: 0, rate: 7, sufficient: true, reject: 1, retry: 1, token_cost: 150 });
+    expect(report.adopted).toEqual({ tier: null, items: 2, feedback_weight: 0, explicit: 0, implicit: 0, rate: 0, sufficient: true, reject: 0, retry: 0, token_cost: 10 });
     const lines = formatStatsText(report).split("\n");
     expect(lines.slice(1, 8).map((l) => l.split(/\s{2,}/)[0])).toEqual(["1", "2", "3", "4", "5", "untiered", "adopted"]);
-    expect(lines[7]!.split(/\s{2,}/)).toEqual(["adopted", "2", "0", "0.00", "0", "0", "10"]);
+    expect(lines[7]!.split(/\s{2,}/)).toEqual(["adopted", "2", "0", "0", "0", "0.00", "0", "0", "10"]);
+  });
+
+  it("shows explicit and implicit verdicts as separate counts; both count in the feedback weight", async () => {
+    const { store } = await newStore();
+    const id = await seed(store, { n: 30, tier: 2, closed: false, token_cost: 1, severities: ["major"] });
+    const record = async (key: string, verdict: "accept" | "changes" | "reverted", severity: VerdictSeverity) => {
+      const row = (await store.listStateChanges(id)).at(-1)!;
+      const r = await store.recordImplicitVerdict({
+        id, state_change_id: row.id, verdict, severity, reason: null, key, target: "pr", pr_head: `head-${key}`,
+      });
+      if (!r.ok) throw new Error(r.reason);
+    };
+    await record("implicit:push:1", "changes", "minor");
+    await record("implicit:merged:1", "accept", "none");
+    await record("implicit:reverted:1", "reverted", "critical");
+    const it = (await store.getWorkItem(id))!;
+    await store.transition({ id, expected_version: it.version, actor: system, reason: "merged", patch: { stage: "CLOSED", close_reason: "completed" } });
+
+    const report = await collectStats(store, { weights: WEIGHTS, min_sample: 1 });
+    expect(report.tiers[1]).toMatchObject({ tier: 2, items: 1, explicit: 1, implicit: 3, feedback_weight: 3 + 1 + 0 + 10 });
+    const text = formatStatsText(report);
+    expect(text.split("\n")[2]!.split(/\s{2,}/).slice(0, 5)).toEqual(["2", "1", "14", "1", "3"]);
+    expect(text).toMatch(/explicit: typed \/verdict comments\. implicit: verdicts from a merge/);
   });
 
   it("an empty store: six zero rows, no rate", async () => {
