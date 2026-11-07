@@ -446,4 +446,18 @@ export const MIGRATIONS: readonly string[] = [
   WHERE NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.seq = c.seq OR i.command_key = c.command_key)
   ORDER BY c.seq;
   `,
+  // 25: host sleeps (design §5 Host sleep, issue #218). One row per sleep a worker saw: one of its waits ended more
+  // than 60 s late. Keyed by (worker_id, woke_at), so recording one again keeps one row. `run_id`: the run the
+  // worker held, null for an idle tick. Ids, a timestamp and a number only. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS host_sleeps (
+    worker_id  TEXT NOT NULL,
+    woke_at    TEXT NOT NULL,
+    gap_ms     INTEGER NOT NULL,
+    run_id     TEXT,
+    PRIMARY KEY (worker_id, woke_at)
+  );
+  CREATE INDEX IF NOT EXISTS host_sleeps_woke ON host_sleeps (woke_at);
+  CREATE INDEX IF NOT EXISTS host_sleeps_run ON host_sleeps (run_id);
+  `,
 ];
