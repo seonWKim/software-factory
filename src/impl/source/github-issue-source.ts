@@ -671,17 +671,17 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
   }
 
+  /** The client's rate-limit budget (`GitHubClient.lowBudget`): true while optional reads should wait. */
+  lowBudget(): boolean {
+    return this.client.lowBudget();
+  }
+
   /**
    * The checks on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per
    * name, GitHub's default) and its commit statuses (older integrations). Three read-only GETs and at most
    * CHECK_PAGES pages of check runs. A check run with a conclusion other than success, neutral or skipped,
    * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
    */
-  /** The client's rate-limit budget (`GitHubClient.lowBudget`): true while optional reads should wait. */
-  lowBudget(): boolean {
-    return this.client.lowBudget();
-  }
-
   async prChecks(pr_number: number): Promise<PrChecks> {
     // Under the budget threshold the gate waits (pending) and a later pass reads the checks.
     if (this.client.lowBudget()) return { state: "pending" };
