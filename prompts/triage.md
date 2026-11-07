@@ -27,6 +27,10 @@ Produce:
   work here.
 - allowed_paths: repo-relative path prefixes the change may touch. As narrow as the work allows.
   An entry ending in `/` covers everything under it; any other entry covers only that exact path.
+  Before answering, ask: Which other files does a change to these paths require? A change often needs a
+  companion file: a test, a migration step, a doc topic file. Allow each one, so the work does not stop
+  at a path limit. The factory also adds the companions the repository declares (`path_companions` in
+  factory.config.json) and says so in the spec.
   A store schema change (a new table, column or migration) needs a migration for every store the repository
   ships. In this repository that means also allowing `migrations/mysql/` and
   `src/impl/store/mysql/migrations.ts` beside the SQLite schema, so a path limit never stops the work halfway.
@@ -35,9 +39,9 @@ Produce:
   under an allowed_paths entry ending in `/`. An output where allowed_paths does not cover files_to_change
   is rejected.
   Docs: `docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic
-  files that apply. In files_to_change and allowed_paths, name the topic files the change touches
-  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), not the index. Name an index only when the change
-  adds a topic file.
+  files that apply. The documentation targets are the topic files the change touches
+  (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`), not the index: name those in files_to_change
+  and allowed_paths. A new topic file also needs its one line in the index, so list the index then too.
 - tier: risk 1–5. 1 = docs/tests only. 2 = small, local code change. 3 = behavior change in core logic,
   config, prompts, gates or permissions. 4 = security-relevant (secrets, auth, sandbox, tool broker).
   5 = needs a rollout plan. When unsure, pick the higher tier.

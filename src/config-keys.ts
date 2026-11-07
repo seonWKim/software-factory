@@ -4,6 +4,7 @@
 
 import type { FileConfig } from "./compose.js";
 import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
+import { pathCompanionProblems } from "./core/companions.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatibleProblems } from "./impl/openai/config.js";
@@ -65,6 +66,7 @@ export const TOP_LEVEL_KEYS = [
   "defaults",
   "projects",
   "openai_compatible",
+  "path_companions",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -192,7 +194,13 @@ export function unknownConfigKeys(raw: unknown): string[] {
 export function checkConfigKeys(raw: unknown): void {
   // The coordination values too (design §5, 2026-11-03): a zero or non-numeric threshold fails at load.
   // The openai_compatible block's values too: base_url and the three model names.
-  const problems = [...unknownConfigKeys(raw), ...coordinationProblems(raw), ...openaiCompatibleProblems(raw)];
+  // The path_companions entries too (design 04-triage.md): each bad entry names its index.
+  const problems = [
+    ...unknownConfigKeys(raw),
+    ...coordinationProblems(raw),
+    ...openaiCompatibleProblems(raw),
+    ...pathCompanionProblems(raw),
+  ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }
 

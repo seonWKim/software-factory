@@ -1,0 +1,15 @@
+# 4. Agents: triage paths and companions
+
+**Path companions (decided 2026-11-07, issue #224).** Triage writes `allowed_paths` and `files_to_change` from the files it expects to change, so a spec often missed a companion file: the MySQL migration step for a schema change, or the design topic file for a decision. The implementer could not write it (`parseTriage` rejects an uncovered `files_to_change` entry, and the pre-push scope gate fails a push outside `allowed_paths` without a retry). Now the repository declares its companions, and the controller adds them:
+
+- **Config.** `path_companions` in `factory.config.json` (optional, top level; listed in `TOP_LEVEL_KEYS`) is a list of `{ when, also }`: `when` one repo-relative path, `also` a non-empty list of repo-relative paths; a path ending in `/` names a folder. It is checked at load (`pathCompanionProblems` in `src/core/companions.ts`, run by `checkConfigKeys`): a value that is not a list, an entry without a non-empty `when`, an empty or non-string `also`, or an unknown key in an entry stops startup, each message naming the key and the entry index. Absent: no companions. The checked-in config declares both store schemas (`also`: `migrations/mysql/` and `src/impl/store/mysql/migrations.ts`) and both doc indexes (`also`: their topic folder).
+- **Matching.** A `when` matches the answer's `files_to_change` only, never `allowed_paths`: equal, under a `when` folder, or a `when` under a named folder. Each `also` path is added to `allowed_paths` unless an allowed path already covers it.
+- **Doc indexes.** Built in, apart from the config: an answer naming `docs/design.md` or `docs/plugins.md` in `files_to_change` or `allowed_paths` gets `docs/design/` or `docs/plugins/` added. The index stays allowed, so a new topic file's index line can still be written.
+- **Where it runs.** In the controller's triage branch, on the raw answer, before `parseTriage` (so a companion listed only in `files_to_change` is accepted, not rejected as uncovered) and before the tier floor (so an added path under a floor raises the tier like any other). The stored `allowed_paths` include the added paths, so the scope gate allows them.
+- **The spec.** The Files section lists each added path under "Added by `path_companions`", with the `when` path that caused it, in every spec comment the triage branch renders (the spec gate and the phase approved by its parent). An answer that matches nothing is unchanged: the same `allowed_paths` and the same spec text.
+- **Split specs.** Only the top-level `allowed_paths` gain companions. Each phase's `allowed_paths` stay as triage wrote them; the phase's own triage run applies the rule when it runs.
+- **The prompt.** `prompts/triage.md` asks which other files a change to the allowed paths requires, and names the topic files (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`) as the documentation targets, not the index.
+
+Not changed: the floors and tier rules, the CI scope gate, the merge gate, per-project companions in the settings layers, and items already triaged (they keep their paths until a `/revise`).
+
+## History
