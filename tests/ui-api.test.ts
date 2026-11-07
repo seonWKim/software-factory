@@ -7,6 +7,7 @@ import type { Timestamp, WorkItem, WorkItemId, WorkerId } from "../src/core/type
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
@@ -103,7 +104,7 @@ async function seeded(opts: { store?: (s: FactoryStore) => FactoryStore } = {}) 
     scanner,
     clock,
     lease_ms: LEASE,
-    prUrl: (project, n) => `https://github.com/${project}/pull/${n}`,
+    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health,
   };
   return { d, store, clock, items: { approve, merge, secretive, done, running, running2, running3, queued, queued2 }, claimed, claimed2, healthRuns: () => healthRuns };
@@ -492,5 +493,44 @@ describe("ui api: withholding and read-only", () => {
       expect((await get(d, path, { method: "HEAD" })).status, path).toBe(200);
     }
     expect(calls.length).toBeGreaterThan(0);
+  });
+});
+
+describe("ui api: plugins, issue and PR links (issue #240)", () => {
+  type Row = { id: string; issue: { number: number; url: string } | null; pr_number: number | null; pr_url: string | null };
+
+  it("overview reports the plugins in use; absent deps mean none", async () => {
+    const { d } = await seeded();
+    expect((await json<{ plugins: unknown }>(d, "/api/v1/overview")).plugins).toEqual({ issues: null, prs: null });
+    const gh = { ...d, plugins: { issues: "github", prs: "github" } } as UiDeps;
+    expect((await json<{ plugins: unknown }>(gh, "/api/v1/overview")).plugins).toEqual({ issues: "github", prs: "github" });
+  });
+
+  it("items carry the issue, null for an adopted PR, and a PR URL built from the stored label", async () => {
+    const { d, store, items } = await seeded();
+    const { project } = items.merge;
+    await saveProjectLabel(store, { key: project, label: "github.com/o/r" });
+    const adopted = (await store.createWorkItem(
+      { ...issue(90), source: { type: "github_issue", id: "o/r#90", link: "https://github.com/o/r/pull/90" } }, system,
+    )).item;
+    await patch(store, adopted, { pr_number: 90 });
+    const list = (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
+    const merge = list.find((i) => i.id === items.merge.id)!;
+    expect(merge.issue).toEqual({ number: 2, url: "https://github.com/o/r/issues/2" });
+    expect(merge.pr_url).toBe("https://github.com/o/r/pull/42");
+    expect(merge.pr_url).not.toContain("github:");
+    const pr = list.find((i) => i.id === adopted.id)!;
+    expect(pr.issue).toBeNull();
+    expect(pr.pr_url).toBe("https://github.com/o/r/pull/90");
+    // The item page gets the same corrected URL.
+    const one = await json<{ item: Row }>(d, `/api/v1/items/${items.merge.id}`);
+    expect(one.item.pr_url).toBe("https://github.com/o/r/pull/42");
+  });
+
+  it("a project with no stored label has a PR number and no URL", async () => {
+    const { d, items } = await seeded();
+    const row = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
+    expect(row.pr_number).toBe(42);
+    expect(row.pr_url).toBeNull();
   });
 });
