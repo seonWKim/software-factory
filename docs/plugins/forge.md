@@ -11,6 +11,11 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
 - Solo default: `"source": ["local"]` (or `[]`): no forge, no GitHub call at all. PR events stop; no item's PR is read, labelled or commented on.
 - Enterprise: `github-issues` (plus any other sources): the `github` forge, with the same reads as before.
 
+**Local items never reach the forge** (2026-11-08, issue #333; design 05-sources, Local items, by source type). An item's route is its source type, not a setting: a `local` item commits its local branch through the `local` broker, opens no PR and merges with `factory merge <id>` into the local base branch, after the install and test commands pass on the merge commit in a temporary worktree; nothing is pushed and no forge call is made for it. Only a GitHub item pushes and opens its PR through the GitHub broker. No `forges` setting and no new key:
+
+- Solo default: no GitHub plugin; local items take the local broker and the local merge with no config.
+- Enterprise: the `github` forge and GitHub broker for GitHub items, with local items on the same local path beside them on the shared store, where a local merge is one conditional ref update and one conditional item transition, so two replicas never merge one change twice.
+
 `"none"` (or `null`, `false`, `""`) selects no forge. Next to `github-issues` an off value fails startup with a message naming `plugins.forge` and `github-issues`: that source's PRs would never close their items (one silent path fewer; it may be allowed later if someone needs it). An unknown name fails startup, naming `Forge`, `plugins.forge` and every available name. The forge is never a guard.
 
 Plugins:
@@ -29,6 +34,7 @@ Switch back / disable: drop `github-issues` from `plugins.source` and leave `plu
 
 ## History
 
+- **Local items never reach the forge** (decision changed 2026-11-08, issue #333). Before: with the GitHub broker selected, a local item pushed to origin and opened a PR like a GitHub item.
 - **`commitsBetween`** (new method, 2026-11-08, issue #316). Before: the forge could name a commit's author but not count the commits in a push.
 
 - **The forge reads PRs** (decision changed 2026-11-07, issue #273, phase 2 of #172). Before: selecting a forge only loaded it; the controller read every PR event and PR fact from the `github-issues` source and sent PR comments and PR status to the `github_issue` adapter, and `plugins.forge` left out meant no forge.
