@@ -4,8 +4,9 @@ import { phaseLabel } from "../src/core/commands.js";
 import type { SourceRef, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
-import type { PrLineComment, SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, pipeline, silent } from "./helpers/fakes.js";
+import type { ForgeEvent, PrLineComment } from "../src/interfaces/forge.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, mallory, pipeline, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // Feedback on a factory PR (design §4, issue #178): `/revise <feedback>` on the PR, and a GitHub "Request
@@ -29,7 +30,7 @@ function review(
   it: WorkItem,
   review_id: string,
   o: { body?: string; comments?: PrLineComment[]; reviewer?: ExternalIdentity; pr?: number; head_branch?: string } = {},
-): SourceEvent {
+): ForgeEvent {
   const pr = o.pr ?? PR;
   return {
     kind: "pr_changes_requested", source: prRef(pr), pr_number: pr, head_branch: o.head_branch ?? `${config.branch_prefix}${it.id}`,
@@ -44,8 +45,12 @@ async function atMergeWait(opts: Parameters<typeof pipeline>[0] = {}) {
   await p.step();
   const waiting = await p.item(item);
   expect(waiting).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: PR, loop_count: 0 });
-  const poll = async (...events: SourceEvent[]) => {
-    p.source.queue.push(...events);
+  /** One poll tick: PR reviews come from the forge, comments from the source. */
+  const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
+    for (const e of events) {
+      if (e.kind === "pr_changes_requested") p.forge.queue.push(e);
+      else p.source.queue.push(e as SourceEvent);
+    }
     await p.controller.tickIntake();
   };
   const refusals = () => p.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
@@ -274,9 +279,11 @@ describe("a 'Request changes' review on a factory PR", () => {
     await f.poll(review(f.it, "5004", { body: "fix it" }));
     await f.poll(review(f.it, "5004", { body: "fix it" }));
     expect(await f.item(f.it)).toEqual(before);
-    expect(f.refusals()).toHaveLength(1);
-    expect(f.refusals()[0]).toMatchObject({ source: prRef(PR), marker: "<!-- factory:refused:review-5004 -->" });
-    expect(f.refusals()[0]!.body).toContain(`the item is ${phaseLabel("reviewing")}`);
+    // The reply goes on the PR, through the forge (issue #273).
+    const replies = f.forge.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toMatchObject({ pr_number: PR, marker: "<!-- factory:refused:review-5004 -->" });
+    expect(replies[0]!.body).toContain(`the item is ${phaseLabel("reviewing")}`);
   });
 
   it("on a PR that is no work item's, or whose item is closed: nothing changes and nothing is posted", async () => {
@@ -304,10 +311,11 @@ describe("feedback on an adopted PR", () => {
   it("/revise on an adopted PR waiting for a human merge starts an implement run the same way", async () => {
     const { store, clock } = await newStore();
     const source = new FakeSource();
-    source.prFileMap[50] = ["src/x.ts"];
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const forge = new FakeForge(source);
+    forge.prFileMap[50] = ["src/x.ts"];
+    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
-    source.queue.push({
+    forge.queue.push({
       kind: "pr_open", source: prRef(50), pr_number: 50, head_branch: "feature/x", head_sha: "h1",
       title: "Speed up the poll", body: "It reads fewer pages.", author: bob, labels: [],
     });

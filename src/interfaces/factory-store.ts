@@ -13,6 +13,8 @@ import type {
   Tier,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveWindow,
   Run,
   RunAttempt,
   RunId,
@@ -24,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -122,6 +127,45 @@ export interface NewRun {
   not_before?: Timestamp | null;
   /** Stored with the run for the worker to read (e.g. `/resolve` notes). Absent or null: none. */
   input?: RunInput | null;
+}
+
+/** The patterns the alarm step looks for across items (design 05-alarms). */
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts";
+
+/** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
+export interface NewAlert {
+  pattern: AlertPattern;
+  /** The dedupe key: the pattern and a hash of its code and normalized detail, never the detail itself. */
+  pattern_key: string;
+  error_code: string;
+  /** Runs (or restarts) that matched. */
+  count: number;
+  /** Egress-scanned before it is stored; null when the scanner flagged it (the code and count stay). */
+  detail: string | null;
+}
+
+export interface Alert extends NewAlert {
+  id: string;
+  created_at: Timestamp;
+}
+
+/** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
+export interface NewImproveReport extends ImproveWindow {
+  run_id: RunId;
+  project: string;
+  groups: ImproveReport["groups"];
+  patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -377,8 +421,10 @@ export interface FactoryStore {
    * Pull-based claim: among queued runs of the given kinds whose `not_before` has passed, the first by kind
    * rank (review, triage, update, implement, resolve), then created_at, then insertion order → running,
    * attempt + 1, new lease with token + 1. An implement-type run whose item already has one running is
-   * skipped, never blocking the runs after it. Returns null while the `rate_limit` claim pause is in effect;
-   * while the `forge_auth` pause is, implement-type runs (implement, update) are skipped and stay queued.
+   * skipped, never blocking the runs after it. Returns null while the `rate_limit`, `model_stall` or `network`
+   * claim pause is in effect; while the `forge_auth` pause is, implement-type runs (implement, update) are skipped
+   * and stay queued; while the `github_rate_limit` pause is, implement-type and review runs are skipped and stay
+   * queued (triage and resolve claim).
    * Coordination (design §5, 2026-11-03), in the same transaction as the claim: a queued `implement` run is
    * skipped, and stays queued, while its item is `blocked_on: dependency` or has a dependency edge that is not
    * satisfied (state `merged`, or the work item of `depends_on` closed `completed` with a merge sha), and, for an
@@ -411,28 +457,45 @@ export interface FactoryStore {
    * Puts a running run back in `queued` as paused, while it is `running` with this `token`: paused_at = now,
    * paused_by, session_id and resume set, lease cleared, no outcome, `attempt` unchanged, not acknowledgeable
    * (it is not finished). lease_lost when the run is no longer ours. Closes the claim's attempt record as `paused`.
+   * `resume` null: nothing to reattach (the network pause requeues a run whose folder is gone), the next claim
+   * starts it afresh, still with `attempt` unchanged.
    */
-  pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume }): Promise<LeaseResult>;
+  pauseRun(runId: RunId, token: number, pause: { paused_by: string; session_id: string | null; resume: RunResume | null }): Promise<LeaseResult>;
   /**
    * Sets claim pause `name` (default `rate_limit`) until `resume_at`, for every work item and worker:
    * `rate_limit` stops every claim (a usage or rate limit), `forge_auth` stops implement-type claims (the forge
-   * refused the credentials). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
-   * when this call moved it, so exactly one caller logs it. For `forge_auth` only, `started` is true when this
+   * refused the credentials), `github_rate_limit` stops implement-type and review claims (GitHub's rate limit, until
+   * its reset). One `claim_pauses` row per name. Only ever moves a pause later. `extended` is true
+   * when this call moved it, so exactly one caller logs it. For every name but `rate_limit`, `started` is true when this
    * call found no pause in effect (none yet, or the last one ended) and began one; it is decided by the same
    * conditional write, so among concurrent callers exactly one starts a pause (one owner comment per pause).
-   * The `rate_limit` result has no `started`.
+   * The `rate_limit` result has no `started`. The probe pauses (`model_stall`, `network`) stay in effect past
+   * their time until a probe passes; `started` also writes their since row.
    */
   pauseClaims(resume_at: Timestamp, name?: ClaimPauseName): Promise<{ extended: boolean; started?: boolean; resume_at: Timestamp }>;
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
-   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
-   * `model_answered` row moves to the probe time, as an answered probe would, so `model_stall_since` reads null too.
-   * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
-   * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
+   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. A probe pause (`model_stall`,
+   * `network`) in effect: its row and its answered row (`model_answered`, `network_answered`) move to the earlier
+   * of the probe time and now, as a passing probe does, so its since row reads null too and a failure right after
+   * starts a new pause. `ended` is true when a pause was in effect. A pause not in effect (none, already over, a
+   * second call) changes no row. The since and answered rows are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Takes the due probe of probe pause `name` (design §5 Restarts): while the pause is in effect with probe time
+   * `due`, moves it to `next` with one conditional write under the claim lock, true for the one caller whose write
+   * landed. Only that replica probes; every other one sees false (another took it, the time moved, or the pause
+   * ended) and probes nothing. A moved, ended or missing pause changes no row and is never started again.
+   */
+  claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
+  /**
+   * @deprecated claimProbe("model_stall", due, next) replaces it; no source file calls it. Removal plan in design
+   * §5 Restarts (docs/design/05-restarts.md): move the store contract tests to claimProbe, then delete it.
+   */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
@@ -486,14 +549,49 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+  /** Runs whose finished_at is in [start, end), oldest first (finished_at, then insertion order). Read-only. */
+  listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]>;
+  /**
+   * Queues a run on an existing item with no transition (design §7: the improve run of a system work item, whose
+   * state never changes). A run with the same idempotency key already there: that run, `created: false`.
+   */
+  enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
+
+  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+
+  /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
+  recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
+  getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
 
   // Coordination (design §5, 2026-11-03)
 
   /**
    * Makes `links` the item's edges: new ones are inserted `open`, kept ones keep their state, others are deleted.
-   * Idempotent. Returns the item's edges.
+   * Idempotent. Returns the item's edges. With `read_at` (the issue's updated_at the links were read at, issue #254)
+   * every edge and the item record it, in the same transaction; without it both keep what they had.
    */
-  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]>;
+  replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]>;
+  /**
+   * The issue updated_at the item's links were last read at (`replaceDependencyEdges` with `read_at`), kept on the
+   * item so an issue with no links has one too. Null: never read with a time, or marked stale. Read-only.
+   */
+  dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null>;
+  /** Clears the item's read time, so the controller reads its links on the next poll. Idempotent. */
+  markDependencyLinksStale(id: WorkItemId): Promise<void>;
   /** Edges of one item, or every edge pointing to one source id, or every edge. Read-only. */
   listDependencyEdges(filter?: { work_item_id?: WorkItemId; depends_on?: string }): Promise<DependencyEdge[]>;
   /** Sets one edge's state. False when there is no such edge. */
@@ -504,6 +602,8 @@ export interface FactoryStore {
   conflictCounts(project: string): Promise<Map<string, number>>;
   /** The item's claim decisions, oldest first. Read-only. */
   listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]>;
+  /** The latest claim decision of each of the items that has one, in one read (the Items page, one read for every row). Read-only. */
+  listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>>;
   /**
    * `/approve` on a held run: bumps the version and writes a state change (reason `coordination_approved`, the
    * approver as actor, detail = run id, holder, cost, threshold) and sets the decision's `approved_by`, in one
@@ -660,6 +760,17 @@ export interface FactoryStore {
    * `work_item_id`: only sleeps recorded during one of that item's runs. Read-only.
    */
   listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]>;
+
+  // Alerts (design 05-alarms): one row per pattern the alarm step saw, at most one per pattern per dedupe window.
+
+  /**
+   * Stores `alert` unless its pattern already alerted within `dedupe_ms` of the store clock's now. One
+   * transaction with a conditional write on the pattern's row, so replicas recording one pattern at once store
+   * one alert; the one that did gets `created: true`.
+   */
+  recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
+  /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
+  listAlerts(opts: { limit: number }): Promise<Alert[]>;
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 

@@ -2,7 +2,7 @@
 // rows as the HTML page, that store text leaves only through the Withholder, and that it never writes.
 // Everything goes through respond(), the server's whole request handling without a socket.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -10,8 +10,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
+import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
+import { serverRevision } from "../src/ui/system-actions.js";
+import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -346,6 +348,44 @@ describe("ui api: items", () => {
     expect(new Set(attempts.map((a) => a.started_at)).size).toBe(3);
     expect(new Set(attempts.map((a) => a.finished_at)).size).toBe(3);
     for (const a of attempts) expect(a.finished_at > a.started_at).toBe(true);
+  });
+});
+
+describe("ui api: item thread (issue #286)", () => {
+  it("item detail returns the thread from the store, oldest first: seq, time, kind, author ID or unknown, channel, anchor, withheld body", async () => {
+    const { d, store, clock, items } = await seeded();
+    const it = items.secretive;
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:spec:1 -->", body: "## Spec\n\nthe spec" });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "github:77", body: `a comment with ${SECRET}` });
+    clock.advance(1_000);
+    await store.recordItemMessage({ work_item_id: it.id, marker: "<!-- factory:refused:app-3 -->", body: "`/approve` was not applied" });
+    await store.recordItemMessage({ work_item_id: items.approve.id, marker: "<!-- factory:spec:2 -->", body: "another item's" });
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    const listed = await store.listItemMessages(it.id);
+    expect(body.thread).toEqual(listed.map((m, i) => ({
+      seq: m.seq,
+      at: m.created_at,
+      kind: ["spec", "comment", "refused"][i],
+      author: i === 1 ? "unknown" : "factory",
+      channel: "github_issue",
+      anchor: `msg-${m.seq}`,
+      body: i === 1 ? "[withheld: github_token]" : m.body,
+    })));
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+    // An item with no entries has an empty thread.
+    expect((await json<{ thread: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).thread).toEqual([]);
+  });
+
+  it("each Needs-you row's need has the anchor of the item's newest factory entry; null when it has none", async () => {
+    const { d, store, items } = await seeded();
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:needs-human:1 -->", body: "first why" });
+    const why = (await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:failed:2 -->", body: "second why" })).message;
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "github:5", body: "a later comment" });
+    const needs = await json<{ items: { id: string; need: { anchor: string | null } }[] }>(d, "/api/v1/items?state=needs");
+    const anchors = Object.fromEntries(needs.items.map((i) => [i.id, i.need.anchor]));
+    expect(anchors[items.secretive.id]).toBe(`msg-${why.seq}`);
+    expect(anchors[items.approve.id]).toBeNull();
   });
 });
 
@@ -990,6 +1030,9 @@ describe("ui api: why an item waits (issue #310)", () => {
         new Proxy(store, {
           get(target, prop, receiver) {
             if (prop === "listClaimDecisions") return async (id: WorkItemId) => decisions.get(id) ?? [];
+            if (prop === "listLatestClaimDecisions") {
+              return async (ids: readonly WorkItemId[]) => new Map(ids.flatMap((id) => decisions.get(id)?.slice(-1).map((x) => [id, x] as const) ?? []));
+            }
             const v = Reflect.get(target, prop, receiver) as unknown;
             return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
           },
@@ -1068,5 +1111,212 @@ describe("ui api: why an item waits (issue #310)", () => {
     const w = await whyOn(d, items.secretive.id);
     expect(w.row.why.text).toBe("[withheld: github_token]");
     expect(w.item.text).toBe("[withheld: github_token]");
+  });
+});
+
+describe("ui api: the server's revision and the app's (issue #311)", () => {
+  it("the overview returns the server's git revision, the same one the web build has built in through Vite define", async () => {
+    const root = new URL("..", import.meta.url).pathname;
+    const server = await serverRevision(root);
+    expect(server).toMatch(/^[0-9a-f]{40}$/);
+    const define = (viteConfig as { define?: Record<string, string> }).define ?? {};
+    expect(JSON.parse(define.__FACTORY_REV__ ?? "null")).toBe(server);
+
+    const { d } = await seeded();
+    const withRev: ApiDeps = { ...d, revision: server };
+    expect((await json<{ server_rev: string | null }>(withRev, "/api/v1/overview")).server_rev).toBe(server);
+    // Without a revision (a test, a checkout without git) it is null, never the supervisor's.
+    expect((await json<{ server_rev: string | null }>(d, "/api/v1/overview")).server_rev).toBeNull();
+  });
+});
+
+describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
+  type Pause = { name: string; ends_at: string; since?: string | null };
+  const pausesOf = async (d: UiDeps) => (await json<{ pauses: Pause[] }>(d, "/api/v1/pauses")).pauses;
+  const at = (clock: FakeClock, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+
+  it("returns each active pause with its end time and a model stall's start; an ended pause is not returned", async () => {
+    const { d, store, clock } = await seeded();
+    expect(await pausesOf(d)).toEqual([]);
+    const began = clock.now().toISOString();
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    await store.pauseClaims(at(clock, 120_000), "rate_limit");
+    await store.pauseClaims(at(clock, 30_000), "forge_auth");
+    const list = await pausesOf(d);
+    expect(list.map((p) => p.name).sort()).toEqual(["forge_auth", "model_stall", "rate_limit"]);
+    expect(list.find((p) => p.name === "model_stall")).toMatchObject({ ends_at: at(clock, 60_000), since: began });
+    expect(list.find((p) => p.name === "rate_limit")).toEqual({ name: "rate_limit", ends_at: at(clock, 120_000) });
+    clock.advance(45_000);
+    expect((await pausesOf(d)).map((p) => p.name).sort()).toEqual(["model_stall", "rate_limit"]);
+    // A model stall whose probe is due stays until a probe answers.
+    clock.advance(200_000);
+    const due = await pausesOf(d);
+    expect(due.map((p) => p.name)).toEqual(["model_stall"]);
+    expect(due[0]!.ends_at < clock.now().toISOString()).toBe(true);
+  });
+
+  type NeedRow = { id: string; level: string; need?: { reason: string; command: string | null } };
+  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_human: "Needs a human" };
+
+  it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
+    const { d, store, items } = await seeded();
+    const more: Record<string, WorkItem> = {};
+    for (const [n, reason] of [[20, "run_failed:implement:diff_too_large"], [21, "max_loops"], [22, "merge_conflict_pending"], [23, "something_new"]] as const) {
+      more[reason] = await make(store, n, `Item ${n}`);
+      await patch(store, more[reason]!, { blocked_on: "human", blocked_reason: reason });
+    }
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const need = (id: string) => rows.find((r) => r.id === id)!.need!;
+    expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("failed: diff_too_large");
+    expect(need(items.approve.id).command).toBe("/approve or /reject <reason>");
+    expect(need(items.merge.id).reason).toBe("merge check running");
+    for (const r of rows) {
+      expect(r.need, r.id).toBeDefined();
+      expect(r.need!.reason.toLowerCase(), r.id).not.toBe(LABELS[r.level]!.toLowerCase());
+    }
+    expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
+  });
+
+  it("a ready-to-merge row shows the merge check: mergeable, or the conflict count", async () => {
+    const { d, store, items } = await seeded();
+    const row = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!.need!;
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("mergeable");
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: false, conflicts: ["a.ts", "b.ts"], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect((await row()).reason).toBe("2 conflicting files");
+  });
+
+  it("a row that does not wait for you has no need", async () => {
+    const { d, items } = await seeded();
+    const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items;
+    expect(rows.find((r) => r.id === items.running.id)!.need).toBeUndefined();
+  });
+
+  it("the overview, items and pauses reads make no forge or other remote call: store reads only", async () => {
+    const calls: string[] = [];
+    const spy = (s: FactoryStore): FactoryStore =>
+      new Proxy(s, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) => {
+            calls.push(String(prop));
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    const forge = { calls: 0 };
+    const { d, store, clock } = await seeded({ store: spy });
+    // A forge stub in the deps: nothing in the UI may reach it.
+    const withForge = { ...d, forge: new Proxy({}, { get: () => { forge.calls++; } }) } as UiDeps;
+    await store.pauseClaims(at(clock, 60_000), "model_stall");
+    calls.length = 0;
+    for (const path of ["/api/v1/overview", "/api/v1/items?state=needs", "/api/v1/pauses"]) await json(withForge, path);
+    expect(forge.calls).toBe(0);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.filter((n) => !/^(get|list|count|schemaVersion)/.test(n))).toEqual([]);
+  });
+});
+
+describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () => {
+  const stored = (clock: FakeClock, over: Record<string, unknown> = {}) => JSON.stringify({
+    limit: 5000, remaining: 0, reset_at: new Date(clock.now().getTime() + 600_000).toISOString(), budget_share: 0.5,
+    share_limit: 2500, counted: 1234, state: "waiting", as_of: clock.now().toISOString(), replica_id: "host:1", ...over,
+  });
+
+  it("the overview shows remaining calls, the reset time, this factory's count and, at 0, a wait with the reset as its reason", async () => {
+    const { d, store, clock } = await seeded();
+    expect((await json<{ github_budget: unknown }>(d, "/api/v1/overview")).github_budget).toBeNull();
+    const reset_at = new Date(clock.now().getTime() + 600_000).toISOString();
+    await store.advanceCursor("github:budget", null, stored(clock));
+    const o = await json<{ github_budget: Record<string, unknown>; system_actions: unknown[] }>(d, "/api/v1/overview");
+    expect(o.github_budget).toMatchObject({
+      limit: 5000, remaining: 0, reset_at, budget_share: 0.5, share_limit: 2500, counted: 1234, replica_id: "host:1",
+      state: "waiting", wait_reason: `waiting for the GitHub rate-limit reset at ${reset_at}`,
+    });
+    // A wait, not an error: nothing for the operator to do.
+    expect(JSON.stringify(o.system_actions)).not.toContain("rate-limit");
+    const html = (await get(d, "/classic")).body;
+    expect(sectionOf(html, "github-budget")).toContain(`waiting for the GitHub rate-limit reset at ${reset_at}`);
+    expect(sectionOf(html, "github-budget")).toContain("this factory counted 1234 of 2500");
+  });
+
+  it("once the stored reset has passed, the window is over: no wait and a count of 0", async () => {
+    const { d, store, clock } = await seeded();
+    await store.advanceCursor("github:budget", null, stored(clock));
+    clock.advance(600_000);
+    const o = await json<{ github_budget: Record<string, unknown> }>(d, "/api/v1/overview");
+    expect(o.github_budget).toMatchObject({ state: "ok", counted: 0, wait_reason: null });
+  });
+});
+
+describe("ui api: items for the tree (issue #295)", () => {
+  type Row = {
+    id: string; parent_id: string | null; phase: number | null; title: string | null; pr_url: string | null;
+    run: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
+    claim: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
+  };
+  const rowsOf = async (d: UiDeps) => new Map((await json<{ items: Row[] }>(d, "/api/v1/items")).items.map((r) => [r.id, r]));
+
+  it("each row has parent_id and phase, and its run with the worker (through the Withholder), start and queue position", async () => {
+    const { d, store, items, claimed, claimed2 } = await seeded();
+    const parent = await make(store, 50, "Split parent");
+    const phase = (await store.createWorkItem({ ...issue(51), title: "Phase", parent: { id: parent.id, phase: 2 } }, system)).item;
+    const rows = await rowsOf(d);
+    expect(rows.get(parent.id)).toMatchObject({ parent_id: null, phase: null, run: null, claim: null });
+    expect(rows.get(phase.id)).toMatchObject({ parent_id: parent.id, phase: 2 });
+    expect(rows.get(items.running.id)!.run).toEqual({
+      kind: "implement", status: "running", attempt: claimed.attempt, worker_id: "host:11:1", started_at: claimed.started_at, position: null,
+    });
+    expect(rows.get(items.running2.id)!.run!.worker_id).toBe("[withheld: github_token]");
+    expect(rows.get(items.queued.id)!.run).toMatchObject({ kind: "triage", status: "queued", worker_id: null, started_at: null, position: 1 });
+    expect(rows.get(items.queued2.id)!.run!.position).toBe(2);
+    expect(rows.get(items.approve.id)!.run).toBeNull();
+    void claimed2;
+  });
+
+  it("a held run carries the latest claim decision: holder, cost and threshold, from one batched read", async () => {
+    const { d, store, clock } = await seeded();
+    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const a = await make(store, 60, "Holder");
+    await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
+    clock.advance(1_000);
+    const b = await make(store, 61, "Held");
+    await enqueue(store, b, "implement", "h:b", { stage: "RUNNING", ...PATHS });
+    const first = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(first.work_item_id).toBe(a.id);
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+    expect(await store.listLatestClaimDecisions([])).toEqual(new Map());
+    const batched = vi.spyOn(store, "listLatestClaimDecisions");
+    const rows = await rowsOf(d);
+    expect(rows.get(b.id)!.claim).toEqual({ decision: "held", holder: "#60", holder_id: a.id, approved: false, cost: 3, threshold: 2.5 });
+    expect([...rows.values()].filter((r) => r.claim === null).length).toBeGreaterThan(0);
+    expect(batched).toHaveBeenCalledTimes(1);
+  });
+
+  it("claim reads one batch and no per-item decisions, and a stale hold from an earlier run is left out", async () => {
+    const { d, store, clock } = await seeded();
+    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const a = await make(store, 70, "Holder");
+    await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
+    clock.advance(1_000);
+    const b = await make(store, 71, "Held");
+    await enqueue(store, b, "implement", "h:b", { stage: "RUNNING", ...PATHS });
+    const first = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+    // The held run ends after the holder finishes; a new implement run (a fix) is queued for b.
+    await store.completeRun(first.id, first.lease!.token, { status: "succeeded", summary: "ok", data: {} });
+    const held = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(held.work_item_id).toBe(b.id);
+    await store.completeRun(held.id, held.lease!.token, { status: "failed", error_code: "agent_error", detail: "x", infra: false });
+    await enqueue(store, b, "implement", "h:b2");
+    expect((await store.listLatestClaimDecisions([b.id])).get(b.id)).toBeDefined();
+    const perItem = vi.spyOn(store, "listClaimDecisions");
+    const batched = vi.spyOn(store, "listLatestClaimDecisions");
+    const rows = await rowsOf(d);
+    expect(rows.get(b.id)!.run).toMatchObject({ kind: "implement", status: "queued" });
+    expect(rows.get(b.id)!.claim).toBeNull();
+    expect(perItem).not.toHaveBeenCalled();
+    expect(batched).toHaveBeenCalledTimes(1);
   });
 });

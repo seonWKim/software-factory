@@ -721,6 +721,33 @@ describe("updater: git-worktree status file", () => {
   });
 });
 
+describe("updater: git-worktree restart list", () => {
+  it("the status file lists the last 10 restarts with time and exit reason, oldest first", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    const read = () => JSON.parse(readFileSync(file, "utf8")) as { state: string; restarts?: { at: string; reason: string }[] };
+    const { launcher, clock, updater } = setup({ statusFile: file });
+    await updater.start();
+    expect(read().restarts).toEqual([]);
+    const times: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      const child = launcher.children[i]!;
+      if (i % 2 === 0) child.lastError = `boom ${i}`;
+      times.push(clock.now().toISOString());
+      child.exit(1);
+      await waitFor(() => read().restarts?.length === Math.min(i + 1, 10), `restart ${i}`);
+      clock.advance(30_000);
+      await updater.poll(); // restarts the child
+    }
+    const list = read().restarts!;
+    expect(list.map((r) => r.at)).toEqual(times.slice(2));
+    expect(list.map((r) => r.reason)).toEqual(times.slice(2).map((_, j) => ((j + 2) % 2 === 0 ? `boom ${j + 2}` : "exit code 1")));
+    // A later state keeps the list.
+    expect(read().state).toBe("running");
+    await updater.shutdown();
+    expect(read().restarts).toHaveLength(10);
+  });
+});
+
 describe("updater: git-worktree pending migrations", () => {
   type Status = { state: string; rev: string | null; target_rev: string | null; child_pid: number | null; pending?: string[]; supervisor_pid?: number };
   /** A pending-steps oracle keyed by revision folder; folders not listed have none. */

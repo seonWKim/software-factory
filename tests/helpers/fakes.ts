@@ -8,10 +8,12 @@ import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interf
 import { PatternEgressScanner } from "../../src/impl/egress/pattern-egress-scanner.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../../src/interfaces/auth-provider.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../src/interfaces/sandbox.js";
+import type { NetworkProbe, NetworkProbeResult } from "../../src/interfaces/network-probe.js";
 import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
+  PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
+import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
 import { Worker } from "../../src/core/worker.js";
@@ -100,7 +102,12 @@ export class FakeSource implements PollSource {
   /** When set, poll throws this instead of returning events. */
   pollError: Error | null = null;
 
-  constructor(readonly type: SourceType = "github_issue") {}
+  /** Like GitHub, a `github_issue` source refuses intake silently; any other type replies. */
+  readonly silent_intake_refusal?: true;
+
+  constructor(readonly type: SourceType = "github_issue") {
+    if (type === "github_issue") this.silent_intake_refusal = true;
+  }
   /** Posted comments; `url` stands in for the forge's comment URL (`<issue link>#issuecomment-<n>`). */
   comments: { source: SourceRef; body: string; marker: string; url: string }[] = [];
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
@@ -176,27 +183,6 @@ export class FakeSource implements PollSource {
   }
   /** Who closed each source item, by source id, as the last delivered source_closed said. */
   closers = new Map<string, ExternalIdentity | null>();
-  /** PR states; a PR not listed is open. closePr turns an open one `closed`. */
-  prStates = new Map<number, "open" | "closed" | "merged">();
-  /** Comments closePr posted on PRs, at most one per marker. */
-  prComments: { pr_number: number; body: string; marker: string }[] = [];
-  /** Every closePr call, failed ones included, in order. */
-  prCloseCalls: number[] = [];
-  /** When set, closePr posts its comment, then throws this instead of closing the PR. */
-  prCloseError: Error | null = null;
-  /** When set, closePr throws this before posting anything. */
-  prCommentError: Error | null = null;
-  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
-    this.prCloseCalls.push(input.pr_number);
-    if ((this.prStates.get(input.pr_number) ?? "open") !== "open") return "not_open";
-    if (this.prCommentError) throw this.prCommentError;
-    if (!this.prComments.some((c) => c.marker === input.marker)) {
-      this.prComments.push({ pr_number: input.pr_number, body: input.body(this.closers.get(input.closed.id) ?? null), marker: input.marker });
-    }
-    if (this.prCloseError) throw this.prCloseError;
-    this.prStates.set(input.pr_number, "closed");
-    return "closed";
-  }
   /** Every setStatus call, in order, including ones that threw. */
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
   /** When set, setStatus records the call, then throws this without changing labels. */
@@ -214,6 +200,88 @@ export class FakeSource implements PollSource {
     for (const s of WORK_STATUSES) if (s !== status) set.delete(s);
     set.add(status);
     this.labels.set(key, set);
+  }
+  /** The status labels on a target. */
+  statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
+    const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
+    return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
+  }
+}
+
+/**
+ * A forge over in-memory PRs of repo o/r (issue #273): `queue` holds the PR events the next poll delivers, the PR
+ * facts answer from the maps below, and PR comments and PR status are recorded. `source`: the FakeSource whose
+ * delivered closes name who closed an item, as GitHub's issue does for closePr.
+ */
+export class FakeForge implements Forge {
+  readonly ref_type = "github_issue" as const;
+  queue: ForgeEvent[] = [];
+  /** Every poll call, failed ones included, with the cursor it was given. */
+  polls: (string | null)[] = [];
+  /** When set, poll throws this instead of returning events. */
+  pollError: Error | null = null;
+  /** PR comments postPrComment posted, at most one per marker; `url` stands in for the comment URL. */
+  comments: { pr_number: number; body: string; marker: string; url: string }[] = [];
+  /** When set, postPrComment throws this. */
+  commentError: Error | null = null;
+  /** Every setPrStatus call, in order, including ones that threw. */
+  statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number }[] = [];
+  /** When set, setPrStatus records the call, then throws this. */
+  statusError: Error | null = null;
+
+  constructor(private readonly source: Pick<FakeSource, "closers"> | null = null) {}
+
+  async poll(cursor: string | null): Promise<ForgePollResult> {
+    this.polls.push(cursor);
+    if (this.pollError) throw this.pollError;
+    const events = this.queue;
+    this.queue = [];
+    return { events, next_cursor: String(Number(cursor ?? "0") + 1) };
+  }
+  prRef(pr_number: number): SourceRef {
+    return { type: "github_issue", id: `o/r#${pr_number}`, link: `https://github.com/o/r/pull/${pr_number}` };
+  }
+  prNumberOf(ref: SourceRef): number | null {
+    const m = /\/pull\/(\d+)$/.exec(ref.link);
+    return ref.type === "github_issue" && m ? Number(m[1]) : null;
+  }
+  async postPrComment(pr_number: number, body: string, marker: string): Promise<{ url: string }> {
+    if (this.commentError) throw this.commentError;
+    const existing = this.comments.find((c) => c.marker === marker);
+    if (existing) return { url: existing.url };
+    const url = `${this.prRef(pr_number).link}#issuecomment-${this.comments.length + 1}`;
+    this.comments.push({ pr_number, body, marker, url });
+    return { url };
+  }
+  async setPrStatus(source: SourceRef, status: WorkStatus, pr_number: number): Promise<void> {
+    this.statusCalls.push({ source, status, pr_number });
+    if (this.statusError) throw this.statusError;
+  }
+  /** The status the PR was last set to, or null. */
+  prStatus(pr_number: number): WorkStatus | null {
+    return this.statusCalls.filter((c) => c.pr_number === pr_number).at(-1)?.status ?? null;
+  }
+  /** PR states; a PR not listed is open. closePr turns an open one `closed`. */
+  prStates = new Map<number, "open" | "closed" | "merged">();
+  /** Comments closePr posted on PRs, at most one per marker. */
+  prComments: { pr_number: number; body: string; marker: string }[] = [];
+  /** Every closePr call, failed ones included, in order. */
+  prCloseCalls: number[] = [];
+  /** When set, closePr posts its comment, then throws this instead of closing the PR. */
+  prCloseError: Error | null = null;
+  /** When set, closePr throws this before posting anything. */
+  prCommentError: Error | null = null;
+  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
+    this.prCloseCalls.push(input.pr_number);
+    if ((this.prStates.get(input.pr_number) ?? "open") !== "open") return "not_open";
+    if (this.prCommentError) throw this.prCommentError;
+    if (!this.prComments.some((c) => c.marker === input.marker)) {
+      const closer = this.source?.closers.get(input.closed.id) ?? null;
+      this.prComments.push({ pr_number: input.pr_number, body: input.body(closer), marker: input.marker });
+    }
+    if (this.prCloseError) throw this.prCloseError;
+    this.prStates.set(input.pr_number, "closed");
+    return "closed";
   }
   /** What prChecks answers, one entry per call, oldest first; once empty, every call answers `passed`. */
   checkResults: PrChecks[] = [];
@@ -242,11 +310,6 @@ export class FakeSource implements PollSource {
   commitAuthors: Record<string, ExternalIdentity> = {};
   async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
     return this.commitAuthors[sha] ?? null;
-  }
-  /** The status labels on a target. */
-  statusLabels(source: SourceRef, pr_number: number | null = null): string[] {
-    const set = this.labels.get(labelTarget(source, pr_number)) ?? new Set<string>();
-    return [...set].filter((l) => (WORK_STATUSES as readonly string[]).includes(l));
   }
 }
 
@@ -295,12 +358,6 @@ export class FakeStreamSource implements StreamSource {
   closed: SourceRef[] = [];
   async closeIssue(source: SourceRef): Promise<void> {
     this.closed.push(source);
-  }
-  /** Every closePr call, in order. The PR is taken to be open; the closer is unknown. */
-  closedPrs: { pr_number: number; body: string; marker: string }[] = [];
-  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
-    this.closedPrs.push({ pr_number: input.pr_number, body: input.body(null), marker: input.marker });
-    return "closed";
   }
   reactions: { source: SourceRef; comment_id: string | null }[] = [];
   statusCalls: { source: SourceRef; status: WorkStatus; pr_number: number | null }[] = [];
@@ -436,6 +493,8 @@ export class FakeSandbox implements Sandbox {
   refs: Record<string, string> = {};
   /** Git argv prefixes (joined by spaces) that exit 1 with a `fatal:` stderr, e.g. "fetch" for a failed base fetch. */
   failGit: string[] = [];
+  /** The stderr of a `failGit` command, when set (e.g. git's "Could not resolve host" line); else `fatal: <verb> failed`. */
+  failGitStderr: string | null = null;
   /** What `git status --porcelain` prints: non-empty means the worktree has changes (a pause commits them). */
   status = "";
   /** When set, a `git commit` moves HEAD here (the WIP commit a pause makes). */
@@ -471,7 +530,7 @@ export class FakeSandbox implements Sandbox {
     const args = cmd.slice(1).join(" ");
     this.gitCalls.push(args);
     this.gitEnvs.push({ ...o.env });
-    if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: `fatal: ${args.split(" ")[0]} failed` };
+    if (this.failGit.some((p) => args.startsWith(p))) return { ...res(1), stderr: this.failGitStderr ?? `fatal: ${args.split(" ")[0]} failed` };
     if (args === "rev-parse HEAD") return out(this.head);
     const ref = args.match(/^rev-parse --verify --end-of-options (.+)\^\{commit\}$/)?.[1];
     if (ref !== undefined && ref in this.refs) return out(`${this.refs[ref]}\n`);
@@ -680,15 +739,28 @@ export const triageSpec = {
  * The whole loop on fakes: a controller and two workers sharing one store, sandbox, broker and runner. Specs are
  * auto-approved (spec_gate_min_tier 3, triageSpec is tier 2), so implement and review follow triage at once.
  */
+/** A NetworkProbe whose answers are scripted, in order; with none left it passes. Counts its probes. */
+export class FakeNetworkProbe implements NetworkProbe {
+  probes = 0;
+  constructor(public answers: NetworkProbeResult[] = []) {}
+  async probe(): Promise<NetworkProbeResult> {
+    this.probes++;
+    return this.answers.shift() ?? { ok: true };
+  }
+}
+
 export async function pipeline(opts: {
   implement?: (spec: AgentRunSpec) => Partial<AgentRunResult> | Promise<Partial<AgentRunResult>>;
   config?: Partial<FactoryConfig>;
   scanner?: EgressScanner;
+  /** The controller's network probe (design §5 Restarts); absent: none, so a network pause ends at its probe time. */
+  network_probe?: NetworkProbe;
 } = {}) {
   const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 }, ...opts.config };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const runner = new FakeRunner({
@@ -698,7 +770,10 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner , repeated_failure_rule: false });
+  const controller = new Controller({
+    store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner, repeated_failure_rule: false,
+    ...(opts.network_probe ? { network_probe: opts.network_probe } : {}),
+  });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
@@ -721,7 +796,7 @@ export async function pipeline(opts: {
   const item = async (it: WorkItem) => (await store.getWorkItem(it.id))!;
   const runs = async (it: WorkItem, kind?: Run["kind"]) => (await store.listRuns(it.id)).filter((r) => !kind || r.kind === kind);
   const agentCalls = (role: AgentRunSpec["role"]) => runner.specs.filter((s) => s.role === role).length;
-  return { config: cfg, clock, store, source, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
+  return { config: cfg, clock, store, source, forge, sandbox, broker, runner, log, controller, w1, w2, submit, step, item, runs, agentCalls };
 }
 
 /** `factory session`'s local records (src/core/session.ts), in memory instead of under state_dir. */
@@ -735,6 +810,7 @@ export class MemorySessionFiles implements SessionFiles {
 
 /** The repo's issues by number, for `session start` on an issue with no work item. Records each number asked. */
 export class FakeIssues implements IssueLookup {
+  readonly type = "github_issue";
   asked: number[] = [];
   constructor(readonly issues: Record<number, SessionIssue> = {}) {}
   issue = async (n: number) => (this.asked.push(n), this.issues[n] ?? null);

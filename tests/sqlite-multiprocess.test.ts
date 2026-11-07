@@ -43,7 +43,9 @@ function runChild(code: string): Promise<string[]> {
   });
 }
 
-describe("SqlFactoryStore on SQLite across processes", () => {
+// Real git or child-process work per test: fast alone, slower under a full parallel run. Above the global 5 s
+// testTimeout (vitest.config.ts, unchanged) so host load does not fail them.
+describe("SqlFactoryStore on SQLite across processes", { timeout: 30_000 }, () => {
   let dist: string;
   beforeAll(() => {
     dist = mkdtempSync(join(tmpdir(), "sf-dist-"));

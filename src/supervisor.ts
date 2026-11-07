@@ -2,6 +2,7 @@
 // worker in this process, between the updater's start and shutdown (which write the status file). Under
 // `git-worktree` it runs them in children forked from built version folders: on a new base commit it starts
 // the new child first, then asks the old one to drain (an IPC message); stop (SIGTERM) goes to every live child.
+// There it also runs `factory ui` as a child, swapped to the new folder on each new revision.
 
 import { type ChildProcess, fork } from "node:child_process";
 import { type Loaded, Plugins } from "./compose.js";
@@ -19,6 +20,7 @@ import {
 } from "./interfaces/updater.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import { runProcess } from "./impl/process/run-process.js";
+import { GitWorktreeUpdater } from "./impl/updater/git-worktree.js";
 import { createPlugin } from "./plugins.js";
 
 export { SUPERVISED_ENV } from "./interfaces/updater.js";
@@ -87,6 +89,8 @@ export async function runDev(loaded: Loaded, inPlace: (signal: AbortSignal) => P
   const clock = await new Plugins(loaded).clock();
   const log = new ConsoleLogger(clock, "supervisor");
   const updater = await createUpdater(loaded, { run: runProcess, launcher: new ForkLauncher(), clock, log });
+  // Built versions also serve the status page, so it restarts on each new revision (design: Self-update).
+  if (updater instanceof GitWorktreeUpdater) updater.serveUi();
   return supervise({ updater, clock, pollMs: loaded.config.poll_interval_ms, log, signals: process, inPlace });
 }
 

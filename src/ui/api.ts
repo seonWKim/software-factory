@@ -19,10 +19,16 @@ import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js"
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
+import { needOf } from "./need.js";
+import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
-import { readSettings } from "./settings-api.js";
+import { failures } from "./failures.js";
+import { readGitHubBudget } from "./github-budget.js";
+import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { type Why, deadlocked } from "./why.js";
+import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { latestWhyAnchor, threadRows } from "./thread.js";
+import type { Why } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -46,13 +52,16 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
 }
 
+/** The API's dependencies: the pause routes' and the overview's system actions'. */
+export type ApiDeps = PauseDeps & SystemDeps;
+
 /** Answers one GET (or HEAD) under /api/v1. */
-export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
+export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   const path = url.pathname.slice("/api/v1".length);
   const c = new ApiCtx(d);
   switch (path) {
     case "/overview":
-      return ok(await overview(c));
+      return ok(await overview(c, url.searchParams));
     case "/items":
       return items(c, url.searchParams);
     case "/runs":
@@ -65,6 +74,8 @@ export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
       return unreviewedMerges(c, url.searchParams);
     case "/health":
       return ok(await health(c));
+    case "/failures":
+      return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
@@ -74,7 +85,7 @@ export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
     case "/data/tables":
       return data(await dataTables(c.data()));
     case "/pauses":
-      return readPauses(d);
+      return pauses(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
@@ -113,6 +124,14 @@ export async function api(d: PauseDeps, url: URL): Promise<ApiResult> {
   return apiError(404, "Not found.");
 }
 
+/** GET /api/v1/pauses with, for a model stall, when it began (`since`): one more store read, no forge call. */
+async function pauses(d: ApiDeps): Promise<ApiResult> {
+  const r = await readPauses(d);
+  const body = r.value as { pauses: { name: string }[] };
+  const since = await d.store.getClaimPause("model_stall_since");
+  return { status: r.status, value: { ...body, pauses: body.pauses.map((p) => (p.name === "model_stall" ? { ...p, since } : p)) } };
+}
+
 function data(r: DataResult): ApiResult {
   return "error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value };
 }
@@ -121,7 +140,7 @@ class ApiCtx {
   readonly w: Withholder;
   readonly now: Date;
 
-  constructor(readonly d: UiDeps) {
+  constructor(readonly d: UiDeps & SystemDeps) {
     this.w = new Withholder(d.scanner);
     this.now = d.clock.now();
   }
@@ -175,6 +194,19 @@ class ApiCtx {
     };
   }
 
+  /**
+   * What a Needs-you row says (need.ts): the reason through the Withholder, the command to type, and `anchor`, the
+   * item page's anchor of the newest factory thread entry (null when the item has none).
+   */
+  async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
+    const n = await needOf(
+      { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
+      it,
+      check && { state: check.state, conflicts: check.conflicts.length },
+    );
+    return { reason: n.reason, command: n.command, anchor: await latestWhyAnchor(this.d.store, it.id) };
+  }
+
   /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
   async whyOfItem(it: WorkItem) {
     const s = this.d.store;
@@ -209,32 +241,46 @@ async function sleepRows(c: ApiCtx, rows: readonly HostSleep[]) {
   return out;
 }
 
-async function overview(c: ApiCtx) {
+async function overview(c: ApiCtx, params: URLSearchParams) {
   const s = c.d.store;
   const stages: Record<Stage, number> = await s.countWorkItemsByStage();
   const running = await s.listRunsByStatus(["running"], LIST_LIMIT);
   const queued = await s.listRunsByStatus(["queued"], LIST_LIMIT);
-  const needs_you = (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await deadlocks(c, [...running, ...queued]));
   const recent = await s.listRunsFinishedWithin(DAY_MS);
   const succeeded = recent.filter((r) => r.status === "succeeded");
   // The supervisor's status (the HTML page's banner); absent without a status function, null when stopped.
   const status = c.d.factoryStatus ? await c.d.factoryStatus() : undefined;
+  // The effective `workers` setting (file, override or default, capped at max_workers), not the file value the status holds.
+  const workers = status && c.d.settings ? await effectiveWorkers(c.d, c.d.settings) : status ? { value: status.workers, source: "file" as const } : null;
   const factory = status === undefined ? undefined : status === null ? null : {
     state: status.state,
     rev: status.rev,
     target_rev: status.target_rev,
     child_pid: status.child_pid,
     since: status.since,
-    workers: status.workers,
+    workers: workers!.value,
+    workers_source: workers!.source,
     error: await c.text(status.error ?? null),
     pending: status.pending ?? [],
   };
+  // System actions (design §9 Status page): store reads and in-process values only, no forge call.
+  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, dashboardRev: parseRevision(params.get("rev")) });
+  const system_actions = [];
+  for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
+  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
+    /** The git revision this UI server runs; the app compares it with the one built into it. */
+    server_rev: c.d.revision ?? null,
     plugins: c.d.plugins ?? { issues: null, prs: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you,
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
+    system_actions,
+    /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
+    github_token_days: token,
+    /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
+    github_budget: await readGitHubBudget(s, c.now),
     running: running.length,
     queued: queued.length,
     last_24h: {
@@ -244,25 +290,6 @@ async function overview(c: ApiCtx) {
     },
     unreviewed_merges_7d: await s.countUnreviewedMergesSince(new Date(c.now.getTime() - 7 * DAY_MS).toISOString() as Timestamp),
   };
-}
-
-/**
- * Open items not blocked on a person whose current run's latest claim decision is a deadlock: they are in Needs
- * you too (issue #310). One claim-decision read per item with an active implement run.
- */
-async function deadlocks(c: ApiCtx, active: readonly Run[]): Promise<number> {
-  const s = c.d.store;
-  const seen = new Set<WorkItemId>();
-  let n = 0;
-  for (const r of active.filter((x) => x.kind === "implement")) {
-    if (seen.has(r.work_item_id)) continue;
-    seen.add(r.work_item_id);
-    const d = (await s.listClaimDecisions(r.work_item_id)).at(-1) ?? null;
-    if (!d || !active.some((x) => x.work_item_id === r.work_item_id && deadlocked(d, x))) continue;
-    const it = await s.getWorkItem(r.work_item_id);
-    if (it && it.stage !== "CLOSED" && it.blocked_on !== "human") n++;
-  }
-  return n;
 }
 
 const MERGES_DEFAULT = 50;
@@ -305,6 +332,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const out = [];
   for (const r of shown) {
     const it = r.item;
+    const decision = r.decision; // the current run's only: an earlier run's hold is stale
+    const merge_check = await mergeCheckRow(c, it, checks.get(it.id) ?? null);
     out.push({
       id: it.id,
       source: { type: it.source.type, id: it.source.id, link: it.source.link },
@@ -326,8 +355,28 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       version: it.version,
       dependents: r.dependents,
       conflicts: r.conflicts,
-      merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
+      merge_check,
+      need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
+      parent_id: it.parent_id,
+      phase: it.phase,
+      waiting_on_number: r.input.waiting_on_number ?? null,
+      run: r.run && {
+        kind: r.run.kind,
+        status: r.run.status,
+        attempt: r.run.attempt,
+        worker_id: r.run.lease ? await c.text(r.run.lease.owner) : null,
+        started_at: r.run.started_at,
+        position: r.run.status === "queued" ? r.position : null,
+      },
+      claim: decision && {
+        decision: decision.decision,
+        holder: await c.text(decision.holder_ref),
+        holder_id: decision.holder_work_item_id,
+        approved: decision.approved_by !== null,
+        cost: decision.cost,
+        threshold: decision.threshold,
+      },
     });
   }
   // The closed items count in the facets even when the list leaves them out (the Closed option's count).
@@ -412,6 +461,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       const parts = runParts(stored, id, r.id);
       return parts.length > 0 ? [[r.id, parts] as const] : [];
     })),
+    /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
+    thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };

@@ -11,6 +11,8 @@ import type {
   DependencyState,
   Handoff,
   HostSleep,
+  ImproveReport,
+  ImproveReportId,
   Run,
   RunAttempt,
   RunAttemptStatus,
@@ -21,6 +23,10 @@ import type {
   SourceRef,
   SourceType,
   Stage,
+  StandingGate,
+  StandingProposal,
+  StandingProposalId,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   StateChangeId,
@@ -34,6 +40,7 @@ import type {
   VerdictSeverity,
   WorkItem,
   WorkItemId,
+  WorkItemPatch,
   ClaimPauseName,
   RunInput,
   RunResume,
@@ -49,11 +56,13 @@ import {
   type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
+  holdOutcome,
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
+  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, NETWORK, NETWORK_ANSWERED, PROBE_PAUSES, type ProbePause,
+  SESSION_LOST, failureClass, pathsOverlap, probePauseOf,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -69,6 +78,7 @@ import type {
   BudgetCheckpointResult,
   ClaimInput,
   CliCommand,
+  Alert,
   FactoryStore,
   InboxRow,
   ItemMessage,
@@ -83,9 +93,13 @@ import type {
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
+  NewAlert,
+  NewImproveReport,
   NewInboxEvent,
   NewItemMessage,
   NewRun,
+  NewStandingProposal,
+  NewStandingRule,
   NewUnreviewedMerge,
   NewWorkItem,
   OpenBudgetCheckpointInput,
@@ -122,8 +136,8 @@ import { migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
+import { changeAssignments, changeFields } from "./change-fields.js";
 import {
-  WORK_ITEM_COLUMNS,
   diffPatch,
   newId,
   newWorkItem,
@@ -138,7 +152,7 @@ import {
   rowToUnreviewedMerge,
   rowToVerdict,
   rowToWorkItem,
-  workItemValues,
+  workItemInsert,
 } from "./rows.js";
 
 /**
@@ -185,10 +199,10 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { item: existing, created: false };
 
       const item = newWorkItem(input, this.now());
-      const values = workItemValues(item);
+      const { columns, values } = workItemInsert(item, await changeFields(tx, item.project, item.pr_number));
       const inserted = await this.insertOnce(
         tx,
-        `INSERT INTO work_items (${WORK_ITEM_COLUMNS}) VALUES (${placeholders(values.length)})`,
+        `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
         values,
       );
       // A concurrent intake of the same source committed first.
@@ -222,8 +236,10 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getWorkItemByPr(project: string, pr_number: number): Promise<WorkItem | null> {
     const [row] = await this.db.all(
-      `SELECT * FROM work_items WHERE project = ? AND pr_number = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, pr_number],
+      // change_ref first; pr_number for a row an older controller wrote without it (change_ref NULL).
+      `SELECT * FROM work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
+         ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
+      [project, String(pr_number), pr_number],
     );
     return row ? rowToWorkItem(row) : null;
   }
@@ -289,7 +305,7 @@ export class SqlFactoryStore implements FactoryStore {
       }
     }
 
-    const { changes, sets, values } = diffPatch(current, input.patch);
+    const { changes, sets, values } = await this.patchSql(tx, current, input.patch);
     const now = this.now();
     const version = current.version + 1;
     const updated = await tx.run(
@@ -496,23 +512,26 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
-      // implement-type claims only, and so does a failed push_access or pr_api preflight check (design §5
-      // Restarts). All are rows of claim_pauses, read under the lock.
+      // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
+      // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
+      // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED, NETWORK, NETWORK_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
       const active = (name: ClaimPauseName) => (pauses.get(name) ?? "") > now;
       if (active(RATE_LIMIT_PAUSE)) return null;
-      // A stall pauses every claim until a probe answers, not until a time (design §5 Restarts).
-      if (stallInEffect(pauses.get(MODEL_STALL), pauses.get(MODEL_ANSWERED))) return null;
+      // A stall or a dead network pauses every claim until a probe passes, not until a time (design §5 Restarts).
+      const probing = (p: ProbePause) => probeInEffect(pauses.get(p), pauses.get(PROBE_PAUSES[p].answered));
+      if (probing(MODEL_STALL) || probing(NETWORK)) return null;
       // `workers pause`: this loop's own row or the all-flag stops its claims (design §5 Pause), read under the lock.
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
       const forgePaused = active(FORGE_AUTH_PAUSE) || active(PREFLIGHT_ACCESS_PAUSE);
+      const githubPaused = active(GITHUB_RATE_LIMIT);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -549,6 +568,9 @@ export class SqlFactoryStore implements FactoryStore {
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // A GitHub rate limit holds every kind that calls GitHub on its way (implement, update, review) until the
+        // reset; triage and resolve still claim.
+        if (githubPaused && (writer || next.kind === "review")) continue;
         if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
@@ -644,7 +666,8 @@ export class SqlFactoryStore implements FactoryStore {
 
   /**
    * Whether queued implement run `runId` may be claimed now (design §5, 2026-11-03). Writes the run's claim
-   * decision when the cost rule decided it and the decision changed.
+   * decision when the cost rule decided it and the decision changed. A `held` run then follows `hold_policy`
+   * (issue #314), timed from `held_since`: the start of the hold, kept while the run stays held.
    */
   private async coordinate(
     tx: SqlExecutor, runId: RunId, itemId: WorkItemId, c: CoordContext, s: CoordinationSettings,
@@ -660,12 +683,20 @@ export class SqlFactoryStore implements FactoryStore {
       c.conflicts.get(it.project) ?? new Map(), s);
     const verdict = claimDecision(holds);
     if (verdict === "free") return true;
+    const now = this.now();
+    const since = existing?.decision === "held" ? (existing.held_since ?? existing.at) : now;
+    const write = (decision: ClaimDecision["decision"]) => this.writeDecision(tx, it, runId, decision, holds[0]!, s.max_cost, existing, since);
     if (existing?.approved_by) {
-      await this.writeDecision(tx, it, runId, "approved", holds[0]!, s.max_cost, existing);
+      await write("approved");
       return true;
     }
-    await this.writeDecision(tx, it, runId, verdict === "deadlock" ? "deadlock" : "held", holds[0]!, s.max_cost, existing);
-    return verdict === "deadlock";
+    if (verdict === "deadlock") {
+      await write("deadlock");
+      return true;
+    }
+    const outcome = holdOutcome(holds, s, Date.parse(now) - Date.parse(since));
+    await write(outcome);
+    return outcome !== "held";
   }
 
   private refFor(c: CoordContext, holderId: string, self: WorkItem): string {
@@ -677,7 +708,7 @@ export class SqlFactoryStore implements FactoryStore {
   /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
   private async writeDecision(
     tx: SqlExecutor, it: WorkItem, runId: RunId, decision: ClaimDecision["decision"], hold: Hold, threshold: number,
-    existing: ClaimDecision | null,
+    existing: ClaimDecision | null, held_since: Timestamp,
   ): Promise<void> {
     const row = {
       decision,
@@ -688,27 +719,30 @@ export class SqlFactoryStore implements FactoryStore {
       cost: hold.cost,
       threshold,
       fallback: hold.holder.fallback ? 1 : 0,
+      held_since,
     };
     if (
       existing && existing.decision === row.decision && existing.holder_work_item_id === row.holder_work_item_id &&
       existing.holder_ref === row.holder_ref && existing.holder_kind === row.holder_kind &&
       JSON.stringify(existing.shared) === row.shared && existing.cost === row.cost && existing.threshold === row.threshold &&
-      (existing.fallback ? 1 : 0) === row.fallback
+      (existing.fallback ? 1 : 0) === row.fallback && existing.held_since === row.held_since
     ) {
       return;
     }
-    const values = [row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback];
+    const values = [
+      row.decision, row.holder_work_item_id, row.holder_ref, row.holder_kind, row.shared, row.cost, row.threshold, row.fallback, row.held_since,
+    ];
     const now = this.now();
     const updated = await tx.run(
       `UPDATE claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
-         threshold = ?, fallback = ?, at = ? WHERE run_id = ?`,
+         threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
       [...values, now, runId],
     );
     if (updated === 0) {
       await this.insertOnce(
         tx,
         `INSERT INTO claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
-           threshold, fallback, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+           threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [runId, it.id, ...values, now],
       );
     }
@@ -721,8 +755,9 @@ export class SqlFactoryStore implements FactoryStore {
     // `started` for every name but rate_limit: the rate-limit pause's result stays exactly as it was (out of this change).
     const result = (extended: boolean, started: boolean, at: Timestamp) =>
       name === RATE_LIMIT_PAUSE ? { extended, resume_at: at } : { extended, started, resume_at: at };
-    if (name === MODEL_STALL) return this.pauseForStall(resume_at);
-    if (name === MODEL_STALL_SINCE) throw new Error("model_stall_since is written by the store when a stall pause starts");
+    const probe = probePauseOf(name);
+    if (probe === name) return this.pauseForProbe(probe, resume_at);
+    if (probe !== null && name === PROBE_PAUSES[probe].since) throw new Error(`${name} is written by the store when a ${probe} pause starts`);
     return this.db.transaction(async (tx) => {
       if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
         return result(true, true, resume_at);
@@ -744,46 +779,59 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /**
-   * The stall pause (design §5 Restarts), under the claim lock so a claim, a stall and a probe never interleave.
-   * It is in effect while its row's time (the next probe) is after the last answered probe, whatever the clock
-   * says. Not in effect: this call starts one (`started`) and writes when it began (`model_stall_since`). In
+   * A probe pause, `model_stall` or `network` (design §5 Restarts), under the claim lock so a claim, a failure and a
+   * probe never interleave. It is in effect while its row's time (the next probe) is after its answered row, whatever
+   * the clock says. Not in effect: this call starts one (`started`) and writes when it began (its since row). In
    * effect: only a later probe time moves it.
    */
-  private async pauseForStall(resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
-    const { forUpdate } = this.db.dialect;
+  private async pauseForProbe(pause: ProbePause, resume_at: Timestamp): Promise<{ extended: boolean; started: boolean; resume_at: Timestamp }> {
+    const { since: sinceRow } = PROBE_PAUSES[pause];
     return this.db.transaction(async (tx) => {
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const rows = new Map(
-        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
-          .map((r) => [r.name as string, r.resume_at as Timestamp]),
-      );
-      const current = rows.get(MODEL_STALL);
-      const answered = rows.get(MODEL_ANSWERED);
-      if (current !== undefined && stallInEffect(current, answered)) {
+      const { current, answered } = await this.probeRows(tx, pause, true);
+      if (current !== undefined && probeInEffect(current, answered)) {
         if (resume_at <= current) return { extended: false, started: false, resume_at: current };
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, MODEL_STALL]);
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, pause]);
         return { extended: true, started: false, resume_at };
       }
       // A probe time not after the last answer would start a pause that is already over.
       if (answered !== undefined && resume_at <= answered) return { extended: false, started: false, resume_at: current ?? resume_at };
-      const now = this.now();
-      for (const [name, at] of [[MODEL_STALL, resume_at], [MODEL_STALL_SINCE, now]] as const) {
-        if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
-          await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
-        }
-      }
+      await this.setPauseRows(tx, [[pause, resume_at], [sinceRow, this.now()]]);
       return { extended: true, started: true, resume_at };
     });
   }
 
+  /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
+  private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
+    if (lock) await tx.all(`SELECT name FROM claim_locks WHERE name = ?${this.db.dialect.forUpdate}`, [CLAIM_LOCK]);
+    const answeredRow = PROBE_PAUSES[pause].answered;
+    const rows = new Map(
+      (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
+        .map((r) => [r.name as string, r.resume_at as Timestamp]),
+    );
+    const current = rows.get(pause);
+    const answered = rows.get(answeredRow);
+    return { ...(current !== undefined && { current }), ...(answered !== undefined && { answered }) };
+  }
+
+  /** Writes each claim_pauses row, inserting the ones not there yet. */
+  private async setPauseRows(tx: SqlExecutor, rows: readonly (readonly [string, Timestamp])[]): Promise<void> {
+    for (const [name, at] of rows) {
+      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
+        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
+      }
+    }
+  }
+
   async getClaimPause(name: ClaimPauseName = RATE_LIMIT_PAUSE): Promise<Timestamp | null> {
-    if (name === MODEL_STALL || name === MODEL_STALL_SINCE) {
-      // In effect until a probe answers, not until a time: the probe time is returned also once it passed.
+    const probe = probePauseOf(name);
+    if (probe !== null && name !== PROBE_PAUSES[probe].answered) {
+      // In effect until a probe passes, not until a time: the probe time is returned also once it passed.
+      const { since, answered } = PROBE_PAUSES[probe];
       const rows = new Map(
-        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [MODEL_STALL, MODEL_STALL_SINCE, MODEL_ANSWERED]))
+        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [probe, since, answered]))
           .map((r) => [r.name as string, r.resume_at as Timestamp]),
       );
-      if (!stallInEffect(rows.get(MODEL_STALL), rows.get(MODEL_ANSWERED))) return null;
+      if (!probeInEffect(rows.get(probe), rows.get(answered))) return null;
       return rows.get(name) ?? null;
     }
     const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
@@ -792,30 +840,43 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }> {
-    if (name === MODEL_STALL_SINCE || name === MODEL_ANSWERED) throw new Error(`${name} is not a pause of its own; end model_stall`);
-    if (name === MODEL_STALL) return this.endStall();
-    // Conditional: only a row still in effect moves, so a second call, or one with no pause, writes nothing.
+    const probe = probePauseOf(name);
+    if (probe !== null && probe !== name) throw new Error(`${name} is not a pause of its own; end ${probe}`);
+    if (probe !== null) return this.endProbe(probe);
+    // Conditional: only a row still in effect moves, so a second call, or one with no pause in effect, writes nothing.
     const now = this.now();
     const ended = await this.db.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ?", [now, name, now]);
     return { ended: ended === 1 };
   }
 
-  /** Ends a stall pause as an answered probe would: model_answered moves to the probe time, under the claim lock. */
-  private async endStall(): Promise<{ ended: boolean }> {
-    const { forUpdate } = this.db.dialect;
+  /**
+   * Ends a probe pause as a passing probe does, under the claim lock: its row and its answered row both move to the
+   * earlier of the probe time and now. Never a future answer, so a failure right after starts a pause.
+   */
+  private async endProbe(pause: ProbePause): Promise<{ ended: boolean }> {
     return this.db.transaction(async (tx) => {
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const rows = new Map(
-        (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [MODEL_STALL, MODEL_ANSWERED]))
-          .map((r) => [r.name as string, r.resume_at as Timestamp]),
-      );
-      const probeAt = rows.get(MODEL_STALL);
-      if (probeAt === undefined || !stallInEffect(probeAt, rows.get(MODEL_ANSWERED))) return { ended: false };
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [MODEL_ANSWERED, probeAt]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at < ?", [probeAt, MODEL_ANSWERED, probeAt]);
-      }
+      const { current, answered } = await this.probeRows(tx, pause, true);
+      if (current === undefined || !probeInEffect(current, answered)) return { ended: false };
+      const now = this.now();
+      const at = current < now ? current : now;
+      await this.setPauseRows(tx, [[pause, at], [PROBE_PAUSES[pause].answered, at]]);
       return { ended: true };
     });
+  }
+
+  async claimProbe(name: ProbePause, due: Timestamp, next: Timestamp): Promise<boolean> {
+    // Under the claim lock, as every probe pause write: a pause ended meanwhile is never moved back into effect.
+    // Conditional on the probe time the caller read: of replicas that saw the same due probe, one write lands.
+    return this.db.transaction(async (tx) => {
+      const { answered } = await this.probeRows(tx, name, true);
+      if (!probeInEffect(due, answered) || next <= due) return false;
+      return (await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
+    });
+  }
+
+  /** @deprecated Use claimProbe("model_stall", …); see FactoryStore.takeStallProbe for the removal plan. */
+  async takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }> {
+    return { taken: await this.claimProbe(MODEL_STALL, due, next) };
   }
 
   // Worker pauses (design §5 Pause)
@@ -861,7 +922,7 @@ export class SqlFactoryStore implements FactoryStore {
   async pauseRun(
     runId: RunId,
     token: number,
-    pause: { paused_by: string; session_id: string | null; resume: RunResume },
+    pause: { paused_by: string; session_id: string | null; resume: RunResume | null },
   ): Promise<LeaseResult> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
@@ -870,7 +931,7 @@ export class SqlFactoryStore implements FactoryStore {
         `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = NULL,
            paused_at = ?, paused_by = ?, session_id = ?, pause_state = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
-        [now, pause.paused_by, pause.session_id, JSON.stringify(pause.resume), now, runId, token],
+        [now, pause.paused_by, pause.session_id, pause.resume === null ? null : JSON.stringify(pause.resume), now, runId, token],
       );
       if (paused === 1) await this.closeAttempt(tx, runId, token, "paused", now);
       return paused === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
@@ -1029,7 +1090,7 @@ export class SqlFactoryStore implements FactoryStore {
       );
       // A session start is the run's one claim (design §6): it gets its attempt record like any claim.
       await this.openAttempt(tx, (await this.selectRun(tx, runId))!, now);
-      const { changes, sets, values } = diffPatch(current, input.patch);
+      const { changes, sets, values } = await this.patchSql(tx, current, input.patch);
       const version = current.version + 1;
       await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
         ...values, version, now, input.id, input.expected_version,
@@ -1112,9 +1173,90 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToRun);
   }
 
+  async listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
+      [start, end],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const run = await this.insertRun(tx, input);
+      if (run) return { run, created: true };
+      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      return { run: rowToRun(row!), created: false };
+    });
+  }
+
+  // Improve reports (design §7)
+
+  async recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
+    const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        report.id, report.run_id, report.project, report.window_start, report.window_end,
+        JSON.stringify(report.groups), JSON.stringify(report.patterns), report.created_at,
+      ],
+    );
+    return created ? { report, created } : { report: (await this.getImproveReport(input.run_id))!, created };
+  }
+
+  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
+    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  // Standing approvals (design 05-standing-approvals)
+
+  async putStandingRule(input: NewStandingRule): Promise<StandingRule> {
+    return this.db.transaction(async (tx) => {
+      const now = this.now();
+      const enabled = input.enabled ? 1 : 0;
+      const inserted = await this.insertOnce(
+        tx,
+        "INSERT INTO standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.gate, input.tier, enabled, input.set_by, now, now],
+      );
+      if (!inserted) {
+        await tx.run("UPDATE standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
+          enabled, input.set_by, now, input.gate, input.tier,
+        ]);
+      }
+      const [row] = await tx.all("SELECT * FROM standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
+      return rowToStandingRule(row!);
+    });
+  }
+
+  async listStandingRules(): Promise<StandingRule[]> {
+    return (await this.db.all("SELECT * FROM standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
+  }
+
+  async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
+    const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
+    const created = await this.insertOnce(
+      this.db,
+      "INSERT INTO standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [proposal.id, proposal.gate, proposal.tier, proposal.run_length, proposal.threshold, proposal.created_at],
+    );
+    if (created) return { proposal, created };
+    const [row] = await this.db.all("SELECT * FROM standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
+      input.gate, input.tier, input.run_length,
+    ]);
+    return { proposal: rowToStandingProposal(row!), created };
+  }
+
+  async listStandingProposals(): Promise<StandingProposal[]> {
+    return (await this.db.all("SELECT * FROM standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
+  }
+
   // Coordination (design §5, 2026-11-03)
 
-  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
+  async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[], read_at?: Timestamp): Promise<DependencyEdge[]> {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const wanted = new Map<string, DependencyLink>();
@@ -1130,9 +1272,22 @@ export class SqlFactoryStore implements FactoryStore {
           [id, l.depends_on, l.kind, now, now],
         );
       }
+      if (read_at !== undefined) {
+        await tx.run("UPDATE dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
+        await tx.run("UPDATE work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
+      }
       const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
       return rows.map(rowToDependencyEdge);
     });
+  }
+
+  async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
+    const [row] = await this.db.all("SELECT edges_source_updated_at FROM work_items WHERE id = ?", [id]);
+    return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
+  }
+
+  async markDependencyLinksStale(id: WorkItemId): Promise<void> {
+    await this.db.run("UPDATE work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
   }
 
   async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {
@@ -1190,6 +1345,20 @@ export class SqlFactoryStore implements FactoryStore {
   async listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> {
     const rows = await this.db.all(`SELECT * FROM claim_decisions WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToClaimDecision);
+  }
+
+  async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
+    const out = new Map<WorkItemId, ClaimDecision>();
+    if (ids.length === 0) return out;
+    const rows = await this.db.all(
+      `SELECT * FROM claim_decisions WHERE work_item_id IN (${placeholders(ids.length)}) ORDER BY at, ${this.db.dialect.seq}`,
+      [...ids],
+    );
+    for (const row of rows) {
+      const d = rowToClaimDecision(row);
+      out.set(d.work_item_id, d); // oldest first: the last one wins
+    }
+    return out;
   }
 
   async approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult> {
@@ -1272,10 +1441,11 @@ export class SqlFactoryStore implements FactoryStore {
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
     assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
+      const { change_ref } = await changeFields(tx, input.project, input.pr_number);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO unreviewed_merges (id, project, pr_number, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.pr_number, change_ref, input.merge_sha, input.merger_id, this.now()],
       );
       const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, input.pr_number]);
       return { merge: rowToUnreviewedMerge(row!), created };
@@ -1799,6 +1969,34 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToHostSleep(row) : null;
   }
 
+  // Alerts (design 05-alarms): the pattern's row is the dedupe, the alert row the record.
+
+  async recordAlert(input: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }> {
+    const now = this.now();
+    return this.db.transaction(async (tx) => {
+      // Conditional: only the first write of a pattern, or the one that finds its last alert dedupe_ms old, wins.
+      const due =
+        (await this.insertOnce(tx, "INSERT INTO alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
+        (await tx.run("UPDATE alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND last_alert_at <= ?", [
+          now, input.pattern_key, this.after(-dedupe_ms),
+        ])) === 1;
+      if (!due) return { created: false as const };
+      const alert: Alert = { ...input, id: newId("al"), created_at: now };
+      await tx.run(
+        "INSERT INTO alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [alert.id, alert.pattern, alert.pattern_key, alert.error_code, alert.count, alert.detail, alert.created_at],
+      );
+      return { created: true as const, alert };
+    });
+  }
+
+  async listAlerts(opts: { limit: number }): Promise<Alert[]> {
+    const limit = Math.max(0, Math.floor(opts.limit));
+    // limit is an integer computed here, inlined as the other paged reads do.
+    const rows = await this.db.all(`SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
+    return rows.map(rowToAlert);
+  }
+
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
@@ -2087,6 +2285,13 @@ export class SqlFactoryStore implements FactoryStore {
     }
   }
 
+  /** A patch's diff as assignments, with the change columns when it sets pr_number (on the patched project). */
+  private async patchSql(tx: SqlExecutor, current: WorkItem, patch: WorkItemPatch): Promise<ReturnType<typeof diffPatch>> {
+    const diff = diffPatch(current, patch);
+    const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes);
+    return { changes: diff.changes, sets: [...diff.sets, ...change.sets], values: [...diff.values, ...change.values] };
+  }
+
   private now(): Timestamp {
     return this.clock.now().toISOString() as Timestamp;
   }
@@ -2246,8 +2451,8 @@ const FORGE_AUTH_PAUSE: ClaimPauseName = "forge_auth";
  */
 const PREFLIGHT_ACCESS_PAUSE: ClaimPauseName = "preflight_access";
 
-/** A stall pause is in effect while its next probe time is after the last answered probe (none: always). */
-function stallInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
+/** A probe pause is in effect while its next probe time is after the last answered probe (none: always). */
+function probeInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
   return probeAt !== undefined && probeAt > (answeredAt ?? "");
 }
 
@@ -2452,6 +2657,53 @@ function rowToMergeCheck(row: Row): MergeCheck {
     head_sha: row.head_sha as string,
     base_sha: row.base_sha as string,
     checked_at: row.checked_at as Timestamp,
+  };
+}
+
+function rowToAlert(row: Row): Alert {
+  return {
+    id: row.id as string,
+    pattern: row.pattern as Alert["pattern"],
+    pattern_key: row.pattern_key as string,
+    error_code: row.error_code as string,
+    count: Number(row.count),
+    detail: (row.detail as string | null) ?? null,
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToImproveReport(row: Row): ImproveReport {
+  return {
+    id: row.id as ImproveReportId,
+    run_id: row.run_id as RunId,
+    project: row.project_key as string,
+    window_start: row.window_start as Timestamp,
+    window_end: row.window_end as Timestamp,
+    groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
+    patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
+    created_at: row.created_at as Timestamp,
+  };
+}
+
+function rowToStandingRule(row: Row): StandingRule {
+  return {
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    enabled: Number(row.enabled) === 1,
+    set_by: row.set_by as UserId,
+    created_at: row.created_at as Timestamp,
+    updated_at: row.updated_at as Timestamp,
+  };
+}
+
+function rowToStandingProposal(row: Row): StandingProposal {
+  return {
+    id: row.id as StandingProposalId,
+    gate: row.gate as StandingGate,
+    tier: Number(row.tier) as Tier,
+    run_length: Number(row.run_length),
+    threshold: Number(row.threshold),
+    created_at: row.created_at as Timestamp,
   };
 }
 

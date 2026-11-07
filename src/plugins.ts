@@ -9,7 +9,8 @@
 // Guards (SecretStore, EgressScanner, ToolBroker; docs/architecture.md §5, G1–G6) can be switched to
 // another plugin, but never disabled: config that selects nothing for a guard fails at startup.
 //
-// Optional kinds (Forge, issue #172) have no default: leaving their key out, or "none", selects nothing.
+// Optional kinds (Forge, issue #172) have no default plugin: "none" selects nothing. Leaving `plugins.forge` out
+// lets src/compose.ts derive it from the sources (withForgeDefault, issue #273).
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -80,6 +81,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   github_auth: { interface: "GitHubCredentials", configKey: "plugins.github_auth", guard: false, optional: false },
   test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false, optional: false },
   forge: { interface: "Forge", configKey: "plugins.forge", guard: false, optional: true },
+  network_probe: { interface: "NetworkProbe", configKey: "plugins.network_probe", guard: false, optional: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

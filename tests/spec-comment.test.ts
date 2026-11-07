@@ -181,6 +181,41 @@ describe("triage scope lists and decisions", () => {
   });
 });
 
+describe("triage applied_defaults (issue #315)", () => {
+  const { scope: _s, ...noScope } = spec;
+  const current = { ...noScope, in_scope: ["The CI check."], out_of_scope: ["The review agent."], decisions: [] };
+  const RULE = "tier 4 needs a human merge";
+
+  it("the schema has an optional, capped list of strings", () => {
+    expect(TRIAGE_SCHEMA.required).not.toContain("applied_defaults");
+    expect(TRIAGE_SCHEMA.properties.applied_defaults).toMatchObject({ type: "array", items: { type: "string" } });
+    expect(TRIAGE_SCHEMA.properties.applied_defaults.maxItems).toBeGreaterThan(0);
+  });
+
+  it("parses an absent list as empty and rejects a non-list or a non-string entry", () => {
+    const r = parseTriage(current);
+    expect(r.ok && r.value.applied_defaults).toEqual([]);
+    expect(parseTriage({ ...current, applied_defaults: RULE }).ok).toBe(false);
+    expect(parseTriage({ ...current, applied_defaults: [RULE, 3] }).ok).toBe(false);
+  });
+
+  it("an answer with an applied default and no decision renders the rule under Applied defaults only", () => {
+    const r = parseTriage({ ...current, applied_defaults: [RULE] });
+    if (!r.ok) throw new Error(r.error);
+    const body = renderSpec(r.value, r.value.tier);
+    expect(body).not.toContain("### Decisions for you");
+    expect(body).toContain(`### Applied defaults\n- ${RULE}\n`);
+  });
+
+  it("puts Applied defaults right after Decisions for you, and omits it when empty", () => {
+    const body = renderSpec({ ...listed, applied_defaults: [RULE, "caches may stay in process"] }, 2);
+    const headings = lines(body).filter((x) => x.startsWith("### "));
+    expect(headings[headings.indexOf("### Decisions for you") + 1]).toBe("### Applied defaults");
+    expect(body).toContain(`### Applied defaults\n- ${RULE}\n- caches may stay in process\n`);
+    expect(renderSpec({ ...listed, applied_defaults: [] }, 2)).not.toContain("### Applied defaults");
+  });
+});
+
 describe("triage in_short", () => {
   it("is a required text field in the schema and the validator", () => {
     expect(TRIAGE_SCHEMA.required).toContain("in_short");

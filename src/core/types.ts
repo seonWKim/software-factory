@@ -23,8 +23,8 @@ export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "depen
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
-/** `local`: an item filed on this machine (issue #198); its id is local to the factory. */
-export type SourceType = "github_issue" | "slack_thread" | "local";
+/** The source adapter's type, e.g. `local`: an item filed on this machine (issue #198). Core names no other source. */
+export type SourceType = string;
 
 /**
  * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the
@@ -159,8 +159,11 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
+ * `improve` runs no agent (design §7): it groups the failed runs of a time window into one stored report, with one
+ * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
+ * system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -171,6 +174,94 @@ export interface RunInput {
   wip?: WipRef;
   /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
   session?: SessionRecord;
+  /** An improve run's report window (design §7), fixed at enqueue so a retry reports the same runs. */
+  improve?: ImproveWindow;
+}
+
+/** The finished runs an improve report covers: finished_at in [window_start, window_end). */
+export interface ImproveWindow {
+  window_start: Timestamp;
+  window_end: Timestamp;
+}
+
+/**
+ * Failed runs that share an error code and a normalized detail (design §7). `detail` is the normalized text,
+ * never the raw detail. Run IDs in finish order; item IDs distinct, in the order their first run finished.
+ */
+export interface FailureGroup {
+  error_code: string;
+  detail: string;
+  run_ids: RunId[];
+  work_item_ids: WorkItemId[];
+  /** The transcript tails read for the group's model call (groups only), each scanned before the call. */
+  tails?: ImproveTail[];
+  /** The model's draft of cause and fix (groups only, design §7). Absent: the worker had no model to ask. */
+  draft?: ImproveDraft;
+}
+
+/**
+ * One run's transcript tail for an improve draft. `included`: in the prompt. `withheld`: the egress scan flagged
+ * it, so it was left out; `rules` name the rules, never the text. `missing`: no stored transcript (none, or one
+ * the scan kept out of storage).
+ */
+export type ImproveTail =
+  | { run_id: RunId; status: "included" | "missing" }
+  | { run_id: RunId; status: "withheld"; rules: string[] };
+
+/**
+ * A group's draft (design §7). `drafted`: the model's cause, fix and the paths the fix touches, scanned clean.
+ * `withheld`: the draft's scan flagged it, so only the rules are kept. `touches_prompts_or_gate`: set by the
+ * factory from the gate list, never by the model. `failed`: invalid output, a refusal, an error or a max-tokens
+ * stop. `skipped`: past the per-run call cap, no call made.
+ */
+export type ImproveDraft =
+  | { status: "drafted"; cause: string; fix: string; touches: string[]; touches_prompts_or_gate: boolean }
+  | { status: "withheld"; rules: string[]; touches_prompts_or_gate: boolean }
+  | { status: "failed"; reason: "invalid_output" | "refused" | "error" | "max_tokens" }
+  | { status: "skipped"; reason: "call_cap" };
+
+export type ImproveReportId = Brand<string, "ImproveReportId">;
+
+/**
+ * One improve run's report (design §7): `groups` hold two or more runs, `patterns` exactly one. Both sorted the
+ * same way every time, so the same failed runs give the same report. One row per run.
+ */
+export interface ImproveReport extends ImproveWindow {
+  id: ImproveReportId;
+  run_id: RunId;
+  project: string;
+  groups: FailureGroup[];
+  patterns: FailureGroup[];
+  created_at: Timestamp;
+}
+
+/** Standing approvals (design 05-standing-approvals): the gate a human decision is made at. Only the spec gate so far. */
+export type StandingGate = "spec";
+/** What the spec at the gate is: a phase of a split, a split into phases, or a single spec. */
+export type SpecKind = "phase" | "split" | "single";
+/** A human's decision at a gate. */
+export type GateOutcome = "approved" | "rejected" | "revised";
+
+/** A standing-approval rule, one per (gate, tier). Stored only: nothing acts on it yet. `set_by`: a user ID. */
+export interface StandingRule {
+  gate: StandingGate;
+  tier: Tier;
+  enabled: boolean;
+  set_by: UserId;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export type StandingProposalId = Brand<string, "StandingProposalId">;
+
+/** A proposal to turn a rule on, one per (gate, tier, run_length): the run that reached `threshold`. */
+export interface StandingProposal {
+  id: StandingProposalId;
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
+  created_at: Timestamp;
 }
 
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
@@ -232,14 +323,21 @@ export interface WorkerPause {
  * Named rows of `claim_pauses` (design §5 Restarts). `rate_limit`: no claim of any kind. `forge_auth`: the forge
  * refused the factory's credentials (401/403), so no implement-type claim (implement, update). `preflight_access`:
 the push_access or pr_api preflight check failed another way (issue #216), so no implement-type claim either.
+ * `github_rate_limit`: GitHub's REST rate limit was hit (2026-11-07), so no implement, update or review claim and no
+ * GitHub poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
- * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
- * is not before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
+ * it ends only when `model_answered` (the last answered probe, written by `endClaimPause("model_stall")`) is not
+ * before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
+ * `network`: a git call, push, preflight or model request could not reach its host, so no claim of any kind until
+ * a network probe passes. A probe pause like `model_stall`, with `network_since` and `network_answered`.
  */
-export type ClaimPauseName = "rate_limit" | "forge_auth" | "preflight_access" | "model_stall" | "model_stall_since" | "model_answered";
+export type ClaimPauseName =
+  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit"
+  | "model_stall" | "model_stall_since" | "model_answered"
+  | "network" | "network_since" | "network_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**
@@ -266,7 +364,7 @@ export interface RunAttempt {
   /** The failed outcome's error code; `lease_expired` for a reaped claim; null otherwise. */
   error_code: string | null;
   /** failureClass() of a failed outcome; `infra` for a reaped claim; null for every other status. */
-  failure_class: "task" | "infra" | "rate_limited" | "stalled" | null;
+  failure_class: "task" | "infra" | "rate_limited" | "stalled" | "checks_env" | null;
   /** outcomeTokens() of the outcome that closed it; 0 when it closed without an outcome. */
   tokens: number;
 }
@@ -407,7 +505,10 @@ export type RunOutcome =
       detail: string;
       /** Infrastructure failure (lease loss, timeout, exception): counts toward `max_restart`, not `max_attempts`. */
       infra: boolean;
-      /** For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth` and `preflight_access`: when the pause ends. */
+      /**
+       * For `rate_limited`: when the limit resets, if the runner could tell. For `forge_auth`, `preflight_access` and
+       * `github_rate_limited`: when the pause ends.
+       */
       reset_at?: Timestamp | null;
       /** The last part of the run's output, for the last-attempt comment. Egress-scanned with the outcome. */
       output_tail?: string;
@@ -514,6 +615,11 @@ export interface DependencyEdge {
   depends_on: string;
   kind: DependencyKind;
   state: DependencyState;
+  /**
+   * The source issue's `updated_at` when this edge was read from it (issue #254), or the store time of a read made
+   * without one. Null on edges stored before it was kept.
+   */
+  source_updated_at: Timestamp | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -532,12 +638,13 @@ export interface SharedPath {
 /**
  * The latest claim decision on a held implement run (design 2026-11-03): one row per run, rewritten when the
  * decision changes. `held`: the run stays queued; `deadlock`: claimed by the deadlock rule although held by
- * waiting items; `approved`: claimed past the hold after a human's `/approve`.
+ * waiting items; `approved`: claimed past the hold after a human's `/approve`; `timed_out`: claimed after
+ * `hold_policy` `run_after_minutes` ran out; `overlap_allowed`: claimed at once under `hold_policy` `run` (issue #314).
  */
 export interface ClaimDecision {
   run_id: RunId;
   work_item_id: WorkItemId;
-  decision: "held" | "deadlock" | "approved";
+  decision: "held" | "deadlock" | "approved" | "timed_out" | "overlap_allowed";
   /** The holding item, or null for a PR with no work item. */
   holder_work_item_id: WorkItemId | null;
   /** How the holder is named: "#92" (its issue or PR number). */
@@ -551,5 +658,7 @@ export interface ClaimDecision {
   fallback: boolean;
   /** The user whose `/approve` lifted the hold; null until then. */
   approved_by: UserId | null;
+  /** When the hold started; kept while the run stays held, whichever holder names it. Null on rows from before it. */
+  held_since: Timestamp | null;
   at: Timestamp;
 }

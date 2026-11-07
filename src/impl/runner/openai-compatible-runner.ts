@@ -1,3 +1,4 @@
+import { NETWORK_UNAVAILABLE, networkDetail, unreachableHost } from "../../core/policy.js";
 import { type ToolContext, type ToolResult, type ToolSpec, guardPolicy } from "../../core/tools/index.js";
 import {
   type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, toolsNotExposedMessage,
@@ -128,6 +129,7 @@ export class OpenAICompatibleRunner implements AgentRunner {
       workdir: spec.sandbox.workdir,
       deny_paths: spec.deny_paths,
       writable_paths: spec.writable_paths,
+      readable_paths: spec.readable_paths ?? [],
       env_allowlist: spec.env_allowlist,
     });
     const ctx: ToolContext = { sandbox: this.opts.sandbox, handle: spec.sandbox, policy, signal: stop.signal };
@@ -158,6 +160,9 @@ export class OpenAICompatibleRunner implements AgentRunner {
           if (r.code === "aborted" || stop.signal.aborted) return ended();
           if (r.code === "rate_limited") return result("rate_limited", { error: r.message, ...(r.reset_at && { reset_at: r.reset_at }) });
           if (r.code === PROVIDER_SETUP) return result("failed", { code: PROVIDER_SETUP, error: `openai-compatible: ${r.code}: ${r.message}` });
+          // DNS or connect (design §5 Restarts): the worker's network pause reads this prefix; the host only.
+          const host = r.code === "network_error" ? unreachableHost(r.message) : null;
+          if (host !== null) return result("failed", { error: `${NETWORK_UNAVAILABLE}: ${networkDetail(host)}` });
           return result("failed", { error: `openai-compatible: ${r.code}: ${r.message}` });
         }
         usage.input_tokens += r.usage.input_tokens;

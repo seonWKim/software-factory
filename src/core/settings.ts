@@ -1,5 +1,6 @@
 import type { Budgets } from "./budget.js";
-import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
@@ -271,6 +272,11 @@ export const SETTABLE_KEYS = [
   "lease_ms",
   "workers",
   "phases_auto_approve",
+  "hold_policy",
+  "alarm_repeat_count",
+  "alarm_window_minutes",
+  "alarm_restart_count",
+  "standing_approvals.threshold",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -281,7 +287,7 @@ export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
-  "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env",
+  "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env", "toolchain",
 ] as const;
 export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
@@ -307,6 +313,11 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   lease_ms: "How long a claimed step stays held by a worker without a lease renewal.",
   workers: "Worker loops in each process that claim and run steps.",
   phases_auto_approve: "Whether a phase spec of an approved split needs no approval of its own.",
+  hold_policy: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
+  alarm_repeat_count: "Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert.",
+  alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
+  alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
+  "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -323,6 +334,7 @@ export const PR_ONLY_DESCRIPTIONS: Readonly<Record<PrOnlyKey, string>> = {
   broker: "Which tool broker runs the forge actions agents ask for, such as a push.",
   deny_paths: "Absolute paths that agent runs may never read.",
   env: "Whether the factory runs locally or in the cloud.",
+  toolchain: "Cache folders agents may read but not write, their extra env, and the command that warms them.",
 };
 
 /** When a set takes effect, per key. What `settings set` prints and docs/design.md lists. */
@@ -344,6 +356,11 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   lease_ms: "the next claim or lease renewal",
   workers: "the worker pool's next tick",
   phases_auto_approve: "the next phase spec triage writes",
+  hold_policy: "the next claim",
+  alarm_repeat_count: "the next alarm step (each poll)",
+  alarm_window_minutes: "the next alarm step (each poll)",
+  alarm_restart_count: "the next alarm step (each poll)",
+  "standing_approvals.threshold": "the controller's next spec approval",
 };
 
 export interface SettableValues {
@@ -364,6 +381,11 @@ export interface SettableValues {
   lease_ms: number;
   workers: number;
   phases_auto_approve: boolean;
+  hold_policy: HoldPolicy;
+  alarm_repeat_count: number;
+  alarm_window_minutes: number;
+  alarm_restart_count: number;
+  "standing_approvals.threshold": number;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -385,6 +407,9 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   lease_ms: 300_000,
   workers: 1,
   phases_auto_approve: false,
+  hold_policy: DEFAULT_COORDINATION.hold_policy,
+  ...ALARM_DEFAULTS,
+  "standing_approvals.threshold": 10,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -460,6 +485,8 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve":
       return booleanSetting(key, value) as SettableValues[K];
+    case "hold_policy":
+      return parseHoldPolicy(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -661,7 +688,11 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     lease_ms: config.lease_ms,
     workers: config.workers,
     phases_auto_approve: config.phases_auto_approve ?? false,
+    alarm_repeat_count: config.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
+    alarm_window_minutes: config.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
+    alarm_restart_count: config.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
   };
+  if (config.coordination) file.hold_policy = config.coordination.hold_policy;
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
   return { file, layers: config.settings, ...(config.max_workers !== undefined ? { max_workers: config.max_workers } : {}) };
@@ -745,8 +776,13 @@ export class LiveSettings {
 
   private viewOf(r: ResolvedSettings): FactoryConfig {
     const v = r.values;
+    const coordination = this.opts.config.coordination;
     return {
       ...this.opts.config,
+      // `hold_policy` lives in the claim's coordination settings; a config with none and no override keeps none.
+      ...(coordination || r.global.hold_policy.source !== "default"
+        ? { coordination: { ...(coordination ?? DEFAULT_COORDINATION), hold_policy: v.hold_policy } }
+        : {}),
       settings: r.layers,
       max_loops: v.max_loops,
       max_restart: v.max_restart,
@@ -760,6 +796,9 @@ export class LiveSettings {
       lease_ms: v.lease_ms,
       phases_auto_approve: v.phases_auto_approve,
       workers: v.workers,
+      alarm_repeat_count: v.alarm_repeat_count,
+      alarm_window_minutes: v.alarm_window_minutes,
+      alarm_restart_count: v.alarm_restart_count,
     };
   }
 }

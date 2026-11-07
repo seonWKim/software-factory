@@ -1,12 +1,13 @@
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
-import type { Logger } from "./log.js";
+import type { LogFields, Logger } from "./log.js";
 import {
-  CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, redact, runChecks, toolchainMissing,
+  BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText,
+  failingTestFiles, redact, runChecks, toolchainMissing, withTestFiles,
 } from "./checks.js";
 import {
   IMPLEMENT_SCHEMA,
@@ -22,27 +23,29 @@ import {
   unverifiedOf,
 } from "./outputs.js";
 import {
-  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
-  failureClass, isCovered, wipBranchFor,
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
+  NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
 import {
   MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, mergeAppendedConflicts, renumberPlan, touchesSqliteSchema,
 } from "./mechanical.js";
+import { runImprove } from "./improver.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
   type Run, type RunId, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
 import {
-  type AgentRunResult, type AgentRunSpec, type AgentRunner, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, type GateHooks, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
 } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
+import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { PrCheckResult } from "../interfaces/source-adapter.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
@@ -64,6 +67,11 @@ export interface WorkerDeps {
   broker: ToolBroker;
   scanner: EgressScanner;
   storage: SharedStorage;
+  /**
+   * Plain completions with no tools: the improve run's one draft call per failure group (design §7). Absent: the
+   * improve run asks no model and its groups carry no draft. Compose always passes the `plugins.llm` chain.
+   */
+  llm?: LLMProvider;
   clock: Clock;
   config: FactoryConfig;
   prompts: Prompts;
@@ -142,7 +150,7 @@ const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
@@ -222,6 +230,9 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
   GIT_TERMINAL_PROMPT: "0",
 };
 
+/** The most paths one live-checkout report names; `count` gives the total. */
+const LIVE_REPORT_PATHS = 20;
+
 const TRUSTED_GIT_KEYS = new Set([
   "core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates", "core.ignorecase",
   "core.precomposeunicode", "core.symlinks", "core.hookspath", "extensions.objectformat", "extensions.refstorage",
@@ -248,6 +259,9 @@ class RunFailure extends Error {
     super(detail);
   }
 }
+
+/** The paused_by of a run the network pause put back in the queue: the system, not a person. */
+export const NETWORK_PAUSED_BY = "system:network";
 
 /**
  * `workers pause` stopped the run's agent (design §5 Pause). Not a failure: the run goes back to `queued` with no
@@ -294,6 +308,43 @@ interface RunScratch {
   sessions: Set<string>;
   step_session?: string | null;
   kept?: { folder: string; session: string };
+  /** Times the gate hooks' Stop hook sent an agent step of this run back (capped by `agent_stop_checks`). */
+  stop_blocks?: number;
+  /** The toolchain's warm_command ran for this run (design 05-sandbox.md): later agent steps skip it. */
+  warmed?: boolean;
+}
+
+/**
+ * The run kinds whose first agent step the toolchain's warm_command runs before (design 05-sandbox.md, issue
+ * #334): the ones that build and run checks. Triage only reads, so it warms nothing.
+ */
+const WARM_KINDS: readonly RunKind[] = ["implement", "review", "resolve"];
+
+/** The failure code of a run whose toolchain warm_command failed: no agent started. An infra failure, retried. */
+export const WARM_FAILED = "warm_failed";
+
+/** What the fix step needs from the implement run: its git folders, model, start and the merged-in base. */
+interface FixContext {
+  gitDir: string;
+  dirs: string;
+  model: ModelClass;
+  start: string;
+  baseSha: string;
+}
+
+/** The no-commit failure's detail; the gate hooks' Stop hook sends an agent back with it too. */
+export const NO_COMMITS_DETAIL = "the implementer made no commits";
+
+/**
+ * An implement run's own commits, oldest first: those since its start, else the non-merge commits since the base.
+ * The run folder can start on the item's branch with an earlier run's work already on it (a run that pushed, then
+ * failed, issue #261): an agent that only checks that work and adds nothing has not failed. Merges don't count.
+ * One rule for the no-commit failure and the gate hooks' Stop hook.
+ */
+export async function runCommits(git: (args: string[]) => Promise<string>, start: string, base: string): Promise<string[]> {
+  const commits = (await git(["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
+  if (commits.length > 0) return commits;
+  return (await git(["rev-list", "--reverse", "--no-merges", `${base}..HEAD`])).split("\n").filter(Boolean);
 }
 
 /** The handoff's next steps when the paused agent left no note. */
@@ -442,10 +493,11 @@ export class Worker {
     } catch (err) {
       if (err instanceof RunPaused) paused = err;
       else {
-        outcome =
-          err instanceof RunFailure
-            ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra, usage }
-            : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true, usage };
+        // A DNS or connect error from git, the sandbox or the forge becomes network_unavailable (design §5 Restarts).
+        const failed = err instanceof RunFailure
+          ? { ...classifyNetwork(err.code, err.message), infra: err.infra, extra: err.extra }
+          : { ...classifyNetwork("exception", err instanceof Error ? err.message : ""), infra: true, extra: {} };
+        outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
       this.meters.delete(run);
@@ -472,6 +524,10 @@ export class Worker {
     if (!scan.clean) {
       outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false, usage };
     }
+    if (outcome.status === "failed" && outcome.error_code === NETWORK_UNAVAILABLE) {
+      await this.requeueForNetwork(run, token, outcome.detail, log);
+      return;
+    }
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
       const resume = outcome.reset_at ?? this.after(this.cfg.retry_max_ms);
@@ -479,6 +535,16 @@ export class Worker {
       const pause = await this.d.store.pauseClaims(resume);
       if (pause.extended) {
         this.d.log.warn(`rate limited: all runs paused, work resumes at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
+    }
+    if (outcome.status === "failed" && outcome.error_code === GITHUB_RATE_LIMITED) {
+      // GitHub's rate limit (design §5 Restarts): implement, update and review claims and the GitHub poll wait for
+      // the reset the broker's message carries, set before the outcome is stored. Not the model's rate_limit pause.
+      const reset = outcome.reset_at ?? githubRateLimitReset(outcome.detail) ?? this.after(this.cfg.retry_max_ms);
+      const pause = await this.d.store.pauseClaims(reset, GITHUB_RATE_LIMIT);
+      outcome = { ...outcome, reset_at: pause.resume_at };
+      if (pause.started) {
+        this.d.log.warn(`GitHub rate limited: implement, update and review runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
     if (outcome.status === "failed" && outcome.error_code === AGENT_STALLED) {
@@ -529,6 +595,23 @@ export class Worker {
     };
     if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", { ...log, ...result });
     else this.d.log.info("run done", { ...log, status: outcome.status, ...result });
+  }
+
+  /**
+   * A run that could not reach its host (design §5 Restarts, network pause): not a failure. Every claim pauses
+   * (`network`) before the run goes back to the queue, first probe after 30 s; `started` comes from the store's
+   * conditional write, so one worker logs the warning. The run is requeued with no outcome and its attempt
+   * unchanged (pauseRun with nothing to resume), so no limit, retry or block ever sees it. Only the host is logged.
+   */
+  private async requeueForNetwork(run: Run, token: number, detail: string, log: LogFields): Promise<void> {
+    const host = detail.replace(/^could not reach /, "");
+    const pause = await this.d.store.pauseClaims(this.after(NETWORK_PROBE_MS.first), NETWORK);
+    if (pause.started) {
+      this.d.log.warn(`network unavailable: all runs paused, first probe at ${pause.resume_at}`, { ...log, host, resume_at: pause.resume_at });
+    }
+    const r = await this.d.store.pauseRun(run.id, token, { paused_by: NETWORK_PAUSED_BY, session_id: null, resume: null });
+    if (r.ok) this.d.log.info("run requeued: network unavailable", { ...log, host });
+    else this.d.log.warn("lease lost before the run was requeued; nothing stored", log);
   }
 
   /**
@@ -631,6 +714,7 @@ export class Worker {
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
     if (run.kind === "update") return this.update(run, item, ctx, signal);
+    if (run.kind === "improve") return this.improve(run, item, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.cfg;
     const branch = run.kind === "triage" ? null : branchFor(item, this.cfg.branch_prefix);
@@ -654,6 +738,31 @@ export class Worker {
     } finally {
       if (!keep && this.scratch.get(run)?.kept?.folder !== handle.id) await this.d.sandbox.destroy(handle);
     }
+  }
+
+  /**
+   * The improve run (design §7): no sandbox, no agent. One plain model call per group, with no tools; its usage
+   * counts toward the run's. Stores one report; the outcome names it.
+   */
+  private async improve(run: Run, item: WorkItem, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const { llm } = this.d;
+    const meter = this.meters.get(run);
+    const metered: LLMProvider | undefined = llm && {
+      complete: async (req) => {
+        const res = await llm.complete(req);
+        if (meter) addUsage(meter, res.usage);
+        return res;
+      },
+    };
+    const report = await runImprove(
+      {
+        store: this.d.store, storage: this.d.storage, scanner: this.d.scanner, signal,
+        ...(metered ? { llm: metered } : {}), ...(this.d.prompts.improve !== undefined ? { prompt: this.d.prompts.improve } : {}),
+      },
+      run,
+      item,
+    );
+    return { report_id: report.id, groups: report.groups.length, patterns: report.patterns.length };
   }
 
   /**
@@ -795,6 +904,7 @@ export class Worker {
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
         writable_paths: [],
         env_allowlist: gitIdentity(this.cfg.agent_git_identity),
+        gate_hooks: this.gateHooks(run, item, start, baseSha),
       }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? kept }).catch(async (err: unknown) => {
         stopWatch.abort();
         await watching;
@@ -822,14 +932,9 @@ export class Worker {
       // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
       if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
 
-      let commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
-      // The run folder can start on the item's branch with an earlier run's work already on it (a run that pushed,
-      // then failed): an agent that only checks that work and adds nothing has not failed. Merges don't count.
+      const commits = await runCommits((args) => this.git(handle, args), start, baseSha);
       if (commits.length === 0) {
-        commits = (await this.git(handle, ["rev-list", "--reverse", "--no-merges", `${baseSha}..HEAD`])).split("\n").filter(Boolean);
-      }
-      if (commits.length === 0) {
-        throw new RunFailure("no_commits", "the implementer made no commits", false, { output_tail: tail(result.transcript) });
+        throw new RunFailure("no_commits", NO_COMMITS_DETAIL, false, { output_tail: tail(result.transcript) });
       }
       work = {
         commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
@@ -872,10 +977,10 @@ export class Worker {
       work.commits += Number((await this.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
     };
     try {
-      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model });
+      checked = await this.checksBeforePush(run, item, handle, ctx, signal, { gitDir, dirs, model, start, baseSha: sync.baseSha });
     } catch (err) {
-      // Both keep the commits on a wip branch, so the retry starts from them.
-      if (!(err instanceof RunFailure) || (err.code !== CHECKS_FAILED_RUN && err.code !== TOOLCHAIN_MISSING)) throw err;
+      // Each keeps the commits on a wip branch, so the retry starts from them.
+      if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
       await countFixCommits();
       const head = (await this.git(handle, ["rev-parse", "HEAD"])).trim();
       throw await this.keepWip(run, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
@@ -1201,7 +1306,8 @@ export class Worker {
   /**
    * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
    * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
-   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403, else `preflight_access` for
+   * A failed check fails the run with the broker's code (`github_rate_limited` on a GitHub rate limit, which pauses
+   * claims until its reset; `forge_auth` on another 401/403, else `preflight_access` for
    * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
    * starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */
@@ -1512,8 +1618,9 @@ export class Worker {
    * The pre-push checks of an implement run (design §4, decided 2026-11-03): `repo.check_commands` in order on
    * the committed branch, stopping at the first failure. A failure gets one fix step in the same run (the
    * implement prompt with the failing command and its output tail; the agent commits the fix), then the whole
-   * list runs again. A second failure posts one comment naming the command and fails the run with
-   * `checks_failed`. Returns the passing round's results and whether a fix step ran; the caller then runs the
+   * list runs again. On a second failure the failing test files run again on the base commit (failsOnBase):
+   * when they fail there too, the run fails with `checks_env`; otherwise one comment names the command and the
+   * run fails with `checks_failed`. Returns the passing round's results and whether a fix step ran; the caller then runs the
    * scope, size and floor gates again on the final diff.
    */
   private async checksBeforePush(
@@ -1522,7 +1629,7 @@ export class Worker {
     handle: SandboxHandle,
     ctx: ToolCallContext,
     signal: AbortSignal,
-    s: { gitDir: string; dirs: string; model: ModelClass },
+    s: FixContext,
   ): Promise<{ results: CheckResult[]; fixed: boolean }> {
     await this.cleanTree(handle);
     const first = await this.runCheckList(run, handle, signal);
@@ -1538,7 +1645,48 @@ export class Worker {
     await this.cleanTree(handle);
     const second = await this.runCheckList(run, handle, signal);
     if (!second.failed) return { results: second.results, fixed: true };
+    const onBase = await this.failsOnBase(run, handle, signal, s.baseSha, second.failed);
+    if (onBase) return this.checksEnv(run, item, ctx, second.failed, onBase);
     return this.checksFailed(run, item, ctx, first.failed, second.failed);
+  }
+
+  /**
+   * The base rerun (design §4, decided 2026-11-07): the test files `failed` names run again with the same
+   * command and env, on a temporary detached worktree of `baseSha` inside the run folder (BASE_CHECKOUT_DIR),
+   * removed afterwards. Returns the files when every one fails on the base too; null when the output names no
+   * test file (no base run), when one of them passes or is missing on the base, or when the base run cannot
+   * start (logged): those stay `checks_failed`.
+   */
+  private async failsOnBase(run: Run, handle: SandboxHandle, signal: AbortSignal, baseSha: string, failed: CheckResult): Promise<string[] | null> {
+    const files = failingTestFiles(failed.tail);
+    if (files.length === 0) return null;
+    const cannotStart = (why: string) => {
+      this.d.log.warn("base rerun could not start; the run fails with checks_failed", { run_id: run.id, error: why.slice(0, 300) });
+      return null;
+    };
+    try {
+      await this.removeBaseCheckout(handle);
+      await this.git(handle, [...NO_HOOKS, "worktree", "add", "--quiet", "--detach", BASE_CHECKOUT_DIR, baseSha]);
+    } catch (err) {
+      await this.removeBaseCheckout(handle);
+      return cannotStart(err instanceof Error ? err.message : "unknown");
+    }
+    try {
+      const round = await this.runCheckList(run, handle, signal, { commands: [withTestFiles(failed.command, files)], cwd: BASE_CHECKOUT_DIR });
+      if (!round.failed) return null;
+      const missing = round.failed.how.startsWith("could not run") ? round.failed.how : toolchainMissing(round.failed.tail);
+      if (missing) return cannotStart(missing);
+      const alsoFailing = new Set(failingTestFiles(round.failed.tail));
+      return files.every((f) => alsoFailing.has(f)) ? files : null;
+    } finally {
+      await this.removeBaseCheckout(handle);
+    }
+  }
+
+  /** Removes the base rerun's worktree, if there is one; best effort, a failure leaves it for the next add to refuse. */
+  private async removeBaseCheckout(handle: SandboxHandle): Promise<void> {
+    await this.gitRaw(handle, [...NO_HOOKS, "worktree", "remove", "--force", BASE_CHECKOUT_DIR]);
+    await this.gitRaw(handle, ["worktree", "prune"]);
   }
 
   /**
@@ -1550,7 +1698,7 @@ export class Worker {
     item: WorkItem,
     handle: SandboxHandle,
     signal: AbortSignal,
-    s: { gitDir: string; dirs: string; model: ModelClass },
+    s: FixContext,
     failed: CheckResult,
   ): Promise<void> {
     const scan = failed.tail === "" ? { clean: true as const } : await this.d.scanner.scan("log", failed.tail);
@@ -1575,6 +1723,7 @@ export class Worker {
       output_schema: IMPLEMENT_SCHEMA,
       writable_paths: [s.gitDir],
       env_allowlist: gitIdentity(this.cfg.agent_git_identity),
+      gate_hooks: this.gateHooks(run, item, s.start, s.baseSha),
     }, "fix");
     const out = parseImplement(result.output);
     if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
@@ -1607,15 +1756,44 @@ export class Worker {
   }
 
   /**
-   * The check list in the run folder with the check env: the tool env, the slot env (worker index, test workers)
-   * and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
+   * `checks_env` (design §5 Restarts): one comment, keyed on the run, names the test files that fail on the base
+   * too; a failed post is logged. Nothing is pushed. The controller requeues the run without spending an attempt
+   * or a restart, at most CHECKS_ENV_LIMIT times per item.
    */
-  private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<CheckRound> {
+  private async checksEnv(run: Run, item: WorkItem, ctx: ToolCallContext, failed: CheckResult, files: string[]): Promise<never> {
+    const cmd = commandText(failed.command);
+    const body = [
+      "## Factory pre-push checks: failing on the base branch too",
+      "",
+      `Before pushing, the implement run ran the checks (\`repo.check_commands\`), and \`${cmd}\` failed (${failed.how}), also after one fix step. The failing test files fail the same way on a clean checkout of the base commit, so the factory reads them as flaky or broken on the base, not as a fault of this branch:`,
+      "",
+      ...files.map((f) => `- \`${f.replace(/`/g, "'")}\``),
+      "",
+      `Nothing was pushed to the pull request branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
+    ].join("\n");
+    const posted = await this.d.broker.call(ctx, "github.comment", {
+      number: Number(item.source.id.split("#")[1]),
+      body,
+      marker: `<!-- factory:checks:${run.id} -->`,
+    });
+    if (!posted.ok) this.d.log.warn("checks env comment failed", { run_id: run.id, error_code: posted.error_code });
+    throw new RunFailure(CHECKS_ENV, `\`${cmd}\` ${failed.how} after one fix step, and on the base commit too; failing tests: ${files.join(", ")}`.slice(0, 500), false, {
+      output_tail: failed.tail,
+    });
+  }
+
+  /**
+   * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env, the slot env
+   * (worker index, test workers) and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an
+   * agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   */
+  private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
     const db = await this.database(run);
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
-      commands: checkCommands(this.cfg.repo),
+      commands: o.commands ?? checkCommands(this.cfg.repo),
+      ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
       env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
@@ -1623,6 +1801,24 @@ export class Worker {
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
+  }
+
+  /**
+   * The gate hooks for an implement agent step (design §4, issue #302): the values the worker's gates use, the
+   * check list with the check env (no test database), and the Stop hook's cap with what earlier steps used.
+   */
+  private gateHooks(run: Run, item: WorkItem, start: string, baseSha: string): GateHooks {
+    const { max_diff_lines, max_diff_files } = settingValues(item.project, this.cfg.settings, this.d.learned);
+    return {
+      allowed_paths: [...item.allowed_paths],
+      start_sha: start,
+      base_sha: baseSha,
+      limits: { max_diff_lines, max_diff_files },
+      check_commands: checkCommands(this.cfg.repo),
+      check_env: { ...this.d.toolEnv, ...this.slotEnv() },
+      stop_checks: this.cfg.agent_stop_checks ?? AGENT_STOP_CHECKS_DEFAULT,
+      stop_blocks_used: this.scratch.get(run)?.stop_blocks ?? 0,
+    };
   }
 
   /** The run's test database, made on first use. Null without a TestDatabase. A failure is an infra failure. */
@@ -2142,13 +2338,36 @@ export class Worker {
     if (f) throw new RunFailure("tests_failed", `\`${commandText(f.command)}\` ${f.how}`, false, f.tail ? { output_tail: f.tail } : {});
   }
 
+  /**
+   * The toolchain's warm step (design 05-sandbox.md, issue #334): `warm_command` in the run folder before the
+   * run's first agent step, as the worker (its tool env: the owner's HOME and caches, and the network), with the
+   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends
+   * the run before any agent starts, naming the command.
+   */
+  private async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
+    const round = await runChecks({
+      sandbox: this.d.sandbox,
+      handle,
+      commands: [cmd],
+      env: { ...this.d.toolEnv, ...this.slotEnv() },
+      timeout_ms: this.cfg.run_timeout_ms,
+      signal,
+      redact: [],
+    });
+    if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
+    const f = round.failed;
+    if (f) {
+      throw new RunFailure(WARM_FAILED, `toolchain warm_command \`${commandText(f.command)}\` ${f.how}; no agent started`, true, f.tail ? { output_tail: f.tail } : {});
+    }
+  }
+
   private async agent(
     run: Run,
     item: WorkItem,
     handle: SandboxHandle,
     signal: AbortSignal,
     role: Pick<AgentRunSpec, "system_prompt" | "prompt" | "tools" | "model_class" | "output_schema"> &
-      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role">>,
+      Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role" | "gate_hooks">>,
     /** Second agent step in one run (the conflict resolution): its own transcript, `<run>.<step>.json`. */
     step?: string,
     /**
@@ -2169,8 +2388,14 @@ export class Worker {
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }
+    const toolchain = this.cfg.toolchain;
+    if (toolchain && s && !s.warmed && WARM_KINDS.includes(run.kind)) {
+      await this.warm(run, handle, signal, toolchain.warm_command);
+      s.warmed = true;
+    }
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
+    const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
       run_id: run.id,
       work_item_id: item.id,
@@ -2186,11 +2411,19 @@ export class Worker {
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
+      // The toolchain block (design 05-sandbox.md): caches the agent may read, never write, and its env entries.
+      ...(toolchain ? { readable_paths: toolchain.caches, toolchain_env: toolchain.env } : {}),
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
     const meter = this.meters.get(run);
     if (meter) addUsage(meter, result.usage);
+    await this.reportLiveCheckout(run, handle, liveBefore, step);
+    // One line per time a gate hook sent the agent back (design §4, issue #302); the worker's gates still decide.
+    for (const b of result.gate_blocks ?? []) {
+      if (b.hook === "stop" && s) s.stop_blocks = (s.stop_blocks ?? 0) + 1;
+      this.d.log.info("gate hook sent the agent back", { run_id: run.id, step: step ?? "", hook: b.hook, check: b.check.slice(0, 200), attempt: b.attempt });
+    }
 
     // G5 before the transcript is stored anywhere. A known secret value or the canary fails the run; a pattern hit
     // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since
@@ -2228,11 +2461,46 @@ export class Worker {
       throw new RunFailure(PROVIDER_SETUP, clean ? said : "the provider's message is withheld: the egress scan flagged it", false,
         clean ? { output_tail: tail(result.transcript) } : {});
     }
+    // A model request that could not reach its host (the runner's `network_unavailable: ` error): the network pause.
+    if (result.status === "failed" && result.error?.startsWith(`${NETWORK_UNAVAILABLE}: `)) {
+      throw new RunFailure(NETWORK_UNAVAILABLE, result.error.slice(NETWORK_UNAVAILABLE.length + 2), true);
+    }
     // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
     }
     return result;
+  }
+
+  /**
+   * The untracked, not ignored files in the live checkout (`repo.path`, the owner's checkout), from a trusted git
+   * call through the sandbox. Null when git cannot list them (a sandbox that cannot see the host checkout): then
+   * the check is skipped. Best effort, never a failure (design §5 Sandbox).
+   */
+  private async liveUntracked(handle: SandboxHandle): Promise<Set<string> | null> {
+    const r = await this.d.sandbox.exec(handle, ["git", "-C", this.cfg.repo.path, "ls-files", "--others", "--exclude-standard", "-z"], {
+      env: { ...this.d.toolEnv, ...TRUSTED_GIT_ENV },
+    }).catch(() => null);
+    return r?.exit_code === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
+  }
+
+  /**
+   * After an agent step: the files that appeared in the live checkout while it ran (untracked files there before
+   * the step are not reported) are logged with the run id. The run goes on: the file may be the owner's or
+   * another run's, and the harness and tool guards are what stop a write (design §5 Sandbox).
+   */
+  private async reportLiveCheckout(run: Run, handle: SandboxHandle, before: Set<string> | null, step: string | undefined): Promise<void> {
+    if (!before) return;
+    const after = await this.liveUntracked(handle);
+    const added = [...(after ?? [])].filter((p) => !before.has(p)).sort();
+    if (added.length === 0) return;
+    this.d.log.warn("files appeared in the live checkout during an agent step", {
+      run_id: run.id,
+      step: step ?? "",
+      checkout: this.cfg.repo.path,
+      paths: added.slice(0, LIVE_REPORT_PATHS).join(","),
+      count: added.length,
+    });
   }
 
   /**
@@ -2623,7 +2891,7 @@ function parseCheckResults(raw: unknown): PrCheckResult[] | null {
 const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested"];
 
 /** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
-function fenced(text: string): string {
+export function fenced(text: string): string {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;

@@ -32,6 +32,7 @@ import type {
   WorkerId,
 } from "../../../core/types.js";
 import type { NewWorkItem } from "../../../interfaces/factory-store.js";
+import type { ChangeFields } from "./change-fields.js";
 import type { Row, SqlValue } from "./driver.js";
 
 const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files"]);
@@ -111,16 +112,20 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
   };
 }
 
-/** Column values for INSERT INTO work_items, in WORK_ITEM_COLUMNS order. */
-export const WORK_ITEM_COLUMNS =
+const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
   "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
   "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha, parent_id, phase, " +
   "files_to_change, pr_files";
 
-export function workItemValues(i: WorkItem): SqlValue[] {
-  return [
+/**
+ * The columns and values of INSERT INTO work_items; `change` is changeFields of the item's pr_number (the adopted
+ * PR's, else none). The change columns are listed only with a PR number: without one they are NULL by default,
+ * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
+ */
+export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: string; values: SqlValue[] } {
+  const values: SqlValue[] = [
     i.id, i.version, i.source.type, i.source.id, i.source.link, i.requester_id, i.project, i.problem,
     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
     JSON.stringify(i.allowed_paths), i.tier, i.stage, i.blocked_on, i.blocked_reason, i.close_reason, i.loop_count,
@@ -130,6 +135,8 @@ export function workItemValues(i: WorkItem): SqlValue[] {
     i.parent_id, i.phase,
     i.files_to_change && JSON.stringify(i.files_to_change), i.pr_files && JSON.stringify(i.pr_files),
   ];
+  if (change.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
+  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, change.change_ref, change.change_url] };
 }
 
 /** Only the fields that actually change, as state_changes entries and `column = ?` assignments. */
@@ -343,6 +350,7 @@ export function rowToDependencyEdge(r: Row): DependencyEdge {
     depends_on: r.depends_on as string,
     kind: r.kind as DependencyEdge["kind"],
     state: r.state as DependencyEdge["state"],
+    source_updated_at: (r.source_updated_at as Timestamp | null | undefined) ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
@@ -361,6 +369,7 @@ export function rowToClaimDecision(r: Row): ClaimDecision {
     threshold: Number(r.threshold),
     fallback: Number(r.fallback) === 1,
     approved_by: (r.approved_by as UserId | null) ?? null,
+    held_since: (r.held_since as Timestamp | null) ?? null,
     at: r.at as Timestamp,
   };
 }

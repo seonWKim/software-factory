@@ -21,7 +21,7 @@ import { projectKeyChecks } from "../src/ui/factory-status.js";
 import { NO_FILTERS } from "../src/ui/filters.js";
 import { type UiDeps, renderIndex, renderItem } from "../src/ui/pages.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
-import { FakeAuth, FakeSource, PROJECT, alice, cleanScanner, config, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, FakeForge, FakeSource, PROJECT, alice, cleanScanner, config, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
 import { issue, system, w1 } from "./helpers/store.js";
 
 // Projects are keyed by GitHub's repository node ID (design 2026-11-01): `github:github.com:<node id>`, with
@@ -229,15 +229,15 @@ describe("writes use the key", () => {
   it("intake and a controller transition write only the key; the store refuses owner/name", async () => {
     const f = await rawStore();
     const source = new FakeSource();
-    const controller = new Controller({ store: f.store, source, auth: new FakeAuth(), clock: f.clock, config, log: recordingLog(), scanner: cleanScanner });
+    const forge = new FakeForge(source);
+    const controller = new Controller({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config, log: recordingLog(), scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(7), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();
     const run = (await f.store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
     await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
     await controller.tickRuns();
     // A merge of a PR no item knows writes an unreviewed_merges row.
-    const merged: SourceEvent = { kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice };
-    source.queue.push(merged);
+    forge.queue.push({ kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice });
     await controller.tickIntake();
 
     expect(await f.projects()).toEqual([PROJECT.key, PROJECT.key]);
@@ -307,8 +307,9 @@ describe("the label, never the key, is shown", () => {
     const f = await rawStore();
     const log = recordingLog();
     const source = new FakeSource();
+    const forge = new FakeForge(source);
     const cfg: FactoryConfig = { ...config, project: { key: KEY, label: "github.com/o/r" } };
-    const controller = new Controller({ store: f.store, source, auth: new FakeAuth(), clock: f.clock, config: cfg, log, scanner: cleanScanner });
+    const controller = new Controller({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config: cfg, log, scanner: cleanScanner });
 
     // Startup line, then intake, triage, a rejection and an unreviewed merge: every path that comments or logs.
     const stop = new AbortController();
@@ -319,7 +320,7 @@ describe("the label, never the key, is shown", () => {
     const run = (await f.store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
     await f.store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
     await controller.tickRuns();
-    source.queue.push({ kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice });
+    forge.queue.push({ kind: "pr_merged", pr_number: 77, head_branch: "feature/x", merge_sha: "m77", merger: alice });
     await controller.tickIntake();
 
     expect(log.lines.find((l) => l.msg === "controller started")?.fields).toEqual({ project: "github.com/o/r" });

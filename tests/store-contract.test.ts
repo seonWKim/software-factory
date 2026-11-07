@@ -4,18 +4,24 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import type { FactoryStore, WorkerProcessReport } from "../src/interfaces/factory-store.js";
+import type { FactoryStore, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
+/** A project label as the cursor `project_label:<key>` stores it, and the PR link built like prUrl in src/main.ts. */
+const LABEL = "github.com/o/r";
+const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
+/** The SQLite migration that adds the change columns, found by what it does so a renumber at merge needs no edit. */
+const CHANGE_MIGRATION = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN change_ref")) + 1;
 
 describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
@@ -852,6 +858,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await sorted()).toEqual(before);
     });
 
+    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+      const { store, clock } = await make();
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      const next = later(clock, 60_000);
+      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+      // The same due time again, also with another next time: already taken, nothing moves.
+      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+    });
+
+    it("a stall right after a model_stall pause ended before its probe time starts a new pause", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 60_000), "model_stall");
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.pauseClaims(later(clock, 60_000), "model_stall")).toMatchObject({ started: true });
+      expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
+    });
+
+    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+      const { store, clock } = await make();
+      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      await store.endClaimPause("model_stall");
+      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
     it("endClaimPause refuses model_stall_since and model_answered, which are not pauses of their own", async () => {
       const { store } = await make();
       await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
@@ -979,6 +1017,55 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.countUnreviewedMergesSince(since)).toBe(2);
       expect(await store.countUnreviewedMergesSince(new Date(clock.now().getTime() + 1000).toISOString() as Timestamp)).toBe(0);
       expect(await store.countUnreviewedMergesSince("1970-01-01T00:00:00.000Z" as Timestamp)).toBe(3);
+    });
+  });
+
+  describe("change fields beside pr_number (migration 35)", () => {
+    const raw = async (store: FactoryStore, table: string, id: string) =>
+      (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
+    const adoptedIn = (n: number, project: string) => ({
+      ...issue(n),
+      project,
+      source: { type: "github_issue" as const, id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` },
+      adopted: { pr_number: n, head_branch: "feature/x", head_sha: "h1", allowed_paths: ["src/a.ts"], tier: 4 as const },
+    });
+
+    it("the adopted insert writes change_ref, and change_url from the stored label; intake writes neither", async () => {
+      const { store } = await make();
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      const labelled = (await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
+      const unlabelled = (await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
+      const plain = (await store.createWorkItem(issue(7), system)).item;
+      expect(await raw(store, "work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await raw(store, "work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
+      expect(await raw(store, "work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 5))!.id).toBe(labelled.id);
+      expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 6))!.id).toBe(unlabelled.id);
+    });
+
+    it("a patch that sets pr_number writes change_ref, and change_url when the label is stored", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item;
+      const b = (await store.createWorkItem({ ...issue(2), project: OTHER_PROJECT_KEY }, system)).item;
+      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+      await store.transition({ id: a.id, expected_version: 1, patch: { pr_number: 34 }, actor: system, reason: "x" });
+      await store.transition({ id: b.id, expected_version: 1, patch: { pr_number: 35 }, actor: system, reason: "x" });
+      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "work_items", b.id)).toMatchObject({ change_ref: "35", change_url: null });
+      // A patch without pr_number leaves the change columns alone.
+      await store.transition({ id: a.id, expected_version: 2, patch: { blocked_on: "human" }, actor: system, reason: "x" });
+      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      // The change columns are not part of the state change: only the patched fields are.
+      const [, set] = await store.listStateChanges(a.id);
+      expect(set!.changes).toEqual({ pr_number: { from: null, to: 34 } });
+      expect((await store.getWorkItemByPr(PROJECT_KEY, 34))!.id).toBe(a.id);
+      expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 35))!.id).toBe(b.id);
+    });
+
+    it("an unreviewed merge insert writes change_ref", async () => {
+      const { store } = await make();
+      const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: null });
+      expect(await raw(store, "unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
     });
   });
 
@@ -1772,6 +1859,42 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
+  describe("alerts (migration 36)", () => {
+    const HOUR = 3_600_000;
+    const alert = (over: Partial<NewAlert> = {}): NewAlert => ({
+      pattern: "repeated_error", pattern_key: "repeated_error:abc", error_code: "checks_failed", count: 3, detail: "boom", ...over,
+    });
+
+    it("stores an alert with its fields; the same pattern inside the dedupe window stores none", async () => {
+      const { store, clock } = await make();
+      expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+      const first = await store.recordAlert(alert(), 6 * HOUR);
+      expect(first).toMatchObject({ created: true, alert: { ...alert(), created_at: clock.now().toISOString() } });
+      clock.advance(6 * HOUR - 1);
+      expect(await store.recordAlert(alert({ count: 4 }), 6 * HOUR)).toEqual({ created: false });
+      // Another pattern is its own; a null detail round-trips.
+      const other = await store.recordAlert(alert({ pattern: "zero_tokens", pattern_key: "zero_tokens", detail: null }), 6 * HOUR);
+      expect(other).toMatchObject({ created: true, alert: { pattern: "zero_tokens", detail: null } });
+      expect((await store.listAlerts({ limit: 10 })).map((a) => a.pattern_key)).toEqual(["zero_tokens", "repeated_error:abc"]);
+    });
+
+    it("the same pattern stores again once the window has passed; newest first, limit honoured", async () => {
+      const { store, clock } = await make();
+      await store.recordAlert(alert(), 6 * HOUR);
+      clock.advance(6 * HOUR);
+      const again = await store.recordAlert(alert({ count: 7 }), 6 * HOUR);
+      expect(again).toMatchObject({ created: true, alert: { count: 7 } });
+      expect((await store.listAlerts({ limit: 10 })).map((a) => a.count)).toEqual([7, 3]);
+      expect((await store.listAlerts({ limit: 1 })).map((a) => a.count)).toEqual([7]);
+    });
+
+    it("concurrent records of one pattern leave one alert", async () => {
+      const { store } = await make();
+      const results = await Promise.all([store.recordAlert(alert(), 6 * HOUR), store.recordAlert(alert(), 6 * HOUR)]);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
+    });
+  });
   describe("host sleeps (migration 28)", () => {
     const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
     const sleep = (over: Partial<HostSleep> = {}): HostSleep => ({ worker_id: w1, woke_at: at(0), gap_ms: 120_000, run_id: null, ...over });
@@ -1821,6 +1944,42 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
   // App command requests (issue #245, migration 23 on both backends).
+  describe("dependency edges keep the issue updated_at they were read at (migrations 32 and 33)", () => {
+    const T1 = "2026-11-07T10:00:00.000Z" as Timestamp;
+    const T2 = "2026-11-07T11:00:00.000Z" as Timestamp;
+
+    it("replaceDependencyEdges with read_at records it on every edge and on the item; without it both stay", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item.id;
+      expect(await store.dependencyLinksReadAt(a)).toBeNull();
+      const plain = await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }]);
+      expect(plain.map((e) => e.source_updated_at)).toEqual([null]);
+
+      const read = await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }, { depends_on: "o/r#3", kind: "sub_issue" }], T1);
+      expect(read.map((e) => [e.depends_on, e.source_updated_at])).toEqual([["o/r#2", T1], ["o/r#3", T1]]);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T1);
+      expect((await store.listDependencyEdges({ work_item_id: a })).map((e) => e.source_updated_at)).toEqual([T1, T1]);
+
+      // No links: the item still records when they were read.
+      await store.replaceDependencyEdges(a, [], T2);
+      expect(await store.listDependencyEdges({ work_item_id: a })).toEqual([]);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T2);
+      await store.replaceDependencyEdges(a, []);
+      expect(await store.dependencyLinksReadAt(a)).toBe(T2);
+    });
+
+    it("markDependencyLinksStale clears the item's read time, twice as once", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item.id;
+      await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }], T1);
+      await store.markDependencyLinksStale(a);
+      await store.markDependencyLinksStale(a);
+      expect(await store.dependencyLinksReadAt(a)).toBeNull();
+      // The edges keep the time they were read at.
+      expect((await store.listDependencyEdges({ work_item_id: a })).map((e) => e.source_updated_at)).toEqual([T1]);
+    });
+  });
+
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
     const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({
@@ -2048,6 +2207,46 @@ describe("MySQL step 19 (worker-processes)", () => {
   });
 });
 
+describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
+  const steps = () => readSteps(STEPS_DIR, INLINE_STEPS);
+  const sql = (file: string) => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("are the repo's steps after 32, in order, .sql files", () => {
+    expect(steps().find((st) => st.name === "edge-source-updated-at")).toMatchObject({ number: 33, from: 32, kind: "sql" });
+    expect(steps().find((st) => st.name === "item-edges-source-updated-at")).toMatchObject({ number: 34, from: 33, kind: "sql" });
+  });
+
+  it("add the same columns as SQLite migrations 33 and 34, each in one ALTER (safe to rerun after a failure)", () => {
+    const added = (text: string) => [...text.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
+    expect(added(MIGRATIONS[32]!)).toEqual(["dependency_edges.source_updated_at"]);
+    expect(added(MIGRATIONS[33]!)).toEqual(["work_items.edges_source_updated_at"]);
+    expect(added(sql("0033-edge-source-updated-at.sql"))).toEqual(added(MIGRATIONS[32]!));
+    expect(added(sql("0034-item-edges-source-updated-at.sql"))).toEqual(added(MIGRATIONS[33]!));
+    for (const f of ["0033-edge-source-updated-at.sql", "0034-item-edges-source-updated-at.sql"]) {
+      const statements = sql(f).split("\n").filter((l) => l.trim() && !l.startsWith("--"));
+      expect(statements, f).toHaveLength(1);
+    }
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades a state-32 database: edges keep their rows and get a NULL read time", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(32) }).apply(() => undefined);
+    const clock = new FakeClock();
+    const s = await new MysqlMigrations(conn).apply(() => undefined);
+    expect(s.pending.map((p) => p.number)).toEqual(expect.arrayContaining([33, 34]));
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const a = (await store.createWorkItem(issue(1), system)).item.id;
+    await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }]);
+    expect(await store.dependencyLinksReadAt(a)).toBeNull();
+    const at = "2026-11-07T10:00:00.000Z" as Timestamp;
+    expect((await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }], at))[0]?.source_updated_at).toBe(at);
+    expect(await store.dependencyLinksReadAt(a)).toBe(at);
+  });
+});
+
 describe("migration 28 on an existing SQLite database", () => {
   it("adds host_sleeps and keeps every earlier row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sf-mig28-"));
@@ -2117,5 +2316,154 @@ describe("MySQL step 28 (host-sleeps)", () => {
     const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
     await store.recordHostSleep(s);
     expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+  });
+});
+
+describe("migration 32 on an existing SQLite database", () => {
+  it("adds standing_rules and standing_proposals and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig32-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 31; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect(await store.getCursor("poll")).toBe("c1");
+      const { created } = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+      expect(created).toBe(true);
+      expect((await store.putStandingRule({ gate: "spec", tier: 2, enabled: false, set_by: "github:1" as UserId })).enabled).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 32 (standing-approvals)", () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-31 database: both tables added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect(await store.getCursor("poll")).toBe("c1");
+    const first = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    const again = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    expect([first.created, again.created]).toEqual([true, false]);
+    await store.putStandingRule({ gate: "spec", tier: 2, enabled: true, set_by: "github:1" as UserId });
+    expect((await store.listStandingRules()).map((r) => [r.gate, r.tier, r.enabled])).toEqual([["spec", 2, true]]);
+  });
+});
+
+describe("migration 35 (change fields) on an existing SQLite database", () => {
+  const adoptedIn = (n: number, project: string) => ({
+    ...issue(n),
+    project,
+    adopted: { pr_number: n, head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
+  });
+
+  it("prUrl in src/main.ts builds the same string as the backfill and the store writes", () => {
+    expect(readFileSync(join(process.cwd(), "src", "main.ts"), "utf8")).toContain("prUrl: (label, n) => `https://${label}/pull/${n}`");
+    expect(CHANGE_MIGRATION).toBeGreaterThan(0);
+  });
+
+  it("an item without a PR inserts as before: the change columns are listed only with a PR number", async () => {
+    // A schema from before the migration, as tests of older steps build (tests/session-migration.test.ts on MySQL).
+    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
+    const raw = new DatabaseSync(path);
+    for (const m of MIGRATIONS.slice(0, CHANGE_MIGRATION - 1)) raw.exec(m);
+    raw.close();
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      const { item } = await store.createWorkItem(issue(1), system);
+      expect((await store.getWorkItem(item.id))!).toMatchObject({ id: item.id, pr_number: null });
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("backfills change_ref and change_url from pr_number and the label, adds the indexes; pr_number-only rows still resolve", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
+    const clock = new FakeClock();
+    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
+    await seed.migrate();
+    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
+    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
+    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
+    const patched = (await seed.createWorkItem(issue(7), system)).item;
+    await seed.transition({ id: patched.id, expected_version: 1, patch: { pr_number: 9 }, actor: system, reason: "x" });
+    const plain = (await seed.createWorkItem(issue(8), system)).item;
+    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 11, merge_sha: "m", merger_id: null });
+    await seed.close();
+    // Back to the state before the migration: no change columns or indexes, every row as it was.
+    const db = new DatabaseSync(path);
+    db.exec(`
+      DROP INDEX work_items_change; DROP INDEX unreviewed_merges_change;
+      ALTER TABLE work_items DROP COLUMN change_ref; ALTER TABLE work_items DROP COLUMN change_url;
+      ALTER TABLE unreviewed_merges DROP COLUMN change_ref;
+      DELETE FROM schema_migrations WHERE version >= ${CHANGE_MIGRATION};
+    `);
+    db.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      const row = async (table: string, id: string) => (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
+      expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
+      expect(await row("work_items", patched.id)).toMatchObject({ change_ref: "9", change_url: prUrl(LABEL, 9) });
+      expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
+      expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
+    } finally {
+      await store.close();
+    }
+
+    const check = new DatabaseSync(path);
+    const index = (name: string) => check.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) as { sql: string } | undefined;
+    expect(index("work_items_change")?.sql).toMatch(/ON work_items \(project, change_ref\)/);
+    expect(index("unreviewed_merges_change")?.sql).toMatch(/UNIQUE INDEX .* ON unreviewed_merges \(project, change_ref\)/);
+    // A row an older controller wrote: pr_number only, change_ref NULL. The lookup falls back to pr_number.
+    check.prepare("UPDATE work_items SET pr_number = 12 WHERE id = ?").run(plain.id);
+    check.close();
+    const reopened = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      expect((await reopened.getWorkItemByPr(PROJECT_KEY, 12))!).toMatchObject({ id: plain.id, pr_number: 12 });
+      expect((await reopened.getWorkItemByPr(PROJECT_KEY, 5))!.id).toBe(labelled.id);
+      expect(await reopened.getWorkItemByPr(OTHER_PROJECT_KEY, 12)).toBeNull();
+    } finally {
+      await reopened.close();
+    }
+  });
+});
+
+describe("MySQL step 35 (change-fields)", () => {
+  it("is a .ts data step right after the SQLite migration's starting state", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")).toMatchObject({
+      number: CHANGE_MIGRATION, from: CHANGE_MIGRATION - 1, kind: "ts",
+    });
+  });
+
+  it.skipIf(!MYSQL_URL)("a row written with pr_number only still resolves by PR", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const { item } = await store.createWorkItem(issue(1), system);
+    await conn.query("UPDATE work_items SET pr_number = 12 WHERE id = ?", [item.id]);
+    expect((await store.getWorkItemByPr(PROJECT_KEY, 12))!).toMatchObject({ id: item.id, pr_number: 12 });
+    expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, 12)).toBeNull();
   });
 });

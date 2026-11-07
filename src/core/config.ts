@@ -1,7 +1,8 @@
 import type { PathCompanion } from "./companions.js";
-import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
+import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
+import { isUnder } from "./tools/paths.js";
 import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 
@@ -137,6 +138,19 @@ export interface LoadedConfig {
   first_output_ms?: number;
   /** How often a stall pause probes the cheap model; a failed probe moves the pause this much later. Absent: 600000. */
   probe_interval_ms?: number;
+  /**
+   * The alarm step (design 05-alarms): matching runs on distinct items (and zero-token agent runs in a row) that
+   * raise an alert, the minutes they are counted over, and the child restarts within 30 minutes that raise one.
+   * Settable live. Absent: ALARM_DEFAULTS.
+   */
+  alarm_repeat_count?: number;
+  alarm_window_minutes?: number;
+  alarm_restart_count?: number;
+  /**
+   * The most times the gate hooks' Stop hook sends an implement run's agent back in one run (design §4, issue
+   * #302); the next stop is allowed. A positive integer. Absent: AGENT_STOP_CHECKS_DEFAULT (3).
+   */
+  agent_stop_checks?: number;
   lease_ms: number;
   heartbeat_ms: number;
   tick_ms: number;
@@ -161,7 +175,8 @@ export interface LoadedConfig {
   budget_min_sample?: number;
   /**
    * Coordination (design §5, 2026-11-03): `max_coordination_cost`, `hotspot_paths`, `hotspot_weight`,
-   * `mechanical_paths` and `mechanical_weight` (issue #297) from factory.config.json, checked at load by
+   * `mechanical_paths` and `mechanical_weight` (issue #297), `hold_policy` and `hotspot_mode` (issue #314) from
+   * factory.config.json, checked at load by
    * `coordinationConfig` and passed in by compose.ts. Absent: DEFAULT_COORDINATION.
    */
   coordination?: CoordinationSettings;
@@ -171,7 +186,47 @@ export interface LoadedConfig {
    * answer's `allowed_paths` when its `files_to_change` names the `when` path. Absent: none.
    */
   path_companions?: PathCompanion[];
+  /**
+   * The project's toolchain (design 05-sandbox.md, issue #334): `toolchain` from factory.config.json, checked at
+   * load by compose.ts (`toolchainConfig`). Absent: no warm step, no readable cache and no extra agent env, so
+   * every run is exactly as before the block existed.
+   */
+  toolchain?: ToolchainConfig;
 }
+
+/**
+ * The checked `toolchain` block. `caches`: absolute, normalized folders (a leading `~` taken against the owner's
+ * HOME) the agent may read and never write; none overlaps a denied path. `env`: non-secret entries added to the
+ * agent's environment (G1 checks on key and value). `warm_command`: argv the worker runs before the agent, with
+ * the network and no credential; absent in the file: `repo.install_command`.
+ */
+export interface ToolchainConfig {
+  caches: readonly string[];
+  env: Readonly<Record<string, string>>;
+  warm_command: readonly string[];
+}
+
+/** The keys of the `toolchain` block. */
+export const TOOLCHAIN_KEYS = ["caches", "env", "warm_command"] as const;
+
+/**
+ * Each declared cache that cannot be read safely, with the denied path it overlaps: the cache is that path, lies
+ * inside it, or holds it (the secret file's folder is a `deny_paths` entry). One entry per pair; `index` is the
+ * cache's place in `caches`. Both lists normalized.
+ */
+export function toolchainCacheOverlaps(
+  caches: readonly string[],
+  denied: readonly string[],
+): { index: number; cache: string; denied: string }[] {
+  return caches.flatMap((cache, index) =>
+    denied.filter((d) => isUnder(cache, d) || isUnder(d, cache)).map((d) => ({ index, cache, denied: d })),
+  );
+}
+
+/** The alarm keys when factory.config.json gives none (design 05-alarms). */
+export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
+/** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
+export const AGENT_STOP_CHECKS_DEFAULT = 3;
 
 /** `stall_ms`, `first_output_ms` and `probe_interval_ms` when factory.config.json gives none (design §5 Restarts). */
 export const STALL_DEFAULTS = { stall_ms: 300_000, first_output_ms: 180_000, probe_interval_ms: 600_000 } as const;
@@ -183,6 +238,8 @@ export const COORDINATION_KEYS = [
   "hotspot_weight",
   "mechanical_paths",
   "mechanical_weight",
+  "hold_policy",
+  "hotspot_mode",
 ] as const;
 
 /**
@@ -190,7 +247,8 @@ export const COORDINATION_KEYS = [
  * optional (absent: its default). `max_coordination_cost` and `hotspot_weight` must be numbers above 0; zero,
  * a negative or a non-numeric value fails at startup, like the other numeric keys. `hotspot_paths` is a list of
  * non-empty paths (a folder ends in `/`), and so is `mechanical_paths`. `mechanical_weight` must be a number above
- * 0 and below 1.0 (issue #297): a mechanical path weighs less than any ordinary shared file.
+ * 0 and below 1.0 (issue #297): a mechanical path weighs less than any ordinary shared file. `hold_policy` is
+ * checked by `parseHoldPolicy`, and `hotspot_mode` is `policy` or `hold` (issue #314).
  */
 export function coordinationProblems(raw: unknown): string[] {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
@@ -213,6 +271,16 @@ export function coordinationProblems(raw: unknown): string[] {
       problems.push(`${key} must be a list of non-empty paths`);
     }
   }
+  if (r.hold_policy !== undefined) {
+    try {
+      parseHoldPolicy(r.hold_policy);
+    } catch (err) {
+      problems.push((err as Error).message);
+    }
+  }
+  if (r.hotspot_mode !== undefined && !(HOTSPOT_MODES as readonly unknown[]).includes(r.hotspot_mode)) {
+    problems.push(`hotspot_mode must be ${HOTSPOT_MODES.map((m) => `"${m}"`).join(" or ")} (got ${JSON.stringify(r.hotspot_mode) ?? String(r.hotspot_mode)})`);
+  }
   return problems;
 }
 
@@ -227,6 +295,8 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
     hotspot_weight: (r.hotspot_weight as number | undefined) ?? DEFAULT_COORDINATION.hotspot_weight,
     mechanical: (r.mechanical_paths as string[] | undefined) ?? DEFAULT_COORDINATION.mechanical,
     mechanical_weight: (r.mechanical_weight as number | undefined) ?? DEFAULT_COORDINATION.mechanical_weight,
+    hold_policy: r.hold_policy === undefined ? DEFAULT_COORDINATION.hold_policy : parseHoldPolicy(r.hold_policy),
+    hotspot_mode: (r.hotspot_mode as HotspotMode | undefined) ?? DEFAULT_COORDINATION.hotspot_mode,
   };
 }
 
@@ -251,4 +321,6 @@ export interface Prompts {
   review: string;
   /** prompts/resolve.md. Absent when the file is missing; a resolve run then fails with `prompt_missing`. */
   resolve?: string;
+  /** prompts/improve.md, the improve run's system prompt (design §7). Absent: the improve run asks no model. */
+  improve?: string;
 }

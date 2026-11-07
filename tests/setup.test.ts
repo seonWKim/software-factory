@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
-import { createLabels, ensureSecretFile, setSecret, statusLabelChecks } from "../src/setup.js";
+import { checkStatus, createLabels, ensureSecretFile, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 describe("setup: secret file writes", () => {
@@ -105,5 +105,49 @@ describe("config: status_label_prefix", () => {
     const loaded = await loadConfig(join(import.meta.dirname, ".."));
     expect(loaded.file.status_label_prefix).toBeUndefined();
     expect(loaded.config.status_label_prefix).toBe("sf: ");
+  });
+});
+
+/** A GitHub client whose token expires at `expires` (null: never); counts the expiry reads. */
+class ExpiryClient extends GitHubClient {
+  reads = 0;
+  constructor(private readonly expires: Date | null) {
+    super({} as GitHubCredentials, "http://unused");
+  }
+  override async tokenExpiration(): Promise<Date | null> {
+    this.reads++;
+    return this.expires;
+  }
+}
+
+describe("doctor: GitHub token expiry thresholds (design §9 Health)", () => {
+  const repo = { owner: "o", name: "r" };
+  const NOW = new Date("2026-11-07T12:00:00.000Z");
+  const inDays = (d: number, extraMs = 0) => new Date(NOW.getTime() + d * 86_400_000 + extraMs);
+  const check = (exp: Date | null) => tokenExpiryCheck(new ExpiryClient(exp), repo, NOW);
+
+  it("0 days or less is fail, 1 or 2 days warn, 3 days or more ok", async () => {
+    expect(checkStatus(await check(inDays(-1)))).toBe("fail");
+    expect(checkStatus(await check(inDays(0)))).toBe("fail");
+    // Under a whole day left counts as 0 days.
+    expect(checkStatus(await check(inDays(0, 23 * 3_600_000)))).toBe("fail");
+    expect(checkStatus(await check(inDays(1)))).toBe("warn");
+    expect(checkStatus(await check(inDays(2, 3_600_000)))).toBe("warn");
+    expect(checkStatus(await check(inDays(3)))).toBe("ok");
+    expect(checkStatus(await check(inDays(90)))).toBe("ok");
+  });
+
+  it("says how many days are left and carries the number; a soon-expiring token names the rotate command", async () => {
+    expect(await check(inDays(2))).toEqual({ ok: false, warn: true, token_days: 2, msg: "GitHub token expires in 2 days (run: npm run setup -- --rotate-github)" });
+    expect(await check(inDays(0))).toEqual({ ok: false, token_days: 0, msg: "GitHub token expires in 0 days (run: npm run setup -- --rotate-github)" });
+    expect((await check(inDays(10))).token_days).toBe(10);
+  });
+
+  it("a token that never expires stays a warn; an App token's expiry comes from its grant, with no GitHub read", async () => {
+    expect(checkStatus(await check(null))).toBe("warn");
+    const client = new ExpiryClient(null);
+    const c = await tokenExpiryCheck(client, repo, NOW, { expires_at: inDays(1) });
+    expect(checkStatus(c)).toBe("warn");
+    expect(client.reads).toBe(0);
   });
 });

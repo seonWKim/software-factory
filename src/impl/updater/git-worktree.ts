@@ -10,7 +10,9 @@ import {
   CODE_ROOT_ENV,
   CONFIG_ENV,
   type ChildHandle,
+  type ChildRestart,
   MIGRATION_PENDING,
+  RESTART_HISTORY,
   type SupervisorRequest,
   type ChildLauncher,
   type CommandRunner,
@@ -142,6 +144,8 @@ const within = (path: string, dir: string) => path === dir || path.startsWith(di
  * for an old child. A failed build never touches a running child. The main checkout is only fast-forwarded
  * (when on the base branch and clean); nothing else is done to it.
  *
+ * With serveUi() it also runs the status page from the claiming child's folder and swaps it on each new revision.
+ *
  * One supervisor per state directory is assumed: index blocks and the live set are kept in this process.
  */
 export class GitWorktreeUpdater implements Updater {
@@ -169,6 +173,8 @@ export class GitWorktreeUpdater implements Updater {
   private readonly abort = new AbortController();
   /** The revision the claiming child was started from. */
   private runningRev: string | null = null;
+  /** The last unexpected child exits, oldest first, for the status file (RESTART_HISTORY at most). */
+  private restarts: ChildRestart[] = [];
   /** The last status written: a repeat of the same state keeps its `since`. */
   private lastStatus: SupervisorStatus | null = null;
   /** The crash loop in progress: its error and when it began. */
@@ -177,6 +183,10 @@ export class GitWorktreeUpdater implements Updater {
   private reporting: Promise<void> = Promise.resolve();
   /** The update waiting on `npm run migrate`, if any. */
   private migration: Migration | null = null;
+  /** `factory ui`'s arguments when this supervisor also runs the status page (serveUi); null: it does not. */
+  private uiArgs: readonly string[] | null = null;
+  /** The status page child and the folder it serves from. */
+  private ui: { child: ChildHandle; dir: string } | null = null;
 
   constructor(private readonly o: GitWorktreeOptions) {}
 
@@ -197,7 +207,16 @@ export class GitWorktreeUpdater implements Updater {
   }
 
   childPids(): number[] {
-    return this.live.map((l) => l.child.pid);
+    return [...this.live.map((l) => l.child.pid), ...(this.ui ? [this.ui.child.pid] : [])];
+  }
+
+  /**
+   * Also run the status page (`factory ui`, `args`) as a child, from the claiming child's folder: on each new
+   * revision the old one stops and a new one starts from the new folder (drain-and-swap: the port is free
+   * before the new one binds), and one that exits by itself starts again on the next poll. Call before start().
+   */
+  serveUi(args: readonly string[] = ["ui"]): void {
+    this.uiArgs = args;
   }
 
   async start(): Promise<void> {
@@ -210,6 +229,7 @@ export class GitWorktreeUpdater implements Updater {
       this.newest = await this.create(origin);
     }
     await this.ensureChild();
+    await this.syncUi();
     if (!this.closed) await this.cleanup();
   }
 
@@ -234,7 +254,41 @@ export class GitWorktreeUpdater implements Updater {
     }
     if (this.migration) await this.migrationStep();
     else await this.ensureChild();
+    await this.syncUi();
     if (!this.closed) await this.cleanup();
+  }
+
+  /**
+   * The status page child follows the claiming child's folder: none yet (or it exited) starts one; one on an
+   * older folder is stopped first, then the new one starts. With no claiming child (a migration drained every
+   * child) the page keeps serving from where it is: it only reads the store.
+   */
+  private async syncUi(): Promise<void> {
+    const args = this.uiArgs;
+    const dir = this.current?.dir ?? null;
+    if (this.closed || args === null || dir === null || this.ui?.dir === dir) return;
+    const { log } = this.o;
+    if (this.ui) {
+      log.info("stopping the status page child: a new revision serves it", { pid: this.ui.child.pid, dir: this.ui.dir });
+      const old = this.ui;
+      await this.stop(old.child);
+      if (this.ui === old) this.ui = null;
+      if (this.closed) return;
+    }
+    const child = this.o.launcher.launch({
+      entry: join(dir, "dist", "main.js"),
+      args,
+      cwd: this.o.repoPath,
+      env: { [CODE_ROOT_ENV]: dir, [SUPERVISED_ENV]: "1", ...(this.o.configFile ? { [CONFIG_ENV]: this.o.configFile } : {}) },
+    });
+    const ui = { child, dir };
+    this.ui = ui;
+    log.info("status page child started", { pid: child.pid, dir });
+    void child.exited.then((code) => {
+      if (this.ui === ui) this.ui = null;
+      if (this.stopping.has(child) || this.closed) return;
+      log.warn("status page child exited; starting it again on the next poll", { pid: child.pid, exit_code: code, error: child.lastError ?? null });
+    });
   }
 
   /** The current migration, for tests and the status file. */
@@ -362,9 +416,11 @@ export class GitWorktreeUpdater implements Updater {
     this.abort.abort();
     const all = [...this.live];
     for (const l of all) l.timer?.abort();
-    if (all.length) this.o.log.info("stopping every live child", { pids: all.map((l) => l.child.pid).join(",") });
-    await Promise.all(all.map((l) => this.stop(l.child)));
+    const children = [...all.map((l) => l.child), ...(this.ui ? [this.ui.child] : [])];
+    if (children.length) this.o.log.info("stopping every live child", { pids: children.map((c) => c.pid).join(",") });
+    await Promise.all(children.map((c) => this.stop(c)));
     this.current = null;
+    this.ui = null;
     await this.report("stopped", null);
   }
 
@@ -487,6 +543,7 @@ export class GitWorktreeUpdater implements Updater {
       log.warn("could not write the pid file", { dir, error: err instanceof Error ? err.message.slice(0, 200) : "unknown" }),
     );
     await this.report("running", null);
+    await this.syncUi();
   }
 
   /** Asks an old child to drain; it exits by itself after its in-flight runs. Hard stop only on timeout. Never awaited. */
@@ -526,7 +583,9 @@ export class GitWorktreeUpdater implements Updater {
       log.warn("child exited: schema or data steps pending; waiting for npm run migrate", { pid: l.child.pid, rev: l.rev });
       return;
     }
-    if (!this.closed) void this.report("crashed", null, l.child.lastError ?? `exit code ${code}`);
+    const reason = l.child.lastError ?? `exit code ${code}`;
+    this.restarts = [...this.restarts, { at: this.o.clock.now().toISOString(), reason }].slice(-RESTART_HISTORY);
+    if (!this.closed) void this.report("crashed", null, reason);
     log.warn("child exited unexpectedly; restarting on the next poll", { pid: l.child.pid, exit_code: code });
   }
 
@@ -572,6 +631,7 @@ export class GitWorktreeUpdater implements Updater {
       error,
       ...(state.startsWith("migration_") && this.migration ? { pending: this.migration.steps } : {}),
       supervisor_pid: process.pid,
+      restarts: this.restarts,
     };
     this.lastStatus = status;
     // One write at a time: a child's exit can report while a poll does.
@@ -660,7 +720,7 @@ export class GitWorktreeUpdater implements Updater {
       if (pid === null || !this.pidAlive(pid)) this.foreign.delete(dir);
     }
     const all = await this.folders();
-    const kept = new Set<string>([...this.live.map((l) => l.dir), ...this.foreign]);
+    const kept = new Set<string>([...this.live.map((l) => l.dir), ...this.foreign, ...(this.ui ? [this.ui.dir] : [])]);
     if (this.building) kept.add(this.building);
     if (this.migration) kept.add(this.migration.dir);
     const extra = this.newest && !kept.has(this.newest) ? this.newest : await this.newestBuilt(all.filter((d) => !kept.has(d)));

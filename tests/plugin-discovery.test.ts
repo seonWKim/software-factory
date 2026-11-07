@@ -108,6 +108,7 @@ describe("plugin discovery: the built-in registry", () => {
       updater: "git-worktree",
       github_auth: "token",
       test_database: "none",
+      network_probe: "http",
     };
     expect(defaultPlugins("darwin")).toEqual({ ...fixed, awake: "caffeinate" });
     expect(defaultPlugins("linux")).toEqual({ ...fixed, awake: "none" });

@@ -50,7 +50,7 @@ export interface CommandState {
   asked_by?: RunKind;
 }
 
-export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "link" | "help";
+export type CommandName = "approve" | "reject" | "revise" | "retry" | "resolve" | "budget" | "verdict" | "standing" | "link" | "help";
 
 export interface CommandSpec {
   name: CommandName;
@@ -144,6 +144,16 @@ export const COMMANDS: readonly CommandSpec[] = [
     description: "Record a verdict on the result; it does not change the state",
     phases: OPEN_PHASES,
     needs_pr: true,
+    changes_state: false,
+  },
+  {
+    name: "standing",
+    usage: "/standing [accept|decline <rule>]",
+    description:
+      "Show the standing-approval rules, or turn one on or off. `/standing accept spec-t1` lets tier 1 specs that wait at the spec gate be approved without a reply; " +
+      "`/standing decline spec-t1` turns it off or declines its proposal. A `/revise` or `/reject` on an item the rule approved also turns it off",
+    phases: COMMAND_PHASES,
+    needs_pr: false,
     changes_state: false,
   },
   {
@@ -246,9 +256,16 @@ export function prCommandsFor(s: CommandState): CommandSpec[] {
  */
 const ACCOUNT_COMMANDS: readonly CommandName[] = ["link"];
 
+/**
+ * Factory commands: about the factory's rules, not the item (design 05-standing-approvals). Listed by `/help` and
+ * in the SET_UP.md table, never in an item's footer; parsed like item commands and answered on a work item.
+ */
+const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
+
 /** The commands that apply in `s`, in table order; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
-  return COMMANDS.filter((c) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && applies(c, s)).concat(commandSpec("help"));
+  const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
+  return COMMANDS.filter((c) => shown(c) && applies(c, s)).concat(commandSpec("help"));
 }
 
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;

@@ -17,6 +17,7 @@ import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { Forge } from "./interfaces/forge.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
+import type { NetworkProbe } from "./interfaces/network-probe.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
@@ -46,6 +47,7 @@ export interface Instances {
   github_auth: GitHubCredentials;
   test_database: TestDatabase;
   forge: Forge;
+  network_probe: NetworkProbe;
 }
 
 export type PluginKind = keyof Instances;
@@ -85,7 +87,8 @@ export interface Contexts {
    * `scanner` and `log`: what a source with its own credentials and its own posts needs (the `slack` source,
    * issue #109: its tokens from the SecretStore, G5 on every message before it is posted).
    */
-  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger };
+  /** `clock`: build() always passes it; a polled source needs it (the GitHub source's starting point). */
+  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger; clock?: Clock };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
@@ -95,6 +98,8 @@ export interface Contexts {
   /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
   test_database: BaseContext & { secrets: SecretStore };
   forge: BaseContext & { github: GitHubClient };
+  /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */
+  network_probe: BaseContext;
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;

@@ -14,7 +14,7 @@ import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettableKey,
-  type SettingsBase,
+  type SettingsBase, type SettingSource,
   effectiveSetting, isProjectSettableKey, resolveSettings,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -83,6 +83,12 @@ export function storeProjectResolver(
 
 /** What the CLI prints for a value: JSON text. */
 const fmt = (v: unknown): string => JSON.stringify(v) ?? String(v);
+
+/** The `workers` setting the factory acts on now: file, override or default, capped at `max_workers` (the same resolve the Settings page reads). */
+export async function effectiveWorkers(d: UiDeps, s: UiSettings): Promise<{ value: number; source: SettingSource }> {
+  const e = effectiveSetting(resolveSettings(s.base, await d.store.listSettingOverrides()), "workers");
+  return { value: e.value, source: e.source };
+}
 
 type Kind = "number" | "boolean" | "models" | "model_by";
 const kindOf = (k: SettableKey): Kind =>

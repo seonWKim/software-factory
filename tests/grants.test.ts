@@ -8,7 +8,7 @@ import { GitHubAuthProvider } from "../src/impl/auth/github-auth-provider.js";
 import { newLinkCode } from "../src/impl/auth/link-code.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
-import { GitHubPermissionGrant } from "../src/impl/grant/github-permission.js";
+import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { StaticGrant, staticGrantConfig } from "../src/impl/grant/static.js";
 import type { ExternalIdentity, GrantSource, GrantSubject, Role } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -222,7 +222,7 @@ describe("one shared authorize check", () => {
       readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
         e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []);
     const asking = files(SRC).filter((f) => /\/collaborators\//.test(readFileSync(f, "utf8"))).map((f) => relative(SRC, f));
-    expect(asking).toEqual([join("impl", "grant", "github-permission.ts")]);
+    expect(asking).toEqual([join("impl", "github", "github-permission.ts")]);
   });
 
   it("the controller decides permission only through its one authorize helper", () => {

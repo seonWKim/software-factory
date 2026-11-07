@@ -12,17 +12,33 @@ export interface FactoryState {
   target_rev: string | null;
   child_pid: number | null;
   since: string;
+  /** The effective `workers` setting (file, override or default, capped at max_workers), not the status file's value. */
   workers: number;
+  workers_source: "override" | "file" | "default";
   error: string | null;
   pending: string[];
+}
+
+/** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
+export interface SystemAction {
+  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "revision_mismatch";
+  text: string;
+  command: string;
+  /** When it ends by itself, else null. */
+  until: string | null;
+  /** The item it is about (a deadlock), else null. */
+  work_item_id: string | null;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
 export interface Overview {
   as_of: string;
+  /** The git revision the UI server runs; compared with WEB_REV. Null: unknown. */
+  server_rev?: string | null;
   stages: Record<string, number>;
-  /** Open items blocked on a person, plus those whose run started past a deadlock: "Needs you (N)". */
+  /** Open items blocked on a person plus the system actions: "Needs you (N)". */
   needs_you: number;
+  system_actions?: SystemAction[];
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
@@ -99,7 +115,21 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  /**
+   * What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows.
+   * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
+   */
+  need?: { reason: string; command: string | null; anchor?: string | null };
   why?: Why;
+  /** The split parent (null for any other item) and this item's place among its phases. */
+  parent_id?: string | null;
+  phase?: number | null;
+  /** The issue number this item waits on, when it is exactly one (a held phase's previous phase, one dependency). */
+  waiting_on_number?: number | null;
+  /** The item's queued or running run; `position` is a queued run's place in the queue. */
+  run?: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
+  /** The item's latest claim decision; `holder` is "#92", `holder_id` the holding item when it has one. */
+  claim?: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
 }
 
 export interface Items {
@@ -195,12 +225,26 @@ export interface ItemDetail {
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
+  /** The item's thread (src/ui/thread.ts), oldest first; every body already through the Withholder. */
+  thread?: ThreadEntry[];
   /** The commands that apply in the item's current state, in the order to show them. */
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
+}
+
+/** One entry of an item's thread: `author` is `factory` or `unknown` (no author is stored), `channel` the item's source type. */
+export interface ThreadEntry {
+  seq: number;
+  at: string;
+  kind: string;
+  author: string;
+  channel: string;
+  /** The entry's id on the item page: `msg-<seq>`. */
+  anchor: string;
+  body: string;
 }
 
 /** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */
@@ -357,6 +401,8 @@ export interface DataPageBody {
 export interface PauseRow {
   name: string;
   ends_at: string;
+  /** When a model stall began; absent for the pauses that have no start time. */
+  since?: string | null;
 }
 
 /** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
@@ -365,8 +411,64 @@ export interface PausesView {
   csrf_token: string | null;
 }
 
+declare const __FACTORY_REV__: string | null | undefined;
+
+/** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
+export const WEB_REV: string | null = typeof __FACTORY_REV__ === "string" ? __FACTORY_REV__ : null;
+
+/** One live worker process of `/api/v1/workers` (`processes`). `slots` 0 is a draining process. */
+export interface WorkerProcess {
+  process_id: string;
+  pid: number;
+  host: string;
+  slots: number;
+  max_slots: number;
+  busy: number;
+  idle: number;
+  started_at: string;
+  reported_at: string;
+  runs: { id: string; kind: string; work_item_id: string; worker_id: string; started_at: string | null }[];
+}
+
+/** `/api/v1/workers`. `processes_error` is set when the processes could not be read. */
+export interface WorkersView {
+  as_of: string;
+  workers: { owner: string; running: number }[];
+  processes?: WorkerProcess[];
+  processes_error?: string;
+}
+
+/** `/api/v1/failures`: failed runs of a window grouped by error code. */
+export interface FailureRun {
+  id: string;
+  work_item_id: string;
+  kind: string;
+  attempt: number;
+  detail: string;
+  worker: string | null;
+  finished_at: string | null;
+}
+export interface FailureGroup {
+  code: string;
+  /** Plain words for a known code; null for an unknown one. */
+  description: string | null;
+  count: number;
+  last_seen: string | null;
+  items: number;
+  runs: FailureRun[];
+}
+export interface Failures {
+  as_of: string;
+  window: "24h" | "7d";
+  cap: number;
+  total: number;
+  capped: boolean;
+  groups: FailureGroup[];
+}
+
 export const API = {
-  overview: "/api/v1/overview",
+  // The app's own revision goes along, so the server lists a mismatch in Needs you.
+  overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
@@ -379,6 +481,7 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  failures: (window: string) => `/api/v1/failures?window=${window}`,
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   pauses: "/api/v1/pauses",

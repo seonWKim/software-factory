@@ -542,4 +542,107 @@ export const MIGRATIONS: readonly string[] = [
   WHERE r.handled_at IS NULL AND NOT EXISTS (SELECT 1 FROM command_inbox i WHERE i.command_key = 'app:' || r.seq)
   ORDER BY r.seq;
   `,
+  // 30: when a cost hold started (issue #314, design §5 Hold policy): kept while the run stays held, whichever
+  // holder the decision names, so a `run_after_minutes` timer does not restart. NULL on older rows.
+  `
+  ALTER TABLE claim_decisions ADD COLUMN held_since TEXT;
+  `,
+  // 31: improve reports and filed patterns (issue #306, design §7). `improve_reports`: one row per improve run, its
+  // window and the failed runs it grouped (`failure_groups`: two or more runs, `patterns`: one run), JSON text.
+  // `filed_patterns`: one row per pattern filed from a report, keyed by (project_key, pattern_key); created empty,
+  // nothing writes it yet. IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 31.
+  `
+  CREATE TABLE IF NOT EXISTS improve_reports (
+    id              TEXT PRIMARY KEY,
+    run_id          TEXT NOT NULL UNIQUE REFERENCES runs(id),
+    project_key     TEXT NOT NULL,
+    window_start    TEXT NOT NULL,
+    window_end      TEXT NOT NULL,
+    failure_groups  TEXT NOT NULL,
+    patterns        TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS improve_reports_project ON improve_reports (project_key, created_at);
+  CREATE TABLE IF NOT EXISTS filed_patterns (
+    id           TEXT PRIMARY KEY,
+    project_key  TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    report_id    TEXT NOT NULL REFERENCES improve_reports(id),
+    filed_ref    TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE (project_key, pattern_key)
+  );
+  `,
+  // 32: standing approvals (design 05-standing-approvals, issue #298). `standing_rules`: one row per (gate, tier),
+  // `enabled` 0 or 1, `set_by` a user ID. `standing_proposals`: one row per (gate, tier, run_length), the run of
+  // unchanged approvals that reached `threshold`. Stored only: nothing acts on either yet. IF NOT EXISTS: safe to run
+  // again on a database whose recorded version was set back below 32.
+  `
+  CREATE TABLE IF NOT EXISTS standing_rules (
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL,
+    set_by      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (gate, tier)
+  );
+  CREATE TABLE IF NOT EXISTS standing_proposals (
+    id          TEXT PRIMARY KEY,
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    run_length  INTEGER NOT NULL,
+    threshold   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (gate, tier, run_length)
+  );
+  `,
+  // 33: dependency edges re-read only when the issue changed (issue #254, design §5 Coordination). Each edge keeps
+  // the source issue's updated_at it was read at; NULL on edges from before (the controller reads them once more).
+  `
+  ALTER TABLE dependency_edges ADD COLUMN source_updated_at TEXT;
+  `,
+  // 34: the same read time on the item (issue #254), so an item whose issue has no links also records when its
+  // links were read. NULL: never read with a time, or marked stale; the controller reads its links on the next poll.
+  `
+  ALTER TABLE work_items ADD COLUMN edges_source_updated_at TEXT;
+  `,
+  // 35: the change columns beside pr_number (phase 1 of the change fields). `change_ref`: the PR number as text;
+  // `change_url`: https://<label>/pull/<n> for a GitHub project key whose label cursor exists, else NULL (the same
+  // string as prUrl in src/main.ts). Backfilled from pr_number; the store writes them with pr_number from now on.
+  // Only NULL columns are filled and the indexes are IF NOT EXISTS: safe to run again below 35.
+  `
+  ALTER TABLE work_items ADD COLUMN change_ref TEXT;
+  ALTER TABLE work_items ADD COLUMN change_url TEXT;
+  ALTER TABLE unreviewed_merges ADD COLUMN change_ref TEXT;
+  UPDATE work_items SET change_ref = CAST(pr_number AS TEXT) WHERE pr_number IS NOT NULL AND change_ref IS NULL;
+  UPDATE work_items SET change_url = 'https://' || (SELECT c.value FROM cursors c WHERE c.name = 'project_label:' || work_items.project)
+    || '/pull/' || pr_number
+  WHERE pr_number IS NOT NULL AND change_url IS NULL AND substr(project, 1, 7) = 'github:'
+    AND EXISTS (SELECT 1 FROM cursors c WHERE c.name = 'project_label:' || work_items.project);
+  UPDATE unreviewed_merges SET change_ref = CAST(pr_number AS TEXT) WHERE change_ref IS NULL;
+  CREATE INDEX IF NOT EXISTS work_items_change ON work_items (project, change_ref);
+  CREATE UNIQUE INDEX IF NOT EXISTS unreviewed_merges_change ON unreviewed_merges (project, change_ref);
+  `,
+  // 36: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
+  // detail (NULL when the egress scanner flagged it). `alert_patterns`: one row per pattern, the time it last
+  // alerted; the conditional update on it is the 6-hour dedupe. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS alerts (
+    id           TEXT PRIMARY KEY,
+    pattern      TEXT NOT NULL,
+    pattern_key  TEXT NOT NULL,
+    error_code   TEXT NOT NULL,
+    count        INTEGER NOT NULL,
+    detail       TEXT,
+    created_at   TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS alerts_created ON alerts (created_at);
+  CREATE TABLE IF NOT EXISTS alert_patterns (
+    pattern_key    TEXT PRIMARY KEY,
+    last_alert_at  TEXT NOT NULL
+  );
+  `,
 ];

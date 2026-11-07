@@ -3,7 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
-import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
+import { COORDINATION_KEYS, TOOLCHAIN_KEYS, coordinationProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
@@ -14,7 +14,8 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
  * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
  * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
- * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297) are checked here at load
+ * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
+ * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts once #200 lands; listed here first so that change needs no
  * edit to this file.
@@ -52,6 +53,10 @@ export const TOP_LEVEL_KEYS = [
   "stall_ms",
   "first_output_ms",
   "probe_interval_ms",
+  "alarm_repeat_count",
+  "alarm_window_minutes",
+  "alarm_restart_count",
+  "agent_stop_checks",
   "workers",
   "max_workers",
   "state_dir",
@@ -69,6 +74,8 @@ export const TOP_LEVEL_KEYS = [
   "hotspot_weight",
   "mechanical_paths",
   "mechanical_weight",
+  "hold_policy",
+  "hotspot_mode",
   "tool_grants",
   "defaults",
   "projects",
@@ -76,6 +83,7 @@ export const TOP_LEVEL_KEYS = [
   "slack",
   "path_companions",
   "cli_user",
+  "toolchain",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -96,7 +104,7 @@ export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies re
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port", "user_id"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
-export const GITHUB_KEYS = ["min_remaining"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
+export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
@@ -187,6 +195,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
     check(raw.openai_compatible.models, "openai_compatible.models", "openai_compatible.models", OPENAI_COMPATIBLE_MODELS_KEYS);
   }
   check(raw.slack, "slack", "slack", SLACK_KEYS);
+  check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.

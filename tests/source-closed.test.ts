@@ -3,15 +3,16 @@ import { Controller } from "../src/core/controller.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { GitHubToolBroker } from "../src/impl/broker/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import type { AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceCloseReason, SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
@@ -70,16 +71,17 @@ async function factory(
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const log = recordingLog();
   const workerLog = recordingLog();
-  const makeController = () => new Controller({ store, source, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
+  const makeController = () => new Controller({ store, source, forge, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
   const controller = makeController();
   const broker = makeBroker(store, clock);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(),
     clock, config, prompts, log: workerLog, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
   });
-  return { clock, store, source, log, workerLog, controller, makeController, worker, broker };
+  return { clock, store, source, forge, log, workerLog, controller, makeController, worker, broker };
 }
 
 const src = issueRef(7);
@@ -91,8 +93,12 @@ const closed = (closer: ExternalIdentity | null = bob, state_reason: SourceClose
 
 type F = Awaited<ReturnType<typeof factory>>;
 
-async function intake(f: F, ...events: SourceEvent[]) {
-  f.source.queue.push(...events);
+/** One poll tick: PR events come from the forge, the rest from the source. */
+async function intake(f: F, ...events: (SourceEvent | ForgeEvent)[]) {
+  for (const e of events) {
+    if (e.kind.startsWith("pr_")) f.forge.queue.push(e as ForgeEvent);
+    else f.source.queue.push(e as SourceEvent);
+  }
   await f.controller.tickIntake();
 }
 
@@ -222,7 +228,7 @@ describe("closing the source issue stops its work item", () => {
     expect((await f.store.getRun(implement.id))!.acknowledged_at).not.toBeNull();
     expect(commentsAtClose).toBeGreaterThanOrEqual(0);
     expect(f.source.comments).toHaveLength(commentsAtClose);
-    expect(f.source.prComments).toEqual([]);
+    expect(f.forge.prComments).toEqual([]);
   });
 
   it("the same close twice, in one poll, a later poll, or after a restart, writes one row and cancels nothing new", async () => {
@@ -348,17 +354,18 @@ describe("closing the source issue: close reason and the open PR", () => {
     await withPr(f);
     await intake(f, closed(bob, "not_planned"));
     expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null });
-    expect(f.source.prStates.get(42)).toBe("closed");
-    expect(f.source.prComments.map((c) => [c.pr_number, c.body])).toEqual([[42, "Closed because the issue was closed by @bob."]]);
+    expect(f.forge.prStates.get(42)).toBe("closed");
+    expect(f.forge.prComments.map((c) => [c.pr_number, c.body])).toEqual([[42, "Closed because the issue was closed by @bob."]]);
     expect(f.source.statusLabels(src)).toEqual(["rejected"]);
-    expect(f.source.statusLabels(src, 42)).toEqual(["rejected"]);
+    // The PR's status goes through the forge (issue #273).
+    expect(f.forge.prStatus(42)).toBe("rejected");
     expect(f.source.comments).toEqual([]);
 
     // The same close again, in later polls and sweeps: no second comment, nothing new written.
     const version = (await item(f)).version;
     await intake(f, closed(bob, "not_planned"));
     await f.controller.tickSourceCloses();
-    expect(f.source.prComments).toHaveLength(1);
+    expect(f.forge.prComments).toHaveLength(1);
     expect((await item(f)).version).toBe(version);
   });
 
@@ -367,7 +374,7 @@ describe("closing the source issue: close reason and the open PR", () => {
     await withPr(f);
     await intake(f, closed(null, "completed"));
     expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: null });
-    expect(f.source.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed."]);
+    expect(f.forge.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed."]);
     expect(f.source.statusLabels(src)).toEqual(["done"]);
   });
 
@@ -375,11 +382,11 @@ describe("closing the source issue: close reason and the open PR", () => {
     for (const state of ["merged", "closed"] as const) {
       const f = await factory();
       await withPr(f);
-      f.source.prStates.set(42, state);
+      f.forge.prStates.set(42, state);
       await intake(f, closed());
       expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "wont_do", blocked_on: "none", blocked_reason: null });
-      expect(f.source.prStates.get(42)).toBe(state);
-      expect(f.source.prComments).toEqual([]);
+      expect(f.forge.prStates.get(42)).toBe(state);
+      expect(f.forge.prComments).toEqual([]);
     }
   });
 
@@ -387,23 +394,23 @@ describe("closing the source issue: close reason and the open PR", () => {
     for (const fail of ["close", "comment"] as const) {
       const f = await factory();
       await withPr(f);
-      if (fail === "close") f.source.prCloseError = new Error("boom");
-      else f.source.prCommentError = new Error("boom");
+      if (fail === "close") f.forge.prCloseError = new Error("boom");
+      else f.forge.prCommentError = new Error("boom");
       await intake(f, closed(bob, "completed"));
       expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
-      expect(f.source.prStates.get(42) ?? "open").toBe("open");
+      expect(f.forge.prStates.get(42) ?? "open").toBe("open");
       expect(f.log.lines.filter((l) => l.level === "warn").map((l) => l.msg))
         .toContain("closing the PR after the source closed failed; retried on a later tick");
 
-      f.source.prCloseError = null;
-      f.source.prCommentError = null;
+      f.forge.prCloseError = null;
+      f.forge.prCommentError = null;
       await f.controller.tickSourceCloses();
-      expect(f.source.prStates.get(42)).toBe("closed");
-      expect(f.source.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed by @bob."]);
+      expect(f.forge.prStates.get(42)).toBe("closed");
+      expect(f.forge.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed by @bob."]);
       expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null });
-      const calls = f.source.prCloseCalls.length;
+      const calls = f.forge.prCloseCalls.length;
       await f.controller.tickSourceCloses();
-      expect(f.source.prCloseCalls).toHaveLength(calls);
+      expect(f.forge.prCloseCalls).toHaveLength(calls);
     }
   });
 

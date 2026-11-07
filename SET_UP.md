@@ -99,6 +99,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
 | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
 | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result; it does not change the state | any open item, once it has a PR |
+| `/standing [accept\|decline <rule>]` | Show the standing-approval rules, or turn one on or off. `/standing accept spec-t1` lets tier 1 specs that wait at the spec gate be approved without a reply; `/standing decline spec-t1` turns it off or declines its proposal. A `/revise` or `/reject` on an item the rule approved also turns it off | any time |
 | `/link <code>` | Link the account you post from to a factory user, with a code from `factory link-code <user_id>` | any time |
 | `/help` | List every command and which ones apply now | any time |
 
@@ -120,7 +121,7 @@ Who may act: local commands (the CLI and the local UI) are checked by the local 
 |---|---|---|
 | Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
 | Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
-| May approve, retry, revise, reject | The owner | The owner and every `approver` |
+| May approve, retry, revise, reject, resolve | The owner | The owner and every `approver` |
 | May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
 | `anonymous` | Read and create only: never the owner, never an approver | The same |
 
@@ -133,11 +134,12 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
+- `factory resolve <id> [notes]`: Store `/resolve` for the item; the controller applies it.
 - `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
 - `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
 - `factory users remove <user_id>`: Owner only: remove a local user's role.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise` and `reject` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. Generated from `src/core/local-cli.ts`; a test fails when this list differs.
 
 ### Status labels
 

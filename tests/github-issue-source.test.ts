@@ -4,27 +4,12 @@ import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/source/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { issueRef } from "./helpers/fakes.js";
+import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
-/** Records every request; GET answers come from `responses` by path prefix (without query), else []. */
-class FakeClient extends GitHubClient {
-  calls: { method: string; path: string; body: unknown }[] = [];
-  responses: Record<string, unknown[]> = {};
-
-  constructor() {
-    super({} as GitHubCredentials, "http://unused");
-  }
-  override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    this.calls.push({ method, path, body });
-    if (method !== "GET") return {} as T;
-    const bare = path.split("?")[0]!;
-    // Pages after the first are always empty.
-    if (!path.includes("page=1")) return [] as T;
-    return (this.responses[bare] ?? []) as T;
-  }
-}
-
 const user = { id: 1, login: "alice", type: "User" };
+/** A command's identity: the numeric id only, as the command inbox row keeps it (issue #284); no login. */
+const aliceId = { provider: "github", subject: "1" };
 const comment = (id: number, body: string, updated_at: string, issue = 7) => ({
   id,
   issue_url: `https://api.github.com/repos/o/r/issues/${issue}`,
@@ -60,12 +45,12 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: { provider: "github", subject: "1", login: "alice" }, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "10", approver: aliceId, note: "" },
       {
         kind: "spec_rejected", source: issueRef(7), comment_id: "11",
-        approver: { provider: "github", subject: "1", login: "alice" }, reason: "too big\nsplit it",
+        approver: aliceId, reason: "too big\nsplit it",
       },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "12", requester: { provider: "github", subject: "1", login: "alice" } },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "12", requester: aliceId },
       { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: { provider: "github", subject: "1", login: "alice" }, body: "looks good" },
     ]);
   });
@@ -84,14 +69,14 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: alice, feedback: "keep the CLI flag\nand drop the config key" },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: alice, feedback: "" },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: alice, feedback: "" },
-      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: alice, reason: "" },
-      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: alice, reason: "duplicate of #3" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "20", requester: aliceId, feedback: "keep the CLI flag\nand drop the config key" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "21", requester: aliceId, feedback: "" },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "22", requester: aliceId, feedback: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "23", approver: aliceId, reason: "" },
+      { kind: "spec_rejected", source: issueRef(7), comment_id: "24", approver: aliceId, reason: "duplicate of #3" },
       // A longer word is not the command: it is an unknown one.
-      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: alice, command: "revised" },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: alice, command: "rejectfoo" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "25", requester: aliceId, command: "revised" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "26", requester: aliceId, command: "rejectfoo" },
     ]);
   });
 
@@ -114,20 +99,20 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: alice, note: "" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: alice, note: "keep the flag" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: alice, note: "first line\nsecond line" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: alice, note: "note below" },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: alice, command: "aprove" },
-      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: alice },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "40", approver: aliceId, note: "" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "41", approver: aliceId, note: "keep the flag" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "42", approver: aliceId, note: "first line\nsecond line" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "43", approver: aliceId, note: "note below" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "44", requester: aliceId, command: "aprove" },
+      { kind: "help_requested", source: issueRef(7), comment_id: "45", requester: aliceId },
       // Text that is not a command is passed on whole, for a suggestion (design §4).
       { kind: "plain_comment", source: issueRef(7), comment_id: "46", author: alice, body: "thanks!" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "47", author: alice, body: "/" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "48", author: alice, body: "/ approve" },
       // /retry notes and +paths (issue #280) are passed on as typed; the controller splits and checks them.
-      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: alice, note: "please" },
-      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: alice, note: "+paths src/a.ts docs/b.md\nkeep it small" },
-      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: alice, note: "+paths src/a.ts" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "49", requester: aliceId, note: "please" },
+      { kind: "retry_requested", source: issueRef(7), comment_id: "50", requester: aliceId, note: "+paths src/a.ts docs/b.md\nkeep it small" },
+      { kind: "spec_approved", source: issueRef(7), comment_id: "51", approver: aliceId, note: "+paths src/a.ts" },
     ]);
   });
 
@@ -184,11 +169,11 @@ describe("GitHubIssueSource", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver, amount: null },
-      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver, amount: "9000000" },
-      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver, amount: "1.5" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "30", approver: aliceId, amount: null },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "31", approver: aliceId, amount: "9000000" },
+      { kind: "budget_continue", source: issueRef(7), comment_id: "32", approver: aliceId, amount: "1.5" },
       // Not /budget: an unknown command word gets a reply (design §4).
-      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: approver, command: "budgetx" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "33", requester: aliceId, command: "budgetx" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "34", author: approver, body: "please /budget 5" },
     ]);
   });
@@ -199,6 +184,17 @@ describe("GitHubIssueSource", () => {
     const old = JSON.stringify({ issues: null, comments: "2026-11-01T00:00:00Z", pulls: null });
     const { events } = await source.poll(old);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe("GitHubIssueSource: intake events carry the issue's updated_at (issue #254)", () => {
+  it("item_requested has the open issue's updated_at as GitHub gave it", async () => {
+    const { client, source } = setup();
+    client.responses["/repos/o/r/issues"] = [{ number: 7, title: "t", body: "b", user, updated_at: "2026-11-07T09:00:00Z" }];
+    const { events } = await source.poll(null);
+    expect(events.find((e) => e.kind === "item_requested")).toMatchObject({
+      kind: "item_requested", source: issueRef(7), title: "t", body: "b", updated_at: "2026-11-07T09:00:00Z",
+    });
   });
 });
 
@@ -260,17 +256,32 @@ describe("GitHubIssueSource: closed issues", () => {
     expect(JSON.parse(second.next_cursor)).toMatchObject({ closed: "2026-11-01T00:00:04Z" });
   });
 
-  it("delivers closes after pull request events, so a merge that closes its issue is seen first", async () => {
+  it("returns no PR event, whatever the pull lists hold, and reads no pull list (issue #273)", async () => {
     const { client, source } = make();
     client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
     client.issues[7] = { number: 7, closed_by: bob };
     client.responses["/repos/o/r/pulls"] = [{
-      number: 42, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:01Z",
+      number: 42, merged_at: "2026-11-01T00:00:01Z", merge_commit_sha: "m", updated_at: "2026-11-01T00:00:01Z",
       head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" },
     }];
     const { events } = await source.poll(null);
-    // The fake answers the open-PR list with the same PR; pr_open is not what this test is about.
-    expect(events.map((e) => e.kind).filter((k) => k !== "pr_open")).toEqual(["pr_closed", "source_closed"]);
+    const prKinds = ["pr_merged", "pr_closed", "pr_open", "pr_unmergeable", "pr_changes_requested"];
+    expect(events.filter((e) => prKinds.includes(e.kind))).toEqual([]);
+    expect(events.map((e) => e.kind)).toEqual(["source_closed"]);
+    expect(client.calls.filter((c) => c.path.startsWith("/repos/o/r/pulls"))).toEqual([]);
+  });
+
+  it("reads a cursor from before issue #273, PR position included, without error", async () => {
+    const { client, source } = make();
+    client.closed = [closedIssue(7, "2026-11-01T00:00:01Z")];
+    client.issues[7] = { number: 7, closed_by: bob };
+    const old = JSON.stringify({
+      issues: null, comments: null, pulls: "2026-10-01T00:00:00Z", start: "2026-09-01T00:00:00Z", reviews: "2026-10-01T00:00:00Z", review_ids: [1],
+    });
+    const { events, next_cursor } = await source.poll(old);
+    expect(events.map((e) => e.kind)).toEqual(["source_closed"]);
+    // The PR position is carried along unread; the forge starts from it (GitHubForge.handover_cursor).
+    expect(JSON.parse(next_cursor)).toMatchObject({ pulls: "2026-10-01T00:00:00Z", start: "2026-09-01T00:00:00Z" });
   });
 
   it("carries GitHub's close reason: completed and not_planned as they are, anything else as null", async () => {
@@ -294,78 +305,6 @@ describe("GitHubIssueSource: closed issues", () => {
     const old = JSON.stringify({ issues: null, comments: null, pulls: null });
     const { events } = await source.poll(old);
     expect(events).toEqual([{ kind: "source_closed", source: issueRef(7), closer: { provider: "github", subject: "2", login: "bob" }, state_reason: null }]);
-  });
-});
-
-describe("GitHubIssueSource: closePr", () => {
-  /** Answers GET /pulls/N from `pulls` and GET /issues/N from `issues`; records every call; comments via commentOnce. */
-  class PrClient extends FakeClient {
-    pulls: Record<number, unknown> = {};
-    issues: Record<number, unknown> = {};
-    failClose = false;
-    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-      const m = /^\/repos\/o\/r\/(issues|pulls)\/(\d+)$/.exec(path);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return (m[1] === "issues" ? this.issues : this.pulls)[Number(m[2])] as T;
-      }
-      if (method === "PATCH" && this.failClose) throw new GitHubError(500, "boom");
-      return super.request<T>(method, path, body);
-    }
-  }
-  const make = () => {
-    const client = new PrClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
-    return { client, source };
-  };
-  const body = (closer: { login?: string } | null) => `closed by ${closer?.login ?? "nobody"}`;
-  const input = { pr_number: 42, closed: issueRef(7), marker: "<!-- m -->", body };
-
-  it("comments with the issue's closer, then closes the open PR without merging", async () => {
-    const { client, source } = make();
-    client.pulls[42] = { number: 42, state: "open", merged_at: null };
-    client.issues[7] = { number: 7, closed_by: { id: 2, login: "bob", type: "User" } };
-    expect(await source.closePr(input)).toBe("closed");
-    const writes = client.calls.filter((c) => c.method !== "GET");
-    expect(writes).toEqual([
-      { method: "POST", path: "/repos/o/r/issues/42/comments", body: { body: "closed by bob\n\n<!-- m -->" } },
-      { method: "PATCH", path: "/repos/o/r/pulls/42", body: { state: "closed" } },
-    ]);
-    expect(client.calls.some((c) => c.path.includes("/merge"))).toBe(false);
-  });
-
-  it("with no closer on the issue, the body gets null", async () => {
-    const { client, source } = make();
-    client.pulls[42] = { number: 42, state: "open", merged_at: null };
-    client.issues[7] = { number: 7, closed_by: null };
-    await source.closePr(input);
-    expect(client.calls.find((c) => c.method === "POST")!.body).toEqual({ body: "closed by nobody\n\n<!-- m -->" });
-  });
-
-  it("leaves a merged or closed PR alone: no comment, no close", async () => {
-    for (const pr of [{ state: "closed", merged_at: "2026-11-01T00:00:00Z" }, { state: "closed", merged_at: null }]) {
-      const { client, source } = make();
-      client.pulls[42] = { number: 42, ...pr };
-      client.issues[7] = { number: 7, closed_by: null };
-      expect(await source.closePr(input)).toBe("not_open");
-      expect(client.calls.filter((c) => c.method !== "GET")).toEqual([]);
-    }
-  });
-
-  it("a failed close throws, after the comment; the retry does not post it again", async () => {
-    const { client, source } = make();
-    client.pulls[42] = { number: 42, state: "open", merged_at: null };
-    client.issues[7] = { number: 7, closed_by: null };
-    client.failClose = true;
-    await expect(source.closePr(input)).rejects.toThrow();
-    // The comment is now on the PR; commentOnce finds its marker on the retry.
-    client.responses["/repos/o/r/issues/42/comments"] = [{ body: "closed by nobody\n\n<!-- m -->" }];
-    client.failClose = false;
-    client.calls = [];
-    expect(await source.closePr(input)).toBe("closed");
-    expect(client.calls.filter((c) => c.method !== "GET")).toEqual([
-      { method: "PATCH", path: "/repos/o/r/pulls/42", body: { state: "closed" } },
-    ]);
   });
 });
 
@@ -401,10 +340,10 @@ describe("GitHubIssueSource: /verdict", () => {
     const { events } = await source.poll(null);
     expect(events).toEqual([
       {
-        kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "20", approver,
+        kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "20", approver: aliceId,
         args: "changes minor rename it\nand split the test",
       },
-      { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver, args: "" },
+      { kind: "verdict_submitted", target: { kind: "issue", source: issueRef(7) }, comment_id: "21", approver: aliceId, args: "" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "22", author: approver, body: "/verdict/x accept none" },
     ]);
   });
@@ -423,7 +362,7 @@ describe("GitHubIssueSource: /verdict", () => {
     expect(events).toEqual([
       {
         kind: "verdict_submitted", target: { kind: "pr", pr_number: 42, head_branch: "factory/wi_a" },
-        comment_id: "30", approver, args: "accept none",
+        comment_id: "30", approver: aliceId, args: "accept none",
       },
     ]);
     const gets = client.calls.filter((c) => /^\/repos\/o\/r\/(issues|pulls)\/\d+$/.test(c.path)).map((c) => c.path);
@@ -473,55 +412,6 @@ describe("GitHubIssueSource: base-branch commits", () => {
   });
 });
 
-describe("GitHubIssueSource: unmergeable factory PRs", () => {
-  const pull = (number: number, ref: string) => ({
-    number, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:00Z",
-    head: { ref, sha: `head${number}` }, base: { ref: "main", sha: `base${number}` },
-  });
-  const full = (number: number, ref: string, mergeable: boolean | null) => ({ ...pull(number, ref), mergeable });
-
-  /** Answers the single-PR GETs from `byNumber`; everything else as FakeClient. */
-  class PrClient extends FakeClient {
-    byNumber: Record<number, unknown> = {};
-    open: unknown[] = [];
-    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=open")) {
-        this.calls.push({ method, path, body });
-        return (path.includes("page=1") ? this.open : []) as T;
-      }
-      const m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(path);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return this.byNumber[Number(m[1])] as T;
-      }
-      return super.request<T>(method, path, body);
-    }
-  }
-
-  it("emits pr_unmergeable only for open factory PRs whose mergeable is false", async () => {
-    const client = new PrClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
-    client.open = [
-      pull(1, "factory/wi_a"), pull(2, "factory/wi_b"), pull(3, "factory/wi_c"), pull(4, "feature/x"),
-    ];
-    client.byNumber = {
-      1: full(1, "factory/wi_a", false),
-      2: full(2, "factory/wi_b", true),
-      3: full(3, "factory/wi_c", null),
-      4: full(4, "feature/x", false),
-    };
-    const { events } = await source.poll(null);
-    expect(events.filter((e) => e.kind === "pr_unmergeable")).toEqual([
-      { kind: "pr_unmergeable", pr_number: 1, head_branch: "factory/wi_a", head_sha: "head1", base_sha: "base1" },
-    ]);
-    const gets = client.calls.filter((c) => c.method === "GET").map((c) => c.path);
-    expect(gets.some((p) => p.startsWith("/repos/o/r/pulls?state=open"))).toBe(true);
-    expect(gets.filter((p) => /^\/repos\/o\/r\/pulls\/\d+$/.test(p)).sort()).toEqual([
-      "/repos/o/r/pulls/1", "/repos/o/r/pulls/2", "/repos/o/r/pulls/3",
-    ]);
-  });
-});
-
 describe("GitHubIssueSource: /resolve", () => {
   const alice = { provider: "github", subject: "1", login: "alice" };
   const prComment = (id: number, body: string, pr: number) => ({
@@ -554,12 +444,12 @@ describe("GitHubIssueSource: /resolve", () => {
     ];
     const { events } = await source.poll(null);
     expect(events).toEqual([
-      { kind: "resolve_requested", source: issueRef(7), comment_id: "10", requester: alice, notes: "", pr: null },
+      { kind: "resolve_requested", source: issueRef(7), comment_id: "10", requester: aliceId, notes: "", pr: null },
       {
-        kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: alice,
+        kind: "resolve_requested", source: issueRef(7), comment_id: "11", requester: aliceId,
         notes: "keep main's API\n\n  and the new flag", pr: null,
       },
-      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: alice, command: "resolver" },
+      { kind: "unknown_command", source: issueRef(7), comment_id: "12", requester: aliceId, command: "resolver" },
       { kind: "plain_comment", source: issueRef(7), comment_id: "13", author: alice, body: "please /resolve" },
     ]);
   });
@@ -578,12 +468,39 @@ describe("GitHubIssueSource: /resolve", () => {
     const { events } = await source.poll(null);
     expect(events).toEqual([
       {
-        kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: alice, notes: "take both",
+        kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: aliceId, notes: "take both",
         pr: { pr_number: 42, head_branch: "factory/wi_a" },
       },
     ]);
     const lookups = client.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
     expect(lookups).toEqual(["/repos/o/r/pulls/42", "/repos/o/r/pulls/43", "/repos/o/r/pulls/44"]);
+  });
+
+  it("/revise on a PR's conversation names the PR and its head branch, factory or not; a PR that is gone is ignored", async () => {
+    const client = new PullClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    client.pulls[14] = { number: 14, head: { ref: "factory/wi_a", sha: "h" } };
+    client.pulls[10] = { number: 10, head: { ref: "feature/x", sha: "h" } };
+    const onPr = (id: number, body: string, pr: number) => ({
+      ...comment(id, body, `2026-11-01T00:00:${String(id).padStart(2, "0")}Z`, pr),
+      html_url: `https://github.com/o/r/pull/${pr}#issuecomment-${id}`,
+    });
+    client.responses["/repos/o/r/issues/comments"] = [
+      onPr(30, "/revise rename the flag\nkeep an alias", 14),
+      onPr(31, "/revise", 10),
+      { ...onPr(32, "/revise x", 44), html_url: "https://github.com/o/r/pull/44#issuecomment-32" },
+      comment(33, "/revise on the issue", "2026-11-01T00:00:33Z", 7),
+    ];
+    // PR 44 is gone (404): its comment is ignored and the poll still succeeds.
+    const { events } = await source.poll(null);
+    expect(events.filter((e) => e.kind === "revise_requested")).toEqual([
+      {
+        kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: aliceId, feedback: "rename the flag\nkeep an alias",
+        pr: { pr_number: 14, head_branch: "factory/wi_a" },
+      },
+      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: aliceId, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
+      { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: aliceId, feedback: "on the issue" },
+    ]);
   });
 });
 
@@ -730,298 +647,6 @@ describe("GitHubIssueSource: status labels", () => {
   });
 });
 
-describe("GitHubIssueSource.prChecks", () => {
-  /** Answers GET /pulls/42 with head sha "h1", and the check runs and commit statuses of "h1". */
-  class ChecksClient extends FakeClient {
-    runs: { name: string; status: string; conclusion: string | null }[] = [];
-    statuses: { context: string; state: string }[] = [];
-    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-      this.calls.push({ method, path, body });
-      const bare = path.split("?")[0]!;
-      if (bare === "/repos/o/r/pulls/42") return { number: 42, head: { ref: "factory/wi_a", sha: "h1" } } as T;
-      if (bare === "/repos/o/r/commits/h1/check-runs") {
-        return { total_count: this.runs.length, check_runs: path.includes("page=1") ? this.runs : [] } as T;
-      }
-      if (bare === "/repos/o/r/commits/h1/status") {
-        return { state: "pending", total_count: this.statuses.length, statuses: this.statuses } as T;
-      }
-      throw new Error(`unexpected ${method} ${path}`);
-    }
-  }
-  const run = (name: string, status: string, conclusion: string | null = null) => ({ name, status, conclusion });
-  function make() {
-    const client = new ChecksClient();
-    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
-  }
-
-  it("reads the check runs and statuses of the PR's head commit, read-only", async () => {
-    const { client, source } = make();
-    client.runs = [run("test", "completed", "success")];
-    await source.prChecks(42);
-    expect(client.calls).toEqual([
-      { method: "GET", path: "/repos/o/r/pulls/42", body: undefined },
-      { method: "GET", path: "/repos/o/r/commits/h1/check-runs?per_page=100&page=1", body: undefined },
-      { method: "GET", path: "/repos/o/r/commits/h1/status?per_page=100", body: undefined },
-    ]);
-  });
-
-  it("passed when every check succeeded, was skipped or neutral, and when there are none", async () => {
-    const { client, source } = make();
-    expect(await source.prChecks(42)).toEqual({ state: "passed" });
-    client.runs = [run("test", "completed", "success"), run("lint", "completed", "skipped"), run("x", "completed", "neutral")];
-    client.statuses = [{ context: "ci/legacy", state: "success" }];
-    expect(await source.prChecks(42)).toEqual({ state: "passed" });
-  });
-
-  it("pending while a check has not finished and none failed", async () => {
-    const { client, source } = make();
-    client.runs = [run("test", "completed", "success"), run("test-mysql", "in_progress")];
-    expect(await source.prChecks(42)).toEqual({ state: "pending" });
-    client.runs = [run("test", "completed", "success")];
-    client.statuses = [{ context: "ci/legacy", state: "pending" }];
-    expect(await source.prChecks(42)).toEqual({ state: "pending" });
-  });
-
-  it("failed as soon as one check finished without success, naming every failed one", async () => {
-    const { client, source } = make();
-    client.runs = [
-      run("test", "completed", "failure"),
-      run("test-mysql", "queued"),
-      run("typecheck", "completed", "timed_out"),
-      run("cancelled-one", "completed", "cancelled"),
-      run("ok", "completed", "success"),
-    ];
-    client.statuses = [{ context: "ci/legacy", state: "error" }, { context: "ci/fine", state: "success" }];
-    expect(await source.prChecks(42)).toEqual({ state: "failed", failed: ["test", "typecheck", "cancelled-one", "ci/legacy"] });
-  });
-});
-
-describe("GitHubIssueSource: pull requests the factory did not open (design 2026-11-01)", () => {
-  const bob = { id: 2, login: "bob", type: "User" };
-  const pull = (number: number, ref: string, o: Record<string, unknown> = {}) => ({
-    number, merged_at: null, merge_commit_sha: null, updated_at: "2026-11-01T00:00:00Z", draft: false,
-    title: `PR ${number}`, body: `body ${number}`, user: bob, labels: [],
-    head: { ref, sha: `head${number}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: `base${number}` },
-    ...o,
-  });
-
-  /** Answers the open and closed PR lists, single PRs, PR files, issue timelines and single commits. */
-  class PullsClient extends FakeClient {
-    open: unknown[] = [];
-    closed: unknown[] = [];
-    byNumber: Record<number, unknown> = {};
-    files: Record<number, unknown[]> = {};
-    timeline: Record<number, unknown[]> = {};
-    commits: Record<string, unknown> = {};
-    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-      const page1 = path.includes("page=1");
-      const bare = path.split("?")[0]!;
-      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=open")) {
-        this.calls.push({ method, path, body });
-        return (page1 ? this.open : []) as T;
-      }
-      if (method === "GET" && path.startsWith("/repos/o/r/pulls?state=closed")) {
-        this.calls.push({ method, path, body });
-        return (page1 ? this.closed : []) as T;
-      }
-      let m = /^\/repos\/o\/r\/pulls\/(\d+)$/.exec(bare);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return this.byNumber[Number(m[1])] as T;
-      }
-      m = /^\/repos\/o\/r\/pulls\/(\d+)\/files$/.exec(bare);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return (page1 ? (this.files[Number(m[1])] ?? []) : []) as T;
-      }
-      m = /^\/repos\/o\/r\/issues\/(\d+)\/timeline$/.exec(bare);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return (page1 ? (this.timeline[Number(m[1])] ?? []) : []) as T;
-      }
-      m = /^\/repos\/o\/r\/commits\/([0-9a-z]+)$/.exec(bare);
-      if (method === "GET" && m) {
-        this.calls.push({ method, path, body });
-        return this.commits[m[1]!] as T;
-      }
-      return super.request<T>(method, path, body);
-    }
-  }
-  const make = () => {
-    const client = new PullsClient();
-    return { client, source: new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main") };
-  };
-  const prRef = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` });
-  const bobId = { provider: "github", subject: "2", login: "bob" };
-
-  it("reports open non-draft PRs against the base from this repository, and every factory PR; no detail reads for others", async () => {
-    const { client, source } = make();
-    client.open = [
-      pull(10, "feature/x", { labels: [{ name: "factory: skip" }, { name: "bug" }] }),
-      pull(11, "feature/draft", { draft: true }),
-      pull(12, "feature/fork", { head: { ref: "feature/fork", sha: "head12", repo: { full_name: "evil/r" } } }),
-      pull(13, "feature/rel", { base: { ref: "release", sha: "b" } }),
-      pull(14, "factory/wi_a"),
-      pull(15, "feature/gone", { head: { ref: "feature/gone", sha: "head15", repo: null } }),
-    ];
-    client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
-    const { events } = await source.poll(null);
-    expect(events.filter((e) => e.kind === "pr_open")).toEqual([
-      {
-        kind: "pr_open", source: prRef(10), pr_number: 10, head_branch: "feature/x", head_sha: "head10",
-        title: "PR 10", body: "body 10", author: bobId, labels: ["factory: skip", "bug"],
-      },
-      {
-        kind: "pr_open", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", head_sha: "head14",
-        title: "PR 14", body: "body 14", author: bobId, labels: [],
-      },
-    ]);
-    const gets = client.calls.filter((c) => /^\/repos\/o\/r\/(pulls|issues)\/\d+/.test(c.path)).map((c) => c.path);
-    expect(gets).toEqual(["/repos/o/r/pulls/14"]);
-  });
-
-  it("reports merges and closes of every PR, with the merger, and marks forks", async () => {
-    const { client, source } = make();
-    client.closed = [
-      pull(20, "feature/x", { merged_at: "2026-11-01T00:00:03Z", merge_commit_sha: "m20", updated_at: "2026-11-01T00:00:03Z" }),
-      pull(21, "patch-1", {
-        merged_at: "2026-11-01T00:00:02Z", merge_commit_sha: "m21", updated_at: "2026-11-01T00:00:02Z",
-        head: { ref: "patch-1", sha: "h", repo: { full_name: "evil/r" } },
-      }),
-      pull(22, "feature/y", { updated_at: "2026-11-01T00:00:01Z" }),
-    ];
-    client.byNumber[20] = { merged_by: bob };
-    client.byNumber[21] = { merged_by: null };
-    const { events } = await source.poll(null);
-    expect(events.filter((e) => e.kind === "pr_merged" || e.kind === "pr_closed")).toEqual([
-      { kind: "pr_merged", pr_number: 20, head_branch: "feature/x", merge_sha: "m20", merger: bobId },
-      { kind: "pr_merged", pr_number: 21, head_branch: "patch-1", merge_sha: "m21", merger: null, fork: true },
-      { kind: "pr_closed", pr_number: 22, head_branch: "feature/y" },
-    ]);
-  });
-
-  it("/revise on a PR's conversation names the PR and its head branch, factory or not; a PR that is gone is ignored", async () => {
-    const { client, source } = make();
-    client.byNumber[14] = pull(14, "factory/wi_a");
-    client.byNumber[10] = pull(10, "feature/x");
-    const onPr = (id: number, body: string, pr: number) => ({
-      ...comment(id, body, `2026-11-01T00:00:${String(id).padStart(2, "0")}Z`, pr),
-      html_url: `https://github.com/o/r/pull/${pr}#issuecomment-${id}`,
-    });
-    client.responses["/repos/o/r/issues/comments"] = [
-      onPr(30, "/revise rename the flag\nkeep an alias", 14),
-      onPr(31, "/revise", 10),
-      { ...onPr(32, "/revise x", 44), html_url: "https://github.com/o/r/pull/44#issuecomment-32" },
-      comment(33, "/revise on the issue", "2026-11-01T00:00:33Z", 7),
-    ];
-    // PR 44 is gone (404): its comment is ignored and the poll still succeeds.
-    const original = client.request.bind(client);
-    client.request = (async (method: string, path: string, body?: unknown) => {
-      if (path === "/repos/o/r/pulls/44") throw new GitHubError(404, "Not Found");
-      return original(method, path, body);
-    }) as typeof client.request;
-    const { events } = await source.poll(null);
-    const alice = { provider: "github", subject: "1", login: "alice" };
-    expect(events.filter((e) => e.kind === "revise_requested")).toEqual([
-      {
-        kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: alice, feedback: "rename the flag\nkeep an alias",
-        pr: { pr_number: 14, head_branch: "factory/wi_a" },
-      },
-      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: alice, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
-      { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: alice, feedback: "on the issue" },
-    ]);
-  });
-
-  describe("'Request changes' reviews", () => {
-    const at = (s: number) => `2026-11-02T00:00:${String(s).padStart(2, "0")}Z`;
-    const rv = (id: number, state: string, submitted_at: string | null, o: Record<string, unknown> = {}) =>
-      ({ id, state, body: `review ${id}`, user: bob, submitted_at, ...o });
-
-    it("the first poll only sets the review time: no review is read or delivered", async () => {
-      const { client, source } = make();
-      client.open = [pull(14, "factory/wi_a", { updated_at: at(5) })];
-      client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
-      client.responses["/repos/o/r/pulls/14/reviews"] = [rv(1, "CHANGES_REQUESTED", at(1))];
-      const { events, next_cursor } = await source.poll(null);
-      expect(events.filter((e) => e.kind === "pr_changes_requested")).toEqual([]);
-      expect(client.calls.some((c) => c.path.includes("/reviews"))).toBe(false);
-      expect(JSON.parse(next_cursor)).toMatchObject({ reviews: at(5), review_ids: [] });
-    });
-
-    it("a later poll delivers each new 'Request changes' review by a person with its line comments, once", async () => {
-      const { client, source } = make();
-      client.open = [pull(14, "factory/wi_a", { updated_at: at(5) }), pull(10, "feature/x", { updated_at: at(1) })];
-      client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
-      const first = (await source.poll(null)).next_cursor;
-
-      client.open = [pull(14, "factory/wi_a", { updated_at: at(9) }), pull(10, "feature/x", { updated_at: at(1) })];
-      client.responses["/repos/o/r/pulls/14/reviews"] = [
-        rv(1, "CHANGES_REQUESTED", at(2)), // before the review time: never delivered
-        rv(2, "APPROVED", at(6)),
-        rv(3, "COMMENTED", at(7)),
-        rv(4, "CHANGES_REQUESTED", at(8), { user: { id: 9, login: "ci-bot", type: "Bot" } }),
-        rv(5, "CHANGES_REQUESTED", at(9), { body: "Two problems." }),
-        rv(6, "PENDING", null),
-      ];
-      client.responses["/repos/o/r/pulls/14/reviews/5/comments"] = [
-        { path: "src/core/a.ts", line: 12, original_line: 12, body: "this throws on an empty list" },
-        { path: "tests/a.test.ts", line: null, original_line: 40, body: "add a case" },
-      ];
-      const second = await source.poll(first);
-      expect(second.events.filter((e) => e.kind === "pr_changes_requested")).toEqual([
-        {
-          kind: "pr_changes_requested", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", review_id: "5",
-          reviewer: bobId, body: "Two problems.",
-          comments: [
-            { path: "src/core/a.ts", line: 12, body: "this throws on an empty list" },
-            { path: "tests/a.test.ts", line: 40, body: "add a case" },
-          ],
-        },
-      ]);
-      // PR 10 was not updated since the review time: its reviews are not read. Only review 5's comments are.
-      const reads = client.calls.filter((c) => c.path.includes("/reviews")).map((c) => c.path.split("?")[0]);
-      expect([...new Set(reads)]).toEqual(["/repos/o/r/pulls/14/reviews", "/repos/o/r/pulls/14/reviews/5/comments"]);
-      expect(second.events.findIndex((e) => e.kind === "pr_changes_requested"))
-        .toBeGreaterThan(second.events.findIndex((e) => e.kind === "pr_open"));
-
-      // The same reviews on the next poll: nothing again.
-      const third = await source.poll(second.next_cursor);
-      expect(third.events.filter((e) => e.kind === "pr_changes_requested")).toEqual([]);
-    });
-  });
-
-  it("prFiles lists every changed path, both sides of a rename", async () => {
-    const { client, source } = make();
-    client.files[10] = [
-      { filename: "src/a.ts", status: "modified" },
-      { filename: "src/new.ts", previous_filename: "src/old.ts", status: "renamed" },
-    ];
-    expect(await source.prFiles(10)).toEqual(["src/a.ts", "src/new.ts", "src/old.ts"]);
-    expect(client.calls.map((c) => c.path)).toEqual(["/repos/o/r/pulls/10/files?per_page=100&page=1"]);
-  });
-
-  it("labelAddedBy names the actor of the latest `labeled` event for that label, or null", async () => {
-    const { client, source } = make();
-    client.timeline[10] = [
-      { event: "labeled", label: { name: "factory: skip" }, actor: user },
-      { event: "commented", actor: user },
-      { event: "labeled", label: { name: "bug" }, actor: user },
-      { event: "labeled", label: { name: "factory: skip" }, actor: bob },
-    ];
-    expect(await source.labelAddedBy(10, "factory: skip")).toEqual(bobId);
-    expect(await source.labelAddedBy(10, "other")).toBeNull();
-    expect(await source.labelAddedBy(11, "factory: skip")).toBeNull();
-  });
-
-  it("commitAuthor names the commit's linked account, or null", async () => {
-    const { client, source } = make();
-    client.commits.abc = { sha: "abc", author: bob };
-    client.commits.def = { sha: "def", author: null };
-    expect(await source.commitAuthor("abc")).toEqual(bobId);
-    expect(await source.commitAuthor("def")).toBeNull();
-  });
-});
-
 describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
   /** Answers POST /issues with a new issue and GETs from `responses`; the sub-issue link can be made to fail. */
   class SubIssueClient extends FakeClient {
@@ -1092,3 +717,4 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
     ]);
   });
 });
+

@@ -11,7 +11,7 @@ import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
+  FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -40,17 +40,19 @@ class GitHubGrant implements GrantSource {
   }
 }
 
-async function factory() {
+/** `sync: false`: no sync plugin is selected (the `local` source only); the fake forge still stands in for the merge. */
+async function factory(opts: { sync?: boolean } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const gh = new FakeSource();
+  const forge = new FakeForge(opts.sync === false ? null : gh);
   const local = new LocalSource(store);
   const github = new GitHubGrant();
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const auth = new GitHubAuthProvider(store, grants);
   const local_auth = new LocalAuthProvider(store, grants);
   const controller = new Controller({
-    store, sources: [gh, local], auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
+    store, sources: opts.sync === false ? [local] : [gh, local], forge, auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
@@ -76,7 +78,7 @@ async function factory() {
   };
   const refusals = async (id: WorkItemId) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
-  return { clock, store, gh, github, controller, broker, step, cli, refusals };
+  return { clock, store, gh, forge, github, controller, broker, step, cli, refusals };
 }
 
 describe("local task flow", () => {
@@ -97,7 +99,7 @@ describe("local task flow", () => {
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
 
-    f.gh.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
 
@@ -118,6 +120,29 @@ describe("local task flow", () => {
     expect(f.gh.subIssueCalls).toBe(0);
     expect(f.gh.comments.filter((c) => c.source.type === "local")).toEqual([]);
     expect(f.broker.calls.filter((c) => /issue/.test(c.name))).toEqual([]);
+  });
+
+  it("solo, no sync plugin: CLI intake, approve, implement and review, then the fake forge's merge closes it; the GitHub grant is never called", async () => {
+    // Issue #286: with no local forge yet (a follow-up issue), the merge event is injected by the fake forge.
+    const f = await factory({ sync: false });
+    const id = (await f.cli(ME, { action: "create", title: "A local-only task", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect((await f.cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
+    await f.step();
+    await f.step();
+    const ready = (await f.store.getWorkItem(id))!;
+    expect(ready).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+
+    f.forge.queue.push({ kind: "pr_merged", pr_number: ready.pr_number!, head_branch: `factory/${id}`, merge_sha: "m2", merger: alice });
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    const reasons = (await f.store.listStateChanges(id)).map((c) => c.reason);
+    const at = ["intake", "triaged", "spec_approved", "implemented", "review_passed", "pr_merged"].map((r) => reasons.indexOf(r));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(f.github.calls).toBe(0);
+    expect(f.gh.polls).toEqual([]);
   });
 
   it("a GitHub comment is still authorized by the GitHub auth plugin", async () => {
