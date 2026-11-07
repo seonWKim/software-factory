@@ -180,7 +180,7 @@ describe("sync lease takeover", () => {
 
   it("a fenced cursor write from the old holder moves nothing once the lease was taken over", async () => {
     const { clock, store, a, b } = await pair();
-    a.source.queue.push({ kind: "help_requested", source: issue(1).source, comment_id: "1", author: { provider: "github", subject: "1", login: "alice" } });
+    a.source.queue.push({ kind: "help_requested", source: issue(1).source, comment_id: "1", requester: { provider: "github", subject: "1", login: "alice" } });
     await a.controller.tickIntake();
     const cursor = await store.getCursor("intake:github_issue");
     expect(cursor).not.toBeNull();

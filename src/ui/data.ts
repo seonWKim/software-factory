@@ -11,7 +11,6 @@ import { type FactoryStore, type StoreTable, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX,
 export const HIDDEN_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   runs: ["lease_token"],
   listener_leases: ["token"],
-  sync_leases: ["token"],
   run_attempts: ["lease_token"],
   link_codes: ["code_hash"],
 };
