@@ -1,5 +1,6 @@
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
+import { runImprove } from "./improver.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
@@ -116,7 +117,7 @@ const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */
@@ -537,6 +538,8 @@ export class Worker {
   }
 
   private async role(run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass): Promise<Record<string, unknown>> {
+    // An improve run is store reads and one report row (design §7): no sandbox, no agent, no model.
+    if (run.kind === "improve") return runImprove(this.d.store, run, item);
     if (run.kind === "update") return this.update(run, item, ctx, signal);
     if (run.kind === "resolve") return this.resolve(run, item, ctx, signal, model);
     const { repo } = this.cfg;

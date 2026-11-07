@@ -74,6 +74,9 @@ import type {
   ListenerLease,
   MergeCheck,
   NewMergeCheck,
+  FailureGroup,
+  ImproveReport,
+  NewImproveReport,
   ListenerLeaseResult,
   NewAppCommandRequest,
   NewCliCommand,
@@ -1064,6 +1067,25 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToRun);
   }
 
+  async listRunsFinishedBetween(project: string, start: Timestamp, end: Timestamp): Promise<Run[]> {
+    const rows = await this.db.all(
+      `SELECT r.* FROM runs r JOIN work_items w ON w.id = r.work_item_id
+       WHERE w.project = ? AND r.finished_at IS NOT NULL AND r.finished_at >= ? AND r.finished_at < ?
+       ORDER BY r.finished_at, r.${this.db.dialect.seq}`,
+      [project, start, end],
+    );
+    return rows.map(rowToRun);
+  }
+
+  async enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }> {
+    return this.db.transaction(async (tx) => {
+      const run = await this.insertRun(tx, input);
+      if (run) return { run, created: true };
+      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      return { run: rowToRun(row!), created: false };
+    });
+  }
+
   // Coordination (design §5, 2026-11-03)
 
   async replaceDependencyEdges(id: WorkItemId, links: readonly DependencyLink[]): Promise<DependencyEdge[]> {
@@ -1507,6 +1529,33 @@ export class SqlFactoryStore implements FactoryStore {
     if (work_item_ids.length === 0) return [];
     const rows = await this.db.all(`SELECT * FROM merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
     return rows.map(rowToMergeCheck);
+  }
+
+  // Improve reports (design §7, issue #306): one row per improve run, written once.
+
+  async recordImproveReport(r: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }> {
+    const created_at = this.now();
+    const inserted = await this.insertOnce(
+      this.db,
+      `INSERT INTO improve_reports (run_id, project, window_start, window_end, failure_groups, one_run_patterns, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [r.run_id, r.project, r.window_start, r.window_end, JSON.stringify(r.groups), JSON.stringify(r.singles), created_at],
+    );
+    if (inserted) return { report: { ...structuredClone(r), created_at }, created: true };
+    return { report: (await this.getImproveReport(r.run_id))!, created: false };
+  }
+
+  async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
+    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    return row ? rowToImproveReport(row) : null;
+  }
+
+  async listImproveReports(project: string, limit: number): Promise<ImproveReport[]> {
+    const rows = await this.db.all(
+      "SELECT * FROM improve_reports WHERE project = ? ORDER BY created_at DESC, run_id DESC LIMIT ?",
+      [project, limit],
+    );
+    return rows.map(rowToImproveReport);
   }
 
   // Worker processes (design §5 Coordination, 2026-11-07)
@@ -2049,6 +2098,18 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
     started_at,
     ended_at,
     duration_ms: Number.isFinite(start) && Number.isFinite(end) ? end - start : null,
+  };
+}
+
+function rowToImproveReport(row: Row): ImproveReport {
+  return {
+    run_id: row.run_id as RunId,
+    project: row.project as string,
+    window_start: row.window_start as Timestamp,
+    window_end: row.window_end as Timestamp,
+    groups: JSON.parse(row.failure_groups as string) as FailureGroup[],
+    singles: JSON.parse(row.one_run_patterns as string) as FailureGroup[],
+    created_at: row.created_at as Timestamp,
   };
 }
 

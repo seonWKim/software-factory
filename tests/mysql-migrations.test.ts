@@ -8,7 +8,7 @@ import mysql from "mysql2/promise";
 import { beforeAll, describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { BACKUP_REMINDER, SQLITE_MIGRATE_MESSAGE, parseMigrateArgs, runMigrate } from "../src/impl/store/mysql/migrate-command.js";
-import { BASELINE_STATE, MysqlMigrations, type Queryable, pendingMessage } from "../src/impl/store/mysql/migrations.js";
+import { BASELINE_STATE, INLINE_STEPS, MysqlMigrations, type Queryable, STEPS_DIR, pendingMessage, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { BASELINE } from "../src/impl/store/mysql/schema.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -525,3 +525,75 @@ async function mysqlEnv(database: string, onCleanup: (f: () => Promise<void>) =>
     vars: { SOFTWARE_FACTORY_SECRETS_FILE: file },
   };
 }
+
+// --- improve reports (SQLite 26, MySQL step 0026, issue #306) ---------------------------------------------
+
+const IMPROVE_STEP = 26;
+const IMPROVE_FILE = "0026-improve-reports.sql";
+const IMPROVE_TABLES = ["filed_patterns", "improve_reports"];
+
+/** The column names of `table` in a CREATE TABLE IF NOT EXISTS statement of `text`, in order. */
+function createdColumns(text: string, table: string): string[] {
+  const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\s*\\)`).exec(text)![1]!;
+  return [...body.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|BIGINT|MEDIUMTEXT|CHAR)/gm)].map((m) => m[1]!);
+}
+
+describe("improve reports: SQLite migration 26 and MySQL step 0026", () => {
+  it("SQLite reaches version 26 or later and creates both tables, empty", async () => {
+    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(IMPROVE_STEP);
+    const { store } = await newStore();
+    expect((await store.schemaVersion()).applied).toBeGreaterThanOrEqual(IMPROVE_STEP);
+    const tables = await store.listTables();
+    for (const t of IMPROVE_TABLES) expect(tables.find((x) => x.name === t)?.rows, t).toBe(0);
+  });
+
+  it("SQLite migration 26 is safe to run again after the recorded version is set back", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "sf-sqlite-improve-")), "factory.db");
+    const first = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    await first.migrate();
+    await first.close();
+    const raw = new DatabaseSync(path);
+    raw.exec(`DELETE FROM schema_migrations WHERE version >= ${IMPROVE_STEP}`);
+    raw.close();
+    const again = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    await again.migrate();
+    expect(await again.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+    await again.close();
+  });
+
+  it("step 0026 is a .sql file after 0025 that creates the same columns as SQLite migration 26", () => {
+    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
+    expect(steps.find((x) => x.name === "improve-reports")).toMatchObject({ number: IMPROVE_STEP, from: IMPROVE_STEP - 1, kind: "sql", file: IMPROVE_FILE });
+    const mysqlSql = readFileSync(join(STEPS_DIR, IMPROVE_FILE), "utf8");
+    const sqlite = MIGRATIONS[IMPROVE_STEP - 1]!;
+    expect(createdColumns(sqlite, "improve_reports")).toEqual([
+      "run_id", "project", "window_start", "window_end", "failure_groups", "one_run_patterns", "created_at",
+    ]);
+    for (const t of IMPROVE_TABLES) expect(createdColumns(mysqlSql, t), t).toEqual(createdColumns(sqlite, t));
+  });
+});
+
+describe.skipIf(!MYSQL_URL)("MySQL step 0026 on MySQL", () => {
+  it("on a database at state 25 it is pending, then creates both tables, empty; a store reads and writes reports", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const c = await db.connect();
+    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(IMPROVE_STEP - 1) }).apply(() => undefined);
+    const dir = mysqlStepsUpTo(IMPROVE_STEP);
+    const status = await new MysqlMigrations(c, { dir }).status();
+    expect(status.state).toBe(IMPROVE_STEP - 1);
+    expect(status.pending.map((p) => p.label)).toEqual([IMPROVE_FILE]);
+    await new MysqlMigrations(c, { dir }).apply(() => undefined);
+    expect(await state(c)).toBe(IMPROVE_STEP);
+    for (const t of IMPROVE_TABLES) expect(await rows(c, `SELECT * FROM ${t}`), t).toEqual([]);
+    // The rest of the repo's steps, then a store on it.
+    await new MysqlMigrations(c).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const { item } = await store.createWorkItem(issue(1), system);
+    const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key: "improve:m" });
+    const body = { run_id: run.id, project: item.project, window_start: run.created_at, window_end: run.created_at, groups: [], singles: [] };
+    expect((await store.recordImproveReport(body)).created).toBe(true);
+    expect(await store.getImproveReport(run.id)).toMatchObject(body);
+  });
+});

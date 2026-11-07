@@ -13,6 +13,7 @@ import { configFailLines } from "./config-keys.js";
 import { cliUserConfig } from "./core/config.js";
 import { CLI_COMMANDS, CLI_TOP_WORDS, parseLocalCliArgs, runLocalCli } from "./core/local-cli.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
+import { enqueueManualImprove } from "./core/improver.js";
 import { addCase, buildGoldenRunDeps, formatReport, parseAddArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
 import { GitHubClient } from "./impl/github/github-client.js";
@@ -48,6 +49,8 @@ const USAGE = `factory <command>
   controller   intake, run outcomes, reaper
   worker       claims and executes agent runs
   status [id]  work items, or one item's state_changes trail
+  improve      queues one improve run now: groups the failed runs of the last 24 hours into a report (design §7);
+               a worker runs it, no model call. The controller queues one each UTC day on its own
   stats        per-tier counts of closed items, feedback rate, /reject, /retry, token_cost (read-only)
                --json for one JSON object
   workers pause <n> | pause --all | resume | status   [--by <user id>]
@@ -152,6 +155,17 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version })));
       }
       await app.close();
+      return 0;
+    }
+    case "improve": {
+      // Its own key (a fresh nonce), so it never takes the daily run's slot and is not gated by it.
+      const app = await build(loaded);
+      try {
+        const { run } = await enqueueManualImprove(app.store, app.clock, app.project.key, randomUUID());
+        console.log(`improve run queued: ${run.id}`);
+      } finally {
+        await app.close();
+      }
       return 0;
     }
     case "stats": {

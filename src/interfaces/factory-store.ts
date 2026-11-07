@@ -477,6 +477,16 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+  /**
+   * Runs of items in `project` whose finished_at is at or after `start` and before `end`, oldest first (then
+   * insertion order). Runs with no finished_at are never included. Read-only.
+   */
+  listRunsFinishedBetween(project: string, start: Timestamp, end: Timestamp): Promise<Run[]>;
+  /**
+   * Queues `input` on its existing item, outside any transition (an improve run, design §7): no state change, no
+   * version bump. Idempotent on the idempotency key: a repeat returns the run that has it, `created` false.
+   */
+  enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
 
   // Coordination (design §5, 2026-11-03)
 
@@ -635,6 +645,15 @@ export interface FactoryStore {
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
+  // Improve reports (design §7, issue #306): one per improve run. `filed_patterns` exists but nothing writes it yet.
+
+  /** Stores the run's report, once: a repeat for the same run returns the stored one, `created` false. */
+  recordImproveReport(report: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
+  /** The report of improve run `run_id`; null when it has none. Read-only. */
+  getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+  /** The newest `limit` reports of `project`, newest first. Read-only. */
+  listImproveReports(project: string, limit: number): Promise<ImproveReport[]>;
+
   // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
   // of commands the CLI sends. Store only: nothing calls these yet.
 
@@ -788,6 +807,32 @@ export interface NewMergeCheck {
 
 export interface MergeCheck extends NewMergeCheck {
   checked_at: Timestamp;
+}
+
+/**
+ * Failed runs that share an error code and normalized detail (design §7). IDs only: `run_ids` and `work_item_ids`
+ * sorted and distinct. `detail` is the normalized detail, agent or tool text already egress-scanned with the outcome.
+ */
+export interface FailureGroup {
+  error_code: string;
+  detail: string;
+  run_ids: RunId[];
+  work_item_ids: WorkItemId[];
+}
+
+/** One improve run's report: its window, the groups of two or more runs, and the one-run patterns. */
+export interface NewImproveReport {
+  run_id: RunId;
+  project: string;
+  window_start: Timestamp;
+  window_end: Timestamp;
+  groups: FailureGroup[];
+  singles: FailureGroup[];
+}
+
+export interface ImproveReport extends NewImproveReport {
+  /** Store clock's now when the report was first stored. */
+  created_at: Timestamp;
 }
 
 /** What a WorkerPool reports each tick. */

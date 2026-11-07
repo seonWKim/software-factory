@@ -8,6 +8,7 @@ import {
   suggestBudget,
   tierBudget,
 } from "./budget.js";
+import { enqueueDailyImprove } from "./improver.js";
 import {
   COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
@@ -331,6 +332,8 @@ export class Controller {
       if (due) await this.guard("coordination", () => this.coordinationStep());
       // The local merge check fetches the base, so on the poll interval too (design §5 Merge check).
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
+      // The day's improve run (design §7): one key per UTC day, so any replica, any number of ticks, queue one.
+      if (due) await this.guard("improve", () => this.improveStep());
       // App requests are a store read, so every tick, like an inbox.
       await this.guard("app commands", () => this.appCommandsStep());
       await this.guard("runs", () => this.runsStep());
@@ -499,6 +502,17 @@ export class Controller {
     await this.d.store.markAppCommandRequest(r.seq, text);
   }
 
+  /** Queues the improve run of the current UTC day for the configured project; a no-op once it is queued. */
+  async tickImprove(): Promise<void> {
+    await this.live.refresh();
+    await this.improveStep();
+  }
+
+  private async improveStep(): Promise<void> {
+    const { created, run } = await enqueueDailyImprove(this.d.store, this.d.clock, this.project());
+    if (created) this.d.log.info("improve run queued", { run_id: run.id, work_item_id: run.work_item_id });
+  }
+
   private async runsStep(): Promise<void> {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
       await this.guard(`run:${run.kind}`, () => this.applyRun(run));
@@ -514,7 +528,8 @@ export class Controller {
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
-    for (const it of items) if (it.stage !== "CLOSED") await this.showStatus(it);
+    // The system item (improve runs) has no source to label.
+    for (const it of items) if (it.stage !== "CLOSED" && it.source.type !== "system") await this.showStatus(it);
   }
 
   async tickModelProbe(): Promise<void> {
@@ -2015,6 +2030,7 @@ export class Controller {
   // Run outcomes
 
   async applyRun(run: Run): Promise<void> {
+    if (run.kind === "improve") return this.ackImprove(run);
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
@@ -2182,7 +2198,8 @@ export class Controller {
           };
         }
         case "manual":
-          // Written already acknowledged, so never here; kept for exhaustiveness.
+        case "improve":
+          // manual: written already acknowledged; improve: acked by ackImprove. Never here; kept for exhaustiveness.
           return ack("run_ignored");
         case "interactive": {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
@@ -2916,6 +2933,22 @@ export class Controller {
    * Re-read → decide → conditional transition, retrying on version conflicts. Returns the refusal reason
    * when `fn` refused, else null (applied, or a silent no-op).
    */
+  /**
+   * An improve run's only effect is its report (design §7): the ack changes no field of the system item, posts
+   * nothing and queues nothing. A failed or cancelled one is not retried; the next day's run reports again. Not
+   * through decide(): the system item has no source adapter.
+   */
+  private async ackImprove(run: Run): Promise<void> {
+    const reason = run.outcome?.status === "succeeded" ? "improve_reported" : "improve_failed";
+    for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
+      const item = await this.d.store.getWorkItem(run.work_item_id);
+      if (!item) return;
+      const r = await this.d.store.transition({ id: item.id, expected_version: item.version, patch: {}, actor: SYSTEM, reason, ack_run: run.id });
+      if (r.ok || r.reason !== "version_conflict") return;
+    }
+    this.d.log.warn("transition gave up after conflicts", { work_item_id: run.work_item_id });
+  }
+
   private async decide(
     id: WorkItemId,
     fn: (item: WorkItem) => Decision | Refusal | Promise<Decision | Refusal>,

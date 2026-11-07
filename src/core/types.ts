@@ -23,8 +23,11 @@ export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "depen
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
-/** `local`: an item filed on this machine (issue #198); its id is local to the factory. */
-export type SourceType = "github_issue" | "slack_thread" | "local";
+/**
+ * `local`: an item filed on this machine (issue #198); its id is local to the factory. `system`: the factory's own
+ * item, one per project, that carries its improve runs (design §7, issue #306); no source adapter serves it.
+ */
+export type SourceType = "github_issue" | "slack_thread" | "local" | "system";
 
 /**
  * Where an item came from (design 2026-11-01). `factory`: intake of an issue or thread, the factory opens the
@@ -159,8 +162,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
  * `interactive`: a person's own LLM session (`factory session`, design §5, 2026-11-01), written running with a lease,
  * never queued or claimed. It ends by `session finish` (succeeded), `session abandon` or a lost lease (failed).
+ * `improve` runs no agent and calls no model (design §7, issue #306): the worker groups the failed runs of its
+ * window (`RunInput.improve`) and stores one report. It belongs to the project's `system` item.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -171,7 +176,12 @@ export interface RunInput {
   wip?: WipRef;
   /** An interactive run's record (design §5, 2026-11-01), kept here so no schema step is needed. Read via the Run fields. */
   session?: SessionRecord;
+  /** An improve run's report window (design §7), fixed at enqueue so a rerun reports the same runs. */
+  improve?: ImproveWindow;
 }
+
+/** Runs that finished at or after `start` and before `end` are reported. */
+export interface ImproveWindow { start: Timestamp; end: Timestamp }
 
 /** An interactive run's scanned notes and last finish. Its person, transcript URL and token total are run columns. */
 export interface SessionRecord { notes: SessionNote[]; last_finish: SessionFinish | null }
