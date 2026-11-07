@@ -18,7 +18,6 @@ import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
-import { GitHubClient } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
@@ -33,7 +32,7 @@ import { storeProjectResolver } from "./ui/settings-api.js";
 import { LastChecks, serverRevision } from "./ui/system-actions.js";
 import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
-import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
+import { ISSUE_USAGE, issueDeps, parseIssueArgs, runIssue } from "./issue-cmd.js";
 import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
 import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
@@ -260,9 +259,7 @@ async function main(argv: readonly string[]): Promise<number> {
               const stored = await storeProjectResolver(store, { owner, name })();
               if (stored) return stored;
               if (loaded.config.local_only) return localProject({ owner, name });
-              const p = new Plugins(loaded);
-              const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
-              return resolveProject(github, { owner, name });
+              return resolveProject(await new Plugins(loaded).githubApi(), { owner, name });
             },
             // An ID, never a display name: the OS login of the local owner.
             actor: `local:${userInfo().username}`,
@@ -347,8 +344,7 @@ async function main(argv: readonly string[]): Promise<number> {
         const print = (line: string) => console.log(line);
         // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
         const resolveRepo = async (): Promise<ResolveRepo> => {
-          const p = new Plugins(loaded);
-          const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
+          const github = await new Plugins(loaded).githubApi();
           return (ownerName) => {
             const [owner = "", name = ""] = ownerName.split("/");
             return resolveProject(github, { owner, name });
@@ -418,11 +414,7 @@ async function main(argv: readonly string[]): Promise<number> {
         console.error(ISSUE_USAGE);
         return 1;
       }
-      const p = new Plugins(loaded);
-      const secrets = await p.secrets();
-      const client = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
-      const { owner, name } = loaded.config.repo;
-      console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
+      console.log(await runIssue(await issueDeps(new Plugins(loaded)), action));
       return 0;
     }
     case "session": {
@@ -539,7 +531,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
     try {
       await store.migrate();
       const { owner, name } = loaded.config.repo;
-      const github = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
+      const github = await p.githubApi();
       const r = await addCase(
         {
           store,

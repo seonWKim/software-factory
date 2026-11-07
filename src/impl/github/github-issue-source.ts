@@ -12,7 +12,8 @@ import { type FactoryStore, type NewCliCommand, labelTarget } from "../../interf
 import type {
   IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
-import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
+import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
 
 export interface GhUser {
   id: number;
@@ -208,7 +209,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   readonly silent_intake_refusal = true as const;
 
   constructor(
-    private readonly client: GitHubClient,
+    private readonly client: GitHubApi,
     private readonly repo: RepoRef,
     private readonly label: string,
     private readonly branchPrefix: string,
@@ -660,7 +661,7 @@ export function max(a: string | null, b: string): string {
  * any other error is thrown.
  */
 export async function ensureLabel(
-  client: GitHubClient,
+  client: GitHubApi,
   repo: RepoRef,
   label: { name: string; color: string; description: string },
 ): Promise<"created" | "exists"> {
@@ -675,4 +676,38 @@ export async function ensureLabel(
     if (err instanceof GitHubError && err.status === 422 && err.message.includes("already_exists")) return "exists";
     throw err;
   }
+}
+
+/** The intake label's look on the repository; its name is `intake_label`. */
+const INTAKE_LABEL = { color: "5319e7", description: "Work item for the software factory" };
+
+/** Creates each label, printing created / already exists / could not create per label. */
+export async function createLabels(
+  client: GitHubApi,
+  repo: RepoRef,
+  labels: readonly { name: string; color: string; description: string }[],
+  print: (line: string) => void = (line) => console.log(line),
+): Promise<void> {
+  for (const l of labels) {
+    try {
+      const r = await ensureLabel(client, repo, l);
+      print(`   "${l.name}": ${r === "created" ? "created" : "already exists"}`);
+    } catch (err) {
+      print(`   "${l.name}": could not create it: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+    }
+  }
+}
+
+/** The github-issues plugin's setup hook (`npm run setup`): the intake label, the status labels and the PR flag labels. */
+export async function setupLabels(
+  client: GitHubApi,
+  repo: RepoRef,
+  config: { intake_label: string; status_label_prefix: string },
+  print?: (line: string) => void,
+): Promise<void> {
+  await createLabels(client, repo, [
+    { name: config.intake_label, ...INTAKE_LABEL },
+    ...statusLabels(config.status_label_prefix),
+    ...prFlagLabels(config.status_label_prefix),
+  ], print);
 }

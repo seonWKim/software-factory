@@ -25,8 +25,7 @@ import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
-import type { GitHubCredentials } from "./interfaces/github-credentials.js";
-import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
+import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
 
 /** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
 export interface Instances {
@@ -44,7 +43,8 @@ export interface Instances {
   clock: Clock;
   updater: Updater;
   awake: KeepAwake;
-  github_auth: GitHubCredentials;
+  /** The credentials and the one forge client over them (docs/plugins/github-credentials.md). */
+  github_auth: GitHubAccess;
   test_database: TestDatabase;
   forge: Forge;
   network_probe: NetworkProbe;
@@ -61,7 +61,7 @@ export type OptionalKind = "forge";
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
   loaded: Loaded;
-  repo: RepoRef;
+  repo: { owner: string; name: string };
   /** Values that are not secrets of ours but must never leave (the G6 canary). */
   extraScanValues: readonly string[];
 }
@@ -77,10 +77,10 @@ export interface Contexts {
   runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore; broker?: ToolBroker; scanner?: EgressScanner };
   llm: BaseContext & { secrets: SecretStore };
   /** `grants`: the selected grant sources (`permissions.grants`), built before the auth plugin. */
-  auth: BaseContext & { github: GitHubClient; store: FactoryStore; grants: readonly GrantSource[] };
+  auth: BaseContext & { github: GitHubApi; store: FactoryStore; grants: readonly GrantSource[] };
   secrets: BaseContext;
   egress: BaseContext & { secrets: SecretStore };
-  broker: BaseContext & { github: GitHubClient; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
+  broker: BaseContext & { github: GitHubApi; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
   storage: BaseContext;
   /**
    * `store`: what a source that keeps its intake in the store reads (the `local` source, issue #199). `secrets`,
@@ -88,7 +88,7 @@ export interface Contexts {
    * issue #109: its tokens from the SecretStore, G5 on every message before it is posted).
    */
   /** `clock`: build() always passes it; a polled source needs it (the GitHub source's starting point). */
-  source: BaseContext & { github: GitHubClient; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger; clock?: Clock };
+  source: BaseContext & { github: GitHubApi; store: FactoryStore; secrets: SecretStore; scanner: EgressScanner; log: Logger; clock?: Clock };
   capability: BaseContext & { capabilities: readonly Capability[] };
   clock: BaseContext;
   /** The `dev` supervisor's: a command runner (runProcess) and a child launcher, both fakeable. */
@@ -97,10 +97,18 @@ export interface Contexts {
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
   /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
   test_database: BaseContext & { secrets: SecretStore };
-  forge: BaseContext & { github: GitHubClient };
+  forge: BaseContext & { github: GitHubApi };
   /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */
   network_probe: BaseContext;
 }
+
+/** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */
+export interface SetupContext extends BaseContext {
+  github: GitHubApi;
+  print: (line: string) => void;
+}
+
+export type SetupHook = (ctx: SetupContext) => Promise<void>;
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
 
@@ -130,6 +138,8 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   create: PluginFactory<K>;
   /** The secret names this plugin reads (none if left out); see declaredSecrets. */
   secrets?: readonly SecretDeclaration[];
+  /** One-time work `npm run setup` does for this plugin when it is selected (the github-issues labels); see selectedSetups. */
+  setup?: SetupHook;
   /**
    * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
    * kinds (forge) take none either: leaving their key out selects nothing.
@@ -163,6 +173,8 @@ export interface InterfaceEntry<K extends PluginKind> {
    * loads and scans exactly the union of the selected plugins' names (declaredSecretNames).
    */
   secrets: Readonly<Record<string, readonly SecretDeclaration[]>>;
+  /** The setup hook of each plugin that has one. */
+  setups: Readonly<Record<string, SetupHook>>;
   /** From the descriptors' `default` fields. */
   defaults: KindDefaults;
 }
@@ -254,6 +266,16 @@ export function declaredSecrets(registry: Registry, selection: Selection): Secre
   return [...byName.values()];
 }
 
+/** The setup hooks of the selected plugins, in interface order, each with the plugin it belongs to. What `npm run setup` runs. */
+export function selectedSetups(registry: Registry, selection: Selection): { kind: PluginKind; name: string; setup: SetupHook }[] {
+  return (Object.keys(registry) as PluginKind[]).flatMap((kind) =>
+    selectedNames(selection, kind).flatMap((name) => {
+      const setup = registry[kind].setups[name];
+      return setup ? [{ kind, name, setup }] : [];
+    }),
+  );
+}
+
 /** The secret set: the union of the names the selected plugins declare. The SecretStore loads and scans these. */
 export function declaredSecretNames(registry: Registry, selection: Selection): ReadonlySet<SecretName> {
   return new Set(declaredSecrets(registry, selection).map((d) => d.name));
@@ -266,7 +288,7 @@ export function declaredSecretNames(registry: Registry, selection: Selection): R
  * of the one-per-interface Registry above because a kind selected as a list has no single selection.
  */
 export interface GrantContext extends BaseContext {
-  github: GitHubClient;
+  github: GitHubApi;
 }
 
 export interface GrantDescriptor {

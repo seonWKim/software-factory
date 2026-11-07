@@ -19,6 +19,7 @@ import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorCheck
 import type { ImproveReport, RunId, Timestamp, UserId } from "../src/core/types.js";
 import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, improveSection } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
+import { fakeGitHubAccess } from "./helpers/fakes.js";
 import { BACKENDS } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
@@ -105,7 +106,7 @@ async function setupDoctor(opts: { version?: SchemaVersion | Error; fileExtra?: 
     { name: secretName("MYSQL_PASSWORD"), purpose: "test" },
   ]);
   const creds: GitHubCredentials = { token: async () => secret("tok"), grant: () => null };
-  registry = withPlugin(registry, "github_auth", "fake-gh", () => creds);
+  registry = withPlugin(registry, "github_auth", "fake-gh", () => fakeGitHubAccess(creds));
   stubGitHub(new Set(opts.labels ?? ["factory", "sf: triaging"]));
   return { loaded: await loadConfig(dir, { registry }), storeCalls, mysqlPassword };
 }

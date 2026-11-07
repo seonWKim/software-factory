@@ -29,7 +29,7 @@ import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
-import type { GitHubCredentials } from "./interfaces/github-credentials.js";
+import type { GitHubAccess, GitHubApi, GitHubCredentials, RepoIdentity } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
@@ -40,7 +40,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
+import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
@@ -608,16 +608,6 @@ function refusing<T>(why: string): T {
 
 const NO_GITHUB = "no GitHub plugin is selected (design 05-sources, Local startup): nothing calls GitHub";
 
-/**
- * The GitHub credentials and client the plugins get: the configured ones, or, with no GitHub plugin selected,
- * stand-ins that refuse every call, so no GitHub credential is read and no request is made.
- */
-async function githubParts(loaded: Loaded, p: Plugins, secrets: SecretStore, clock: Clock): Promise<{ credentials: GitHubCredentials; github: GitHubClient }> {
-  if (loaded.config.local_only === true) return { credentials: refusing<GitHubCredentials>(NO_GITHUB), github: refusing<GitHubClient>(NO_GITHUB) };
-  const credentials = await p.githubCredentials(secrets, clock);
-  return { credentials, github: new GitHubClient(credentials, undefined, githubClientOptions(loaded, clock)) };
-}
-
 /** The loaded config with the resolved project, and the per-project settings re-keyed from `owner/name` to its key. */
 export function resolvedConfig(config: LoadedConfig, project: ProjectRef): FactoryConfig {
   const ownerName = `${config.repo.owner}/${config.repo.name}`;
@@ -643,6 +633,8 @@ export interface Built {
  */
 export class Plugins {
   readonly base: BaseContext;
+  /** The github_auth plugin's build, made once: one forge client per Plugins, so per build() and per command. */
+  private access: Promise<GitHubAccess> | undefined;
 
   constructor(
     readonly loaded: Loaded,
@@ -674,8 +666,24 @@ export class Plugins {
   sandbox(): Promise<Sandbox> {
     return createPlugin(this.loaded.registry, "sandbox", this.loaded.plugins.sandbox, this.base);
   }
-  githubCredentials(secrets: SecretStore, clock: Clock): Promise<GitHubCredentials> {
-    return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
+  /**
+   * The credentials and the one forge client the selected github_auth plugin builds, on the first call; later
+   * calls get the same ones. With no GitHub plugin selected (design 05-sources, Local startup): stand-ins that
+   * refuse every call, so no GitHub credential is read and no request is made. `deps`: the secret store and Clock
+   * a caller already has (build()); absent, the configured ones.
+   */
+  githubAccess(deps?: { secrets: SecretStore; clock: Clock }): Promise<GitHubAccess> {
+    this.access ??= this.loaded.config.local_only === true
+      ? Promise.resolve({ credentials: refusing<GitHubCredentials>(NO_GITHUB), api: refusing<GitHubApi>(NO_GITHUB) })
+      : (async () => {
+          const { secrets, clock } = deps ?? { secrets: await this.secrets(), clock: await this.clock() };
+          return createPlugin(this.loaded.registry, "github_auth", this.loaded.plugins.github_auth, { ...this.base, secrets, clock });
+        })();
+    return this.access;
+  }
+  /** The process's forge client (githubAccess): what the CLI commands, setup and doctor call the forge through. */
+  async githubApi(): Promise<GitHubApi> {
+    return (await this.githubAccess()).api;
   }
   /** `tools`: the broker and scanner a runner exposes granted tools through; left out where nothing is granted. */
   /** One runner, or a FallbackRunner over the `plugins.runner` chain (design 2026-11-07). */
@@ -695,7 +703,7 @@ export class Plugins {
    * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
    * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubClient, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
+  async forge(github: GitHubApi, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
     if (name === undefined) return null;
     const ctx = { ...this.base, github, ...sync };
@@ -719,7 +727,8 @@ export async function build(
   const scanner = await p.scanner(secrets);
   // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
   await checkToolchainEnv(loaded.config.toolchain, scanner);
-  const { credentials, github } = await githubParts(loaded, p, secrets, clock);
+  // The one forge client of this build: every plugin that calls the forge gets it; only the broker gets credentials.
+  const { credentials, api: github } = await p.githubAccess({ secrets, clock });
   const sandbox = await p.sandbox();
 
   // One adapter per listed source; the controller routes each item to the one of its source type.
@@ -887,7 +896,7 @@ export interface UiParts {
 }
 
 /** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
-const NO_FORGE = refusing<GitHubClient>("the UI process makes no forge call");
+const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -940,13 +949,8 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
 export interface SessionParts {
-  clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubClient; config: FactoryConfig;
+  clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubApi; config: FactoryConfig;
   close(): Promise<void>;
-}
-
-/** The GitHub client's settings from factory.config.json (`github`), with its log lines under "github". */
-function githubClientOptions(loaded: Loaded, clock: Clock): GitHubClientOptions {
-  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(loaded.file.github), budget_share: githubBudgetShare(loaded.file.github) };
 }
 
 /** build()'s parts a session uses, through the same registry; the broker is its only push and PR path. Live settings. */
@@ -957,7 +961,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const [base, clock, secrets] = [p.base, await p.clock(), await p.secrets()];
   const store = await p.store(secrets, clock);
   await store.migrate();
-  const [scanner, { credentials, github }, sandbox] = [await p.scanner(secrets), await githubParts(loaded, p, secrets, clock), await p.sandbox()];
+  const [scanner, { credentials, api: github }, sandbox] = [await p.scanner(secrets), await p.githubAccess({ secrets, clock }), await p.sandbox()];
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });

@@ -33,6 +33,7 @@ import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.j
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
+import type { GitHubAccess, GitHubApi } from "../src/interfaces/github-credentials.js";
 import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
   type Contexts,
@@ -45,8 +46,10 @@ import {
   type PluginKind,
   REGISTRY,
   type Registry,
+  GRANTS,
   createPlugin,
   declaredSecrets,
+  selectedSetups,
   selectPlugins,
   selectedSources,
   withPlugin,
@@ -190,7 +193,10 @@ describe("plugin registry: defaults", () => {
       const name = loaded.plugins[kind];
       if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
-      expect(x, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
+      // A credential plugin builds its credentials and the one forge client over them.
+      if (kind === "github_auth") expect((x as unknown as GitHubAccess).api).toBeInstanceOf(GitHubClient);
+      const made = kind === "github_auth" ? (x as unknown as GitHubAccess).credentials : x;
+      expect(made, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
       if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
       await closeIfStore(kind, x);
     }
@@ -245,7 +251,7 @@ describe("plugin registry: every discovered plugin", () => {
       it("sits beside its implementation, built with definePlugin", () => {
         const text = readFileSync(file, "utf8");
         expect(text).toMatch(/export default definePlugin\(/);
-        const local = [...text.matchAll(/from\s+"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
+        const local = [...text.matchAll(/(?:from\s+|import\()"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
         expect(local.filter((p) => p.startsWith(IMPL_DIR)).length, "imports its implementation from src/impl").toBeGreaterThan(0);
       });
 
@@ -728,6 +734,97 @@ describe("plugin registry: only plugin descriptors construct implementations", (
       const text = readFileSync(join(REPO_ROOT, "src", f), "utf8");
       for (const name of classes) expect(text, `${f}: new ${name}`).not.toMatch(new RegExp(`new\\s+${name}\\b`));
     }
+  });
+});
+
+describe("GitHub plugins (design 05-sources): one client per process, built by the credential plugin", () => {
+  const GITHUB_DIR = join(IMPL_DIR, "github");
+  const srcFiles = (dir: string): string[] => findPluginFiles([dir], /\.ts$/);
+
+  it("every GitHub descriptor imports its implementation inside create(), never at top level", () => {
+    const files = [...findPluginFiles([GITHUB_DIR]), ...findPluginFiles([GITHUB_DIR], /\.grant\.ts$/)];
+    expect(files.map((f) => f.slice(GITHUB_DIR.length + 1))).toEqual(expect.arrayContaining(["token.plugin.ts", "app.plugin.ts", "github-permission.grant.ts"]));
+    for (const file of files) {
+      const text = readFileSync(file, "utf8");
+      const topLevel = [...text.matchAll(/^import\s+(?!type\b)[^"]*from\s+"(\.[^"]+)"/gm)].map((m) => join(dirname(file), m[1]!));
+      expect(topLevel.filter((p) => p.startsWith(IMPL_DIR)), file).toEqual([]);
+      expect(text, file).toMatch(/\bimport\("\.\//);
+    }
+  });
+
+  it("the token and app descriptors name their secrets themselves, and the implementations take the names from them", () => {
+    for (const [descriptor, impl, secret] of [["token.plugin.ts", "token-credentials.ts", "GITHUB_TOKEN"], ["app.plugin.ts", "app-credentials.ts", "GITHUB_APP_ID"]] as const) {
+      expect(readFileSync(join(GITHUB_DIR, descriptor), "utf8")).toContain(`export const ${secret} = secretName("${secret}")`);
+      const text = readFileSync(join(GITHUB_DIR, impl), "utf8");
+      expect(text).toContain(`import { ${secret} } from "./${descriptor.replace(/\.ts$/, ".js")}"`);
+      expect(text).not.toContain(`secretName("${secret}")`);
+    }
+  });
+
+  it("'new GitHubClient' appears under src/ only in the token and app credential files", () => {
+    const users = srcFiles(join(REPO_ROOT, "src")).filter((f) => /new\s+GitHubClient\b/.test(readFileSync(f, "utf8")));
+    expect(users.map((f) => f.slice(REPO_ROOT.length + 1)).sort()).toEqual(["src/impl/github/app-credentials.ts", "src/impl/github/token-credentials.ts"]);
+  });
+
+  it("build() makes one client and hands it to every context that needs one; only the broker gets credentials", async () => {
+    const credentials = { token: async () => null };
+    const api = { tag: "the one client" } as unknown as GitHubApi;
+    let made = 0;
+    const seen: Record<string, Record<string, unknown>> = {};
+    const record = <T>(kind: string, ctx: object, x: T): T => ((seen[kind] = ctx as Record<string, unknown>), x);
+    let reg = withPlugin(REGISTRY, "github_auth", "app", () => (made++, { credentials, api }));
+    reg = withPlugin(reg, "source", "github-issues", (c) => record("source", c, REGISTRY.source.plugins["github-issues"]!(c)));
+    reg = withPlugin(reg, "auth", "github", (c) => record("auth", c, REGISTRY.auth.plugins.github!(c)));
+    reg = withPlugin(reg, "forge", "github", (c) => record("forge", c, REGISTRY.forge.plugins.github!(c)));
+    reg = withPlugin(reg, "broker", "github", (c) => record("broker", c, {} as ToolBroker));
+    const grant = GRANTS["github-permission"]!;
+    const create = vi.spyOn(grant, "create").mockImplementation((c) => record("grant", c, { remote: true, roles: async () => [], denies: async () => false }));
+    const dir = root({ ...REAL, store: { type: "sqlite" }, tool_grants: undefined, plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues"] } });
+    try {
+      const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+      await built.close();
+    } finally {
+      create.mockRestore();
+    }
+    expect(made).toBe(1);
+    for (const kind of ["source", "auth", "grant", "forge", "broker"]) {
+      expect(seen[kind]?.github, kind).toBe(api);
+      expect(seen[kind]!.repo, kind).toEqual({ owner: (REAL.repo as { owner: string }).owner, name: (REAL.repo as { name: string }).name });
+    }
+    for (const kind of ["source", "auth", "grant", "forge"]) {
+      expect(Object.keys(seen[kind]!), kind).not.toContain("credentials");
+      expect(Object.keys(seen[kind]!), kind).not.toContain("token");
+      expect(Object.values(seen[kind]!), kind).not.toContain(credentials);
+    }
+    expect(seen.broker!.credentials).toBe(credentials);
+  });
+
+  it("Plugins.githubApi() builds the credential plugin once and returns its client every time", async () => {
+    const api = {} as GitHubApi;
+    let made = 0;
+    const reg = withPlugin(REGISTRY, "github_auth", "app", () => (made++, { credentials: { token: async () => null }, api }));
+    const p = new Plugins(await loadConfig(root({ ...REAL, store: { type: "sqlite" } }), { registry: reg }));
+    expect(await p.githubApi()).toBe(api);
+    expect(await p.githubApi()).toBe(api);
+    expect(made).toBe(1);
+  });
+
+  it("the github-issues plugin's setup hook creates the intake, status and PR flag labels", async () => {
+    const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }));
+    const hooks = selectedSetups(loaded.registry, loaded.plugins);
+    expect(hooks.map((h) => `${h.kind}/${h.name}`)).toContain("source/github-issues");
+    expect(selectedSetups(loaded.registry, { ...loaded.plugins, source: "local", sources: ["local"] }).map((h) => h.name)).not.toContain("github-issues");
+    const posted: string[] = [];
+    const github = {
+      request: async (method: string, path: string, body?: { name: string }) => (posted.push(`${method} ${path} ${body?.name}`), {}),
+    } as unknown as GitHubApi;
+    const lines: string[] = [];
+    await hooks.find((h) => h.name === "github-issues")!.setup({ ...new Plugins(loaded).base, github, print: (l) => lines.push(l) });
+    const { owner, name } = loaded.config.repo;
+    expect(posted[0]).toBe(`POST /repos/${owner}/${name}/labels ${loaded.config.intake_label}`);
+    expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}triaging`);
+    expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}incomplete`);
+    expect(lines[0]).toBe(`   "${loaded.config.intake_label}": created`);
   });
 });
 
