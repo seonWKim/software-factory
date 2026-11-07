@@ -100,7 +100,7 @@ describe("improve: scheduling", () => {
   });
 });
 
-/** A runner and an LLM that fail the test if anything calls them: the improve run uses no model. */
+/** A runner and an LLM that fail the test if anything calls them: a worker with no LLM provider asks no model. */
 const noRunner: AgentRunner = {
   run: () => {
     throw new Error("the improve run called the agent runner");
@@ -127,7 +127,7 @@ async function failRun(store: FactoryStore, n: number, code: string, detail: str
 }
 
 describe("improve: the run", () => {
-  it("a worker claims it like any run and stores one report of the window; no model is called, nothing is filed", async () => {
+  it("a worker with no LLM provider claims it like any run and stores one report of the window; no model is called, nothing is filed", async () => {
     const clock = new FakeClock("2026-03-03T06:00:00.000Z");
     const { store } = await newStore(clock);
     // Before the window: not counted.

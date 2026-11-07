@@ -407,11 +407,14 @@ export async function loadConfig(
     implement: await readFile(join(codeRoot, "prompts", "implement.md"), "utf8"),
     review: await readFile(join(codeRoot, "prompts", "review.md"), "utf8"),
   };
-  const resolvePrompt = await readFile(join(codeRoot, "prompts", "resolve.md"), "utf8").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return undefined;
-    throw err;
-  });
-  if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
+  // Optional prompts: a missing file leaves the field absent (resolve: `prompt_missing`; improve: no drafts).
+  for (const name of ["resolve", "improve"] as const) {
+    const text = await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8").catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT") return undefined;
+      throw err;
+    });
+    if (text !== undefined) prompts[name] = text;
+  }
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
@@ -617,7 +620,8 @@ export async function build(
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
   const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
-  // Suggests a command for a plain-language comment; never changes state (design §4).
+  // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
+  // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
@@ -680,6 +684,7 @@ export async function build(
     broker,
     scanner,
     storage,
+    llm,
     clock,
     config,
     prompts: loaded.prompts,
