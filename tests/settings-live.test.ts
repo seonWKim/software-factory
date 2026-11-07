@@ -9,7 +9,8 @@ import { WorkerPool } from "../src/core/worker-pool.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { PROJECT_KEY, issue, newStore, system, w2 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, issueRef, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
@@ -354,5 +355,49 @@ describe("workers: the pool grows and shrinks with no restart", () => {
     });
     expect(pool.size()).toBe(3);
     expect(pool.workers).toHaveLength(3);
+  });
+
+  it("hold_policy: set to run, the worker's next claim takes a run held by cost; reset, it holds again", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const ids = [];
+    for (const n of [1, 2, 3]) {
+      const { item } = await store.createWorkItem(issue(n), system);
+      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/core/worker.ts"] } });
+      await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}` } });
+      ids.push(item.id);
+      clock.advance(1_000);
+    }
+    // Item 1 runs on another worker; 2 and 3 are held by it.
+    expect(await store.claimRun({ worker_id: w2, kinds: ["implement"], lease_ms: 60_000 })).toMatchObject({ work_item_id: ids[0] });
+    // The worker's claims go to the store; the claimed run is recorded, not executed.
+    const claimed: (Run | null)[] = [];
+    const spy = new Proxy(store, {
+      get(target, prop, receiver) {
+        if (prop === "claimRun") {
+          return async (input: Parameters<FactoryStore["claimRun"]>[0]) => {
+            claimed.push(await target.claimRun(input));
+            return null;
+          };
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const settings = new LiveSettings({ config: baseConfig, base: baseFromConfig(baseConfig), source: store });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store: spy, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(),
+      storage: new MemoryStorage(), clock, config: baseConfig, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
+    });
+    await worker.tick();
+    expect(claimed.at(-1)).toBeNull();
+    await store.setSettingOverride({ key: "hold_policy", project: "", value: JSON.stringify({ mode: "run" }), actor: "local:test" });
+    await worker.tick();
+    expect(claimed.at(-1)).toMatchObject({ work_item_id: ids[1] });
+    expect((await store.listClaimDecisions(ids[1]!))[0]).toMatchObject({ decision: "overlap_allowed", holder_work_item_id: ids[0] });
+    await store.resetSettingOverride({ key: "hold_policy", project: "", actor: "local:test" });
+    await worker.tick();
+    expect(claimed.at(-1)).toBeNull();
+    expect((await store.listClaimDecisions(ids[2]!))[0]).toMatchObject({ decision: "held" });
   });
 });

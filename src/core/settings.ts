@@ -1,5 +1,6 @@
 import type { Budgets } from "./budget.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import type { Logger } from "./log.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
@@ -271,6 +272,7 @@ export const SETTABLE_KEYS = [
   "lease_ms",
   "workers",
   "phases_auto_approve",
+  "hold_policy",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -307,6 +309,7 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   lease_ms: "How long a claimed step stays held by a worker without a lease renewal.",
   workers: "Worker loops in each process that claim and run steps.",
   phases_auto_approve: "Whether a phase spec of an approved split needs no approval of its own.",
+  hold_policy: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -344,6 +347,7 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   lease_ms: "the next claim or lease renewal",
   workers: "the worker pool's next tick",
   phases_auto_approve: "the next phase spec triage writes",
+  hold_policy: "the next claim",
 };
 
 export interface SettableValues {
@@ -364,6 +368,7 @@ export interface SettableValues {
   lease_ms: number;
   workers: number;
   phases_auto_approve: boolean;
+  hold_policy: HoldPolicy;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -385,6 +390,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   lease_ms: 300_000,
   workers: 1,
   phases_auto_approve: false,
+  hold_policy: DEFAULT_COORDINATION.hold_policy,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -460,6 +466,8 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve":
       return booleanSetting(key, value) as SettableValues[K];
+    case "hold_policy":
+      return parseHoldPolicy(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -662,6 +670,7 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     workers: config.workers,
     phases_auto_approve: config.phases_auto_approve ?? false,
   };
+  if (config.coordination) file.hold_policy = config.coordination.hold_policy;
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
   return { file, layers: config.settings, ...(config.max_workers !== undefined ? { max_workers: config.max_workers } : {}) };
@@ -745,8 +754,13 @@ export class LiveSettings {
 
   private viewOf(r: ResolvedSettings): FactoryConfig {
     const v = r.values;
+    const coordination = this.opts.config.coordination;
     return {
       ...this.opts.config,
+      // `hold_policy` lives in the claim's coordination settings; a config with none and no override keeps none.
+      ...(coordination || r.global.hold_policy.source !== "default"
+        ? { coordination: { ...(coordination ?? DEFAULT_COORDINATION), hold_policy: v.hold_policy } }
+        : {}),
       settings: r.layers,
       max_loops: v.max_loops,
       max_restart: v.max_restart,
