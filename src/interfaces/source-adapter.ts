@@ -17,8 +17,36 @@ export type SourceEvent =
   | { kind: "spec_approved"; source: SourceRef; comment_id: string; approver: ExternalIdentity; note?: string }
   /** `reason` is the text after `/reject`, possibly empty. */
   | { kind: "spec_rejected"; source: SourceRef; comment_id: string; approver: ExternalIdentity; reason: string }
-  /** `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that). */
-  | { kind: "revise_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity; feedback: string }
+  /**
+   * `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that).
+   * On a PR's conversation, `pr` names that PR (any head branch: factory or adopted) and `source` is the PR
+   * itself, so the 👀 and any reply go there; the controller finds the work item by the head branch, or an
+   * adopted item by the PR number. On an issue, `pr` is null or absent.
+   */
+  | {
+      kind: "revise_requested";
+      source: SourceRef;
+      comment_id: string;
+      requester: ExternalIdentity;
+      feedback: string;
+      pr?: { pr_number: number; head_branch: string } | null;
+    }
+  /**
+   * A "Request changes" review on an open PR (design §4), by a person (never a bot). `source` is the PR,
+   * `review_id` the forge's review id, delivered at most once per review by a poll that advanced the cursor;
+   * the controller still refuses a review it already applied. `body` and each line comment's `body` are
+   * untrusted; `line` is null when the forge gives none (a comment on a whole file or an outdated line).
+   */
+  | {
+      kind: "pr_changes_requested";
+      source: SourceRef;
+      pr_number: number;
+      head_branch: string;
+      review_id: string;
+      reviewer: ExternalIdentity;
+      body: string;
+      comments: PrLineComment[];
+    }
   | { kind: "retry_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
   /** `/help`: the controller replies once with every command, marking the ones that apply now. */
   | { kind: "help_requested"; source: SourceRef; comment_id: string; requester: ExternalIdentity }
@@ -96,6 +124,13 @@ export type SourceEvent =
    * factory merges in it (design §6). A boundary commit may be delivered again; handling is idempotent.
    */
   | { kind: "base_commit"; sha: string; message: string };
+
+/** One line comment of a PR review: the file, the line in the PR's version of it, and the text. */
+export interface PrLineComment {
+  path: string;
+  line: number | null;
+  body: string;
+}
 
 /** How a person closed a source item: done, or not going to be done. */
 export type SourceCloseReason = "completed" | "not_planned";

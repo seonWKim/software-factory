@@ -19,7 +19,7 @@ the `05-*` files.
 
 ## 4. Agents
 - [04-agents.md](design/04-agents.md): the agent roles, the model class per run kind and tier, the GitHub gate and the "In short" opening.
-- [04-gate-commands.md](design/04-gate-commands.md): the human commands (`/approve`, `/reject`, `/revise`, `/verdict`, `/help`), refusals, footers and suggestions.
+- [04-gate-commands.md](design/04-gate-commands.md): the human commands (`/approve`, `/reject`, `/revise`, `/verdict`, `/help`), refusals, footers and suggestions, and `/revise` or "Request changes" on a pull request.
 - [04-closing-source-issue.md](design/04-closing-source-issue.md): closing the source issue stops the item, its runs and its PR.
 - [04-pre-push-gates.md](design/04-pre-push-gates.md): the scope, size and floor gates before a push, sync with the base, and the resolve run's gates.
 - [04-split-specs.md](design/04-split-specs.md): triage size estimates, splitting a big spec into phases, and the phase hold.

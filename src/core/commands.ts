@@ -17,6 +17,7 @@ export type CommandPhase =
   | "floor_tier"
   | "too_large"
   | "failed_implement"
+  | "failed_review"
   | "failed_run"
   | "reviewing"
   | "merge_pending"
@@ -27,7 +28,7 @@ export type CommandPhase =
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "floor_tier", "too_large",
-  "failed_implement", "failed_run", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
+  "failed_implement", "failed_review", "failed_run", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
@@ -52,6 +53,13 @@ export interface CommandSpec {
   needs_pr: boolean;
   /** Whether applying it can change the item's stage or block. */
   changes_state: boolean;
+  /**
+   * Phases where it is also accepted as a comment on the item's pull request, with the meaning in
+   * `pr_description` (design §4). Absent: on the PR it means what it means on the issue, if it is read there.
+   */
+  pr_phases?: readonly CommandPhase[];
+  /** One line: what it does on the PR. */
+  pr_description?: string;
 }
 
 export const COMMANDS: readonly CommandSpec[] = [
@@ -81,12 +89,14 @@ export const COMMANDS: readonly CommandSpec[] = [
     phases: ["spec_pending", "too_large", "failed_implement"],
     needs_pr: false,
     changes_state: true,
+    pr_phases: ["merge_pending", "failed_review"],
+    pr_description: "On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it",
   },
   {
     name: "retry",
     usage: "/retry",
     description: "Run the failed run again",
-    phases: ["failed_run", "too_large", "failed_implement"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement"],
     needs_pr: false,
     changes_state: true,
   },
@@ -159,6 +169,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.blocked_on === "human") {
     const kind = failedRunKind(it as WorkItem);
     if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
+    if (kind === "review") return "failed_review";
     if (kind) return "failed_run";
   }
   if (it.stage === "READY" && it.blocked_reason === "spec_pending") return "spec_pending";
@@ -181,6 +192,16 @@ export function applies(c: CommandSpec, s: CommandState): boolean {
   return c.phases.includes(s.phase) && (!c.needs_pr || s.has_pr);
 }
 
+/** Whether `c` is accepted as a comment on the item's PR with its PR meaning (`pr_phases`); needs a PR. */
+export function appliesOnPr(c: CommandSpec, s: CommandState): boolean {
+  return s.has_pr && (c.pr_phases?.includes(s.phase) ?? false);
+}
+
+/** The commands with a PR meaning that apply on the item's PR in `s`, in table order. */
+export function prCommandsFor(s: CommandState): CommandSpec[] {
+  return COMMANDS.filter((c) => appliesOnPr(c, s));
+}
+
 /**
  * Account commands: about the person, not the item. Listed by `/help` and in the SET_UP.md table, never in an
  * item's footer, and read on any issue, work item or not (design 2026-11-01).
@@ -194,10 +215,18 @@ export function commandsFor(s: CommandState): CommandSpec[] {
 
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
 
-/** The commands that apply now, then a note when none of them changes the state. Ends every waiting comment. */
+const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description ?? c.description}.`;
+
+/**
+ * The commands that apply now, then a note when none of them changes the state. Ends every waiting comment.
+ * When a command applies on the item's PR with its PR meaning, a block naming it comes first; the list and
+ * the note after it are about replies on the comment's own issue.
+ */
 export function commandFooter(s: CommandState): string {
   const cmds = commandsFor(s);
-  const out = ["Commands you can reply with now:", ...cmds.map(line)];
+  const onPr = prCommandsFor(s);
+  const out = onPr.length ? ["On the pull request, you can reply with:", ...onPr.map(prLine), ""] : [];
+  out.push("Commands you can reply with now:", ...cmds.map(line));
   if (!cmds.some((c) => c.changes_state)) out.push("No command changes this item's state now.");
   return out.join("\n");
 }
@@ -214,7 +243,10 @@ export function helpReply(s: CommandState): string {
     "",
     `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
     "",
-    ...COMMANDS.map((c) => `- \`${c.usage}\`${applies(c, s) ? " **(now)**" : ""}: ${c.description}.`),
+    ...COMMANDS.map((c) => {
+      const now = applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
+      return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
+    }),
   ].join("\n");
 }
 
@@ -228,6 +260,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   floor_tier: "blocked by the floor check",
   too_large: "blocked: the change was too large",
   failed_implement: "blocked by a failed implement run",
+  failed_review: "blocked by a failed review run",
   failed_run: "blocked by a failed run",
   reviewing: "in review",
   merge_pending: "waiting for a human merge",
@@ -245,7 +278,8 @@ export function phaseLabel(p: CommandPhase): string {
 function whenText(c: CommandSpec): string {
   const all = (ps: readonly CommandPhase[]) => ps.length === c.phases.length && ps.every((p) => c.phases.includes(p));
   const where = all(COMMAND_PHASES) ? "any time" : all(OPEN_PHASES) ? "any open item" : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
-  return c.needs_pr ? `${where}, once it has a PR` : where;
+  const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
+  return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
@@ -253,7 +287,8 @@ export function commandTableMarkdown(): string {
   return [
     "| Command | What it does | Applies when |",
     "|---|---|---|",
-    ...COMMANDS.map((c) => `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${c.description} | ${whenText(c)} |`),
+    ...COMMANDS.map((c) =>
+      `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""} | ${whenText(c)} |`),
   ].join("\n");
 }
 
