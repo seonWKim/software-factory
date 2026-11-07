@@ -61,6 +61,7 @@ export const TOP_LEVEL_KEYS = [
   "max_coordination_cost",
   "hotspot_paths",
   "hotspot_weight",
+  "tool_grants",
   "defaults",
   "projects",
   "openai_compatible",

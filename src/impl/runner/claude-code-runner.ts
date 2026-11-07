@@ -1,9 +1,12 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
-import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES } from "../../interfaces/agent-runner.js";
+import {
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, toolsNotExposedMessage,
+} from "../../interfaces/agent-runner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import { type GrantedToolDeps, type RunningBridge, ToolGate, bridgeMcpConfig, harnessToolName, startBridgeHost } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
   sandbox: Sandbox;
@@ -16,6 +19,18 @@ export interface ClaudeCodeRunnerOptions {
   claudeBin?: string;
   /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
   now?: () => Date;
+  /**
+   * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and
+   * refuses a run with grants.
+   */
+  tools?: GrantedToolDeps;
+}
+
+/** A run's granted tools as the harness sees them: the bridge's MCP config and the tool names to allow. */
+export interface BridgeArgs {
+  mcpConfig: Record<string, unknown>;
+  /** Granted broker tool names; each becomes `mcp__factory_tools__<name>` in `--allowedTools`. */
+  tools: readonly string[];
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -151,9 +166,10 @@ function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
 }
 
 /** Builds the `claude -p` argument list. Exported for tests. */
-export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude"): string[] {
-  // Exactly the spec's tools, in its order: the runner adds none.
+export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs): string[] {
+  // Exactly the spec's tools, in its order: the runner adds none. Granted broker tools come only through the bridge.
   const tools = spec.tools.map((t) => t.name).join(",");
+  const allowed = [...spec.tools.map((t) => t.name), ...(bridge?.tools ?? []).map(harnessToolName)].join(",");
   return [
     bin,
     "-p",
@@ -165,11 +181,13 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
     "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
     "--setting-sources", "project",
     "--strict-mcp-config",
+    // The run's only MCP server, when it has granted tools: the bridge to the worker side (tool-bridge.ts).
+    ...(bridge ? ["--mcp-config", JSON.stringify(bridge.mcpConfig)] : []),
     ...sessionArgs(spec),
     // Permission mode stays default: with the env scrub on, Claude Code forces it anyway. In -p mode,
     // anything outside --allowedTools is denied (no one can answer a prompt).
     "--tools", tools,
-    ...(tools ? ["--allowedTools", tools] : []),
+    ...(allowed ? ["--allowedTools", allowed] : []),
     "--model", model,
     "--append-system-prompt", spec.system_prompt,
     ...(spec.output_schema ? ["--json-schema", JSON.stringify(spec.output_schema)] : []),
@@ -187,8 +205,26 @@ export async function harnessCredential(secrets: SecretStore): Promise<HarnessCr
 export class ClaudeCodeRunner implements AgentRunner {
   constructor(private readonly opts: ClaudeCodeRunnerOptions) {}
 
+  /** Exposes granted tools when it was given the broker and scanner they go through. */
+  get exposes_tools(): boolean {
+    return this.opts.tools !== undefined;
+  }
+
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
-    if (spec.tool_grants.length > 0) throw new Error("broker tools inside agent runs are not supported yet");
+    if (spec.tool_grants.length === 0) return this.runWith(spec);
+    const error = toolsNotExposedMessage(spec.tool_grants);
+    if (!this.opts.tools) return { status: "failed", output: null, transcript: "", usage: NO_USAGE, error };
+    // The run's socket: every call the bridge forwards (or anyone sends) passes the gate in this process.
+    const gate = new ToolGate(this.opts.tools, spec);
+    const bridge = await startBridgeHost(gate);
+    try {
+      return await this.runWith(spec, bridge);
+    } finally {
+      await bridge.close();
+    }
+  }
+
+  private async runWith(spec: AgentRunSpec, bridge?: RunningBridge): Promise<AgentRunResult> {
     const home = join(this.opts.homesDir, spec.run_id);
     await mkdir(join(home, "tmp"), { recursive: true });
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
@@ -203,7 +239,8 @@ export class ClaudeCodeRunner implements AgentRunner {
     const watch = new StallWatch(stallMs);
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin), {
+      const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
@@ -273,6 +310,8 @@ export class ClaudeCodeRunner implements AgentRunner {
     return dirs.filter((d) => d.isDirectory()).map((d) => join(projects, d.name, `${id}.jsonl`));
   }
 }
+
+const NO_USAGE: AgentRunResult["usage"] = { input_tokens: 0, output_tokens: 0, cost_usd: null };
 
 interface ClaudeJsonResult {
   type?: string;

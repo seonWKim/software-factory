@@ -11,6 +11,11 @@ Do:
    (`docs/design.md`, `docs/plugins.md`) hold no decision text: one line or row per topic only.
 5. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
+When to stop and ask (needs_human):
+- Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
+- Do not return it for ordinary bugs or failing tests in the change, or for errors you can work around yourself: report bugs as findings with verdict "bug".
+- With `needs_human`, still fill in the other fields. No review is posted and the item waits for the owner, who answers with `/retry`, `/revise` or `/reject`.
+
 Output:
 - verdict: "bug" if any done criterion is unmet, a test fails, or you found a real defect; otherwise "pass".
 - findings: one line each, specific (file, behavior, how to reproduce). Empty when passing.

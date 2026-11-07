@@ -1,6 +1,8 @@
 import { Grep, Read, type ToolResult, type ToolSpec, guardPolicy } from "../../src/core/tools/index.js";
-import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../../src/interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type AgentRunner, toolsNotExposedMessage } from "../../src/interfaces/agent-runner.js";
 import type { Sandbox } from "../../src/interfaces/sandbox.js";
+import type { ToolResult as BrokerResult } from "../../src/interfaces/tool-broker.js";
+import { type GrantedToolDeps, ToolGate } from "../../src/impl/runner/tool-bridge.js";
 
 // A test-only AgentRunner with no harness of its own (#90, part 3 of 3 for #58). A scripted fake LLM drives
 // it; every tool call goes through `ToolSpec.run` from src/core/tools, so the file guards (deny_paths, `.env`,
@@ -14,6 +16,7 @@ export type ScriptStep = { tool: string; input: unknown } | { final: unknown };
 export interface Observation {
   tool: string;
   input: unknown;
+  /** A shared file tool's result, or a broker tool's as text, the way the bridge hands it to a model. */
   result: ToolResult;
 }
 
@@ -36,16 +39,36 @@ export class ScriptedLLM {
   }
 }
 
+/** A broker result as the model sees it through the bridge: the content as JSON text, or the error code and message. */
+function asText(r: BrokerResult): ToolResult {
+  return r.ok ? { ok: true, content: JSON.stringify(r.content ?? null) } : { ok: false, error: `${r.error_code}: ${r.message}` };
+}
+
 /** The shared tools this runner exposes. Only these two: the scripted tasks are read-only. */
 const RUNNER_TOOLS: readonly ToolSpec[] = [Read, Grep];
 
 export class ScriptedRunner implements AgentRunner {
+  /**
+   * `tools`: the broker and scanner granted tools go through. Given: a step naming a tool that is not one of the
+   * shared file tools goes to the run's ToolGate (the same gate the Claude Code runner's bridge uses), which
+   * refuses any name the run was not granted. Absent: the runner exposes no tools and refuses a run with grants.
+   */
   constructor(
     private readonly sandbox: Sandbox,
     private readonly llm: ScriptedLLM,
+    private readonly tools?: GrantedToolDeps,
   ) {}
 
+  get exposes_tools(): boolean {
+    return this.tools !== undefined;
+  }
+
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
+    if (spec.tool_grants.length > 0 && !this.tools) {
+      const none = { input_tokens: 0, output_tokens: 0, cost_usd: null };
+      return { status: "failed", output: null, transcript: "", usage: none, error: toolsNotExposedMessage(spec.tool_grants) };
+    }
+    const gate = this.tools ? new ToolGate(this.tools, spec) : null;
     // The one policy every shared tool enforces, built from the spec only: nothing here checks a path.
     const policy = guardPolicy({
       workdir: spec.sandbox.workdir,
@@ -66,9 +89,12 @@ export class ScriptedRunner implements AgentRunner {
           return { status: "completed", output: step.final, transcript: transcript.join("\n"), usage };
         }
         const tool = RUNNER_TOOLS.find((t) => t.name === step.tool && spec.tools.some((s) => s.name === t.name));
+        const isFileTool = RUNNER_TOOLS.some((t) => t.name === step.tool);
         const result: ToolResult = tool
           ? await tool.run(step.input, ctx)
-          : { ok: false, error: `tool ${step.tool} is not available to this run` };
+          : gate && !isFileTool
+            ? asText(await gate.call(step.tool, step.input))
+            : { ok: false, error: `tool ${step.tool} is not available to this run` };
         transcript.push(`tool_use ${step.tool} ${JSON.stringify(step.input)}`);
         transcript.push(`tool_result ${JSON.stringify(result)}`);
         last = { tool: step.tool, input: step.input, result };

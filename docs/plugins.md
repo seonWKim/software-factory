@@ -30,3 +30,15 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | KeepAwake | `caffeinate`, `none` | [keep-awake.md](plugins/keep-awake.md) |
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
 | TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
+
+## Granted broker tools
+
+Each `ToolBroker` tool descriptor sets `read_only`: true only for a tool that changes nothing (the `github`
+broker marks `github.preflight` read-only and `github.push_branch`, `github.open_pr`, `github.comment` not).
+A broker lists every tool it serves through `allTools()`; one without it can be granted nothing.
+
+`tool_grants` in `factory.config.json` grants read-only broker tools to agent runs, per run kind (`triage`,
+`implement`, `review`, `update`, `resolve`, `manual`): `{"tool_grants": {"triage": ["github.preflight"]}}`.
+Absent: no grants. Startup checks it when the broker is built and fails on an unknown run kind, an unknown
+tool or one that is not read-only, listing the valid names. Only a runner with `exposes_tools` (the
+`claude-code` runner) can take grants. How the guards hold: `docs/architecture.md` §5.

@@ -1,4 +1,4 @@
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS } from "./config.js";
+import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type FloorHit, requiredTier } from "./diff-gate.js";
@@ -21,7 +21,9 @@ import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./too
 import {
   type Run, type RunKind, type RunOutcome, type RunResume, type RunUsage, type Timestamp, type WipRef, type WorkItem, type WorkerId, usageTokens,
 } from "./types.js";
-import { type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES } from "../interfaces/agent-runner.js";
+import {
+  type AgentRunResult, type AgentRunSpec, type AgentRunner, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage,
+} from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -621,6 +623,9 @@ export class Worker {
       const out = parseImplement(result.output);
       if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
       await this.distrustAgentGit(handle, dirs);
+      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with
+      // the run folder; none is kept on a wip branch.
+      if (out.value.needs_human) return { needs_human: out.value.needs_human };
 
       const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
       if (commits.length === 0) {
@@ -1389,6 +1394,8 @@ export class Worker {
     }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null });
     const review = parseReview(result.output);
     if (!review.ok) throw new RunFailure("invalid_output", review.error, false, { output_tail: tail(result.transcript) });
+    // The reviewer asked for a human: no review comment on the PR; the controller blocks the item.
+    if (review.value.needs_human) return { needs_human: review.value.needs_human };
 
     const v = review.value;
     const body = [
@@ -1556,6 +1563,8 @@ export class Worker {
         const out = parseImplement(result.output);
         if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
         await this.distrustAgentGit(handle, dirs);
+        // The agent asked for a human: nothing is committed or pushed; the PR is as it was.
+        if (out.value.needs_human) return { needs_human: out.value.needs_human };
 
         // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
         await this.gitWith(handle, ["read-tree", before], { GIT_INDEX_FILE: index });
@@ -1663,13 +1672,18 @@ export class Worker {
     const session = SESSION_ROLES.includes(role.role ?? run.kind)
       ? { id: opts.resume ?? globalThis.crypto.randomUUID(), resume: Boolean(opts.resume) }
       : null;
+    // The run kind's read-only broker tools from `tool_grants` (checked at startup); none when config grants none.
+    const tool_grants = [...grantsFor(this.cfg.tool_grants, run.kind)];
+    if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
+      throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
+    }
     if (session) s?.sessions.add(session.id);
     const result = await this.d.runner.run({
       run_id: run.id,
       work_item_id: item.id,
       role: run.kind,
       sandbox: handle,
-      tool_grants: [],
+      tool_grants,
       lease_token: run.lease!.token,
       deny_paths: this.cfg.deny_paths,
       writable_paths: [],

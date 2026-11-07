@@ -18,7 +18,11 @@ export interface AgentRunSpec {
    * deny_paths, writable_paths and env_allowlist, shared by the tools and every runner.
    */
   tools: readonly ToolSpec[];
-  /** ToolBroker tools granted to the agent. Phase 1: always empty; the worker calls the broker itself. */
+  /**
+   * ToolBroker tools granted to the agent: the run kind's `tool_grants` from factory.config.json, checked at
+   * startup to be read-only tools the broker lists. Empty when config grants none (the default). A runner that
+   * cannot expose tools (`exposes_tools` absent or false) refuses a run with any grant.
+   */
   tool_grants: readonly string[];
   lease_token: number;
   /** Non-secret env vars allowed into the agent process (G1). The runner adds only the harness credential. */
@@ -92,10 +96,22 @@ export interface AgentRunResult {
 export interface AgentRunner {
   run(spec: AgentRunSpec): Promise<AgentRunResult>;
   /**
+   * Whether this runner can expose granted broker tools to its agent (`AgentRunSpec.tool_grants`). Absent: false.
+   * The worker refuses a run with grants on a runner that does not; such a runner also fails the run itself,
+   * with an error naming the granted tools, rather than ignore them.
+   */
+  readonly exposes_tools?: boolean;
+  /**
    * Whether session `id` is stored on this host and readable, so `--resume` can continue it. Absent: sessions
    * are never resumed (a paused run starts a new session from its WIP commit and handoff).
    */
   hasSession?(id: string): Promise<boolean>;
   /** Removes session `id` from this host. Idempotent; safe for a session that is already gone. */
   removeSession?(id: string): Promise<void>;
+}
+
+/** The error code and message of a run refused because its runner cannot expose its granted tools. */
+export const TOOLS_NOT_EXPOSED = "tools_not_exposed";
+export function toolsNotExposedMessage(grants: readonly string[]): string {
+  return `this agent runner cannot expose broker tools to its agent; granted: ${grants.join(", ")}`;
 }
