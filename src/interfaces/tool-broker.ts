@@ -29,10 +29,9 @@ export interface ToolBroker {
   /** Tools this run may call. Finding a tool is not permission (design §7): the grant list decides. */
   listTools(grants: readonly string[]): ToolDescriptor[];
   /**
-   * Every tool this broker serves, granted or not: what startup checks `tool_grants` against. Absent: the broker
-   * serves no tool that config can grant, so any grant fails at startup.
+   * Every tool this broker serves, granted or not: what startup checks `tool_grants` against.
    */
-  allTools?(): readonly ToolDescriptor[];
+  allTools(): readonly ToolDescriptor[];
   /** Results pass through the EgressScanner before returning to the agent. */
   call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult>;
 }

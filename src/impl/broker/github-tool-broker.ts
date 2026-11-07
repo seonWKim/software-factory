@@ -43,7 +43,8 @@ const TOOLS: readonly ToolDescriptor[] = [
   {
     name: "github.open_pr",
     read_only: false,
-    description: "Open a PR for a factory branch, or return the open one.",
+    description:
+      "Open a PR for a factory branch, or update the open one's title and body so it matches the branch. `labels` adds (true) or removes (false) each named label on it.",
     input_schema: {
       type: "object",
       required: ["branch", "base_ref", "title", "body"],
@@ -52,6 +53,7 @@ const TOOLS: readonly ToolDescriptor[] = [
         base_ref: { type: "string" },
         title: { type: "string" },
         body: { type: "string" },
+        labels: { type: "object", additionalProperties: { type: "boolean" } },
       },
     },
   },
@@ -88,6 +90,8 @@ interface PrArgs {
   base_ref: string;
   title: string;
   body: string;
+  /** Label name → present. Adding creates a missing label; removing one that is not there is a no-op. */
+  labels?: Record<string, boolean>;
 }
 interface PreflightArgs {
   branch: string;
@@ -257,7 +261,7 @@ export class GitHubToolBroker implements ToolBroker {
     if (!a.branch.startsWith(this.deps.branchPrefix)) {
       return { ok: false, error_code: "branch_not_allowed", message: `only ${this.deps.branchPrefix}* branches` };
     }
-    const scan = await this.deps.scanner.scan("pr", `${a.title}\n${a.body}`);
+    const scan = await this.deps.scanner.scan("pr", [a.title, a.body, ...Object.keys(a.labels ?? {})].join("\n"));
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
 
     const { owner, name } = this.deps.repo;
@@ -266,14 +270,30 @@ export class GitHubToolBroker implements ToolBroker {
         "GET",
         `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`,
       );
-      const pr =
-        open[0] ??
-        (await this.deps.client.request<{ number: number; html_url: string }>("POST", `/repos/${owner}/${name}/pulls`, {
+      // An open PR gets this push's title and body (issue #229): the description follows the branch.
+      const pr = open[0]
+        ? await this.deps.client.request<{ number: number; html_url: string }>("PATCH", `/repos/${owner}/${name}/pulls/${open[0].number}`, {
+          title: a.title,
+          body: a.body,
+        })
+        : await this.deps.client.request<{ number: number; html_url: string }>("POST", `/repos/${owner}/${name}/pulls`, {
           head: a.branch,
           base: a.base_ref,
           title: a.title,
           body: a.body,
-        }));
+        });
+      for (const [label, present] of Object.entries(a.labels ?? {})) {
+        const path = `/repos/${owner}/${name}/issues/${pr.number}/labels`;
+        if (present) {
+          await this.deps.client.request("POST", path, { labels: [label] });
+          continue;
+        }
+        try {
+          await this.deps.client.request("DELETE", `${path}/${encodeURIComponent(label)}`);
+        } catch (err) {
+          if (!(err instanceof GitHubError && err.status === 404)) throw err;
+        }
+      }
       return { ok: true, content: { number: pr.number, url: pr.html_url } };
     } catch (err) {
       // A 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.

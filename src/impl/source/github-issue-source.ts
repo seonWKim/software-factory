@@ -1,5 +1,6 @@
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
+import { incompleteLabel } from "../../core/pr-body.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
@@ -177,6 +178,14 @@ export function statusLabels(prefix: string): StatusLabel[] {
     const { suffix, color, description } = STATUS_LABELS[status];
     return { status, name: `${prefix}${suffix}`, color, description };
   });
+}
+
+/**
+ * Labels the worker sets on a PR beside its status (issue #229): `incomplete` while the implementer reports
+ * missing work. Setup creates them and doctor checks them, like the status labels.
+ */
+export function prFlagLabels(prefix: string): { name: string; color: string; description: string }[] {
+  return [{ name: incompleteLabel(prefix), color: "b60205", description: "Factory: the PR reports missing work; not done when merged" }];
 }
 
 /** Check-run pages read per prChecks call, 100 each. */
