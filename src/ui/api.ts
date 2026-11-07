@@ -17,6 +17,7 @@ import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
 import { readSettings } from "./settings-api.js";
+import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { Withholder } from "./withhold.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -68,6 +69,19 @@ export async function api(d: UiDeps, url: URL): Promise<ApiResult> {
       return apiError(404, "No such table.");
     }
     return data(await dataTable(c.data(), name, url.searchParams));
+  }
+  const tr = /^\/items\/([^/]+)\/runs\/([^/]+)\/transcript$/.exec(path);
+  if (tr) {
+    let id: string;
+    let run: string;
+    try {
+      id = decodeURIComponent(tr[1]!);
+      run = decodeURIComponent(tr[2]!);
+    } catch {
+      return apiError(404, "No such run for this work item.");
+    }
+    const r = await transcript(d, id as WorkItemId, run, url.searchParams);
+    return { status: r.status, value: r.value };
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
@@ -240,12 +254,22 @@ async function item(c: ApiCtx, id: WorkItemId) {
   // One record per claim (design §6), listed under its run in attempt order.
   const attemptsOf = new Map<string, RunAttempt[]>();
   for (const a of await s.listRunAttempts(id)) attemptsOf.set(a.run_id, [...(attemptsOf.get(a.run_id) ?? []), a]);
+  // Which runs have a stored transcript: one listing of the item's prefix. A storage error only hides the links.
+  let stored: string[] = [];
+  if (c.d.storage) {
+    try {
+      stored = await c.d.storage.list(itemPrefix(id));
+    } catch {
+      stored = [];
+    }
+  }
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
   for (const r of runs) {
     const attempts = [];
     for (const a of attemptsOf.get(r.id) ?? []) attempts.push(await attemptRow(c, a));
+    const last = attemptsOf.get(r.id)?.at(-1);
     runRows.push({
       id: r.id,
       kind: r.kind,
@@ -260,6 +284,10 @@ async function item(c: ApiCtx, id: WorkItemId) {
           ? { code: await c.text(r.outcome.error_code, "run_outcome"), detail: await c.text(r.outcome.detail, "run_outcome") }
           : null,
       attempts,
+      /** The last claim's worker (the lease owner while it has no attempt record). */
+      worker_id: await c.text(last?.worker_id ?? r.lease?.owner ?? null),
+      /** The stored transcript parts ("" is the main step); empty: no transcript to link. */
+      transcript_parts: runParts(stored, id, r.id),
     });
   }
   return {

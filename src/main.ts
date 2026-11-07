@@ -20,7 +20,7 @@ import { linkCodeCommand } from "./impl/auth/link-code.js";
 import type { WorkItemId } from "./core/types.js";
 import { parseWorkersArgs, runWorkersCommand } from "./core/worker-pool.js";
 import { type SecretName, secretName } from "./interfaces/secret-store.js";
-import { selectedSources } from "./plugins.js";
+import { createPlugin, selectedSources } from "./plugins.js";
 import { doctor, doctorChecks, setup } from "./setup.js";
 import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./supervisor.js";
 import { HealthMonitor } from "./ui/health.js";
@@ -246,6 +246,8 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
           factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
+          // The configured shared storage, read only by the transcript view (byte ranges, design §9).
+          storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
         },
         uiPort(loaded.file.ui),
       );
