@@ -13,8 +13,8 @@ import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatible
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
  * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
  * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
- * 2026-11-03) are checked here at load (`coordinationProblems`); until compose.ts passes them through, the
- * worker uses their defaults, which equal the checked-in values. `cli_user` (issue #200): the factory user ID the
+ * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297) are checked here at load
+ * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts once #200 lands; listed here first so that change needs no
  * edit to this file.
  */
@@ -66,6 +66,8 @@ export const TOP_LEVEL_KEYS = [
   "max_coordination_cost",
   "hotspot_paths",
   "hotspot_weight",
+  "mechanical_paths",
+  "mechanical_weight",
   "tool_grants",
   "defaults",
   "projects",
