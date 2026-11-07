@@ -5,8 +5,8 @@ import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
-// App command requests (issue #245): a request row in the store is a new entry point to the comment command
-// path. Each controller tick reads pending requests and applies `approve` with the same permission check and
+// App command requests (issues #245, #282): a request row in the store is a new entry point to the comment command
+// path. It lands in the command inbox too; each controller tick reads the inbox and applies `approve` with the same permission check and
 // transition as a `/approve` comment; anything else is refused with one reply, keyed on the request.
 
 /** FakeAuth lets github:1 (alice) approve, nobody else. */
@@ -191,7 +191,7 @@ describe("app command requests: refusals", () => {
     expect(await h.store.listPendingAppCommandRequests(10)).toEqual([]);
   });
 
-  it("a refusal whose reply fails to post stays pending; the next tick posts it once and stores it", async () => {
+  it("a refusal is written to the thread and stored on the row at once; a failed post is retried by the outbox, once", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const r = await h.request("k1", READER, "approve", { work_item_id: it1.id });
@@ -205,14 +205,16 @@ describe("app command requests: refusals", () => {
       return real(...args);
     };
     await h.controller.tickAppCommands();
-    expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ handled_at: null, refusal: null });
+    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
+    expect((await h.store.listItemMessages(it1.id)).map((m) => m.marker)).toContain(h.marker(r));
+    expect(h.source.comments).toEqual([]);
+    h.clock.advance(config.retry_max_ms);
     await h.controller.tickAppCommands();
     await h.controller.tickAppCommands();
     expect(h.source.comments.filter((c) => c.marker === h.marker(r))).toHaveLength(1);
-    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
   });
 
-  it("requests are applied oldest first; one failing request does not stop the others", async () => {
+  it("requests are applied oldest first; a failing request holds the ones after it until the next tick", async () => {
     const h = await harness();
     const a = await h.itemIn(SPEC_PENDING, 1);
     const b = await h.itemIn(SPEC_PENDING, 2);
@@ -224,11 +226,12 @@ describe("app command requests: refusals", () => {
       return get(id);
     };
     await h.controller.tickAppCommands();
-    expect((await h.store.listPendingAppCommandRequests(10)).map((x) => x.seq)).toEqual([ra.seq]);
-    expect((await h.store.getAppCommandRequest(rb.seq))!.handled_at).not.toBeNull();
+    expect((await h.store.listPendingAppCommandRequests(10)).map((x) => x.seq)).toEqual([ra.seq, rb.seq]);
     h.store.getWorkItem = get;
     await h.controller.tickAppCommands();
     expect((await h.store.getWorkItem(a.id))!.stage).toBe("RUNNING");
+    expect((await h.store.getWorkItem(b.id))!.stage).toBe("RUNNING");
+    expect(await h.store.listPendingAppCommandRequests(10)).toEqual([]);
   });
 });
 

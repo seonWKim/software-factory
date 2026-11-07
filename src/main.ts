@@ -78,7 +78,8 @@ const USAGE = `factory <command>
   session start | status | note | finish | abandon
                your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
 ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
-               local work items (plugins.source includes "local"), acting as cli_user; no GitHub call
+               local work items, read by the controller from the store whatever plugins.source lists,
+               acting as cli_user; no GitHub call
   issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -421,9 +422,6 @@ async function localCli(loaded: Loaded, word: (typeof CLI_TOP_WORDS)[number], ar
       action,
     );
     for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
-    if (r.code === 0 && action.action !== "list" && action.action !== "show" && !selectedSources(loaded.plugins).includes("local")) {
-      console.error('note: plugins.source does not include "local", so the controller does not read local items yet');
-    }
     return r.code;
   } finally {
     await store.close();
