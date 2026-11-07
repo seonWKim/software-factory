@@ -57,6 +57,19 @@ export interface Sandbox {
    * remote, whose config the agent could have changed.
    */
   updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string>;
+  /**
+   * Trusted, like updateBase: fetches only `branch` from origin into the factory repo's
+   * `refs/remotes/origin/<branch>` and returns its commit; null when origin has no such branch. Touches no other
+   * ref, and never the checkout's HEAD, index or working tree. Absent: the controller's merge check is off.
+   */
+  fetchBranch?(spec: { repo: string; branch: string }): Promise<string | null>;
+  /**
+   * Whether `head_sha` merges cleanly into `base_sha`, computed in the factory repo's object store without a
+   * checkout (`git merge-tree --write-tree`), so the repo's HEAD, index and working tree stay as they are.
+   * `conflicts`: the conflicting file paths, each once, sorted; empty when mergeable. Throws on a git error (an
+   * unknown commit, no merge base). Absent: the controller's merge check is off (design §5 Merge check).
+   */
+  mergeCheck?(spec: { repo: string; head_sha: string; base_sha: string }): Promise<{ mergeable: boolean; conflicts: string[] }>;
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult>;
   copyIn(handle: SandboxHandle, hostPath: string, sandboxPath: string): Promise<void>;
   copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void>;

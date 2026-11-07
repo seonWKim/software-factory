@@ -20,6 +20,7 @@ import { LIST_LIMIT, listRows } from "./list.js";
 import { type UiDeps, runTokens } from "./pages.js";
 import { readSettings } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
+import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -208,6 +209,8 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const f = parsed.filters;
   const rows = await listRows({ store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, f);
   const shown = applyFilters(rows, f);
+  const checks = new Map<string, MergeCheck>();
+  for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
   for (const r of shown) {
     const it = r.item;
@@ -232,6 +235,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       version: it.version,
       dependents: r.dependents,
       conflicts: r.conflicts,
+      merge_check: await mergeCheckRow(c, it, checks.get(it.id) ?? null),
     });
   }
   return ok({ as_of: c.now.toISOString(), total: out.length, items: out, facets: facetCounts(rows, f) });
@@ -288,11 +292,36 @@ async function item(c: ApiCtx, id: WorkItemId) {
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
+      merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
     },
     timeline,
     runs: runRows,
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
+  };
+}
+
+/** Waiting for a human merge: the only state the local merge check runs on (design §5 Merge check). */
+function readyToMerge(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
+}
+
+/**
+ * The local merge check of a ready-to-merge item (null for any other item): `mergeable` or `conflicts` from its
+ * stored result, or `checking` while it has none, or while the result is for an older head than the one the
+ * factory last recorded. File names pass the Withholder, each on its own.
+ */
+async function mergeCheckRow(c: ApiCtx, it: WorkItem, m: MergeCheck | null) {
+  if (!readyToMerge(it)) return null;
+  const current = m !== null && (it.last_head_sha === null || it.last_head_sha === m.head_sha);
+  const conflicts: string[] = [];
+  if (current) for (const f of m.conflicts) conflicts.push((await c.text(f))!);
+  return {
+    state: !current ? ("checking" as const) : m.mergeable ? ("mergeable" as const) : ("conflicts" as const),
+    conflicts,
+    head_sha: m?.head_sha ?? null,
+    base_sha: m?.base_sha ?? null,
+    checked_at: m?.checked_at ?? null,
   };
 }
 

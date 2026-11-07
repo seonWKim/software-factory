@@ -768,6 +768,62 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
   });
 });
 
+describe("ui api: local merge check (issue #248)", () => {
+  type Check = { state: string; conflicts: string[]; head_sha: string | null; base_sha: string | null; checked_at: string | null } | null;
+  type Row = { id: string; merge_check: Check };
+  const HEAD = "a".repeat(40);
+  const BASE = "b".repeat(40);
+
+  it("a ready-to-merge item with no result is checking; other items have no merge check", async () => {
+    const { d, items } = await seeded();
+    const list = (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
+    expect(list.find((i) => i.id === items.merge.id)!.merge_check).toEqual({ state: "checking", conflicts: [], head_sha: null, base_sha: null, checked_at: null });
+    expect(list.find((i) => i.id === items.approve.id)!.merge_check).toBeNull();
+    expect((await json<{ item: Row }>(d, `/api/v1/items/${items.approve.id}`)).item.merge_check).toBeNull();
+  });
+
+  it("returns the stored result on the list and the item page, file names through the Withholder", async () => {
+    const { d, store, clock, items } = await seeded();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: false, conflicts: ["src/a.ts", `leak-${SECRET}.txt`], head_sha: HEAD, base_sha: BASE });
+    const want = { state: "conflicts", conflicts: ["src/a.ts", "[withheld: github_token]"], head_sha: HEAD, base_sha: BASE, checked_at: clock.now().toISOString() };
+    const list = (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
+    expect(list.find((i) => i.id === items.merge.id)!.merge_check).toEqual(want);
+    expect((await json<{ item: Row }>(d, `/api/v1/items/${items.merge.id}`)).item.merge_check).toEqual(want);
+    expect(JSON.stringify(await json(d, "/api/v1/items"))).not.toContain(SECRET);
+  });
+
+  it("a clean result is mergeable; a result for an older head than the recorded one is checking", async () => {
+    const { d, store, items } = await seeded();
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: HEAD, base_sha: BASE });
+    const row = async () => (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!.merge_check!;
+    expect((await row()).state).toBe("mergeable");
+    await store.recordPrHead({ id: items.merge.id, expected_head: null, head_sha: "c".repeat(40), manual: null });
+    expect((await row()).state).toBe("checking");
+  });
+
+  it("reads the result with store read methods only", async () => {
+    const calls: string[] = [];
+    const spy = (s: FactoryStore): FactoryStore =>
+      new Proxy(s, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver) as unknown;
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) => {
+            calls.push(String(prop));
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+    const { d, items } = await seeded({ store: spy });
+    calls.length = 0;
+    await json(d, "/api/v1/items");
+    await json(d, `/api/v1/items/${items.merge.id}`);
+    expect(calls).toContain("listMergeChecks");
+    expect(calls).toContain("getMergeCheck");
+    expect(calls.filter((n) => !/^(get|list|count)[A-Z]/.test(n))).toEqual([]);
+  });
+});
+
 describe("ui api: unreviewed merges", () => {
   type Merge = { project: string; pr_number: number; pr_url: string | null; merge_sha: string; merged_by: string; recorded_at: string };
   const list = async (d: UiDeps, q = "") => (await json<{ merges: Merge[] }>(d, `/api/v1/unreviewed-merges${q}`)).merges;

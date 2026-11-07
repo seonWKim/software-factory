@@ -56,9 +56,9 @@ describe("claude-code runner tool flags (snapshot)", () => {
 });
 
 describe("buildHarnessSettings (snapshot)", () => {
-  it("returns the same object as before for the same deny_paths and writable_paths", () => {
+  it("returns the expected object for the given deny_paths and writable_paths", () => {
     expect(buildHarnessSettings({ deny_paths: DENY, writable_paths: WRITABLE })).toEqual({
-      env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1" },
+      env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
       permissions: {
         deny: [
           "Read(//home/op/.config/software-factory)",
@@ -84,6 +84,7 @@ describe("buildHarnessSettings (snapshot)", () => {
         autoAllowBashIfSandboxed: true,
         allowUnsandboxedCommands: false,
         filesystem: { denyRead: DENY, allowWrite: WRITABLE },
+        network: { allowLocalBinding: true },
         credentials: {
           envVars: [
             { name: "GITHUB_TOKEN", mode: "deny" },
@@ -99,6 +100,21 @@ describe("buildHarnessSettings (snapshot)", () => {
     expect(ENV_FILE_DENY).toContain("Read(**/.env.????????*)");
     expect(ENV_FILE_DENY).toContain("Edit(**/.env)");
     expect(ENV_FILE_DENY.filter((r) => r.startsWith("Read("))).toHaveLength(ENV_FILE_DENY.length / 2);
+  });
+
+  it("network: localhost binding only; no host allowed, no proxy, no socket opened", () => {
+    const s = buildHarnessSettings({ deny_paths: DENY, writable_paths: WRITABLE }) as {
+      permissions: { deny: string[] };
+      sandbox: { network: Record<string, unknown> };
+    };
+    // Exactly one network key: no allowedDomains (every outbound host, registry.npmjs.org included, stays denied),
+    // no Unix sockets, no proxy ports.
+    expect(s.sandbox.network).toEqual({ allowLocalBinding: true });
+    expect(JSON.stringify(s)).not.toMatch(/allowedDomains|allowUnixSockets|allowAllUnixSockets|ProxyPort|registry\.npmjs/);
+    // The deny rules are those of the snapshot above, unchanged by the network setting.
+    expect(s.permissions.deny).toContain("WebFetch");
+    expect(s.permissions.deny).toContain("Bash(mysql:*)");
+    expect(s.permissions.deny).toContain("Read(//home/op/.config/software-factory/**)");
   });
 
   it("empty deny_paths and writable_paths", () => {
