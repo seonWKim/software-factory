@@ -653,4 +653,12 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
   CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
   `,
+  // 38: implicit verdicts (design §4 and §6, issue #316). `implicit`: 1 for a verdict the factory read from a PR event
+  // (merge, a person's push, a revert), 0 for a `/verdict` comment and on every older row. `pr_head`: the PR head
+  // commit the verdict is about, NULL on older rows and for a revert; the index serves the one-verdict-per-head read.
+  `
+  ALTER TABLE verdicts ADD COLUMN implicit INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE verdicts ADD COLUMN pr_head TEXT;
+  CREATE INDEX IF NOT EXISTS verdicts_head ON verdicts (work_item_id, pr_head);
+  `,
 ];

@@ -359,6 +359,15 @@ export class SqlFactoryStore implements FactoryStore {
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
         if (existing) return { ok: false, reason: "duplicate", verdict: existing };
         if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+        // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
+        if (input.pr_head !== null) {
+          const [onHead] = await tx.all(
+            `SELECT * FROM verdicts WHERE work_item_id = ? AND pr_head = ? ORDER BY at, ${this.db.dialect.seq}`,
+            [input.id, input.pr_head],
+          );
+          if (onHead && input.implicit) return { ok: false, reason: "duplicate", verdict: rowToVerdict(onHead) };
+          if (onHead) await tx.run("DELETE FROM verdicts WHERE work_item_id = ? AND pr_head = ? AND implicit = 1", [input.id, input.pr_head]);
+        }
 
         const now = this.now();
         const version = current.version + 1;
@@ -367,7 +376,8 @@ export class SqlFactoryStore implements FactoryStore {
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, "human_verdict", {});
+        const reason = input.implicit ? "implicit_verdict" : "human_verdict";
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, reason, {});
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -377,15 +387,17 @@ export class SqlFactoryStore implements FactoryStore {
           reason: input.reason,
           comment_id: input.comment_id,
           target: input.target,
+          implicit: input.implicit,
+          pr_head: input.pr_head,
           at: now,
         };
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
-            verdict.reason, verdict.comment_id, verdict.target, verdict.at,
+            verdict.reason, verdict.comment_id, verdict.target, verdict.implicit ? 1 : 0, verdict.pr_head, verdict.at,
           ],
         );
         // A concurrent delivery of the same comment committed first: undo the version bump and state change.
@@ -480,6 +492,7 @@ export class SqlFactoryStore implements FactoryStore {
         token_cost: Number(r.token_cost),
         reasons: [],
         severities: [],
+        implicit: 0,
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
       });
     }
@@ -491,8 +504,13 @@ export class SqlFactoryStore implements FactoryStore {
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
-    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) {
+      const record = records.get(v.work_item_id as string);
+      if (!record) continue;
+      if (Number(v.implicit) === 1) record.implicit = (record.implicit ?? 0) + 1;
+      else record.severities.push(v.severity as VerdictSeverity);
+    }
     return [...records.values()];
   }
 

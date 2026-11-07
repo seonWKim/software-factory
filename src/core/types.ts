@@ -549,14 +549,16 @@ export interface Handoff {
 }
 
 export type VerdictId = Brand<string, "VerdictId">;
-export type VerdictKind = "accept" | "changes" | "reject";
+/** `reverted` is implicit only: a person cannot write it with `/verdict`. */
+export type VerdictKind = "accept" | "changes" | "reject" | "reverted";
 export type VerdictSeverity = "none" | "minor" | "major" | "critical";
 /** Where the `/verdict` comment was written: the item's issue or its PR. */
 export type VerdictTarget = "issue" | "pr";
 
 /**
- * A human's structured verdict on a work item (`/verdict`, design §4). Linked to the state_changes row
- * (reason `human_verdict`) that carries the actor; changes no work-item field.
+ * A verdict on a work item (design §4): a human's `/verdict` (explicit), or one the factory reads from a PR event
+ * (implicit: a merge, a person's push, a revert). Linked to the state_changes row (reason `human_verdict`, or
+ * `implicit_verdict`) that carries the actor; changes no work-item field.
  */
 export interface Verdict {
   id: VerdictId;
@@ -566,9 +568,16 @@ export interface Verdict {
   severity: VerdictSeverity;
   /** Null only for `accept` without a reason. */
   reason: string | null;
-  /** The comment that held the command. Unique: a redelivered comment records nothing. */
+  /**
+   * The comment that held the command, or for an implicit verdict the key of the event it came from. Unique: a
+   * redelivered comment or event records nothing.
+   */
   comment_id: string;
   target: VerdictTarget;
+  /** True when the factory recorded it from a PR event, false for a `/verdict` comment. */
+  implicit: boolean;
+  /** The PR head commit it is about; null when not known (older rows, a revert). One verdict per head is kept. */
+  pr_head: string | null;
   at: Timestamp;
 }
 

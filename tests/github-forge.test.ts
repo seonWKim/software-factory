@@ -401,6 +401,42 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
   });
 });
 
+describe("GitHubForge: commitsBetween (design §4, implicit verdicts)", () => {
+  /** Answers the compare endpoint from `compare` by range; a status in `fail` throws a GitHubError. */
+  class CompareClient extends FakeClient {
+    compare: Record<string, unknown> = {};
+    fail: Record<string, number> = {};
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      const m = /^\/repos\/o\/r\/compare\/(.+)$/.exec(path);
+      if (!m) return super.request<T>(method, path, body);
+      this.calls.push({ method, path, body });
+      const status = this.fail[m[1]!];
+      if (status) throw new GitHubError(status, "no");
+      return this.compare[m[1]!] as T;
+    }
+  }
+
+  it("is the compare endpoint's ahead count, read with one GET and no write", async () => {
+    const client = new CompareClient();
+    client.compare["h1...h2"] = { ahead_by: 3, behind_by: 0, status: "ahead" };
+    expect(await forgeOf(client).commitsBetween("h1", "h2")).toBe(3);
+    expect(client.calls).toEqual([{ method: "GET", path: "/repos/o/r/compare/h1...h2", body: undefined }]);
+  });
+
+  it("is null when GitHub cannot compare the two (an unknown sha) or gives no count; other failures throw", async () => {
+    const client = new CompareClient();
+    client.fail["gone...h2"] = 404;
+    client.fail["bad...h2"] = 422;
+    client.compare["h1...h3"] = { status: "diverged" };
+    const forge = forgeOf(client);
+    expect(await forge.commitsBetween("gone", "h2")).toBeNull();
+    expect(await forge.commitsBetween("bad", "h2")).toBeNull();
+    expect(await forge.commitsBetween("h1", "h3")).toBeNull();
+    client.fail["h1...h4"] = 500;
+    await expect(forge.commitsBetween("h1", "h4")).rejects.toThrow();
+    expect(client.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+});
 
 describe("GitHubForge: the starting point for merges (design §5, Merges)", () => {
   const bob = { id: 2, login: "bob", type: "User" };

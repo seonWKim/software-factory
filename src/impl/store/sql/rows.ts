@@ -314,6 +314,8 @@ export function rowToVerdict(r: Row): Verdict {
     reason: (r.reason as string | null) ?? null,
     comment_id: r.comment_id as string,
     target: r.target as VerdictTarget,
+    implicit: Number(r.implicit) === 1,
+    pr_head: (r.pr_head as string | null) ?? null,
     at: r.at as Timestamp,
   };
 }
