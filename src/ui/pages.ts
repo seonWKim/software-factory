@@ -7,11 +7,12 @@ import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import {
   type FacetCounts, type Filters, RUN_KINDS, STAGES, STATE_OPTIONS, TIERS, applyFilters, facetCounts, isFiltered,
 } from "./filters.js";
+import { alarmCommand, alarmText, alarmUntil, alarmsFor, openAlarms } from "./alarms.js";
 import { between, duration, esc, facts as factsTable, link, page, table } from "./html.js";
 import type { FactoryStatus } from "./factory-status.js";
 import { githubBudgetSection, readGitHubBudget } from "./github-budget.js";
@@ -152,6 +153,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     // What the operator acts on first (design §9): the process, what runs and waits, the ranked list, health.
     // Totals and cost are background and go last.
     await factorySection(c),
+    await alarmsSection(c),
     githubBudgetSection(await readGitHubBudget(d.store, c.now)),
     await runningSection(c),
     await queueSection(c),
@@ -275,6 +277,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
       const need = await needOf({ store: c.d.store, prUrl: (i) => c.prUrl(i), text: async (v, o) => (await c.w.plain(v, o)).text }, it);
       next = `${esc(need.reason)} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
     }
+    next = [next, await alarmNotes(c, r.alarms)].filter((x) => x !== "").join(" · ");
     const title = `<a class="title" href="/items/${esc(encodeURIComponent(it.id))}"${r.titlePlain === null ? "" : ` title="${esc(r.titlePlain)}"`}>${r.titleHtml}</a>`;
     out.push({
       attrs: ` data-key="${esc(it.id)}" data-sig="${esc(`${it.version}:${r.level}:${r.runStatus ?? "none"}`)}"`,
@@ -299,6 +302,28 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
       ? empty
       : table(["state", "number", "title", "stage", "tier", "next step", "PR", "waiting", "conflicts"], out);
   return `<section id="items"><h2>Work items (${esc(rows.length)})</h2>${body}</section>`;
+}
+
+/**
+ * Needs you's open alarms (design 09-status-page): each alarm's sentence and detail, where to look and when it
+ * closes by itself. Nothing while none is open.
+ */
+async function alarmsSection(c: Ctx): Promise<string> {
+  const open = await openAlarms(c.d.store, c.now);
+  if (open.length === 0) return "";
+  const rows = [];
+  for (const a of open) {
+    const detail = a.detail === null ? "" : `: ${await c.w.text(a.detail, { max: 200 })}`;
+    rows.push(`<li data-alarm="${esc(a.pattern)}">${await c.w.text(alarmText(a))}${detail} · <code>${esc(alarmCommand(a))}</code> · closes ${esc(alarmUntil(a))}</li>`);
+  }
+  return `<section id="alarms"><h2>Needs you: open alarms (${esc(open.length)})</h2><ul>${rows.join("")}</ul></section>`;
+}
+
+/** The open alarms that affect an item, each its sentence through the Withholder; "" with none. */
+async function alarmNotes(c: Ctx, alarms: readonly Alert[]): Promise<string> {
+  const out = [];
+  for (const a of alarms) out.push(`<strong class="alarm">${await c.w.text(alarmText(a))}</strong>`);
+  return out.join(" · ");
 }
 
 /** The conflicts cell: both counts, or empty when the item never had a merge conflict. */
@@ -459,6 +484,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
   const changes = await d.store.listStateChanges(id);
   const runs = await d.store.listRuns(id);
   const conflicts = conflictCounts(runs, changes);
+  const alarms = alarmsFor(await openAlarms(d.store, c.now), item, runs);
 
   const facts: [string, string][] = [
     ["id", esc(item.id)],
@@ -466,6 +492,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     ["source", link(item.source.link, item.source.id)],
     ["stage", esc(item.stage) + (item.close_reason ? ` (${esc(item.close_reason)})` : "")],
     ["blocked", await c.blocked(item)],
+    ...(alarms.length === 0 ? [] : [["alarms", await alarmNotes(c, alarms)] as [string, string]]),
     ["tier", item.tier === null ? "" : esc(item.tier)],
     ["loops / restarts", `${esc(item.loop_count)} / ${esc(item.restart_count)}`],
     ["tokens", esc(item.token_cost)],

@@ -1,4 +1,5 @@
 import type { TierHistory } from "../core/budget.js";
+import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor,
@@ -771,6 +772,18 @@ export interface FactoryStore {
   recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
   /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
+
+  // Restart history (design 05-restarts): one row per unexpected child exit, so the restart alarm's count and
+  // window survive a restart of the factory and every replica on a shared store sees every host's restarts.
+
+  /**
+   * Stores one child restart unless the same restart (its time and reason) is stored already: one conditional
+   * insert, so applying the same restart twice, or from two replicas at once, leaves one row. `created` says
+   * whether this call stored it.
+   */
+  recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }>;
+  /** The child restarts at or after the store clock's now minus `window_ms`, oldest first. Read-only. */
+  listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]>;
 
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 
