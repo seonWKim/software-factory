@@ -248,13 +248,13 @@ class RunFailure extends Error {
   }
 }
 
+/** The paused_by of a run the network pause put back in the queue: the system, not a person. */
+export const NETWORK_PAUSED_BY = "system:network";
+
 /**
  * `workers pause` stopped the run's agent (design §5 Pause). Not a failure: the run goes back to `queued` with no
  * outcome. Filled on its way up: the session the agent ran in, its last note, then the folder and resume point.
  */
-/** The paused_by of a run the network pause put back in the queue: the system, not a person. */
-export const NETWORK_PAUSED_BY = "system:network";
-
 class RunPaused extends Error {
   resume: RunResume | null = null;
   handle: SandboxHandle | null = null;
