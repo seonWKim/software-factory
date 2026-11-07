@@ -465,3 +465,71 @@ describe("Floor item links (issue #228)", () => {
     expect(within(all).getByRole("link", { name: "Being built" }).getAttribute("href")).toBe("/app/items/wi_2");
   });
 });
+
+// ---- Why an item waits (issue #310): one sentence from the API, #N linked, on Floor, Items, Queue and the item page ----
+describe("why an item waits (issue #310)", () => {
+  const REF_URL = "https://github.com/o/r/issues/";
+  const dep = { code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13], ref_url: REF_URL };
+  const held = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: REF_URL };
+  const refLinks = (el: HTMLElement) => [...el.querySelectorAll("[data-why] a")].map((a) => [a.textContent, a.getAttribute("href")]);
+
+  function withWhy(run: () => Promise<void>) {
+    const saved = { items: items.items.map((i) => ({ ...i })), queue: queue.queue.map((q) => ({ ...q })), item: { ...detail.item } };
+    (items.items[0] as Record<string, unknown>).why = dep;
+    (items.items[2] as Record<string, unknown>).why = held;
+    (queue.queue[0] as Record<string, unknown>).why = held;
+    (detail.item as Record<string, unknown>).why = dep;
+    return run().finally(() => {
+      items.items.splice(0, items.items.length, ...saved.items);
+      queue.queue.splice(0, queue.queue.length, ...saved.queue);
+      delete (detail.item as Record<string, unknown>).why;
+    });
+  }
+  const dependencyLinks = [["#12", `${REF_URL}12`], ["#13", `${REF_URL}13`]];
+
+  it("the Floor's Needs you shows the sentence with #N linked, and a held run's Starts shows its sentence, not now", () =>
+    withWhy(async () => {
+      mount();
+      const needs = await screen.findByRole("table", { name: "Needs you" });
+      expect(within(needs).getByText("Waiting for", { exact: false }).textContent).toBe(dep.text);
+      expect(refLinks(needs)).toEqual(dependencyLinks);
+      const q = await screen.findByRole("table", { name: "Queue" });
+      const starts = q.querySelector("tbody tr td:last-child") as HTMLElement;
+      expect(starts.textContent).toBe("Held behind #92, which has an open PR");
+      expect(refLinks(starts)).toEqual([["#92", `${REF_URL}92`]]);
+    }));
+
+  it("Work items and the Queue page show the same sentences, #N linked", () =>
+    withWhy(async () => {
+      history.replaceState(null, "", "/app/items");
+      mount();
+      const all = await screen.findByRole("table", { name: "Work items" });
+      expect(refLinks(all)).toEqual([...dependencyLinks, ["#92", `${REF_URL}92`]]);
+      cleanup();
+      history.replaceState(null, "", "/app/queue");
+      mount();
+      const q = await screen.findByRole("table", { name: "Queue" });
+      expect(within(q).queryByText("now")).toBeNull();
+      expect(refLinks(q)).toEqual([["#92", `${REF_URL}92`]]);
+    }));
+
+  it("the item page shows the full sentence, not cut off, #N linked, and no raw blocked_on row", () =>
+    withWhy(async () => {
+      history.replaceState(null, "", "/app/items/wi_1");
+      mount();
+      const why = await screen.findByTestId("why");
+      expect(why.textContent).toBe(dep.text);
+      expect(refLinks(why)).toEqual(dependencyLinks);
+      for (let el: HTMLElement | null = why; el; el = el.parentElement) expect(el.className).not.toContain("truncate");
+      expect(why.querySelector(".truncate")).toBeNull();
+      expect(screen.queryByText("Blocked on")).toBeNull();
+    }));
+
+  it("a ref with no ref_url, or a number the API did not list, stays plain text", () => {
+    const c = itemsTable([trow(1, { why: { ...dep, ref_url: null } }), trow(2, { why: { ...dep, refs: [12] } })]);
+    const cells = [...c.querySelectorAll("[data-why]")] as HTMLElement[];
+    expect(refLinks(cells[0]!)).toEqual([]);
+    expect(refLinks(cells[1]!)).toEqual([["#12", `${REF_URL}12`]]);
+    expect(cells[1]!.textContent).toBe(dep.text);
+  });
+});

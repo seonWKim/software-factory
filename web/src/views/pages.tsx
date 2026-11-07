@@ -6,7 +6,7 @@ import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
-import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { transcriptPath } from "./transcript.js";
 
@@ -187,10 +187,14 @@ export function ItemPage({ id }: { id: string }) {
         <a href={item.source.link} target="_blank" rel="noreferrer" className={cn("tabular-nums", LINK_CLASS)}>{shortSource(item.source.id)}</a>
       </p>
       <h2 className="text-balance text-base font-semibold">{item.title ?? item.source.id}</h2>
+      {item.why && (
+        <p data-testid="why" className="mt-2 text-sm text-pretty break-words">
+          <WhyText why={item.why} />
+        </p>
+      )}
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {[
           ["Stage", item.stage + (item.close_reason ? ` (${item.close_reason})` : "")],
-          ["Blocked on", item.blocked_on === "none" ? "nothing" : `${item.blocked_on}${item.blocked_reason ? `: ${item.blocked_reason}` : ""}`],
           ["Tier", item.tier ?? "–"],
           ["PR", item.pr_number ?? "–"],
           ["Review loops", item.loop_count],
