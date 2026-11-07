@@ -343,6 +343,19 @@ describe("implement run: checks before push, one fix step", () => {
     ]);
   });
 
+  it("a check that cannot start its tools fails at once as infra (toolchain_missing): no fix step, the commits kept", async () => {
+    const TOOLS = failsWhile(
+      "tests", "src/a.txt", 'Error: Cannot find module "/w/node_modules/typescript/bin/tsc"',
+    );
+    const f = await setup({ checks: [TOOLS] });
+    const item = await f.approveAndImplement();
+    const [run] = await f.implementRuns(item.id);
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "toolchain_missing", infra: true, wip: { branch: `factory/wip/${item.id}/${run!.id}` } });
+    expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain('Cannot find module "/w/node_modules/typescript/bin/tsc"');
+    expect(f.fixSteps).toHaveLength(0);
+    expect(f.broker.names()).not.toContain("github.open_pr");
+  });
+
   it("checks_failed counts as a task failure toward max_attempts; the PR-check reason checks_failed is not used", async () => {
     const f = await setup({
       max_attempts: 2,

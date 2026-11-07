@@ -390,7 +390,7 @@ describe("implement run: sync with base before push", () => {
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts" });
     const last = f.source.comments.at(-1)!.body;
     expect(last).toContain("`merge_conflict`: the branch conflicts with the base branch and the conflict could not be resolved");
-  });
+  }, 30_000); // max_attempts full implement runs, each with real git clone/merge work
 
   it("a resolution that touches a non-conflicting file outside allowed_paths is stopped by the scope gate", async () => {
     const f = await setup({

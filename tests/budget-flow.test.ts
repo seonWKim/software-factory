@@ -361,6 +361,8 @@ describe("/reject at a checkpoint", () => {
     expect(rows.map((c) => c.reason)).toEqual(["budget_checkpoint", "budget_rejected"]);
     expect(rows[1]!.actor).toEqual({ kind: "user", id: "github:1" as UserId });
     expect(f.source.statusLabels(f.src)).toEqual(["rejected"]);
+    // The close says why (issue #229), and the issue is closed as not planned.
+    expect(f.source.comments.some((c) => c.body.startsWith("Closed because the work was stopped at its token budget checkpoint"))).toBe(true);
   });
 });
 
