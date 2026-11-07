@@ -396,6 +396,8 @@ export class FakeSandbox implements Sandbox {
   destroyed = 0;
   /** Commits the next implement run "makes". */
   commits: string[] = ["c1"];
+  /** Commits `git rev-list` reports for one exact argument list, ahead of `commits` (e.g. a branch's earlier work). */
+  revLists: Record<string, string[]> = {};
   /** Files `git diff --name-only` reports for the branch against base (returned NUL-separated, as with `-z`). */
   changedFiles: string[] = [];
   /**
@@ -468,6 +470,7 @@ export class FakeSandbox implements Sandbox {
     if (args.startsWith("rev-parse --path-format=absolute --git-path")) return out("/repo/.git/worktrees/x/sf-resolve-index\n");
     if (args.startsWith("rev-parse --path-format")) return out("/repo/.git\n");
     if (args.startsWith("rev-parse --verify") || args === "rev-parse origin/main") return out("basesha\n");
+    if (args in this.revLists) return out(this.revLists[args]!.join("\n"));
     if (args.startsWith("rev-list")) return out(this.commits.join("\n"));
     if (args.startsWith("log -1")) return out("commit subject\n");
     if (args.startsWith("merge-base --is-ancestor")) return res(this.ancestorExit);
