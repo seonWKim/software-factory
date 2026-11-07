@@ -6,6 +6,7 @@ import type { FileConfig } from "./compose.js";
 import { COORDINATION_KEYS, coordinationProblems } from "./core/config.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
+import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatibleProblems } from "./impl/openai/config.js";
 
 /**
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
@@ -62,6 +63,7 @@ export const TOP_LEVEL_KEYS = [
   "hotspot_weight",
   "defaults",
   "projects",
+  "openai_compatible",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -166,6 +168,10 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.ui, "ui", "ui", UI_KEYS);
   check(raw.updater, "updater", "updater", UPDATER_KEYS);
   check(raw.stats, "stats", "stats", STATS_KEYS);
+  check(raw.openai_compatible, "openai_compatible", "openai_compatible", OPENAI_COMPATIBLE_KEYS);
+  if (isObject(raw.openai_compatible)) {
+    check(raw.openai_compatible.models, "openai_compatible.models", "openai_compatible.models", OPENAI_COMPATIBLE_MODELS_KEYS);
+  }
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -184,7 +190,8 @@ export function unknownConfigKeys(raw: unknown): string[] {
 /** Throws one ConfigKeyError listing every unknown key, or returns. */
 export function checkConfigKeys(raw: unknown): void {
   // The coordination values too (design §5, 2026-11-03): a zero or non-numeric threshold fails at load.
-  const problems = [...unknownConfigKeys(raw), ...coordinationProblems(raw)];
+  // The openai_compatible block's values too: base_url and the three model names.
+  const problems = [...unknownConfigKeys(raw), ...coordinationProblems(raw), ...openaiCompatibleProblems(raw)];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }
 
