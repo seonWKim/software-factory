@@ -229,6 +229,21 @@ describe("ClaudeCodeRunner: only model output restarts the stall clock (issue #2
     expect(Date.now() - started).toBeLessThan(STALL_MS * 4);
   });
 
+  it("thinking-tokens events count as model output: long thinking past first_output_ms and stall_ms is no stall", async () => {
+    const r = await runnerWith(async (opts, out) => {
+      out({ type: "system", subtype: "init" });
+      for (let i = 0; i < 8 && !opts.signal?.aborted; i++) {
+        await wait(STALL_MS / 4, opts.signal);
+        out({ type: "system", subtype: "thinking_tokens", estimated_tokens: 50 * (i + 1) });
+      }
+      if (opts.signal?.aborted) return { exit_code: 143 };
+      out(text("done thinking"));
+      out(RESULT);
+      return { exit_code: 0 };
+    }).run({ ...spec(), first_output_ms: STALL_MS });
+    expect(r.status).toBe("completed");
+  });
+
   it("a tool_result restarts the stall clock", async () => {
     const r = await runnerWith(async (opts, out) => {
       out(toolUse("toolu_1"));

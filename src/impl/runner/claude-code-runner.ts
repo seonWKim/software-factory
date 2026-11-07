@@ -369,8 +369,8 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
 
 /**
  * Stall detection over the CLI's streamed events (design §5 Restarts). Only model output restarts the clock:
- * an `assistant` event, or a `tool_result` block. System events (init, API retries) print before the model
- * answers and are not activity (issue #215). Before the first model output the clock is the shorter of
+ * an `assistant` event, a `thinking_tokens` system event (the model thinking), or a `tool_result` block. Other
+ * system events (init, API retries) print before the model answers and are not activity (issue #215). Before the first model output the clock is the shorter of
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
  * open the clock does not run, since a test run in Bash can be silent for minutes; a hung tool is still bounded
@@ -420,7 +420,8 @@ class StallWatch {
   private track(line: string): boolean {
     const event = line.trim().startsWith("{") ? parseObject(line) : null;
     if (!event) return false;
-    let model = event.type === "assistant";
+    // A thinking-tokens event is the model working before it writes anything: activity, like an assistant event.
+    let model = event.type === "assistant" || (event.type === "system" && event.subtype === "thinking_tokens");
     const message = event.message as { content?: unknown } | undefined;
     if (!Array.isArray(message?.content)) return model;
     for (const block of message.content as { type?: unknown; id?: unknown; tool_use_id?: unknown }[]) {
