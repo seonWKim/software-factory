@@ -1,0 +1,49 @@
+// Display helpers. Pure: `now` is passed in, so a test can fix it.
+
+/** "12s", "4m", "3h", "2d" since `at`; "–" for none. */
+export function ago(at: string | null | undefined, now: number): string {
+  if (!at) return "–";
+  const s = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
+}
+
+/** "in 4m" for a time ahead, "now" for one passed; "–" for none. */
+export function until(at: string | null | undefined, now: number): string {
+  if (!at) return "–";
+  const ms = Date.parse(at) - now;
+  return ms <= 0 ? "now" : `in ${ago(new Date(now - ms).toISOString(), now)}`;
+}
+
+/** "#192" for "owner/repo#192"; the id as is otherwise. */
+export function shortSource(id: string): string {
+  const i = id.lastIndexOf("#");
+  return i >= 0 ? id.slice(i) : id;
+}
+
+/** 38521431 → "38.5M"; 29285 → "29.3k". */
+export function tokens(n: number | null | undefined): string {
+  if (n === null || n === undefined) return "–";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+export const shortRev = (rev: string | null | undefined) => (rev ? rev.slice(0, 7) : "unknown");
+
+/** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
+export const LEVEL_LABELS: Record<string, string> = {
+  ready_to_merge: "Ready to merge",
+  needs_approval: "Needs approval",
+  needs_human: "Needs a human",
+  stuck: "Stuck",
+  running: "Running",
+  queued: "Queued",
+  waiting_on_issue: "Waiting on another issue",
+  closed: "Closed",
+};
+
+/** Levels that wait on the operator: the Floor lists them first. */
+export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_human", "stuck"] as const;

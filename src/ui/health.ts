@@ -90,7 +90,7 @@ export class HealthMonitor {
       : `<table><tr><th>result</th><th>check</th></tr>${rows.join("")}</table>`;
     return (
       `<section id="health"><h2>Health</h2>` +
-      `<p class="muted">Last run ${esc(r.checked_at.toISOString())}. <a href="/?health=refresh#health">refresh</a>${limited}</p>` +
+      `<p class="muted">Last run ${esc(r.checked_at.toISOString())}. <a href="/classic?health=refresh#health">refresh</a>${limited}</p>` +
       `${table}</section>`
     );
   }
