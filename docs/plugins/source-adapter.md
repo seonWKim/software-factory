@@ -14,6 +14,15 @@ Plugins:
   - Enable: `"plugins": { "source": "github-issues", ... }`.
   - Secrets: none of its own (the shared client's `GitHubCredentials`). Settings: `repo` (including `base_branch`), `intake_label`, `branch_prefix`, `poll_interval_ms`, `status_label_prefix` (optional, default `"sf: "`; labels are the prefix plus e.g. `needs approval`. Changing it leaves labels under the old prefix in place).
 
+- `local`: `LocalSource` (source type `local`, a poll source). Reads the CLI command log in the store (`cli_commands`) and turns each command on a local work item into the event the same comment would give on GitHub; stores the factory's replies as item messages (`item_messages`). Never calls GitHub.
+  - Command shape: `args.item` is the work item ID, `args.text` an optional string. The command is rebuilt as `/<command> <text>` and read by the same comment parser as GitHub comments, so `approve`, `reject`, `revise` (no PR), `retry`, `budget`, `resolve` (PR null), `help`, `verdict` (issue target), unknown words (`unknown_command`) and `/link` (`plain_comment`) give the same events. Each event's source is the item's own `SourceRef`, its `comment_id` the command's `key`, and its identity provider `local` with subject the actor after `local:`.
+  - A command whose item is missing or is not a local item gives no event; the cursor still moves past it. The cursor is the last command `seq` read, as a string (empty or none means from the first). At most 100 commands per poll; the rest come on the next poll. A store read error makes the poll throw.
+  - `postComment` stores one item message per marker (a repeat keeps the first body) and returns `url: null`; for a source id with no item it throws, naming the id. `markSeen`, `setStatus` and `closeIssue` do nothing: the store already holds the item's state.
+  - It does not write commands or create items, and emits no `item_requested`. Local identities go through the configured `AuthProvider` unchanged.
+  - Enable: `"plugins": { "source": "local", ... }` on its own, or `"source": ["github-issues", "local"]` next to GitHub.
+  - Secrets: none. Settings: none.
+  - Switch back: `"source": "github-issues"` (drop `local` from the list). Stored commands and messages stay in the store.
+
 Other sources may implement `setStatus` as a no-op.
 
 **Several sources.** `plugins.source` takes one name or a list of names:
@@ -42,5 +51,7 @@ Other sources may implement `setStatus` as a no-op.
 Switch back / disable: `"source": "github-issues"` (or drop the other names from the list). There is no "off".
 
 ## History
+
+- **Local source** (new plugin, 2026-11-07, issue #199). Before: polled intake was GitHub only; the source plugin context had no store.
 
 - **Several sources** (changed 2026-11-01). Before: `plugins.source` took one name and every comment, 👀, status and close went through that one adapter.
