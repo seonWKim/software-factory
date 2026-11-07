@@ -31,6 +31,7 @@ export const TOP_LEVEL_KEYS = [
   "models",
   "model_by",
   "max_loops",
+  "phases_auto_approve",
   "max_attempts",
   "max_restart",
   "retry_base_ms",

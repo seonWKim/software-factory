@@ -53,7 +53,7 @@ const USAGE = `factory <command>
   settings list | set <key> <value> | reset <key> | history
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
-               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers. No restart. Every set and
+               model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve. No restart. Every set and
                reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
   ui           read-only status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker

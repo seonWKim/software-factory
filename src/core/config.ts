@@ -55,6 +55,11 @@ export interface LoadedConfig {
    */
   settings: SettingsLayers;
   max_loops: number;
+  /**
+   * Split phases (design 2026-11-01): when true, a phase's spec needs no `/approve` of its own, since the owner
+   * approved the split on the parent. Live setting (`settings set phases_auto_approve true`). Absent: false.
+   */
+  phases_auto_approve?: boolean;
   /** Infra failures (lease loss, timeout, exception) of one step before it blocks on a human. Default 3. */
   max_restart: number;
   /** First automatic retry waits this long; each next one twice as long. Default 60000. */
