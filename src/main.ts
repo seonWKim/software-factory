@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, loadConfig, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
+import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
 import { configFailLines } from "./config-keys.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
@@ -68,6 +69,8 @@ const USAGE = `factory <command>
                two small real calls to the configured LLM provider (plugins.llm), one plain and one
                with an output schema; default --model cheap; every line is egress-scanned first
   canary       G6: a real agent tries to find a planted canary secret
+  session start | status | note | finish | abandon
+               your own LLM session on a work item, as an interactive run: a worker's gates at finish (SET_UP.md)
   issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
@@ -339,6 +342,19 @@ async function main(cmd: string | undefined, args: string[]): Promise<number> {
       const { owner, name } = loaded.config.repo;
       console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
       return 0;
+    }
+    case "session": {
+      const action = parseSessionArgs(args);
+      if ("error" in action) {
+        console.log(`${action.error}\n${SESSION_USAGE}`);
+        return 1;
+      }
+      const parts = await buildSessionParts(loaded);
+      try {
+        return await runSession(sessionDeps(parts, loaded.stateDir, stopOnSignals()), action);
+      } finally {
+        await parts.close();
+      }
     }
     case "canary": {
       const report = await runCanary(loaded);

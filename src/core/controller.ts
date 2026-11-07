@@ -46,6 +46,7 @@ import {
   MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
+  SESSION_RELEASED,
 } from "./policy.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
@@ -57,7 +58,7 @@ import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.j
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens,
+  type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
 import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
@@ -1753,7 +1754,7 @@ export class Controller {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
     await this.decide(run.work_item_id, async (it) => {
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
-      const tokens = it.token_cost + outcomeTokens(run.outcome);
+      const tokens = it.token_cost + runTokenCount(run);
       if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
@@ -1899,6 +1900,15 @@ export class Controller {
         case "manual":
           // Written already acknowledged, so never here; kept for exhaustiveness.
           return ack("run_ignored");
+        case "interactive": {
+          // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
+          const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
+          const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+          return {
+            patch: { stage: "REVIEW", pr_number: Number(data.pr_number), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
+            ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review") },
+          };
+        }
         case "update": {
           // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
           switch (data.result) {
@@ -1938,6 +1948,7 @@ export class Controller {
     if (!this.expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
+    if (run.kind === "interactive") return sessionReleased(it, run, code);
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
     if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
@@ -2357,7 +2368,7 @@ export class Controller {
     if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
-    if (kind === "implement" || kind === "resolve") return it.stage === "RUNNING";
+    if (kind === "implement" || kind === "resolve" || kind === "interactive") return it.stage === "RUNNING";
     return it.stage === "REVIEW";
   }
 
@@ -2551,8 +2562,17 @@ export class Controller {
  * decision that acknowledges this run, so the add lands in the ack's transaction and the ack fences it (a
  * second apply is refused as already acknowledged, and adds nothing). A run with no usage changes nothing.
  */
+/**
+ * A session that ended without a PR (abandoned, lease lost), design §5, 2026-11-01: never retried. The item is released:
+ * RUNNING, blocked on a human with `session_released`, nothing queued, for the next `session start`. A pushed branch stays.
+ */
+function sessionReleased(_it: WorkItem, run: Run, code: string): Decision {
+  const detail = { run_id: run.id, error_code: code, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+  return { patch: { blocked_on: "human", blocked_reason: SESSION_RELEASED }, actor: SYSTEM, reason: SESSION_RELEASED, detail, ack_run: run.id };
+}
+
 function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
-  const spent = outcomeTokens(run.outcome);
+  const spent = runTokenCount(run);
   if (!d || spent === 0 || d.ack_run !== run.id || "token_cost" in d.patch) return d;
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
 }

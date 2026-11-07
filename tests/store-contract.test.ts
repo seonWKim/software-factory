@@ -1396,4 +1396,72 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
       expect((await store.listSettingChanges(2)).map((c) => c.new_value)).toEqual(["3", "2"]);
     });
   });
+
+  // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
+  // 18 on both backends); notes and the last finish live in the run's input.
+  describe("interactive sessions", () => {
+    const person = { kind: "user" as const, id: "github:5" as UserId };
+    const seed = async (store: FactoryStore, n: number, paths: string[]) => {
+      const { item } = await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { allowed_paths: paths } });
+      if (!r.ok) throw new Error(r.reason);
+      return r.item;
+    };
+    const start = (store: FactoryStore, it: { id: WorkItemId; version: number }) => store.startSession({
+      id: it.id, expected_version: it.version, actor: person, patch: { stage: "RUNNING" }, reason: "session_started", detail: { spec_source: "owner" },
+      owner: "session:h:1", lease_ms: LEASE, transcript_url: "https://example.com/t",
+    });
+
+    it("startSession writes one running interactive run and the transition and cancels queued triage; other runs read the fields as null", async () => {
+      const { store } = await make();
+      const it0 = await seed(store, 1, ["src/a/"]);
+      expect((await store.listRuns(it0.id))[0]).toMatchObject({ actor_id: null, transcript_url: null, session_tokens: null, session_notes: [], last_finish: null });
+      const r = await start(store, it0);
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.run).toMatchObject({ kind: "interactive", status: "running", attempt: 1, actor_id: "github:5", transcript_url: "https://example.com/t", lease: { owner: "session:h:1", token: 1 } });
+      expect(r.state_change).toMatchObject({ reason: "session_started", actor: person, detail: { spec_source: "owner", run_id: r.run.id } });
+      expect([r.item.stage, r.cancelled.length]).toEqual(["RUNNING", 1]);
+      expect((await store.listRuns(it0.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "cancelled"], ["interactive", "running"]]);
+      expect((await store.listRunsByKind("interactive", ["running"])).map((x) => x.id)).toEqual([r.run.id]);
+      // Refused with nothing written: stale version, open session, implement-type run, overlap with another item's session.
+      expect(await start(store, { id: it0.id, version: it0.version })).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect(await start(store, r.item)).toMatchObject({ ok: false, reason: "session_open", run_id: r.run.id });
+      const it1 = await seed(store, 2, ["src/b/"]);
+      const q = await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "implement", idempotency_key: "i2" } });
+      if (!q.ok) throw new Error(q.reason);
+      expect(await start(store, q.item)).toMatchObject({ ok: false, reason: "implement_run", run_id: q.enqueued!.id });
+      const it2 = await seed(store, 3, ["src/a/x.ts"]);
+      const before = JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)]);
+      expect(await start(store, it2)).toMatchObject({ ok: false, reason: "overlap", work_item_id: it0.id, paths: ["src/a/x.ts"] });
+      expect(JSON.stringify([await store.listRuns(it2.id), await store.listStateChanges(it2.id)])).toBe(before);
+    });
+
+    it("updateSession writes notes, tokens, transcript and the last finish only while the lease is held", async () => {
+      const { store } = await make();
+      const r = await start(store, await seed(store, 1, ["src/a/"]));
+      if (!r.ok) throw new Error(r.reason);
+      await store.updateSession(r.run.id, 1, { note: "first" });
+      const u = await store.updateSession(r.run.id, 1, { note: "second", tokens: 120, transcript_url: "https://example.com/u", last_finish: { ok: false, reasons: ["tests"], pr_number: null } });
+      if (!u.ok) throw new Error(u.reason);
+      expect(u.run).toMatchObject({ session_tokens: 120, transcript_url: "https://example.com/u", last_finish: { ok: false, reasons: ["tests"], pr_number: null } });
+      expect(u.run.session_notes.map((n) => n.text)).toEqual(["first", "second"]);
+      expect(await store.updateSession(r.run.id, 2, { tokens: 1 })).toEqual({ ok: false, reason: "lease_lost" });
+      await store.completeRun(r.run.id, 1, { status: "failed", error_code: "abandoned", detail: "", infra: false });
+      expect(await store.updateSession(r.run.id, 1, { tokens: 1 })).toEqual({ ok: false, reason: "lease_lost" });
+      expect((await store.getRun(r.run.id))!.session_tokens).toBe(120);
+    });
+
+    it("claims never take a session or an implement run overlapping it; the reaper fails an expired session with session_lost", async () => {
+      const { store, clock } = await make();
+      const s = await start(store, await seed(store, 1, ["src/a/"]));
+      if (!s.ok) throw new Error(s.reason);
+      const it1 = await seed(store, 2, ["src/a/y.ts"]);
+      await store.transition({ id: it1.id, expected_version: it1.version, actor: system, reason: "x", patch: { stage: "RUNNING" }, enqueue: { kind: "implement", idempotency_key: "i2" } });
+      expect(await store.claimRun({ worker_id: w1, kinds: ["interactive", "implement", "update"], lease_ms: LEASE })).toBeNull();
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(5)).toEqual([s.run.id]);
+      expect(await store.getRun(s.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { status: "failed", error_code: "session_lost" } });
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
+    });
+  });
 });

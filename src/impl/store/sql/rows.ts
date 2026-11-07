@@ -11,6 +11,7 @@ import type {
   HandoffId,
   Run,
   RunId,
+  RunInput,
   SourceType,
   StateChange,
   StateChangeId,
@@ -203,6 +204,9 @@ export function rowToWorkItem(r: Row): WorkItem {
 }
 
 export function rowToRun(r: Row): Run {
+  const input = parseJson<RunInput | null>(r.input ?? null);
+  // An interactive run's notes and last finish are in its input column (design §5, 2026-11-01); older rows read none.
+  const session = input?.session ?? null;
   return {
     id: r.id as RunId,
     work_item_id: r.work_item_id as WorkItemId,
@@ -223,11 +227,16 @@ export function rowToRun(r: Row): Run {
     started_at: (r.started_at as Timestamp | null | undefined) ?? null,
     finished_at: (r.finished_at as Timestamp | null | undefined) ?? null,
     not_before: (r.not_before as Timestamp | null | undefined) ?? null,
-    input: parseJson(r.input ?? null),
+    input,
     paused_at: (r.paused_at as Timestamp | null | undefined) ?? null,
     paused_by: (r.paused_by as string | null | undefined) ?? null,
     session_id: (r.session_id as string | null | undefined) ?? null,
     resume: parseJson(r.pause_state ?? null),
+    actor_id: (r.actor_id as UserId | null | undefined) ?? null,
+    transcript_url: (r.transcript_url as string | null | undefined) ?? null,
+    session_tokens: r.session_tokens === null || r.session_tokens === undefined ? null : Number(r.session_tokens),
+    session_notes: session?.notes ?? [],
+    last_finish: session?.last_finish ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };
