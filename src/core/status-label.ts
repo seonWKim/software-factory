@@ -1,3 +1,4 @@
+import { PHASES_OPEN, PHASE_HOLD } from "./split.js";
 import type { WorkItem } from "./types.js";
 
 /**
@@ -29,13 +30,15 @@ export const WORK_STATUSES: readonly WorkStatus[] = [
  * Pure mapping from the fields that carry state. Anything blocked that is not one of the two expected
  * human gates (spec approval, merge) needs a human: failed runs, max_loops, merge conflicts, an unknown
  * reason, and any blocker other than `human`, except `dependency`: an item waiting for another item to merge
- * shows its stage (implementing), since nobody needs to act (design §5, 2026-11-03). A coordination-cost hold
- * keeps `blocked_on: none`, so it shows its stage as well.
+ * shows its stage (implementing), since nobody needs to act (design §5, 2026-11-03). So does a split's wait on
+ * its own phases: a phase held until the one before it merges, and a parent whose phases are open, show
+ * "implementing". A coordination-cost hold keeps `blocked_on: none`, so it shows its stage as well.
  */
 export function statusOf(
   it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "close_reason">,
 ): WorkStatus {
   if (it.stage === "CLOSED") return it.close_reason === "completed" ? "done" : "rejected";
+  if (it.blocked_on === "upstream" && (it.blocked_reason === PHASE_HOLD || it.blocked_reason === PHASES_OPEN)) return "implementing";
   if (it.blocked_on !== "none" && it.blocked_on !== "dependency") {
     if (it.blocked_on === "human" && it.stage === "READY" && it.blocked_reason === "spec_pending") return "needs_approval";
     if (it.blocked_on === "human" && it.stage === "REVIEW" && it.blocked_reason === "merge_pending") return "ready_to_merge";
