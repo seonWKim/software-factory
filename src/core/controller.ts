@@ -271,6 +271,11 @@ const EMPTY_DIFF = "empty_diff";
 const UNCHANGED_HEAD = "unchanged_head";
 /** blocked_reason of an adopted PR that passed review but whose checks failed. */
 const CHECKS_FAILED = "checks_failed";
+/**
+ * blocked_reason of a factory PR whose checks failed while its stored merge check conflicts for the reviewed head
+ * (design §5 CI gate): an update run merges the base first; no implement run starts until it finished.
+ */
+const CHECKS_FAILED_UPDATE = "checks_failed_update";
 const MAX_CONFLICT_RETRIES = 5;
 /** What an implicit verdict says (design §4): its kind and severity, its reason and its event key. */
 interface ImplicitVerdict {
@@ -1134,7 +1139,7 @@ export class Controller {
    * comes back.
    */
   private async startUpdate(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): Promise<void> {
-    const key = `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
+    const key = updateKey(id, pr_number, head_sha, base_sha);
     await this.decide(id, async (it) => {
       if (!awaitingMerge(it) || prNumber(it) !== pr_number) return null;
       const updates = (await this.d.store.listRuns(it.id)).filter((r) => r.kind === "update");
@@ -2987,7 +2992,7 @@ export class Controller {
           // The worker's cheap checks (issue #223): nothing to review, or the head the last verdict was for. An
           // unchanged head keeps the item's state as it is: the last verdict was applied already, none is replayed.
           if (data.no_agent === EMPTY_DIFF) return this.emptyDiff(it, run, tokens);
-          if (data.no_agent === UNCHANGED_HEAD) return ack("review_unchanged_head");
+          if (data.no_agent === UNCHANGED_HEAD) return this.unchangedHead(it, run);
           const parsed = parseReview(data.review);
           if (!parsed.ok) return this.retryOrBlock(it, run, "task", "invalid_output");
           const tier = effectiveTier(parsed.value.tier, floorTier(it.allowed_paths, this.settings(it.project).floors), it.tier);
@@ -3030,7 +3035,7 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          return this.checkGate(it, run.id, { tier, token_cost: tokens }, run.id);
+          return this.checkGate(it, run, { tier, token_cost: tokens }, run.id);
         }
         case "resolve": {
           // The worker pushed the merge to the same PR branch. A fresh review checks it; its key comes from
@@ -3067,12 +3072,27 @@ export class Controller {
           };
         }
         case "update": {
-          // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
+          // The worker already commented on the PR. A PR waiting for a merge stays in REVIEW waiting for a human; one
+          // whose checks failed (CHECKS_FAILED_UPDATE) is reviewed again on the pushed head, or, already up to date,
+          // goes on to the implement run the update held back.
+          const beforeImplement = updatingForChecks(it);
           switch (data.result) {
             case "pushed":
+              if (beforeImplement) {
+                return {
+                  patch: { blocked_on: "none", blocked_reason: null },
+                  actor: SYSTEM,
+                  reason: "update_pushed",
+                  detail: { run_id: run.id },
+                  ack_run: run.id,
+                  enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-update:${run.id}`, input: await this.reviewInput(prNumber(it), it.id) },
+                };
+              }
               return { patch: {}, actor: SYSTEM, reason: "update_pushed", ack_run: run.id };
-            case "up_to_date":
-              return ack("update_up_to_date");
+            case "up_to_date": {
+              const review = beforeImplement ? await this.latestReview(it.id) : undefined;
+              return review ? this.checkGate(it, review, {}, run.id) : ack("update_up_to_date");
+            }
             case "conflict":
               return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
             case "tests_failed":
@@ -3237,15 +3257,16 @@ export class Controller {
    * passed. Pending (or the source could not say): the item waits in `REVIEW` with `blocked_on: ci` /
    * `checks_pending`, and tickChecks looks again. Failed: back to implement like a review bug (loop_count + 1,
    * max_loops applies), with the failing check names on the state change for the next implementer.
-   * `reviewRunId` is the review that passed; it keys the comments, so a re-decide posts each once.
-   * `ackRun` acks that review when called from applyRun; tickChecks passes null.
+   * `review` is the review that passed; its id keys the comments, so a re-decide posts each once.
+   * `ackRun` acks the run being applied (that review, or an update run); tickChecks passes null.
    */
   private async checkGate(
     it: WorkItem,
-    reviewRunId: RunId,
+    review: Run,
     fields: { tier?: Tier; token_cost?: number },
     ackRun: RunId | null,
   ): Promise<Decision> {
+    const reviewRunId = review.id;
     const checks = await this.readChecks(it);
     const ack = ackRun ? { ack_run: ackRun } : {};
     const tier = fields.tier ?? it.tier;
@@ -3259,34 +3280,7 @@ export class Controller {
         ...ack,
       };
     }
-    if (checks.state === "failed") {
-      const names = checks.failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
-      const detail = { failed_checks: JSON.stringify(names), review_run_id: reviewRunId };
-      if (it.origin === "adopted") {
-        const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
-        await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-          `PR #${it.change_ref} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
-        return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
-      }
-      const loop = it.loop_count + 1;
-      if (loop >= this.cfg.max_loops) {
-        const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
-        await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
-          `PR #${it.change_ref} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
-        return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
-      }
-      const next = { ...it, loop_count: loop };
-      await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
-        `PR #${it.change_ref} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.cfg.max_loops}).`);
-      return {
-        patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
-        actor: SYSTEM,
-        reason: "checks_failed",
-        detail,
-        ...ack,
-        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-      };
-    }
+    if (checks.state === "failed") return this.checksFailed(it, review, checks.failed, fields, ack);
     // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human. An incomplete
     // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
@@ -3307,6 +3301,105 @@ export class Controller {
       : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, with no push` : ""}.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
+  }
+
+  /**
+   * Failed checks after `review` (design §5 CI gate). An adopted PR blocks on its author. A factory PR whose stored
+   * merge check conflicts for the reviewed head gets one update run first (keyed as from the merge check, no loop
+   * counted), and the item waits in REVIEW on `checks_failed_update`. Otherwise back to implement like a review
+   * bug (loop_count + 1), or at `max_loops` a block on a human. A review that skipped an unchanged head marks the
+   * state change `unchanged_head: true`, so the next implement prompt says its previous attempt pushed nothing.
+   */
+  private async checksFailed(
+    it: WorkItem,
+    review: Run,
+    failed: readonly string[],
+    fields: { tier?: Tier; token_cost?: number },
+    ack: { ack_run?: RunId },
+  ): Promise<Decision> {
+    const reviewRunId = review.id;
+    const data = review.outcome?.status === "succeeded" ? review.outcome.data : {};
+    const names = failed.slice(0, MAX_CHECK_NAMES).map((n) => n.slice(0, MAX_CHECK_NAME_CHARS));
+    const detail = {
+      failed_checks: JSON.stringify(names),
+      review_run_id: reviewRunId,
+      ...(data.no_agent === UNCHANGED_HEAD ? { unchanged_head: true } : {}),
+    };
+    if (it.origin === "adopted") {
+      const patch = { ...fields, blocked_on: "human" as const, blocked_reason: CHECKS_FAILED };
+      await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks failed${list}. The factory does not push to a change a person opened; push a fix.\n\n${footerAfter(it, patch)}`);
+      return { patch, actor: SYSTEM, reason: CHECKS_FAILED, detail, ...ack };
+    }
+    const update = await this.updateBeforeImplement(it, typeof data.head_sha === "string" ? data.head_sha : "");
+    if (update) {
+      return {
+        patch: { ...fields, blocked_on: "ci", blocked_reason: CHECKS_FAILED_UPDATE },
+        actor: SYSTEM,
+        reason: "update_started",
+        detail,
+        ...ack,
+        enqueue: { kind: "update", idempotency_key: update },
+      };
+    }
+    const loop = it.loop_count + 1;
+    if (loop >= this.cfg.max_loops) {
+      const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "max_loops" };
+      await this.checksComment(it, `max-loops:${reviewRunId}`, names, (list) =>
+        `PR #${it.change_ref} passed review but its checks failed${list}. That makes ${loop} loops (limit ${this.cfg.max_loops}). A human needs to decide.\n\n${footerAfter(it, patch)}`);
+      return { patch, actor: SYSTEM, reason: "max_loops", detail, ...ack };
+    }
+    const next = { ...it, loop_count: loop };
+    await this.checksComment(it, `checks-failed:${reviewRunId}`, names, (list) =>
+      `PR #${it.change_ref} passed review but its checks failed${list}. The factory sent it back to the implementer (loop ${loop} of ${this.cfg.max_loops}).`);
+    return {
+      patch: { ...fields, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
+      actor: SYSTEM,
+      reason: "checks_failed",
+      detail,
+      ...ack,
+      enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+    };
+  }
+
+  /**
+   * The update run's key when the item's stored merge check is not mergeable for `head` (the reviewed head), the
+   * same key the merge check would use, and no run of it exists yet; else null. No stored check: none, as before.
+   */
+  private async updateBeforeImplement(it: WorkItem, head: string): Promise<string | null> {
+    const pr = prNumber(it);
+    if (pr === null || head === "" || it.head_branch !== null) return null;
+    const check = await this.d.store.getMergeCheck(it.id);
+    if (!check || check.mergeable || check.head_sha !== head) return null;
+    const key = updateKey(it.id, pr, check.head_sha, check.base_sha);
+    return (await this.d.store.listRuns(it.id)).some((r) => r.idempotency_key === key) ? null : key;
+  }
+
+  /**
+   * A review that skipped its unchanged head (issue #223). Its last verdict was applied already, so pending or
+   * passed checks change nothing. Failed checks after a passing verdict loop as any failed checks do: otherwise
+   * nothing would look again, since only items blocked on CI are polled. A `bug` verdict stays as it was.
+   */
+  private async unchangedHead(it: WorkItem, run: Run): Promise<Decision> {
+    const ack: Decision = { patch: {}, actor: SYSTEM, reason: "review_unchanged_head", ack_run: run.id };
+    if (!(await this.lastVerdictPassed(it.id, run.id))) return ack;
+    const checks = await this.readChecks(it);
+    return checks.state === "failed" ? this.checksFailed(it, run, checks.failed, {}, { ack_run: run.id }) : ack;
+  }
+
+  /** Whether the item's latest review with a verdict, other than run `self`, passed. */
+  private async lastVerdictPassed(id: WorkItemId, self: RunId): Promise<boolean> {
+    const last = (await this.d.store.listRuns(id))
+      .filter((r) => r.kind === "review" && r.id !== self && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
+      .at(-1);
+    if (last?.outcome?.status !== "succeeded") return false;
+    const parsed = parseReview(last.outcome.data.review);
+    return parsed.ok && parsed.value.verdict === "pass";
+  }
+
+  /** The item's latest succeeded review run, the one the CI gate applies to. */
+  private async latestReview(id: WorkItemId): Promise<Run | undefined> {
+    return (await this.d.store.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
   }
 
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
@@ -3369,9 +3462,9 @@ export class Controller {
     const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
     for (const w of waiting) {
       if (!waitingOnChecks(w)) continue;
-      const review = (await this.d.store.listRuns(w.id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+      const review = await this.latestReview(w.id);
       if (!review) continue;
-      await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review.id, {}, null) : null)).then(() => undefined));
+      await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
     }
   }
 
@@ -3876,8 +3969,9 @@ export class Controller {
 
   /** Whether the item is in the state a finished run of this kind should advance. */
   private expects(it: WorkItem, kind: RunKind): boolean {
-    // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout.
-    if (kind === "update") return awaitingMerge(it);
+    // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout, or
+    // before the implement run of a failed-checks loop (design §5 CI gate).
+    if (kind === "update") return awaitingMerge(it) || updatingForChecks(it);
     if (kind === "manual") return false;
     // A dependency hold is lifted by the claim reading the store; the controller may clear the field after it.
     if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;
@@ -4479,7 +4573,17 @@ function iso(ms: number): Timestamp {
   return new Date(ms).toISOString() as Timestamp;
 }
 
-/** A PR that passed review and waits for a human merge: the only state an update run may change. */
+/** The key of the one update run per (item, PR, head sha, base sha) (design §5 Merge check). */
+function updateKey(id: WorkItemId, pr_number: number, head_sha: string, base_sha: string): string {
+  return `${id}:update:${pr_number}:${head_sha}:${base_sha}`;
+}
+
+/** A PR whose checks failed, waiting for the update run that merges the base before any implement run. */
+function updatingForChecks(it: WorkItem): boolean {
+  return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_FAILED_UPDATE;
+}
+
+/** A PR that passed review and waits for a human merge, the state an update run usually changes. */
 function awaitingMerge(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
 }

@@ -153,6 +153,127 @@ describe("CI check gate before merge_pending", () => {
   });
 });
 
+describe("failed checks after an implement run that pushed nothing", () => {
+  const failed = { state: "failed" as const, failed: ["test"] };
+  const NO_PUSH = "The previous attempt pushed no commit";
+
+  /**
+   * An item whose PR head stays `h1` whatever the implement runs do (each pushes only the branch's earlier work),
+   * run through triage, /approve, implement and review with `checks` as the PR checks, oldest first. `before`
+   * runs once the item exists, before /approve; `reviews` are the review verdicts, oldest first, then `pass`.
+   */
+  async function noPush(
+    n: number,
+    checks: import("../src/interfaces/forge.js").PrChecks[],
+    opts: { reviews?: ("pass" | "bug")[]; before?: (f: Awaited<ReturnType<typeof factory>>, id: string) => Promise<void> } = {},
+  ) {
+    const verdicts = [...(opts.reviews ?? [])];
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+      review: () => review(verdicts.shift() ?? "pass")(),
+    });
+    const f = await factory(runner);
+    f.forge.checkResults = checks;
+    f.sandbox.commits = [];
+    f.sandbox.revLists["rev-list --reverse --no-merges basesha..HEAD"] = ["c1"];
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    const id = (await f.store.getWorkItemBySource("github_issue", src.id))!.id;
+    f.sandbox.branchHeads[`factory/${id}`] = "h1";
+    await opts.before?.(f, id);
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
+    await f.step();
+    return { ...f, runner, item: (await f.store.getWorkItem(id))! };
+  }
+  const implementPrompts = (f: { runner: FakeRunner }) => f.runner.specs.filter((s) => s.role === "implement").map((s) => s.prompt);
+  const skipped = (runs: Run[]) => runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.no_agent === "unchanged_head");
+
+  it("an unchanged head whose checks failed goes back to implement with loop_count + 1, and the prompt says nothing was pushed", async () => {
+    const f = await noPush(91, [failed, failed]);
+    const changes = await f.store.listStateChanges(f.item.id);
+    const loops = changes.filter((c) => c.reason === "checks_failed");
+    expect(loops).toHaveLength(2);
+    expect(loops[0]!.detail).not.toHaveProperty("unchanged_head");
+    expect(loops[1]!.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 1, to: 2 } });
+    expect(loops[1]!.detail).toMatchObject({ failed_checks: JSON.stringify(["test"]), unchanged_head: true });
+    const runs = await f.store.listRuns(f.item.id);
+    expect(skipped(runs).length).toBeGreaterThanOrEqual(1);
+    expect(loops[1]!.detail!.review_run_id).toBe(skipped(runs)[0]!.id);
+
+    const prompts = implementPrompts(f);
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1]).toContain("## Failing CI checks to fix");
+    expect(prompts[1]).not.toContain(NO_PUSH);
+    expect(prompts[2]).toContain(NO_PUSH);
+    // The third loop's unchanged head has passing checks: only its ack, with no field changed, as before.
+    expect(changes.slice(-2).map((c) => c.reason)).toEqual(["implemented", "review_unchanged_head"]);
+    expect(changes.at(-1)!.changes).toEqual({});
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 2 });
+  });
+
+  it("an unchanged head whose checks failed at the loop limit blocks on a human with max_loops and starts no implement run", async () => {
+    const f = await noPush(92, [failed, failed, failed]);
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: 2 });
+    const last = (await f.store.listStateChanges(f.item.id)).at(-1)!;
+    expect(last).toMatchObject({ reason: "max_loops", detail: { unchanged_head: true } });
+    const runs = await f.store.listRuns(f.item.id);
+    expect(runs.filter((r) => r.kind === "implement")).toHaveLength(3);
+    expect(runs.filter((r) => r.status === "queued")).toEqual([]);
+  });
+
+  it("an unchanged head whose checks are pending makes no state change", async () => {
+    const f = await noPush(93, [failed, { state: "pending" }]);
+    const changes = await f.store.listStateChanges(f.item.id);
+    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["checks_failed", "implemented", "review_unchanged_head"]);
+    expect(changes.at(-1)!.changes).toEqual({});
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 1 });
+    expect(skipped(await f.store.listRuns(f.item.id)).map((r) => r.acknowledged_at !== null)).toEqual([true]);
+  });
+
+  it("a review_bug loop that pushes nothing still stops in REVIEW, even with failed checks", async () => {
+    const f = await noPush(94, [failed], { reviews: ["bug"] });
+    const reasons = (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
+    expect(reasons).toContain("review_bug");
+    expect(reasons).not.toContain("checks_failed");
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 1 });
+    expect(f.forge.checkResults).toEqual([failed]);
+  });
+
+  it("a stored merge check that conflicts for the head starts an update run before the next implement run", async () => {
+    const f = await noPush(95, [failed, failed], { before: async (g, id) => {
+      await g.store.recordMergeCheck({ work_item_id: id as never, mergeable: false, conflicts: ["src/a.ts"], head_sha: "h1", base_sha: "b1" });
+      g.sandbox.ancestorExit = 1;
+      // The update's merge moves the PR head, so the review after it reviews the new head.
+      const exec = g.sandbox.exec.bind(g.sandbox);
+      g.sandbox.exec = (h, cmd, o) => {
+        if (cmd[0] === "git" && cmd[1] === "merge") g.sandbox.branchHeads[`factory/${id}`] = "h2";
+        return exec(h, cmd, o);
+      };
+    } });
+    const changes = await f.store.listStateChanges(f.item.id);
+    const started = changes.find((c) => c.reason === "update_started")!;
+    expect(started.changes).toMatchObject({ blocked_on: { from: "none", to: "ci" }, blocked_reason: { from: null, to: "checks_failed_update" } });
+    expect(started.changes).not.toHaveProperty("loop_count");
+    const reasons = changes.map((c) => c.reason);
+    const at = (r: string) => reasons.indexOf(r);
+    expect(at("update_started")).toBeLessThan(at("update_pushed"));
+    expect(at("update_pushed")).toBeLessThan(at("checks_failed"));
+
+    const runs = await f.store.listRuns(f.item.id);
+    const update = runs.find((r) => r.kind === "update")!;
+    expect(update.idempotency_key).toBe(`${f.item.id}:update:42:h1:b1`);
+    const impls = runs.filter((r) => r.kind === "implement");
+    expect(impls).toHaveLength(2);
+    expect(runs.indexOf(update)).toBeLessThan(runs.indexOf(impls[1]!));
+    // The review after the update ran on the pushed head, then the failed checks there started loop 1.
+    const after = runs.find((r) => r.idempotency_key === `${f.item.id}:review:after-update:${update.id}`)!;
+    expect(after.outcome).toMatchObject({ status: "succeeded", data: { head_sha: "h2" } });
+    expect(changes.find((c) => c.reason === "checks_failed")!.changes).toMatchObject({ loop_count: { from: 0, to: 1 } });
+  });
+});
+
 describe("one issue to one merged PR", () => {
   it("runs triage → human spec gate → implement → review loop → human merge, with a full trail", async () => {
     let reviews = 0;
