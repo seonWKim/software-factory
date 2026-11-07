@@ -2116,34 +2116,34 @@ describe("MySQL step 19 (worker-processes)", () => {
   });
 });
 
-describe("MySQL steps 32 and 33 (edge and item source_updated_at)", () => {
+describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
   const steps = () => readSteps(STEPS_DIR, INLINE_STEPS);
   const sql = (file: string) => readFileSync(join(STEPS_DIR, file), "utf8");
 
-  it("are the repo's steps after 31, in order, .sql files", () => {
-    expect(steps().find((st) => st.name === "edge-source-updated-at")).toMatchObject({ number: 32, from: 31, kind: "sql" });
-    expect(steps().find((st) => st.name === "item-edges-source-updated-at")).toMatchObject({ number: 33, from: 32, kind: "sql" });
+  it("are the repo's steps after 32, in order, .sql files", () => {
+    expect(steps().find((st) => st.name === "edge-source-updated-at")).toMatchObject({ number: 33, from: 32, kind: "sql" });
+    expect(steps().find((st) => st.name === "item-edges-source-updated-at")).toMatchObject({ number: 34, from: 33, kind: "sql" });
   });
 
-  it("add the same columns as SQLite migrations 32 and 33, each in one ALTER (safe to rerun after a failure)", () => {
+  it("add the same columns as SQLite migrations 33 and 34, each in one ALTER (safe to rerun after a failure)", () => {
     const added = (text: string) => [...text.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
-    expect(added(MIGRATIONS[31]!)).toEqual(["dependency_edges.source_updated_at"]);
-    expect(added(MIGRATIONS[32]!)).toEqual(["work_items.edges_source_updated_at"]);
-    expect(added(sql("0032-edge-source-updated-at.sql"))).toEqual(added(MIGRATIONS[31]!));
-    expect(added(sql("0033-item-edges-source-updated-at.sql"))).toEqual(added(MIGRATIONS[32]!));
-    for (const f of ["0032-edge-source-updated-at.sql", "0033-item-edges-source-updated-at.sql"]) {
+    expect(added(MIGRATIONS[32]!)).toEqual(["dependency_edges.source_updated_at"]);
+    expect(added(MIGRATIONS[33]!)).toEqual(["work_items.edges_source_updated_at"]);
+    expect(added(sql("0033-edge-source-updated-at.sql"))).toEqual(added(MIGRATIONS[32]!));
+    expect(added(sql("0034-item-edges-source-updated-at.sql"))).toEqual(added(MIGRATIONS[33]!));
+    for (const f of ["0033-edge-source-updated-at.sql", "0034-item-edges-source-updated-at.sql"]) {
       const statements = sql(f).split("\n").filter((l) => l.trim() && !l.startsWith("--"));
       expect(statements, f).toHaveLength(1);
     }
   });
 
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades a state-31 database: edges keep their rows and get a NULL read time", async () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades a state-32 database: edges keep their rows and get a NULL read time", async () => {
     const db = await newEmptyMysqlDatabase();
     const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(32) }).apply(() => undefined);
     const clock = new FakeClock();
     const s = await new MysqlMigrations(conn).apply(() => undefined);
-    expect(s.pending.map((p) => p.number)).toEqual(expect.arrayContaining([32, 33]));
+    expect(s.pending.map((p) => p.number)).toEqual(expect.arrayContaining([33, 34]));
     const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
     db.onCleanup(() => store.close());
     await store.migrate();
