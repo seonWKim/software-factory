@@ -5,6 +5,8 @@ export default defineConfig({
   oxc: { jsx: { runtime: "automatic" } },
   // Vite's cache and vitest's results go in the run folder, never in node_modules: a run folder's node_modules is
   // shared and read-only (docs/plugins/sandbox.md, `noop`). Vite's own default is node_modules/.vite.
+  // This does not cover the temp file Vite writes to node_modules/.vite-temp while it loads this file: that happens
+  // before any setting here applies, and only `--configLoader runner` on the command avoids it (same doc, known gap).
   cacheDir: ".vite-cache",
   test: {
     // .tsx tests are the web app's; each one sets `@vitest-environment jsdom` itself, so every other test keeps

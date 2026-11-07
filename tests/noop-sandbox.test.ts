@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -272,35 +272,72 @@ describe("NoOpSandbox", () => {
 });
 
 describe("NoOpSandbox run folder with a read-only node_modules", () => {
-  it("runs vitest to a pass and writes nothing under node_modules, its cache going to .vite-cache in the run folder", async () => {
+  // Runs vitest on one small passing test in a NoOpSandbox run folder whose node_modules is read-only, with `extra`
+  // appended to the run folder's own `npm test` command (package.json `scripts.test`). Restores write access before
+  // the run folder is destroyed, so nothing the owner has is left read-only.
+  async function vitestInReadOnlyRunFolder(extra: string[]) {
     const { root, repo } = repoWithOrigin();
     const sbx = new NoOpSandbox(join(root, "worktrees"));
     const h = await sbx.create({ repo, branch: "factory/wi_ro", base_ref: "main" });
     // The shared node_modules: a folder of links to the owner's packages, so its top level can be made read-only
-    // without touching the owner's files.
+    // without touching the owner's files. It already has a `.vite-temp`, as a shared node_modules that has run vite
+    // once does: then Vite's `mkdir -p` succeeds and its EACCES fallback never runs.
     const real = dirname(dirname(createRequire(import.meta.url).resolve("vitest/package.json")));
     const nm = join(h.workdir, "node_modules");
+    const viteTemp = join(nm, ".vite-temp");
     mkdirSync(nm);
+    mkdirSync(viteTemp);
     for (const e of readdirSync(real).filter((n) => !n.startsWith("."))) symlinkSync(join(real, e), join(nm, e));
+    // The run folder is a clone of the factory repo: its package.json makes vitest.config.ts an ES module, which is
+    // the case where Vite writes the bundled config to node_modules/.vite-temp.
+    await sbx.copyIn(h, join(process.cwd(), "package.json"), "package.json");
     await sbx.copyIn(h, join(process.cwd(), "vitest.config.ts"), "vitest.config.ts");
     mkdirSync(join(h.workdir, "tests"));
     writeFileSync(
       join(h.workdir, "tests", "small.test.ts"),
       'import { expect, it } from "vitest";\nit("passes", () => { expect(1 + 1).toBe(2); });\n',
     );
+    const script = (JSON.parse(readFileSync(join(h.workdir, "package.json"), "utf8")) as { scripts: { test: string } }).scripts.test;
+    const [bin, ...args] = script.split(/\s+/);
+    expect(bin).toBe("vitest");
     const before = readdirSync(nm).sort();
+    chmodSync(viteTemp, 0o555);
     chmodSync(nm, 0o555);
     try {
-      const r = await sbx.exec(h, ["node", join(real, "vitest", "vitest.mjs"), "run"], {
+      const r = await sbx.exec(h, ["node", join(real, "vitest", "vitest.mjs"), ...args, ...extra], {
         env: { PATH: process.env.PATH!, HOME: root, TMPDIR: tmpdir(), CI: "1" },
       });
-      expect(r.stderr + r.stdout).toContain("1 passed");
-      expect(r.exit_code).toBe(0);
-      expect(readdirSync(nm).sort()).toEqual(before);
-      expect(existsSync(join(h.workdir, ".vite-cache"))).toBe(true);
+      return {
+        r,
+        added: readdirSync(nm).filter((n) => !before.includes(n)),
+        tempFiles: readdirSync(viteTemp),
+        cache: existsSync(join(h.workdir, ".vite-cache")),
+      };
     } finally {
       chmodSync(nm, 0o755);
+      chmodSync(viteTemp, 0o755);
       await sbx.destroy(h);
     }
+  }
+
+  // Known gap (#225): with the default `bundle` config loader, Vite writes the bundled vitest.config.ts to
+  // node_modules/.vite-temp before any setting in vitest.config.ts applies, so `npm test` as it stands fails here
+  // (EPERM on the host, EACCES in this fake). Only the command can change that (`--configLoader runner`), and
+  // package.json is outside this change. When `scripts.test` gains the flag, this test fails: turn `it.fails` into `it`.
+  it.fails("runs the run folder's own `npm test` command to a pass, writing nothing under node_modules", async () => {
+    const { r, added, tempFiles } = await vitestInReadOnlyRunFolder([]);
+    expect(r.stderr + r.stdout).toContain("1 passed");
+    expect(r.exit_code).toBe(0);
+    expect(added).toEqual([]);
+    expect(tempFiles).toEqual([]);
+  });
+
+  it("with --configLoader runner, passes and writes nothing under node_modules, its cache going to .vite-cache in the run folder", async () => {
+    const { r, added, tempFiles, cache } = await vitestInReadOnlyRunFolder(["--configLoader", "runner"]);
+    expect(r.stderr + r.stdout).toContain("1 passed");
+    expect(r.exit_code).toBe(0);
+    expect(added).toEqual([]);
+    expect(tempFiles).toEqual([]);
+    expect(cache).toBe(true);
   });
 });
