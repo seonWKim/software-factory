@@ -1337,6 +1337,71 @@ describe("/resolve on a merge conflict", () => {
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
   });
 
+  it("a resolve run that returns needs_human blocks on agent_needs_human; /resolve takes the reply as the next run's notes", async () => {
+    const f = await conflicted(72);
+    const ask = { reason: "Both sides rename the same export.", question: "Which name should stay?" };
+    const resolve = f.runner.script.resolve!;
+    f.runner.script.resolve = () => ({ output: { needs_human: ask } });
+    f.source.queue.push(resolveEvent(f, "7201"));
+    await f.step();
+
+    // Blocked, nothing pushed, nothing queued, one comment with the question and /resolve in its footer.
+    let item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 });
+    expect(names(f)).not.toContain("github.push_branch");
+    expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
+    const asks = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:needs-human:"));
+    expect(asks).toHaveLength(1);
+    expect(asks[0]!.body).toContain(`> ${ask.question}`);
+    expect(asks[0]!.body).toContain("- `/resolve [notes]`");
+    expect(asks[0]!.body).toContain("- `/retry`");
+
+    // /help on the block lists /resolve as applying now: the asking run is read from the runs.
+    f.source.queue.push({ kind: "help_requested", source: f.src, comment_id: "7202", requester: alice });
+    await f.controller.tickIntake();
+    expect(f.source.comments.find((c) => c.marker === "<!-- factory:help:7202 -->")!.body).toContain("`/resolve [notes]` **(now)**");
+
+    f.runner.script.resolve = resolve;
+    f.source.queue.push(resolveEvent(f, "7203", "Keep the base's name"));
+    await f.controller.tickIntake();
+    item = (await f.store.getWorkItem(f.item.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    const queued = (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
+    expect(queued.map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "Keep the base's name" }]]);
+    expect(refusals(f)).toEqual([]);
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+  });
+
+  it("/retry on a resolve run's agent_needs_human runs resolve again", async () => {
+    const f = await conflicted(73);
+    const resolve = f.runner.script.resolve!;
+    f.runner.script.resolve = () => ({ output: { needs_human: { reason: "r", question: "q" } } });
+    f.source.queue.push(resolveEvent(f, "7301"));
+    await f.step();
+    f.runner.script.resolve = resolve;
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "7302", requester: alice });
+    await f.controller.tickIntake();
+    const queued = (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
+    expect(queued.map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "" }]]);
+    await f.step();
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+  });
+
+  it("/resolve on an implement run's agent_needs_human is refused", async () => {
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: { reason: "r", question: "q" } } }) });
+    const f = await factory(runner);
+    const src = issueRef(74);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "7400", approver: alice });
+    await f.step();
+    f.source.queue.push({ kind: "resolve_requested", source: src, comment_id: "7401", requester: alice, notes: "", pr: null });
+    await f.step();
+    expect((await f.store.getWorkItemBySource("github_issue", src.id))!).toMatchObject({ blocked_reason: "agent_needs_human" });
+    expect(f.source.comments.find((c) => c.marker === "<!-- factory:refused:7401 -->")!.body).toContain("`/resolve` was not applied");
+  });
+
   it("/resolve from a user without write permission changes nothing and enqueues nothing", async () => {
     const f = await conflicted(71);
     const before = await snapshot(f);
