@@ -202,13 +202,32 @@ const DEPENDENCY_CYCLE = "dependency_cycle";
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
 
-/** PRs live on GitHub: status on a PR goes to the adapter of this type, whatever the item's source. */
-const PR_SOURCE_TYPE: SourceType = "github_issue";
+/**
+ * The source type that stands in as the PR source when no listed source declares `servesPrs` (adapters
+ * written before the flag). Also the type of a PR's own ref and of dependency refs when there is no PR source.
+ */
+const LEGACY_PR_SOURCE_TYPE: SourceType = "github_issue";
 
 /**
- * The sources a controller runs (design 2026-11-01): at least one, no two of one type, and when there are
- * several, one of type github_issue, the only source of PR merge, close and unmergeable events. Errors name
- * `plugins.source`, the config key that lists them.
+ * The PR source among `sources`: the one that declares `servesPrs`, else one of type github_issue, else null.
+ * Two that declare it is a config error, named after `plugins.source`.
+ */
+function findPrSource(sources: readonly SourceAdapter[]): SourceAdapter | null {
+  const declared = sources.filter((s) => s.servesPrs === true);
+  if (declared.length > 1) {
+    throw new Error(
+      `plugins.source lists ${declared.length} sources that serve PRs (${declared.map((s) => `"${s.type}"`).join(", ")}); ` +
+        "PR events and calls go to one source, so list at most one",
+    );
+  }
+  return declared[0] ?? sources.find((s) => s.type === LEGACY_PR_SOURCE_TYPE) ?? null;
+}
+
+/**
+ * The sources a controller runs (design 2026-11-01): at least one, no two of one type, at most one that serves
+ * PRs, and when there are several, one that serves PRs (a `servesPrs` source, else one of type github_issue),
+ * the only source of PR merge, close and unmergeable events. Errors name `plugins.source`, the config key that
+ * lists them.
  */
 function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
   if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
@@ -221,10 +240,10 @@ function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly S
     }
     seen.add(s.type);
   }
-  if (sources.length > 1 && !seen.has(PR_SOURCE_TYPE)) {
+  if (findPrSource(sources) === null && sources.length > 1) {
     throw new Error(
-      `plugins.source lists ${sources.length} sources but none of type "${PR_SOURCE_TYPE}": PR merge, close and ` +
-        "unmergeable events come only from it, so factory PRs would never close their items",
+      `plugins.source lists ${sources.length} sources but none serves PRs (none of type "${LEGACY_PR_SOURCE_TYPE}"): ` +
+        "PR merge, close and unmergeable events come only from such a source, so factory PRs would never close their items",
     );
   }
   return sources;
@@ -252,13 +271,21 @@ export class Controller {
   /** The configured sources, in config order. Fixed at construction; the same on every replica. */
   private readonly sources: readonly SourceAdapter[];
   private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
+  /** The source that serves PRs (see findPrSource), null when none does. Fixed at construction. */
+  private readonly prSource: SourceAdapter | null;
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   private readonly live: LiveSettings;
 
   constructor(private readonly d: ControllerDeps) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
+    this.prSource = findPrSource(this.sources);
     this.live = d.settings ?? LiveSettings.fixed(d.config);
+  }
+
+  /** The source type of PR refs and dependency refs: the PR source's, else github_issue. */
+  private get prSourceType(): SourceType {
+    return this.prSource?.type ?? LEGACY_PR_SOURCE_TYPE;
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */
@@ -634,7 +661,7 @@ export class Controller {
       this.d.log.warn("PR not adopted: its author does not resolve to a user", log);
       return;
     }
-    const forge = this.byType.get(PR_SOURCE_TYPE);
+    const forge = this.prSource;
     if (e.labels.includes(SKIP_LABEL)) {
       const adder = forge?.labelAddedBy ? await forge.labelAddedBy(e.pr_number, SKIP_LABEL) : null;
       const who = adder ? await this.authorize(adder, "approve_spec", e.source.id) : null;
@@ -696,7 +723,7 @@ export class Controller {
 
   /** The pushed head commit's author as a user: the forge does not name who pushed. Else system:pr-sync. */
   private async pusher(id: WorkItemId, sha: string): Promise<Actor> {
-    const forge = this.byType.get(PR_SOURCE_TYPE);
+    const forge = this.prSource;
     const author = forge?.commitAuthor ? await forge.commitAuthor(sha) : null;
     const principal = author ? await this.d.auth.resolve(author) : null;
     if (principal) return { kind: "user", id: principal.user_id };
@@ -992,9 +1019,9 @@ export class Controller {
     );
   }
 
-  /** The adapter PRs go through: the GitHub one, else the item's own source (as setStatus does). */
+  /** The adapter PRs go through: the PR source, else the item's own source (as setStatus does). */
   private prAdapter(source: SourceRef): SourceAdapter | null {
-    return this.byType.get(PR_SOURCE_TYPE) ?? this.byType.get(source.type) ?? null;
+    return this.prSource ?? this.byType.get(source.type) ?? null;
   }
 
   /**
@@ -1619,13 +1646,13 @@ export class Controller {
    * sha), else, with `network`, the source's answer. Null when unknown (no item, no network or no capability).
    */
   private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
-    const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
+    const dep = await this.d.store.getWorkItemBySource(this.prSourceType, dependsOn);
     if (dep) {
       if (dep.stage !== "CLOSED") return "open";
       return dep.close_reason === "completed" && dep.merge_sha !== null ? "merged" : "closed_unmerged";
     }
     if (!network) return null;
-    const adapter = this.byType.get(PR_SOURCE_TYPE);
+    const adapter = this.prSource;
     return adapter && isDependencySource(adapter) ? adapter.dependencyState(dependsOn) : null;
   }
 
@@ -1961,7 +1988,7 @@ export class Controller {
   /** The PR's checks; a source without them counts as passed, a source error as pending (logged). */
   private async readChecks(it: WorkItem): Promise<PrChecks> {
     // PRs live on the PR source (the forge), whatever source the item came from.
-    const forge = this.byType.get(PR_SOURCE_TYPE);
+    const forge = this.prSource;
     if (!forge?.prChecks || it.pr_number === null) return { state: "passed" };
     try {
       return await forge.prChecks(it.pr_number);
@@ -2161,8 +2188,9 @@ export class Controller {
       await this.comment(it, key, body);
       return;
     }
-    const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
-    await this.post({ type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+    const type = this.prSourceType;
+    const link = it.source.type === type ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
+    await this.post({ type, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
   }
 
   /**
@@ -2439,14 +2467,14 @@ export class Controller {
 
   /**
    * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
-   * itself is labelled through its own source; a PR through the GitHub adapter, where PRs live. With no
-   * GitHub adapter (one non-GitHub source alone), the PR call goes to the item's own source, as it always did.
+   * itself is labelled through its own source; a PR through the PR source, where PRs live. With no
+   * PR source (one source alone that serves no PRs), the PR call goes to the item's own source, as it always did.
    */
   private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     try {
       const adapter = pr_number === null
         ? this.adapterFor(source, "setStatus")
-        : (this.byType.get(PR_SOURCE_TYPE) ?? this.adapterFor(source, "setStatus"));
+        : (this.prSource ?? this.adapterFor(source, "setStatus"));
       await adapter?.setStatus(source, status, pr_number);
     } catch (err) {
       this.d.log.warn("set status failed", {

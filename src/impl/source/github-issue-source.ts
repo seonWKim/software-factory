@@ -190,6 +190,8 @@ const COMMIT_PAGES = 5;
 export class GitHubIssueSource implements PollSource, DependencySource {
   readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
+  /** PRs live on GitHub: this source reports and serves them. */
+  readonly servesPrs = true;
 
   constructor(
     private readonly client: GitHubClient,

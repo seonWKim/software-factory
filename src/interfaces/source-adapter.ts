@@ -192,6 +192,13 @@ export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "fa
 interface SourceAdapterBase {
   readonly type: SourceType;
   /**
+   * True on the source that serves PR facts: the PR events (`pr_open`, `pr_merged`, `pr_closed`,
+   * `pr_unmergeable`), and PR checks, files, labels, comments and status. The controller sends every PR
+   * call to this source, whatever its type, and at most one listed source may declare it. Absent or false:
+   * the source serves no PRs; then a source of type `github_issue` stands in, as before the flag existed.
+   */
+  readonly servesPrs?: boolean;
+  /**
    * The checks on PR `pr_number`'s current head commit, read before a reviewed PR is offered for a human
    * merge (design §5 CI gate). Read-only, safe to call any number of times. Absent on sources with no
    * PRs: the controller then treats the checks as passed.
