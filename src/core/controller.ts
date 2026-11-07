@@ -9,7 +9,7 @@ import {
   tierBudget,
 } from "./budget.js";
 import {
-  COMMANDS, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
+  COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
 import { type FactoryConfig, STALL_DEFAULTS } from "./config.js";
@@ -244,8 +244,7 @@ const COORDINATION_BATCH = 50;
 const EDGES_REFRESH_MS = 30 * 60_000;
 /** How old the forge's answer for a dependency outside the factory may get before a pass reads it again. */
 const DEPENDENCY_STATE_REFRESH_MS = 10 * 60_000;
-/** blocked_reason prefixes (with `blocked_on: human`) of a dependency closed unmerged, and of a dependency cycle. */
-const DEPENDENCY_CLOSED = "dependency_closed";
+/** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
 /** Pending app command requests read per tick (design §4, app requests). */
 const APP_COMMAND_BATCH = 20;
@@ -1053,6 +1052,7 @@ export class Controller {
         if (r === RETRY) continue;
         return r;
       }
+      if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
       return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
@@ -1735,6 +1735,8 @@ export class Controller {
           }
         : null,
     );
+    // Its dependents count it merged now that its phases are (design §5).
+    await this.guard("dependents", () => this.releaseDependents(it.source.id));
   }
 
   /**
@@ -1937,15 +1939,56 @@ export class Controller {
     const it = await this.d.store.getWorkItem(id);
     if (!it || it.stage !== "RUNNING" || it.pr_number !== null) return;
     if (it.blocked_on !== "none" && it.blocked_on !== "dependency") return;
-    const edges = network && this.readDue(this.edgesReadAt, id, EDGES_REFRESH_MS, false)
+    await this.applyDependencies(it.id, await this.readDependencies(it, network ? "due" : "stored"));
+  }
+
+  /**
+   * The item's dependency verdict after its edges and their states are read and stored: `stored` reads only the
+   * store; `due` also reads the forge past the refresh intervals; `now` reads the forge whatever the intervals
+   * (a human `/retry`, one read per edge).
+   */
+  private async readDependencies(it: WorkItem, read: "stored" | "due" | "now"): Promise<DependencyVerdict> {
+    const edges = read === "now" || (read === "due" && this.readDue(this.edgesReadAt, it.id, EDGES_REFRESH_MS, false))
       ? await this.refreshEdges(it)
-      : await this.d.store.listDependencyEdges({ work_item_id: id });
+      : await this.d.store.listDependencyEdges({ work_item_id: it.id });
     for (const e of edges) {
-      const state = await this.dependencyStateOf(e.depends_on, network);
-      if (state !== null && state !== e.state) await this.d.store.setDependencyState(id, e.depends_on, state);
+      if (read === "now") this.stateReadAt.delete(e.depends_on);
+      const state = await this.dependencyStateOf(e.depends_on, read !== "stored");
+      if (state !== null && state !== e.state) await this.d.store.setDependencyState(it.id, e.depends_on, state);
     }
-    const fresh = await this.d.store.listDependencyEdges({ work_item_id: id });
-    await this.applyDependencies(it.id, dependencyVerdict(it.source.id, fresh, await this.dependencyGraph()));
+    const fresh = await this.d.store.listDependencyEdges({ work_item_id: it.id });
+    return dependencyVerdict(it.source.id, fresh, await this.dependencyGraph());
+  }
+
+  /**
+   * `/retry` at `dependency_closed` (design §5, 2026-11-07): the dependencies are read again now. None closed
+   * unmerged and no cycle: the block is lifted with a new implement run (the block cancelled the old one), the
+   * human as actor, then a dependency still open holds it as usual. Else refused, naming what still blocks.
+   */
+  private async retryDependencies(
+    it: WorkItem, actor: Extract<Actor, { kind: "user" }>, note: string | null, paths: readonly string[],
+  ): Promise<string | null> {
+    if (paths.length > 0) return "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`";
+    const v = await this.readDependencies(it, "now");
+    const short = (d: string) => shortRef(d, it.source.id);
+    if (v.kind === "closed") {
+      return `${short(v.dependency)} is still closed without a merge; reply \`/retry\` once it is merged or the link to it is removed`;
+    }
+    if (v.kind === "cycle") return `the dependencies form a cycle: ${v.cycle.map(short).join(" → ")}; remove one of the links, then reply \`/retry\``;
+    const blockedReason = it.blocked_reason;
+    const refusal = await this.decide(it.id, (cur) => {
+      if (cur.stage !== "RUNNING" || cur.pr_number !== null || cur.blocked_on !== "human" || cur.blocked_reason !== blockedReason) return null;
+      const next = { ...cur, restart_count: cur.restart_count + 1 };
+      return {
+        patch: { blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
+        actor,
+        reason: "retry_requested",
+        detail: { released: blockedReason ?? DEPENDENCY_CLOSED, ...(note ? { note } : {}) },
+        enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+      };
+    });
+    if (refusal === null && v.kind === "wait") await this.applyDependencies(it.id, v);
+    return refusal;
   }
 
   /**
@@ -1980,15 +2023,15 @@ export class Controller {
   }
 
   /**
-   * What a dependency's state is now: a work item's from the store (merged = closed `completed` with a merge
-   * sha), else, with `network`, the source's answer at most once per DEPENDENCY_STATE_REFRESH_MS. Null when
-   * unknown or not read now (no item, no network, read recently, no capability, or the source failed: logged).
+   * What a dependency's state is now: a work item's from the store (see `itemMerged`), else, with `network`, the
+   * source's answer at most once per DEPENDENCY_STATE_REFRESH_MS. Null when unknown or not read now (no item, no
+   * network, read recently, no capability, or the source failed: logged).
    */
   private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
     const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
     if (dep) {
       if (dep.stage !== "CLOSED") return "open";
-      return dep.close_reason === "completed" && dep.merge_sha !== null ? "merged" : "closed_unmerged";
+      return (await this.itemMerged(dep)) ? "merged" : "closed_unmerged";
     }
     const adapter = this.byType.get(PR_SOURCE_TYPE);
     if (!network || !adapter || !isDependencySource(adapter)) return null;
@@ -1999,6 +2042,18 @@ export class Controller {
       this.d.log.warn("dependency state not read: stored state applies", { depends_on: dependsOn, error: (err as Error).message });
       return null;
     }
+  }
+
+  /**
+   * Whether a work item counts as merged for its dependents: closed `completed` with a merge sha, or a split
+   * parent (never implemented itself, so no sha) closed `completed` whose recorded phases all closed `completed`,
+   * the rule that closes a split (closeSplitIfDone).
+   */
+  private async itemMerged(it: WorkItem): Promise<boolean> {
+    if (!completed(it)) return false;
+    if (it.merge_sha !== null) return true;
+    const phases = await this.recordedPhases(it.id);
+    return phases.length > 0 && phases.every(completed);
   }
 
   /** Source id → the source ids it waits for, over every edge not yet merged, for the cycle check. */
