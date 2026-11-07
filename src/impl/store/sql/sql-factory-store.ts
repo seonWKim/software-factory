@@ -1622,6 +1622,17 @@ export class SqlFactoryStore implements FactoryStore {
     return row ? rowToAppCommandRequest(row) : null;
   }
 
+  async listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]> {
+    // `args` is JSON text written by JSON.stringify on both backends, so the pair appears verbatim; LIKE narrows
+    // (its wildcards escaped with `!`), and the exact check below drops any row whose id only looked alike.
+    const needle = `${JSON.stringify("work_item_id")}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`);
+    const rows = await this.db.all(
+      `SELECT * FROM app_command_requests WHERE args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
+      [`%${needle}%`],
+    );
+    return rows.map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id).reverse();
+  }
+
   // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
 
   async listTables(): Promise<StoreTable[]> {

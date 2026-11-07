@@ -654,7 +654,7 @@ export interface FactoryStore {
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
-  // through the same path as a comment command. Nothing creates them yet but tests.
+  // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
 
   /**
    * Records one request, pending (handled_at and refusal null). Its `seq` is greater than every request recorded
@@ -670,6 +670,11 @@ export interface FactoryStore {
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
   /** The request with `seq`, or null. Read-only. */
   getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /**
+   * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
+   * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
+   */
+  listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]>;
 
   // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
   // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
