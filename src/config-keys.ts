@@ -8,6 +8,7 @@ import { pathCompanionProblems } from "./core/companions.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatibleProblems } from "./impl/openai/config.js";
+import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
 
 /**
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
@@ -70,6 +71,7 @@ export const TOP_LEVEL_KEYS = [
   "defaults",
   "projects",
   "openai_compatible",
+  "slack",
   "path_companions",
   "cli_user",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
@@ -182,6 +184,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   if (isObject(raw.openai_compatible)) {
     check(raw.openai_compatible.models, "openai_compatible.models", "openai_compatible.models", OPENAI_COMPATIBLE_MODELS_KEYS);
   }
+  check(raw.slack, "slack", "slack", SLACK_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -206,6 +209,7 @@ export function checkConfigKeys(raw: unknown): void {
     ...unknownConfigKeys(raw),
     ...coordinationProblems(raw),
     ...openaiCompatibleProblems(raw),
+    ...slackConfigProblems(raw),
     ...pathCompanionProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
