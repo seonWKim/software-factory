@@ -904,6 +904,7 @@ export class Controller {
    */
   async catchUpStatus(): Promise<boolean> {
     // An optional read: with the request budget low it waits for the reset (issue #254); run() asks again each tick.
+    await this.guard("sync", () => this.syncStep());
     if (this.lowBudget()) return false;
     const items = await this.d.store.listWorkItems(CATCH_UP_LIMIT);
     if (items.length >= CATCH_UP_LIMIT) {
@@ -2526,6 +2527,8 @@ export class Controller {
   }
 
   private async coordinationStep(): Promise<void> {
+    // Dependency reads are optional: the sync state and the shared budget decide them (see lowBudget).
+    await this.guard("sync", () => this.syncStep());
     const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
       .filter((r) => r.kind === "implement")
       .slice(0, COORDINATION_BATCH);
@@ -3298,7 +3301,7 @@ export class Controller {
   }
 
   private async checksStep(): Promise<void> {
-    await this.syncStep();
+    await this.guard("sync", () => this.syncStep());
     // Check reads are optional: with the budget low, or another replica syncing, they wait for a later tick.
     if (this.lowBudget()) return;
     const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
