@@ -484,7 +484,23 @@ export class Controller {
     // One repository per factory today, so the configured repo's limit applies to every lease.
     const { max_attempts } = this.settings(this.project());
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
-    const ids = await this.d.store.expireLeases(max_attempts, (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms));
+    // Each attempt the store's conditional update cut off gets its end line (issue #210): the run's last
+    // heartbeat is its end. The reaper sees only an expired lease, so the reason is always lease_expired.
+    const ids = await this.d.store.expireLeases(
+      max_attempts,
+      (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms),
+      (a) =>
+        this.d.log.warn("run abandoned", {
+          run_id: a.run_id,
+          work_item_id: a.work_item_id,
+          attempt: a.attempt,
+          status: "abandoned",
+          reason: "lease_expired",
+          started_at: a.started_at,
+          ended_at: a.ended_at,
+          duration_ms: a.duration_ms,
+        }),
+    );
     for (const id of ids) this.d.log.warn("lease expired", { run_id: id });
   }
 
