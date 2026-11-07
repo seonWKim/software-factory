@@ -88,7 +88,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     await f.controller.tickCoordination();
     expect(await f.claim()).toBeNull();
     // The merge lands on the base branch: the dependency closes with its merge sha, and its dependents move.
-    const merged: ForgeEvent = { kind: "pr_merged", pr_number: 192, head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
+    const merged: ForgeEvent = { kind: "change_merged", change_ref: "192", head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
     await f.controller.handleEvent(merged);
     expect(await f.get(dep)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m192" });
     expect(await f.get(a)).toMatchObject({ blocked_on: "none", blocked_reason: null });
@@ -122,7 +122,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
     const a = await f.item(1);
     await f.controller.tickCoordination();
-    await f.controller.handleEvent({ kind: "pr_closed", pr_number: 192, head_branch: `factory/${dep}` });
+    await f.controller.handleEvent({ kind: "change_closed", change_ref: "192", head_branch: `factory/${dep}` });
     expect(await f.get(a)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "dependency_closed:#92" });
     expect(await f.queued(a)).toEqual([]);
     expect(await f.claim()).toBeNull();
@@ -165,7 +165,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
     const a = await f.item(1);
     await f.controller.tickCoordination();
-    await f.controller.handleEvent({ kind: "pr_closed", pr_number: 192, head_branch: `factory/${dep}` });
+    await f.controller.handleEvent({ kind: "change_closed", change_ref: "192", head_branch: `factory/${dep}` });
     expect(await f.get(a)).toMatchObject({ blocked_on: "human", blocked_reason: "dependency_closed:#92" });
     // The block's comment names the command that re-checks it.
     expect(source.comments.find((c) => c.marker === `<!-- factory:dependency-closed:${a}:o/r#92 -->`)!.body).toContain("`/retry`");
@@ -645,7 +645,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
     f.broker.calls = [];
     const unmergeable = async () => {
-      f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
+      f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
       await f.controller.tickIntake();
     };
     return { ...f, it, unmergeable };

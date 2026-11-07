@@ -159,7 +159,7 @@ describe("GitHubClient rate-limit budget", () => {
     const paths = gh.state.calls.map((c) => c.path.split("?")[0]);
     // The intake lists still run; the per-PR mergeable reads, the reviews and the commits wait.
     expect(paths).toEqual(["/repos/o/r/issues", "/repos/o/r/issues", "/repos/o/r/issues/comments", "/repos/o/r/pulls", "/repos/o/r/pulls"]);
-    expect(low.events.filter((e) => e.kind === "pr_open")).toHaveLength(3);
+    expect(low.events.filter((e) => e.kind === "change_open")).toHaveLength(3);
     // The commit and review cursors stay put, so the next poll reads them.
     expect(JSON.parse(low.next.source).commits).toEqual(JSON.parse(first.next.source).commits);
     expect(JSON.parse(low.next.forge).reviews).toEqual(JSON.parse(first.next.forge).reviews);

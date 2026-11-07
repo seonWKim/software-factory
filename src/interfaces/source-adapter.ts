@@ -27,7 +27,7 @@ export type SourceEvent =
    * `/revise <feedback>`: `feedback` is the text after the command, possibly empty (the controller refuses that).
    * On a PR's conversation, `pr` names that PR (any head branch: factory or adopted) and `source` is the PR
    * itself, so the 👀 and any reply go there; the controller finds the work item by the head branch, or an
-   * adopted item by the PR number. On an issue, `pr` is null or absent.
+   * adopted item by its `change_ref` (the PR number as text). On an issue, `pr` is null or absent.
    */
   | {
       kind: "revise_requested";
@@ -35,7 +35,7 @@ export type SourceEvent =
       comment_id: string;
       requester: ExternalIdentity;
       feedback: string;
-      pr?: { pr_number: number; head_branch: string } | null;
+      pr?: { change_ref: string; head_branch: string } | null;
     }
   /**
    * `/retry [notes]`. `note`: the trimmed text after the command, as for `spec_approved` (a leading `+paths`
@@ -80,7 +80,7 @@ export type SourceEvent =
       comment_id: string;
       requester: ExternalIdentity;
       notes: string;
-      pr: { pr_number: number; head_branch: string } | null;
+      pr: { change_ref: string; head_branch: string } | null;
     }
   /**
    * A `/verdict` comment on an issue or on a PR. `args` is the raw text after `/verdict` (following lines
@@ -117,7 +117,7 @@ export interface SubIssueInput extends Omit<IssueInput, "project" | "requester_i
 
 export type VerdictEventTarget =
   | { kind: "issue"; source: SourceRef }
-  | { kind: "pr"; pr_number: number; head_branch: string };
+  | { kind: "pr"; change_ref: string; head_branch: string };
 
 export interface PollResult {
   events: SourceEvent[];
@@ -158,14 +158,14 @@ interface SourceAdapterBase {
    */
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
   /**
-   * Shows the work item's status on the source (e.g. one status label). `pr_number` null means the item
-   * itself (the issue); non-null means the item's PR: PR status goes to the forge when one is selected
+   * Shows the work item's status on the source (e.g. one status label). `change_ref` null means the item
+   * itself (the issue); non-null (the PR number as text) means the item's PR: PR status goes to the forge when one is selected
    * (`Forge.setPrStatus`, which may call this to write the label); the source does not route it. Afterwards the target carries exactly one of the factory's status markers; markers the
    * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
    * failures are the caller's to log and must not block a transition. Sources with no such surface may
    * do nothing.
    */
-  setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void>;
+  setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void>;
   /**
    * Closes the item on the source, as "not planned" by default (e.g. the issue, `state_reason`). Used with
    * `not_planned` when a human rejects the spec, and with `completed` when every phase of a split closed as

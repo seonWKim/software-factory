@@ -132,7 +132,7 @@ describe("multi-source controller: per-item routing", () => {
     await finishAll(f, "implement", { pr_number: 42 });
 
     expect((await f.store.getWorkItem(slItem.id))!.pr_number).toBe(42);
-    expect(f.sl.statusCalls.filter((c) => c.pr_number !== null)).toEqual([]);
+    expect(f.sl.statusCalls.filter((c) => c.change_ref !== null)).toEqual([]);
     expect(f.forge.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
       { source: slackRef(1), status: "in_review", pr_number: 42 },
     ]);
@@ -151,7 +151,7 @@ describe("multi-source controller: per-item routing", () => {
     );
     await store.transition({ id: item.id, expected_version: item.version, patch: { change_ref: "9" }, actor: { kind: "system", id: "system:test" }, reason: "test" });
     await c.catchUpStatus();
-    expect(only.statusCalls.map((x) => x.pr_number)).toEqual([null, 9]);
+    expect(only.statusCalls.map((x) => x.change_ref)).toEqual([null, "9"]);
   });
 
   it("an item whose source type has no adapter keeps its state; its calls are skipped with a warning", async () => {

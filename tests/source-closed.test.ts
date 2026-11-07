@@ -96,7 +96,7 @@ type F = Awaited<ReturnType<typeof factory>>;
 /** One poll tick: PR events come from the forge, the rest from the source. */
 async function intake(f: F, ...events: (SourceEvent | ForgeEvent)[]) {
   for (const e of events) {
-    if (e.kind.startsWith("pr_")) f.forge.queue.push(e as ForgeEvent);
+    if (e.kind.startsWith("change_") || e.kind === "pr_changes_requested") f.forge.queue.push(e as ForgeEvent);
     else f.source.queue.push(e as SourceEvent);
   }
   await f.controller.tickIntake();
@@ -310,7 +310,7 @@ describe("closing the source issue stops its work item", () => {
     });
     await intake(
       f,
-      { kind: "pr_merged", pr_number: 42, head_branch: `factory/${it.id}`, merge_sha: "m1", merger: alice },
+      { kind: "change_merged", change_ref: "42", head_branch: `factory/${it.id}`, merge_sha: "m1", merger: alice },
       closed(alice),
     );
     expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
@@ -420,7 +420,7 @@ describe("closing the source issue: close reason and the open PR", () => {
       const id = await withPr(f);
       await intake(f, closed(bob, reason));
       const before = await item(f);
-      await intake(f, { kind: "pr_closed", pr_number: 42, head_branch: `factory/${id}` });
+      await intake(f, { kind: "change_closed", change_ref: "42", head_branch: `factory/${id}` });
       expect(await item(f)).toEqual(before);
       expect(before.close_reason).toBe(reason === "completed" ? "completed" : "wont_do");
     }

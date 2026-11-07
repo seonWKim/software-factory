@@ -60,7 +60,7 @@ describe("a non-GitHub source alone with a forge (issue #273)", () => {
     // The PR's checks were read from the forge, its status shown there; the item's own status stays on Slack.
     expect(f.forge.checkCalls).toEqual([42]);
     expect(f.forge.prStatus(42)).toBe("ready_to_merge");
-    expect(f.slack.statusCalls.filter((c) => c.pr_number !== null)).toEqual([]);
+    expect(f.slack.statusCalls.filter((c) => c.change_ref !== null)).toEqual([]);
 
     // The forge reports the PR cannot merge: the automatic resolve's note goes on the PR, through the forge.
     const id = (await f.item()).id;
@@ -68,13 +68,13 @@ describe("a non-GitHub source alone with a forge (issue #273)", () => {
     f.sandbox.mergeExit = 1;
     f.sandbox.conflicts = ["src/gate.ts"];
     f.sandbox.files = { "src/gate.ts": CONFLICT };
-    f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
+    f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
     await f.step();
     expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(f.forge.comments.filter((c) => c.marker.startsWith("<!-- factory:auto-resolved:")).map((c) => c.pr_number)).toEqual([42]);
     expect(f.slack.comments.some((c) => c.marker.startsWith("<!-- factory:auto-resolved:"))).toBe(false);
 
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m42", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${id}`, merge_sha: "m42", merger: alice });
     await f.step();
     expect(await f.item()).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m42" });
     expect(f.forge.prStatus(42)).toBe("done");
@@ -168,7 +168,7 @@ describe("GitHub with and without a forge (issue #273)", () => {
     const T = "2026-11-06T00:00:00Z";
     const f = await github({ withForge: true });
     const id = await f.waiting();
-    await f.controller.handleEvent({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m42", merger: alice });
+    await f.controller.handleEvent({ kind: "change_merged", change_ref: "42", head_branch: `factory/${id}`, merge_sha: "m42", merger: alice });
     const applied = await f.store.listStateChanges(id);
     expect(applied.at(-1)).toMatchObject({ reason: "pr_merged" });
     // The GitHub source's cursor as the version before issue #273 wrote it: the PR position inside it.

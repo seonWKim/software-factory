@@ -39,7 +39,7 @@ describe("GitHubForge: closePr", () => {
     return { client, forge };
   };
   const body = (closer: { login?: string } | null) => `closed by ${closer?.login ?? "nobody"}`;
-  const input = { pr_number: 42, closed: issueRef(7), marker: "<!-- m -->", body };
+  const input = { pr: 42, closed: issueRef(7), marker: "<!-- m -->", body };
 
   it("comments with the issue's closer, then closes the open PR without merging", async () => {
     const { client, forge } = make();
@@ -115,7 +115,7 @@ describe("GitHubForge: unmergeable factory PRs", () => {
     }
   }
 
-  it("emits pr_unmergeable only for open factory PRs whose mergeable is false", async () => {
+  it("emits change_unmergeable only for open factory PRs whose mergeable is false", async () => {
     const client = new PrClient();
     const forge = forgeOf(client);
     client.open = [
@@ -128,8 +128,8 @@ describe("GitHubForge: unmergeable factory PRs", () => {
       4: full(4, "feature/x", false),
     };
     const { events } = await forge.poll(null);
-    expect(events.filter((e) => e.kind === "pr_unmergeable")).toEqual([
-      { kind: "pr_unmergeable", pr_number: 1, head_branch: "factory/wi_a", head_sha: "head1", base_sha: "base1" },
+    expect(events.filter((e) => e.kind === "change_unmergeable")).toEqual([
+      { kind: "change_unmergeable", change_ref: "1", head_branch: "factory/wi_a", head_sha: "head1", base_sha: "base1" },
     ]);
     const gets = client.calls.filter((c) => c.method === "GET").map((c) => c.path);
     expect(gets.some((p) => p.startsWith("/repos/o/r/pulls?state=open"))).toBe(true);
@@ -277,13 +277,13 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     ];
     client.byNumber[14] = { ...pull(14, "factory/wi_a"), mergeable: true };
     const { events } = await forge.poll(null);
-    expect(events.filter((e) => e.kind === "pr_open")).toEqual([
+    expect(events.filter((e) => e.kind === "change_open")).toEqual([
       {
-        kind: "pr_open", source: prRef(10), pr_number: 10, head_branch: "feature/x", head_sha: "head10",
+        kind: "change_open", source: prRef(10), change_ref: "10", head_branch: "feature/x", head_sha: "head10",
         title: "PR 10", body: "body 10", author: bobId, labels: ["factory: skip", "bug"],
       },
       {
-        kind: "pr_open", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", head_sha: "head14",
+        kind: "change_open", source: prRef(14), change_ref: "14", head_branch: "factory/wi_a", head_sha: "head14",
         title: "PR 14", body: "body 14", author: bobId, labels: [],
       },
     ]);
@@ -304,10 +304,10 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
     client.byNumber[20] = { merged_by: bob };
     client.byNumber[21] = { merged_by: null };
     const { events } = await forge.poll(null);
-    expect(events.filter((e) => e.kind === "pr_merged" || e.kind === "pr_closed")).toEqual([
-      { kind: "pr_merged", pr_number: 20, head_branch: "feature/x", merge_sha: "m20", merger: bobId },
-      { kind: "pr_merged", pr_number: 21, head_branch: "patch-1", merge_sha: "m21", merger: null, fork: true },
-      { kind: "pr_closed", pr_number: 22, head_branch: "feature/y" },
+    expect(events.filter((e) => e.kind === "change_merged" || e.kind === "change_closed")).toEqual([
+      { kind: "change_merged", change_ref: "20", head_branch: "feature/x", merge_sha: "m20", merger: bobId },
+      { kind: "change_merged", change_ref: "21", head_branch: "patch-1", merge_sha: "m21", merger: null, fork: true },
+      { kind: "change_closed", change_ref: "22", head_branch: "feature/y" },
     ]);
   });
 
@@ -349,7 +349,7 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
       const second = await forge.poll(first);
       expect(second.events.filter((e) => e.kind === "pr_changes_requested")).toEqual([
         {
-          kind: "pr_changes_requested", source: prRef(14), pr_number: 14, head_branch: "factory/wi_a", review_id: "5",
+          kind: "pr_changes_requested", source: prRef(14), change_ref: "14", head_branch: "factory/wi_a", review_id: "5",
           reviewer: bobId, body: "Two problems.",
           comments: [
             { path: "src/core/a.ts", line: 12, body: "this throws on an empty list" },
@@ -361,7 +361,7 @@ describe("GitHubForge: pull requests the factory did not open (design 2026-11-01
       const reads = client.calls.filter((c) => c.path.includes("/reviews")).map((c) => c.path.split("?")[0]);
       expect([...new Set(reads)]).toEqual(["/repos/o/r/pulls/14/reviews", "/repos/o/r/pulls/14/reviews/5/comments"]);
       expect(second.events.findIndex((e) => e.kind === "pr_changes_requested"))
-        .toBeGreaterThan(second.events.findIndex((e) => e.kind === "pr_open"));
+        .toBeGreaterThan(second.events.findIndex((e) => e.kind === "change_open"));
 
       // The same reviews on the next poll: nothing again.
       const third = await forge.poll(second.next_cursor);
@@ -478,7 +478,7 @@ describe("GitHubForge: the starting point for merges (design §5, Merges)", () =
     const forge = forgeOf(client, ctx);
     return { client, clock, log, forge };
   }
-  const merges = (events: ForgeEvent[]) => events.flatMap((e) => (e.kind === "pr_merged" ? [e.pr_number] : []));
+  const merges = (events: ForgeEvent[]) => events.flatMap((e) => (e.kind === "change_merged" ? [Number(e.change_ref)] : []));
 
   it("a first start with 50 old merged PRs reports no merge and makes no per-PR read, only the list read", async () => {
     const { client, forge } = make();
@@ -581,7 +581,7 @@ describe("GitHubForge: PR comments and PR status (issue #273)", () => {
     expect(await forge.postPrComment(42, "body", "<!-- m -->")).toEqual({ url: "u" });
     await forge.setPrStatus(issueRef(7), "in_review", 42);
     const pr = { type: "github_issue", id: "o/r#42", link: "https://github.com/o/r/pull/42" };
-    expect(calls).toEqual([["postComment", pr, "body", "<!-- m -->"], ["setStatus", issueRef(7), "in_review", 42]]);
+    expect(calls).toEqual([["postComment", pr, "body", "<!-- m -->"], ["setStatus", issueRef(7), "in_review", "42"]]);
   });
 
   it("names its own PR refs only", () => {

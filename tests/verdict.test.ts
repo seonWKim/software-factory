@@ -127,7 +127,7 @@ describe("controller: /verdict", () => {
   it("stores a verdict written on the item's PR the same way", async () => {
     const f = await setup();
     const it0 = await item(f);
-    await f.controller.handleEvent(verdict("accept none", "501", { kind: "pr", pr_number: 42, head_branch: `factory/${it0.id}` }));
+    await f.controller.handleEvent(verdict("accept none", "501", { kind: "pr", change_ref: "42", head_branch: `factory/${it0.id}` }));
     expect(await f.store.listVerdicts(it0.id)).toEqual([
       expect.objectContaining({ verdict: "accept", severity: "none", reason: null, comment_id: "501", target: "pr" }),
     ]);
@@ -138,8 +138,8 @@ describe("controller: /verdict", () => {
   it("ignores a PR comment whose branch is not a work item's, or whose PR is not the item's", async () => {
     const f = await setup();
     const it0 = await item(f);
-    await f.controller.handleEvent(verdict("accept none", "502", { kind: "pr", pr_number: 42, head_branch: "factory/wi_nope" }));
-    await f.controller.handleEvent(verdict("accept none", "503", { kind: "pr", pr_number: 41, head_branch: `factory/${it0.id}` }));
+    await f.controller.handleEvent(verdict("accept none", "502", { kind: "pr", change_ref: "42", head_branch: "factory/wi_nope" }));
+    await f.controller.handleEvent(verdict("accept none", "503", { kind: "pr", change_ref: "41", head_branch: `factory/${it0.id}` }));
     await f.controller.handleEvent(verdict("accept none", "504", { kind: "issue", source: issueRef(8) }));
     expect(await f.store.listVerdicts(it0.id)).toEqual([]);
     expect(f.source.comments).toEqual([]);

@@ -266,7 +266,7 @@ describe("GitHubIssueSource: closed issues", () => {
       head: { ref: "factory/wi_a", sha: "h" }, base: { ref: "main", sha: "b" },
     }];
     const { events } = await source.poll(null);
-    const prKinds = ["pr_merged", "pr_closed", "pr_open", "pr_unmergeable", "pr_changes_requested"];
+    const prKinds = ["pr_merged", "pr_closed", "change_open", "change_unmergeable", "pr_changes_requested"];
     expect(events.filter((e) => prKinds.includes(e.kind))).toEqual([]);
     expect(events.map((e) => e.kind)).toEqual(["source_closed"]);
     expect(client.calls.filter((c) => c.path.startsWith("/repos/o/r/pulls"))).toEqual([]);
@@ -362,7 +362,7 @@ describe("GitHubIssueSource: /verdict", () => {
     const { events } = await source.poll(null);
     expect(events).toEqual([
       {
-        kind: "verdict_submitted", target: { kind: "pr", pr_number: 42, head_branch: "factory/wi_a" },
+        kind: "verdict_submitted", target: { kind: "pr", change_ref: "42", head_branch: "factory/wi_a" },
         comment_id: "30", approver: aliceId, args: "accept none",
       },
     ]);
@@ -470,7 +470,7 @@ describe("GitHubIssueSource: /resolve", () => {
     expect(events).toEqual([
       {
         kind: "resolve_requested", source: issueRef(42), comment_id: "20", requester: aliceId, notes: "take both",
-        pr: { pr_number: 42, head_branch: "factory/wi_a" },
+        pr: { change_ref: "42", head_branch: "factory/wi_a" },
       },
     ]);
     const lookups = client.calls.filter((c) => /^\/repos\/o\/r\/pulls\/\d+$/.test(c.path)).map((c) => c.path);
@@ -497,9 +497,9 @@ describe("GitHubIssueSource: /resolve", () => {
     expect(events.filter((e) => e.kind === "revise_requested")).toEqual([
       {
         kind: "revise_requested", source: issueRef(14), comment_id: "30", requester: aliceId, feedback: "rename the flag\nkeep an alias",
-        pr: { pr_number: 14, head_branch: "factory/wi_a" },
+        pr: { change_ref: "14", head_branch: "factory/wi_a" },
       },
-      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: aliceId, feedback: "", pr: { pr_number: 10, head_branch: "feature/x" } },
+      { kind: "revise_requested", source: issueRef(10), comment_id: "31", requester: aliceId, feedback: "", pr: { change_ref: "10", head_branch: "feature/x" } },
       { kind: "revise_requested", source: issueRef(7), comment_id: "33", requester: aliceId, feedback: "on the issue" },
     ]);
   });
@@ -633,9 +633,9 @@ describe("GitHubIssueSource: status labels", () => {
     await expect(source.setStatus(issueRef(7), "implementing", null)).resolves.toBeUndefined();
   });
 
-  it("labels the PR, not the issue, when pr_number is given", async () => {
+  it("labels the PR, not the issue, when change_ref is given", async () => {
     const { client, source } = make();
-    await source.setStatus(issueRef(7), "in_review", 42);
+    await source.setStatus(issueRef(7), "in_review", "42");
     expect(client.issueLabels.get(42)).toEqual(["sf: in review"]);
     expect(client.issueLabels.has(7)).toBe(false);
   });

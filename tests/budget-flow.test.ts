@@ -373,7 +373,7 @@ describe("outcome and history", () => {
     const it0 = await f.submit();
     await f.budget(null);
     await f.step();
-    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${it0.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${it0.id}`, merge_sha: "m1", merger: alice });
     await f.controller.tickIntake();
     expect(await f.item(it0)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     expect((await f.store.listBudgetCheckpoints(it0.id))[0]).toMatchObject({ answer: "continued_suggested", outcome: "merged" });

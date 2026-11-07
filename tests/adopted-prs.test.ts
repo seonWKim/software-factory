@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import type { Logger } from "../src/core/log.js";
 import { SKIP_LABEL } from "../src/core/policy.js";
+import { projectLabelCursor } from "../src/core/project.js";
 import type { SourceRef, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -29,11 +30,11 @@ function prRef(n: number): SourceRef {
   return { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` };
 }
 
-function prOpen(n: number, o: Partial<Extract<ForgeEvent, { kind: "pr_open" }>> = {}): ForgeEvent {
+function prOpen(n: number, o: Partial<Extract<ForgeEvent, { kind: "change_open" }>> = {}): ForgeEvent {
   return {
-    kind: "pr_open",
+    kind: "change_open",
     source: prRef(n),
-    pr_number: n,
+    change_ref: String(n),
     head_branch: "feature/x",
     head_sha: "h1",
     title: "Speed up the poll",
@@ -65,7 +66,7 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
   /** One poll tick: PR events come from the forge, the rest from the source. */
   const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
     for (const e of events) {
-      if (e.kind.startsWith("pr_")) forge.queue.push(e as ForgeEvent);
+      if (e.kind.startsWith("change_") || e.kind === "pr_changes_requested") forge.queue.push(e as ForgeEvent);
       else source.queue.push(e as SourceEvent);
     }
     await controller.tickIntake();
@@ -110,6 +111,17 @@ describe("adopting a pull request a person opened", () => {
     expect(sc.map((c) => [c.reason, c.actor])).toEqual([["pr_adopted", { kind: "user", id: "github:2" }]]);
     // The status label goes on the pull request (its source).
     expect(f.source.statusLabels(prRef(50))).toEqual(["in_review"]);
+  });
+
+  it("a GitHub item opened from change_open stores change_url as https://<label>/pull/<n>, the string prUrl in src/main.ts builds", async () => {
+    const f = await factory();
+    const label = "github.com/o/r";
+    await f.store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, label);
+    await f.poll(prOpen(50));
+    const it = (await f.item(50))!;
+    expect(it).toMatchObject({ change_ref: "50", change_url: `https://${label}/pull/50` });
+    // The forge received the event, not the source (the harness routes change_* kinds to it).
+    expect(f.forge.fileCalls).toEqual([50]);
   });
 
   it("the review reads the PR's head branch, its title, body and diff with no spec, and comments on the PR", async () => {
@@ -171,7 +183,7 @@ describe("factory: skip", () => {
     expect(await f.store.listWorkItems(10)).toEqual([]);
     expect(f.forge.fileCalls).toEqual([]);
 
-    const merged: ForgeEvent = { kind: "pr_merged", pr_number: 51, head_branch: "feature/x", merge_sha: "m51", merger: alice };
+    const merged: ForgeEvent = { kind: "change_merged", change_ref: "51", head_branch: "feature/x", merge_sha: "m51", merger: alice };
     await f.poll(merged);
     await f.poll(merged);
     expect(await f.store.listWorkItems(10)).toEqual([]);
@@ -308,7 +320,7 @@ describe("merges of pull requests the factory did not open", () => {
     const f = await factory();
     await f.poll(prOpen(50));
     await f.work();
-    await f.poll({ kind: "pr_merged", pr_number: 50, head_branch: "feature/x", merge_sha: "m50", merger: alice });
+    await f.poll({ kind: "change_merged", change_ref: "50", head_branch: "feature/x", merge_sha: "m50", merger: alice });
     const it = (await f.item(50))!;
     expect(it).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m50" });
     const last = (await f.store.listStateChanges(it.id)).at(-1)!;
@@ -320,17 +332,17 @@ describe("merges of pull requests the factory did not open", () => {
   it("an adopted PR closed without a merge closes its item as rejected", async () => {
     const f = await factory();
     await f.poll(prOpen(50));
-    await f.poll({ kind: "pr_closed", pr_number: 50, head_branch: "feature/x" });
+    await f.poll({ kind: "change_closed", change_ref: "50", head_branch: "feature/x" });
     expect((await f.item(50))!).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
   });
 
   it("a merged PR that was never adopted (a fork, or merged before any poll) writes one unreviewed merge and no item", async () => {
     const f = await factory();
     await f.poll(
-      { kind: "pr_merged", pr_number: 60, head_branch: "feature/x", merge_sha: "m60", merger: alice, fork: true },
-      { kind: "pr_merged", pr_number: 61, head_branch: "patch-1", merge_sha: "m61", merger: null },
+      { kind: "change_merged", change_ref: "60", head_branch: "feature/x", merge_sha: "m60", merger: alice, fork: true },
+      { kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null },
     );
-    await f.poll({ kind: "pr_merged", pr_number: 61, head_branch: "patch-1", merge_sha: "m61", merger: null });
+    await f.poll({ kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     const rows = await f.store.listUnreviewedMerges(10);
     expect(rows.map((r) => [r.pr_number, r.merge_sha, r.merger_id]).sort()).toEqual([[60, "m60", "github:1"], [61, "m61", null]]);
@@ -338,7 +350,7 @@ describe("merges of pull requests the factory did not open", () => {
 
   it("a PR closed without a merge and with no item records nothing", async () => {
     const f = await factory();
-    await f.poll({ kind: "pr_closed", pr_number: 62, head_branch: "feature/x", fork: true });
+    await f.poll({ kind: "change_closed", change_ref: "62", head_branch: "feature/x", fork: true });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     expect(await f.store.listUnreviewedMerges(10)).toEqual([]);
   });
