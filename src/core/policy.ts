@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import type { RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
+import type { Run, RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -105,6 +105,51 @@ export const PREFLIGHT_CHECKS = ["push_access", "pr_api", "base_fetch"] as const
  * fails the same way. The item blocks on a human with `run_failed:implement:<code>`; `/retry` or `/revise` go on.
  */
 export const NO_AUTO_RETRY: readonly string[] = ["no_commits", "scope_violation", "egress_blocked", "diff_too_large"];
+
+/**
+ * The block of an item whose implement, review or resolve run returned needs_human (decided 2026-11-07): the
+ * agent hit something it cannot fix and asked the owner. Blocked on a human; no automatic retry.
+ */
+export const AGENT_NEEDS_HUMAN = "agent_needs_human";
+
+/**
+ * The block after two task failures in a row in one step with the same error code and the same detail line
+ * (decided 2026-11-07): a third run would fail the same way. `/retry` starts the step with a fresh budget.
+ */
+export const REPEATED_FAILURE = "repeated_failure";
+
+/** The longest detail line the repeated-failure rule compares. */
+export const FAILURE_LINE_CHARS = 200;
+
+/** The part of a failure's detail the repeated-failure rule compares: its first line, up to 200 characters. */
+export function failureLine(detail: string): string {
+  return (detail.split(/\r?\n/)[0] ?? "").trim().slice(0, FAILURE_LINE_CHARS);
+}
+
+/**
+ * Whether `run`, a task failure, repeats the step's previous task failure: same error code, same detail line.
+ * `step`: the step's runs in order (the first run and its automatic retries), `run` among them. Rate limits,
+ * stalls and infra failures are not attempts, so they are skipped, neither counted nor breaking the row.
+ */
+export function repeatsLastFailure(step: readonly Pick<Run, "id" | "outcome">[], run: Pick<Run, "id" | "outcome">): boolean {
+  const o = run.outcome;
+  if (o?.status !== "failed" || failureClass(o) !== "task") return false;
+  const before = step.slice(0, Math.max(0, step.findIndex((r) => r.id === run.id)));
+  const prev = before.filter((r) => failureClass(r.outcome) === "task" && r.outcome !== null).at(-1)?.outcome;
+  return prev?.status === "failed" && prev.error_code === o.error_code && failureLine(prev.detail) === failureLine(o.detail);
+}
+
+/**
+ * The kind of run behind an `agent_needs_human` or `repeated_failure` block, from the item's runs (oldest
+ * first): the latest run that asked for a human, or the latest failed run. The item's fields cannot tell a
+ * resolve block from an implement block. Undefined for any other block, or when no such run is found.
+ */
+export function blockingRunKind(blockedReason: string | null, runs: readonly Pick<Run, "kind" | "outcome">[]): RunKind | undefined {
+  const asked = (r: Pick<Run, "outcome">) => r.outcome?.status === "succeeded" && r.outcome.data.needs_human != null;
+  if (blockedReason === AGENT_NEEDS_HUMAN) return runs.filter(asked).at(-1)?.kind;
+  if (blockedReason === REPEATED_FAILURE) return runs.filter((r) => r.outcome?.status === "failed").at(-1)?.kind;
+  return undefined;
+}
 
 /** The forge branch that keeps a failed implement run's commits: under the branch prefix, one per run. */
 export function wipBranchFor(item: Pick<WorkItem, "id">, prefix: string, runId: string): string {
