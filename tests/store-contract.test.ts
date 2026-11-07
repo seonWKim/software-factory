@@ -11,7 +11,7 @@ import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import type { FactoryStore, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
+import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
@@ -1830,6 +1830,112 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("sync leases (migration 39): one sync per project, keyed by name", () => {
+    const NAME = `sync:github_issue:${PROJECT_KEY}`;
+
+    it("one owner at a time; the holder's own take keeps its token; another name is its own lease", async () => {
+      const { store } = await make();
+      const [a, b] = await Promise.all([store.acquireSyncLease(NAME, "replica-a", LEASE), store.acquireSyncLease(NAME, "replica-b", LEASE)]);
+      expect([a, b].filter((r) => r.ok)).toHaveLength(1);
+      expect([a, b].find((r) => !r.ok)).toMatchObject({ ok: false, reason: "held", holder: { token: 1 } });
+      const winner = (a.ok ? a : b) as Extract<typeof a, { ok: true }>;
+      // The holder taking it again (a restart with the same id, a second controller in one process) keeps the token.
+      expect(await store.acquireSyncLease(NAME, winner.lease.owner, LEASE)).toMatchObject({ ok: true, lease: { token: 1 } });
+      expect((await store.acquireSyncLease(`sync:github_issue:${OTHER_PROJECT_KEY}`, "replica-b", LEASE)).ok).toBe(true);
+      expect(await store.getSyncLease(NAME)).toMatchObject({ name: NAME, owner: winner.lease.owner, token: 1 });
+      expect(await store.getSyncLease("sync:none")).toBeNull();
+    });
+
+    it("another owner takes over after expiry with token + 1; the old token's renew, release and fenced writes are refused", async () => {
+      const { store, clock } = await make();
+      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE - 1);
+      expect((await store.acquireSyncLease(NAME, "replica-b", LEASE)).ok).toBe(false);
+      // Renew extends it while the token is current, even past expiry (host sleep), as with the listener lease.
+      clock.advance(LEASE);
+      expect((await store.renewSyncLease(NAME, a.lease.token, LEASE)).ok).toBe(true);
+      clock.advance(LEASE);
+      const b = await store.acquireSyncLease(NAME, "replica-b", LEASE);
+      expect(b).toMatchObject({ ok: true, lease: { owner: "replica-b", token: a.lease.token + 1 } });
+      expect(await store.renewSyncLease(NAME, a.lease.token, LEASE)).toMatchObject({ ok: false, reason: "lease_lost", holder: { owner: "replica-b" } });
+      await store.releaseSyncLease(NAME, a.lease.token);
+      expect((await store.acquireSyncLease(NAME, "replica-c", LEASE)).ok).toBe(false);
+      expect(await store.advanceSyncCursor({ name: NAME, token: a.lease.token }, "intake:github_issue", null, "c1")).toBe(false);
+      expect(await store.getCursor("intake:github_issue")).toBeNull();
+    });
+
+    it("release lets another owner take it at once", async () => {
+      const { store } = await make();
+      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      await store.releaseSyncLease(NAME, a.lease.token);
+      expect(await store.acquireSyncLease(NAME, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
+    });
+
+    it("a fenced cursor write lands once: the same write again, or from a cursor value already passed, writes nothing", async () => {
+      const { store } = await make();
+      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      const fence = { name: NAME, token: a.lease.token };
+      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(true);
+      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(false);
+      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(true);
+      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(false);
+      expect(await store.getCursor("intake:github_issue")).toBe("c2");
+    });
+
+    it("a delivery claim fenced with a stale token claims nothing; the current token claims it once", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const target = issue(1).source;
+      await store.recordItemMessage({ work_item_id: item.id, marker: "<!-- m -->", body: "b", delivery: { source_type: "github_issue", target } });
+      const [row] = await store.listPendingDeliveries(["github_issue"], 10);
+      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
+      if (!a.ok) throw new Error(a.reason);
+      clock.advance(LEASE);
+      const b = await store.acquireSyncLease(NAME, "replica-b", LEASE);
+      if (!b.ok) throw new Error(b.reason);
+      expect(await store.claimDelivery(row!.seq, LEASE, { name: NAME, token: a.lease.token })).toBeNull();
+      expect(await store.claimDelivery(row!.seq, LEASE, { name: NAME, token: b.lease.token })).not.toBeNull();
+      expect(await store.claimDelivery(row!.seq, LEASE, { name: NAME, token: b.lease.token })).toBeNull();
+    });
+  });
+
+  describe("forge budget (migration 39): a newer reading wins", () => {
+    const at = (s: number) => new Date(Date.UTC(2026, 10, 8, 9, 0, s)).toISOString() as Timestamp;
+    const reading = (remaining: number, updated_at: Timestamp, project = PROJECT_KEY): ForgeBudget => ({
+      project, plugin: "github", remaining, limit: 5000, reset_at: at(59), updated_at,
+    });
+
+    it("stores the first reading; a newer one replaces it; an older or equal one changes nothing", async () => {
+      const { store } = await make();
+      expect(await store.getForgeBudget(PROJECT_KEY, "github")).toBeNull();
+      expect(await store.putForgeBudget(reading(4000, at(1)))).toBe(true);
+      expect(await store.putForgeBudget(reading(812, at(2)))).toBe(true);
+      expect(await store.putForgeBudget(reading(4500, at(1)))).toBe(false);
+      // The same write again (a handler run twice) writes nothing new.
+      expect(await store.putForgeBudget(reading(812, at(2)))).toBe(false);
+      expect(await store.getForgeBudget(PROJECT_KEY, "github")).toEqual(reading(812, at(2)));
+      // Each project and plugin is its own row.
+      expect(await store.putForgeBudget(reading(10, at(0), OTHER_PROJECT_KEY))).toBe(true);
+      expect(await store.getForgeBudget(PROJECT_KEY, "github")).toEqual(reading(812, at(2)));
+      expect(await store.getForgeBudget(PROJECT_KEY, "other")).toBeNull();
+    });
+  });
+
+  describe("item thread actor (migration 39)", () => {
+    it("keeps the account ID of an entry from a source; the factory's own entries have none", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.recordItemMessage({ work_item_id: item.id, marker: "github:9", body: "/approve", actor: "github:42" });
+      await store.recordItemMessage({ work_item_id: item.id, marker: "<!-- factory:x -->", body: "spec" });
+      const [theirs, ours] = await store.listItemMessages(item.id);
+      expect(theirs).toMatchObject({ marker: "github:9", actor: "github:42" });
+      expect(ours).not.toHaveProperty("actor");
+    });
+  });
+
   describe("identity links", () => {
     const slack = (subject: string) => ({ provider: "slack" as const, subject });
     const userA = "github:1" as UserId;
@@ -2593,5 +2699,56 @@ describe("MySQL step 35 (change-fields)", () => {
     await conn.query("UPDATE work_items SET pr_number = 12 WHERE id = ?", [item.id]);
     expect((await store.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: item.id, pr_number: 12 });
     expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
+  });
+});
+
+describe("migration 40 (sync leases, forge budget, thread actor)", () => {
+  /** Found by what it creates, so a renumber at merge needs no edit. */
+  const STEP = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE IF NOT EXISTS sync_leases")) + 1;
+  const file = "0040-sync-lease.sql";
+  const columns = (text: string, table: string) => {
+    const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\s*\\)`).exec(text)![1]!;
+    return [...body.matchAll(/^\s+`?([a-z_]+)`?\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
+  };
+
+  it("SQLite: adds both tables and the actor column to an existing database, keeping its thread entries", async () => {
+    expect(STEP).toBeGreaterThan(0);
+    const raw = new DatabaseSync(":memory:");
+    for (const m of MIGRATIONS.slice(0, STEP - 1)) raw.exec(m);
+    // Only the thread row matters here: no work item row is built for it.
+    raw.exec("PRAGMA foreign_keys = OFF");
+    raw.exec("INSERT INTO item_thread (work_item_id, marker, body, created_at) VALUES ('wi_1', 'm', 'b', 't')");
+    raw.exec(MIGRATIONS[STEP - 1]!);
+    expect(raw.prepare("SELECT marker, actor FROM item_thread").all().map((r) => ({ ...r }))).toEqual([{ marker: "m", actor: null }]);
+    const cols = (t: string) => (raw.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name).sort();
+    expect(cols("sync_leases")).toEqual(["expires_at", "name", "owner", "token"]);
+    expect(cols("forge_budget")).toEqual(["limit", "plugin", "project_key", "remaining", "reset_at", "updated_at"]);
+    expect(cols("item_thread")).toContain("actor");
+    raw.close();
+  });
+
+  it("MySQL: one step right after the one before it, with the same tables and columns as the SQLite migration", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "sync-lease")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file });
+    const sql = readFileSync(join(STEPS_DIR, file), "utf8");
+    for (const t of ["sync_leases", "forge_budget"]) expect(columns(sql, t)).toEqual(columns(MIGRATIONS[STEP - 1]!, t));
+    expect(sql).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
+    expect(MIGRATIONS[STEP - 1]).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing database from the step before: the tables added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect(await store.getCursor("poll")).toBe("c1");
+    expect((await store.acquireSyncLease("sync:github_issue:p", "replica-a", LEASE)).ok).toBe(true);
+    const b = { project: PROJECT_KEY, plugin: "github", remaining: 812, limit: 5000, reset_at: clock.now().toISOString() as Timestamp, updated_at: clock.now().toISOString() as Timestamp };
+    expect(await store.putForgeBudget(b)).toBe(true);
+    expect(await store.getForgeBudget(PROJECT_KEY, "github")).toEqual(b);
   });
 });
