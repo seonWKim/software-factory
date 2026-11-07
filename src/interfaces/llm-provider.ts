@@ -23,6 +23,8 @@ export interface LLMResponse {
   parsed?: unknown;
   stop_reason: "end" | "max_tokens" | "refused" | "error";
   usage: { input_tokens: number; output_tokens: number; cost_usd: number | null };
+  /** The chain member that answered (design 2026-11-07): its plugin name. Set by a fallback chain. */
+  served_by?: string;
 }
 
 export interface LLMProvider {

@@ -63,14 +63,14 @@ import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./re
 import { renderSpec } from "./spec-comment.js";
 import { applyCompanions } from "./companions.js";
 import {
-  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, parseSizeDetail, parseSubIssues, phaseIssueBody,
+  PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
   phaseLinkDetail, phaseMarker, phaseTitle, suggestSplit,
 } from "./split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "./suggest.js";
 import { type WorkStatus, statusOf } from "./status-label.js";
 import {
   type Actor, type CloseReason, type DependencyState, type Run, type RunId, type RunKind, type SourceRef, type SourceType,
-  type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
+  type StateChange, type StateChangeDetail, type Tier, type Timestamp, type WorkItem, type WorkItemId, outcomeTokens, runTokenCount,
 } from "./types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "./output-summary.js";
 import { type ParsedVerdict, parseVerdict } from "./verdict.js";
@@ -970,7 +970,7 @@ export class Controller {
         if (r === RETRY) continue;
         return r;
       }
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note), tag));
+      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
@@ -1282,6 +1282,7 @@ export class Controller {
     actor: Actor,
     floorNeed: number | null,
     note: string | null,
+    tag: StateChangeDetail | null = null,
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
     if (e.kind === "revise_requested" && e.pr) {
@@ -1293,6 +1294,16 @@ export class Controller {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note);
     if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it));
+    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
+      // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
+      if ((await this.splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
+      if (splitFiling(it)) {
+        const stale = this.d.clock.now().getTime() - Date.parse(it.updated_at) >= SPLIT_FILING_STALE_MS;
+        const phases = stale ? await this.specPhases(it) : null;
+        if (phases) return this.approveSplit(it, phases, actor, note, e.comment_id, tag);
+        return { refuse: "an earlier `/approve` is filing this split's phases; if it stopped, reply `/approve` again in 10 minutes" };
+      }
+    }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {
         refuse: `the item is ${phaseLabel("dependency_hold")} (${it.blocked_reason ?? "a dependency"}), and \`/approve\` does not lift a ` +
@@ -1351,7 +1362,7 @@ export class Controller {
       }
       case "spec_approved": {
         const phases = await this.specPhases(it);
-        if (phases) return this.approveSplit(it, phases, actor, note);
+        if (phases) return this.approveSplit(it, phases, actor, note, e.comment_id, tag);
         return {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
           actor,
@@ -1387,17 +1398,44 @@ export class Controller {
    * `/approve` on a split spec (design 2026-11-01): one sub-issue per phase, in order, each with the intake label
    * and linked to the parent, and one work item per phase, requested by the approver. The first phase is queued
    * for triage; each later one starts held (`phase_hold`) until the phase before it closes as completed
-   * (tickPhases). Filing and intake are idempotent (a marker per phase, intake keyed on the source), so a retry
-   * after a partial failure files no duplicates. A failure refuses the approval and keeps the spec waiting, so
-   * `/approve` again files the rest. On success the parent waits on its phases (`phases_open`); it is never
-   * implemented itself.
+   * (tickPhases). The approval first claims the filing with a conditional transition to `split_filing`, so of
+   * two passes at once (two replicas, an old process still draining) only one files (2026-11-07). A phase that
+   * already has a work item under this parent is not filed again; the rest are filed by marker (the parent's
+   * sub-issues, then the newest labelled issues) and taken in keyed on the source. A failure refuses the
+   * approval and puts the spec back at the gate, so `/approve` again files the rest. On success the parent
+   * waits on its phases (`phases_open`); it is never implemented itself. Returns null once applied: the
+   * transitions are its own, conditional on the claim.
    */
-  private async approveSplit(it: WorkItem, phases: TriagePhase[], actor: Actor, note: string | null): Promise<Decision | Refusal> {
+  private async approveSplit(
+    it: WorkItem,
+    phases: TriagePhase[],
+    actor: Actor,
+    note: string | null,
+    commentId: string,
+    tag: StateChangeDetail | null,
+  ): Promise<Decision | Refusal> {
     const adapter = this.adapterFor(it.source, "fileSubIssue");
     if (!adapter?.fileSubIssue) {
       return { refuse: "this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases" };
     }
+    const claim = await this.d.store.transition({
+      id: it.id,
+      expected_version: it.version,
+      patch: { blocked_on: "upstream", blocked_reason: SPLIT_FILING },
+      actor,
+      reason: SPLIT_FILING,
+      detail: { phases: phases.length, comment_id: commentId },
+    });
+    if (!claim.ok) {
+      if (claim.reason !== "version_conflict") return null;
+      // Another pass claimed it first: the same command is answered by that pass, another one is refused.
+      const cur = claim.current;
+      if (!splitFiling(cur) && !splitOpen(cur)) return { refuse: "the item changed while the approval was applied; reply `/approve` again" };
+      if ((await this.splitClaim(it.id))?.detail?.comment_id === commentId) return null;
+      return { refuse: "another `/approve` already approved this split" };
+    }
     const requester = actor.kind === "user" ? actor.id : it.requester_id;
+    const known = new Map((await this.d.store.listPhases(it.id)).map((p) => [p.phase, p.source]));
     const refs: SourceRef[] = [];
     try {
       for (const [i, phase] of phases.entries()) {
@@ -1405,7 +1443,7 @@ export class Controller {
         const prev = refs[i - 1] ?? null;
         const title = phaseTitle(index, phases.length, phase.title);
         const body = phaseIssueBody({ parent: it.source, phase, index, total: phases.length, depends_on: prev });
-        const ref = await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
+        const ref = known.get(index) ?? await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
         const { item, created } = await this.d.store.createWorkItem(
           {
             source: ref,
@@ -1437,6 +1475,11 @@ export class Controller {
         phases: phases.length,
         error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
       });
+      // Back at the gate, so `/approve` again is accepted at once.
+      const back = splitFiling(it)
+        ? { blocked_on: "human" as const, blocked_reason: "spec_pending" }
+        : { blocked_on: it.blocked_on, blocked_reason: it.blocked_reason };
+      await this.settleSplit(claim.item, { patch: back, actor, reason: "split_filing_failed", detail: { filed: refs.length, phases: phases.length } });
       return {
         refuse: `filing the phase sub-issues stopped after ${refs.length} of ${phases.length}; reply \`/approve\` again to file the rest (none is filed twice)`,
       };
@@ -1453,12 +1496,29 @@ export class Controller {
       "",
       footerAfter(it, patch),
     ].join("\n"));
-    return {
+    await this.settleSplit(claim.item, {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}) },
-    };
+      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+    });
+    return null;
+  }
+
+  /** The claim's end (`split_approved` or `split_filing_failed`), conditional on the claim being the item's last change. */
+  private async settleSplit(claimed: WorkItem, d: NonNullable<Decision>): Promise<void> {
+    const r = await this.d.store.transition({ ...d, id: claimed.id, expected_version: claimed.version });
+    if (!r.ok) {
+      this.d.log.warn("split claim changed before it settled", { work_item_id: claimed.id, reason: d.reason, conflict: r.reason });
+      return;
+    }
+    this.d.log.info("transition", { work_item_id: claimed.id, reason: d.reason, version: r.item.version });
+    await this.showStatus(r.item);
+  }
+
+  /** The parent's latest `split_filing` claim, whose detail names the command that made it. */
+  private async splitClaim(id: WorkItemId): Promise<StateChange | null> {
+    return (await this.d.store.listStateChanges(id)).filter((c) => c.reason === SPLIT_FILING).at(-1) ?? null;
   }
 
   /**
@@ -3007,6 +3067,11 @@ function phaseSpecPending(it: WorkItem): boolean {
 }
 
 /** A split parent whose phases are filed and not all closed as completed. */
+/** A split parent whose `/approve` claimed the filing and has not settled it yet. */
+function splitFiling(it: WorkItem): boolean {
+  return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === SPLIT_FILING;
+}
+
 function splitOpen(it: WorkItem): boolean {
   return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
 }

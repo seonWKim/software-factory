@@ -45,7 +45,7 @@ export type {
   SecretDeclaration,
   Selection,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedSources } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedRunners, selectedSources } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -298,15 +298,20 @@ export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown
   throw new Error(`unknown ${entry.interface} plugin ${JSON.stringify(value) ?? "(missing)"} at ${entry.configKey}; ${available}`);
 }
 
+/** The kinds whose config key takes an ordered list of names: sources (design 2026-11-01), fallback chains. */
+export const LIST_KINDS = ["source", "runner", "llm"] as const;
+type ListKind = (typeof LIST_KINDS)[number];
+
 /**
- * `plugins.source` (design 2026-11-01): one registered name, or a list of them. Returns the checked names in
- * config order. An empty list, an unknown or non-string entry, or the same name twice fails. Which source
- * types the names build, and whether two share one, is known only once they are built: the controller checks
- * that at startup.
+ * A list-taking key (`plugins.source`, design 2026-11-01; `plugins.runner` and `plugins.llm`, the fallback
+ * chains of design 2026-11-07): one registered name, or a list of them. Returns the checked names in config
+ * order. An empty list, an unknown or non-string entry, or the same name twice fails, naming the key. Which
+ * source types the names build, and whether two share one, is known only once they are built: the controller
+ * checks that at startup.
  */
-export function checkSources(registry: Registry, value: unknown): string[] {
-  if (!Array.isArray(value)) return [checkPlugin(registry, "source", value)];
-  const entry = registry.source;
+export function checkList(registry: Registry, kind: ListKind, value: unknown): string[] {
+  if (!Array.isArray(value)) return [checkPlugin(registry, kind, value)];
+  const entry = registry[kind];
   if (value.length === 0) {
     throw new Error(
       `${entry.configKey} is an empty list: name at least one ${entry.interface} plugin; available: ${Object.keys(entry.plugins).join(", ")}`,
@@ -314,8 +319,8 @@ export function checkSources(registry: Registry, value: unknown): string[] {
   }
   const out: string[] = [];
   for (const v of value) {
-    const name = checkPlugin(registry, "source", v);
-    if (out.includes(name)) throw new Error(`${entry.configKey} lists ${JSON.stringify(name)} twice; name each source once`);
+    const name = checkPlugin(registry, kind, v);
+    if (out.includes(name)) throw new Error(`${entry.configKey} lists ${JSON.stringify(name)} twice; name each plugin once`);
     out.push(name);
   }
   return out;
@@ -355,12 +360,15 @@ export function selectPlugins(
   chosen.auth = raw.auth;
   const out = {} as Selection;
   for (const kind of PLUGIN_KINDS) {
-    if (kind !== "source") out[kind] = checkPlugin(registry, kind, chosen[kind]);
+    if (!(LIST_KINDS as readonly string[]).includes(kind)) out[kind] = checkPlugin(registry, kind, chosen[kind]);
   }
   // A list of one is the single name: the selection stays exactly what it always was.
-  const sources = checkSources(registry, chosen.source);
-  out.source = sources[0]!;
-  if (sources.length > 1) out.sources = sources;
+  const lists = { source: "sources", runner: "runners", llm: "llms" } as const;
+  for (const kind of LIST_KINDS) {
+    const names = checkList(registry, kind, chosen[kind]);
+    out[kind] = names[0]!;
+    if (names.length > 1) out[lists[kind]] = names;
+  }
   return out;
 }
 

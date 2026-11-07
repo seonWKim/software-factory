@@ -97,6 +97,10 @@ export interface AgentRunResult {
    * pause uses it as the handoff's next steps. Agent text: the caller scans it before storing it (G5).
    */
   last_note?: string;
+  /** The chain member that produced this result (design 2026-11-07): its plugin name. Set by a fallback chain. */
+  served_by?: string;
+  /** Each fall-over in this run, in order: the member that gave up, the next one tried, and why. */
+  fallbacks?: { from: string; to: string; reason: string }[];
 }
 
 export interface AgentRunner {
