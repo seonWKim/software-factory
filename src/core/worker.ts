@@ -4,7 +4,7 @@ import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable,
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
-import type { Logger } from "./log.js";
+import type { LogFields, Logger } from "./log.js";
 import {
   BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, type CheckRound, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText,
   failingTestFiles, redact, runChecks, toolchainMissing, withTestFiles,
@@ -24,7 +24,7 @@ import {
 } from "./outputs.js";
 import {
   AGENT_STALLED, AUTO_RESOLVE_LIMIT, CHECKS_ENV, CHECKS_ENV_LIMIT, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
-  failureClass, isCovered, wipBranchFor,
+  NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
 import { failingTests, stripAnsi } from "./output-summary.js";
@@ -250,6 +250,9 @@ class RunFailure extends Error {
   }
 }
 
+/** The paused_by of a run the network pause put back in the queue: the system, not a person. */
+export const NETWORK_PAUSED_BY = "system:network";
+
 /**
  * `workers pause` stopped the run's agent (design §5 Pause). Not a failure: the run goes back to `queued` with no
  * outcome. Filled on its way up: the session the agent ran in, its last note, then the folder and resume point.
@@ -469,10 +472,11 @@ export class Worker {
     } catch (err) {
       if (err instanceof RunPaused) paused = err;
       else {
-        outcome =
-          err instanceof RunFailure
-            ? { status: "failed", error_code: err.code, detail: err.message.slice(0, 500), infra: err.infra, ...err.extra, usage }
-            : { status: "failed", error_code: "exception", detail: err instanceof Error ? err.message.slice(0, 500) : "", infra: true, usage };
+        // A DNS or connect error from git, the sandbox or the forge becomes network_unavailable (design §5 Restarts).
+        const failed = err instanceof RunFailure
+          ? { ...classifyNetwork(err.code, err.message), infra: err.infra, extra: err.extra }
+          : { ...classifyNetwork("exception", err instanceof Error ? err.message : ""), infra: true, extra: {} };
+        outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
       this.meters.delete(run);
@@ -498,6 +502,10 @@ export class Worker {
     const scan = await this.d.scanner.scan("run_outcome", JSON.stringify(outcome));
     if (!scan.clean) {
       outcome = { status: "failed", error_code: "egress_blocked", detail: scan.findings.map((f) => f.rule).join(","), infra: false, usage };
+    }
+    if (outcome.status === "failed" && outcome.error_code === NETWORK_UNAVAILABLE) {
+      await this.requeueForNetwork(run, token, outcome.detail, log);
+      return;
     }
     if (outcome.status === "failed" && outcome.error_code === RATE_LIMITED) {
       // Paused before the outcome is stored, so no worker anywhere claims in between (design §5 Restarts).
@@ -566,6 +574,23 @@ export class Worker {
     };
     if (!done.ok) this.d.log.warn("lease lost before completion; outcome dropped", { ...log, ...result });
     else this.d.log.info("run done", { ...log, status: outcome.status, ...result });
+  }
+
+  /**
+   * A run that could not reach its host (design §5 Restarts, network pause): not a failure. Every claim pauses
+   * (`network`) before the run goes back to the queue, first probe after 30 s; `started` comes from the store's
+   * conditional write, so one worker logs the warning. The run is requeued with no outcome and its attempt
+   * unchanged (pauseRun with nothing to resume), so no limit, retry or block ever sees it. Only the host is logged.
+   */
+  private async requeueForNetwork(run: Run, token: number, detail: string, log: LogFields): Promise<void> {
+    const host = detail.replace(/^could not reach /, "");
+    const pause = await this.d.store.pauseClaims(this.after(NETWORK_PROBE_MS.first), NETWORK);
+    if (pause.started) {
+      this.d.log.warn(`network unavailable: all runs paused, first probe at ${pause.resume_at}`, { ...log, host, resume_at: pause.resume_at });
+    }
+    const r = await this.d.store.pauseRun(run.id, token, { paused_by: NETWORK_PAUSED_BY, session_id: null, resume: null });
+    if (r.ok) this.d.log.info("run requeued: network unavailable", { ...log, host });
+    else this.d.log.warn("lease lost before the run was requeued; nothing stored", log);
   }
 
   /**
@@ -2348,6 +2373,10 @@ export class Worker {
       const clean = said === "" || (await this.d.scanner.scan("run_outcome", said)).clean;
       throw new RunFailure(PROVIDER_SETUP, clean ? said : "the provider's message is withheld: the egress scan flagged it", false,
         clean ? { output_tail: tail(result.transcript) } : {});
+    }
+    // A model request that could not reach its host (the runner's `network_unavailable: ` error): the network pause.
+    if (result.status === "failed" && result.error?.startsWith(`${NETWORK_UNAVAILABLE}: `)) {
+      throw new RunFailure(NETWORK_UNAVAILABLE, result.error.slice(NETWORK_UNAVAILABLE.length + 2), true);
     }
     // `stalled` becomes `agent_stalled`: neither infra nor a task failure (failureClass, design §5 Restarts).
     if (result.status !== "completed") {

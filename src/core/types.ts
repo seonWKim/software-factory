@@ -301,13 +301,17 @@ the push_access or pr_api preflight check failed another way (issue #216), so no
  * GitHub poll until the reset its row holds; triage and resolve still claim.
  * `model_stall`: a run stalled (the model printed nothing for `stall_ms`), so no claim of any kind until a probe
  * gets an answer. Its row holds the next probe time, and unlike the others it stays in effect past that time:
- * it ends only when `model_answered` (the last answered probe, written with `pauseClaims(now, "model_answered")`)
- * is not before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
+ * it ends only when `model_answered` (the last answered probe, written by `endClaimPause("model_stall")`) is not
+ * before it. `getClaimPause("model_stall")` returns the next probe time while the pause is in effect, also
  * once it has passed (a probe is due); `getClaimPause("model_stall_since")` returns when the pause began (written
  * by the store when `pauseClaims(…, "model_stall")` starts one). `pauseClaims` returns `started` for it.
+ * `network`: a git call, push, preflight or model request could not reach its host, so no claim of any kind until
+ * a network probe passes. A probe pause like `model_stall`, with `network_since` and `network_answered`.
  */
 export type ClaimPauseName =
-  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit" | "model_stall" | "model_stall_since" | "model_answered";
+  | "rate_limit" | "forge_auth" | "preflight_access" | "github_rate_limit"
+  | "model_stall" | "model_stall_since" | "model_answered"
+  | "network" | "network_since" | "network_answered";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 
 /**

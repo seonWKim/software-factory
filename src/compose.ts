@@ -658,6 +658,8 @@ export async function build(
   const testDatabase = await p.testDatabase(secrets);
   // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
+  // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
+  const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename).
@@ -687,6 +689,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
+    network_probe,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     settings,
