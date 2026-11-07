@@ -35,8 +35,8 @@ export interface Route {
 
 /** The route for a location path under /app/; unknown paths show the Floor. */
 export function routeFor(pathname: string): Route {
-  // A query (`failures?window=24h`) selects within a page; it does not change which page.
-  const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length).split("?")[0]!.replace(/\/+$/, "") : "";
+  // A query (`failures?window=24h`) selects within a page and a hash (`#msg-3`) is a place on it; neither changes which page.
+  const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length).split(/[?#]/)[0]!.replace(/\/+$/, "") : "";
   const m = /^items\/([^/]+)$/.exec(rest);
   if (m) {
     let id: string | null = null;
