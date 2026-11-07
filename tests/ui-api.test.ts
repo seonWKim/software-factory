@@ -10,8 +10,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
+import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
+import { serverRevision } from "../src/ui/system-actions.js";
+import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -1068,5 +1070,21 @@ describe("ui api: why an item waits (issue #310)", () => {
     const w = await whyOn(d, items.secretive.id);
     expect(w.row.why.text).toBe("[withheld: github_token]");
     expect(w.item.text).toBe("[withheld: github_token]");
+  });
+});
+
+describe("ui api: the server's revision and the app's (issue #311)", () => {
+  it("the overview returns the server's git revision, the same one the web build has built in through Vite define", async () => {
+    const root = new URL("..", import.meta.url).pathname;
+    const server = await serverRevision(root);
+    expect(server).toMatch(/^[0-9a-f]{40}$/);
+    const define = (viteConfig as { define?: Record<string, string> }).define ?? {};
+    expect(JSON.parse(define.__FACTORY_REV__ ?? "null")).toBe(server);
+
+    const { d } = await seeded();
+    const withRev: ApiDeps = { ...d, revision: server };
+    expect((await json<{ server_rev: string | null }>(withRev, "/api/v1/overview")).server_rev).toBe(server);
+    // Without a revision (a test, a checkout without git) it is null, never the supervisor's.
+    expect((await json<{ server_rev: string | null }>(d, "/api/v1/overview")).server_rev).toBeNull();
   });
 });

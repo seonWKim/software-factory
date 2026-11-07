@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Moon, RefreshCw, Sun } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
-import { API, type Overview, POLL_MS, getJson } from "./api.js";
+import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Button } from "./components/ui/button.js";
 import { cn } from "./lib/cn.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
@@ -10,6 +10,7 @@ import { type Theme, saveTheme, storedTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
 import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } from "./views/pages.js";
 import { SettingsPage } from "./views/settings.js";
+import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 
 /** "updated Ns ago", ticking each second. */
@@ -86,8 +87,10 @@ export function App() {
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? FloorPage;
   useEffect(() => {
-    document.title = `${transcript ? "Run transcript" : route.itemId ? "Work item" : route.page.label} · software-factory`;
-  }, [route.page, route.itemId, transcript]);
+    // The Needs you count leads the tab title, so a background tab shows it: "(4) Floor · software-factory".
+    const count = needs ? `(${needs}) ` : "";
+    document.title = `${count}${transcript ? "Run transcript" : route.itemId ? "Work item" : route.page.label} · software-factory`;
+  }, [route.page, route.itemId, transcript, needs]);
 
   return (
     <NavProvider value={navigate}>
@@ -121,6 +124,7 @@ export function App() {
               {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
             </Button>
           </header>
+          <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <main className="min-w-0 p-4">
             {!route.itemId && !transcript && <h1 className="mb-4 text-balance text-lg font-semibold">{route.page.label}</h1>}
             {transcript ? (

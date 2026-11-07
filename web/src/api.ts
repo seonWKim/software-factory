@@ -17,12 +17,26 @@ export interface FactoryState {
   pending: string[];
 }
 
+/** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
+export interface SystemAction {
+  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "revision_mismatch";
+  text: string;
+  command: string;
+  /** When it ends by itself, else null. */
+  until: string | null;
+  /** The item it is about (a deadlock), else null. */
+  work_item_id: string | null;
+}
+
 /** `/api/v1/overview`: the page's numbers. */
 export interface Overview {
   as_of: string;
+  /** The git revision the UI server runs; compared with WEB_REV. Null: unknown. */
+  server_rev?: string | null;
   stages: Record<string, number>;
-  /** Open items blocked on a person, plus those whose run started past a deadlock: "Needs you (N)". */
+  /** Open items blocked on a person plus the system actions: "Needs you (N)". */
   needs_you: number;
+  system_actions?: SystemAction[];
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
@@ -365,8 +379,14 @@ export interface PausesView {
   csrf_token: string | null;
 }
 
+declare const __FACTORY_REV__: string | null | undefined;
+
+/** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
+export const WEB_REV: string | null = typeof __FACTORY_REV__ === "string" ? __FACTORY_REV__ : null;
+
 export const API = {
-  overview: "/api/v1/overview",
+  // The app's own revision goes along, so the server lists a mismatch in Needs you.
+  overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,

@@ -14,6 +14,7 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
+import { SystemActions } from "./system-banner.js";
 import { transcriptPath } from "./transcript.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
@@ -147,11 +148,16 @@ export function FloorPage() {
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
+  const actions = o?.system_actions ?? [];
+  // A deadlocked item is a system action and a row of the table: counted once.
+  const ids = new Set(needs.map((i) => i.id));
+  const extra = actions.filter((a) => a.work_item_id === null || !ids.has(a.work_item_id)).length;
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} />
       <ClaimPauses now={now} />
-      <Section title="Needs you" count={items.data ? needs.length : undefined}>
+      <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
+        <SystemActions actions={actions} />
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
@@ -500,6 +506,20 @@ export function QueuePage() {
 
 const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "needs_human" };
 
+function CheckList({ checks }: { checks: Health["checks"] }) {
+  if (checks.length === 0) return null;
+  return (
+    <ul className="space-y-1 text-sm">
+      {checks.map((c, i) => (
+        <li key={i} className="flex items-baseline gap-2">
+          <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
+          <span className="min-w-0 text-pretty break-words">{c.msg}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
@@ -509,19 +529,21 @@ export function HealthPage() {
   if (!health.data) return <Loading rows={6} />;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
+  // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
+  const open = checks.filter((c) => c.status !== "ok");
+  const fine = checks.filter((c) => c.status === "ok");
   const sleeps = health.data.sleeps ?? [];
   return (
     <>
       <ClaimPauses now={now} />
       <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
-        <ul className="space-y-1 text-sm">
-          {checks.map((c, i) => (
-            <li key={i} className="flex items-baseline gap-2">
-              <Badge level={HEALTH_TONE[c.status]}>{c.status}</Badge>
-              <span className="min-w-0 text-pretty break-words">{c.msg}</span>
-            </li>
-          ))}
-        </ul>
+        <CheckList checks={open} />
+        {fine.length > 0 && (
+          <details data-testid="ok-checks" className="mt-2 text-sm">
+            <summary className="cursor-pointer text-zinc-600 dark:text-zinc-400">{fine.length} ok</summary>
+            <CheckList checks={fine} />
+          </details>
+        )}
       </Section>
       <Section title="Host sleeps" count={sleeps.length}>
         {sleeps.length === 0 ? (
