@@ -30,6 +30,7 @@ import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type RepoIdentity, type RepoRef } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
+import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
@@ -132,6 +133,11 @@ export interface FileConfig {
    * settingsLayers (src/core/settings.ts).
    */
   projects?: unknown;
+  /**
+   * An OpenAI-style chat completions endpoint (src/impl/openai/config.ts): `base_url` (https, or http only to
+   * localhost, 127.0.0.1 or [::1]) and a model name per class. Checked at load; no plugin reads it yet.
+   */
+  openai_compatible?: OpenAICompatibleConfig;
 }
 
 export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";

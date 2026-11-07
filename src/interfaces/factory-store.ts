@@ -253,7 +253,22 @@ export interface RecordConflictsInput {
   event_key: string;
 }
 
-export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
+/**
+ * One attempt the reaper cut off (design §5 Restarts, issue #210). `ended_at` is the run's last heartbeat
+ * (`updated_at` before the reaper's write); `duration_ms` is `ended_at − started_at`, null without `started_at`.
+ */
+export interface AbandonedAttempt {
+  run_id: RunId;
+  work_item_id: WorkItemId;
+  attempt: number;
+  /** What the reaper moved the run to. */
+  outcome: "queued" | "failed" | "cancelled";
+  started_at: Timestamp | null;
+  ended_at: Timestamp | null;
+  duration_ms: number | null;
+}
+
+export type LeaseResult ={ ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
 /** `session start` (design §5, 2026-11-01): the item's transition plus one `interactive` run, written running. */
 /** `actor`: the person (state change actor, run actor_id). `detail` gets `run_id`. `owner`: the lease owner, never a worker id. */
@@ -428,8 +443,14 @@ export interface FactoryStore {
    * An `interactive` run is never requeued: it fails `session_lost` (design §5, 2026-11-01), and its attempt record
    * closes as `failed` with that code.
    * In every other case the claim's attempt record closes as `lease_expired`, failure class `infra`, tokens 0.
+   * `onAbandoned` is called once per run this call's conditional update actually changed, after the
+   * transaction commits (design §5 Restarts, issue #210). The returned ids are unchanged.
    */
-  expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
+  expireLeases(
+    max_attempts: number,
+    backoff_ms?: (attempt: number) => number,
+    onAbandoned?: (attempt: AbandonedAttempt) => void,
+  ): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;
 
   /**
@@ -599,6 +620,54 @@ export interface FactoryStore {
   listWorkerProcesses(max_age_ms: number): Promise<WorkerProcess[]>;
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
+
+  // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
+  // of commands the CLI sends. Store only: nothing calls these yet.
+
+  /**
+   * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
+   * for that item is a no-op that reports the existing message with `created: false`.
+   */
+  recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }>;
+  /** The messages of `work_item_id` only, oldest first. Empty for an item with none. Read-only. */
+  listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]>;
+  /**
+   * Appends one CLI command. Its `seq` is greater than every command appended before it. A `key` already
+   * stored is a no-op that reports the existing command with `created: false`.
+   */
+  appendCliCommand(input: NewCliCommand): Promise<{ created: boolean; command: CliCommand }>;
+  /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
+  listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
+}
+
+export interface NewItemMessage {
+  work_item_id: WorkItemId;
+  /** Unique within the item; a repeat with the same marker stores nothing. */
+  marker: string;
+  body: string;
+}
+
+export interface ItemMessage extends NewItemMessage {
+  seq: number;
+  /** Store clock's now when the message was first recorded. */
+  created_at: Timestamp;
+}
+
+export interface NewCliCommand {
+  /** Idempotency key, unique across all commands: a repeat with the same key stores nothing. */
+  key: string;
+  /** The ID of whoever ran the command (e.g. `local:<login>`), never a display name. */
+  actor: string;
+  /** The command's name. */
+  command: string;
+  /** The command's arguments, stored as JSON. */
+  args: Record<string, unknown>;
+}
+
+export interface CliCommand extends NewCliCommand {
+  seq: number;
+  /** Store clock's now when the command was first appended. */
+  created_at: Timestamp;
 }
 
 /** What a WorkerPool reports each tick. */

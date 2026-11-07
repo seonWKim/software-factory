@@ -625,6 +625,9 @@ export class Worker {
       const out = parseImplement(result.output);
       if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
       await this.distrustAgentGit(handle, dirs);
+      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with
+      // the run folder; none is kept on a wip branch.
+      if (out.value.needs_human) return { needs_human: out.value.needs_human };
 
       const commits = (await this.git(handle, ["rev-list", "--reverse", `${start}..HEAD`])).split("\n").filter(Boolean);
       if (commits.length === 0) {
@@ -1401,6 +1404,8 @@ export class Worker {
     }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null });
     const review = parseReview(result.output);
     if (!review.ok) throw new RunFailure("invalid_output", review.error, false, { output_tail: tail(result.transcript) });
+    // The reviewer asked for a human: no review comment on the PR; the controller blocks the item.
+    if (review.value.needs_human) return { needs_human: review.value.needs_human };
 
     const v = review.value;
     const body = [
@@ -1568,6 +1573,8 @@ export class Worker {
         const out = parseImplement(result.output);
         if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
         await this.distrustAgentGit(handle, dirs);
+        // The agent asked for a human: nothing is committed or pushed; the PR is as it was.
+        if (out.value.needs_human) return { needs_human: out.value.needs_human };
 
         // Re-seeded from the pre-agent tree, not the agent's index: no skip-worktree or assume-unchanged bits survive.
         await this.gitWith(handle, ["read-tree", before], { GIT_INDEX_FILE: index });

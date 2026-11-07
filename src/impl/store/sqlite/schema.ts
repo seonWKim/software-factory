@@ -371,4 +371,26 @@ export const MIGRATIONS: readonly string[] = [
     END
   FROM runs WHERE attempt >= 1;
   `,
+  // 21: local work items (issue #198). `item_messages`: the messages the controller would post as comments on an
+  // item, one per (item, marker). `cli_commands`: the commands the CLI sends, read in `seq` order; `command_key` is
+  // the idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes.
+  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 21.
+  `
+  CREATE TABLE IF NOT EXISTS item_messages (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id  TEXT NOT NULL REFERENCES work_items(id),
+    marker        TEXT NOT NULL,
+    body          TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE (work_item_id, marker)
+  );
+  CREATE TABLE IF NOT EXISTS cli_commands (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  );
+  `,
 ];

@@ -36,9 +36,25 @@ export interface TriagePhase {
   allowed_paths: string[];
 }
 
+/**
+ * An agent's "I cannot go on without a human" answer (implement, resolve and review): why, and the one question
+ * the owner should answer. Short plain text, each at most NEEDS_HUMAN_MAX_CHARS. Not a failure: the controller
+ * blocks the item with `agent_needs_human` and starts no retry.
+ */
+export interface NeedsHuman {
+  reason: string;
+  question: string;
+}
+
+/** The longest `needs_human.reason` or `needs_human.question` the validators accept. */
+export const NEEDS_HUMAN_MAX_CHARS = 500;
+
 export interface ImplementOutput {
+  /** "" when the agent returned needs_human without it. */
   summary: string;
+  /** "" when the agent returned needs_human without it. */
   next_steps: string;
+  needs_human?: NeedsHuman;
 }
 
 export interface ReviewOutput {
@@ -46,6 +62,7 @@ export interface ReviewOutput {
   tier: Tier;
   findings: string[];
   summary: string;
+  needs_human?: NeedsHuman;
 }
 
 const tierSchema = { type: "integer", minimum: 1, maximum: 5 };
@@ -89,11 +106,30 @@ export const TRIAGE_SCHEMA = {
   },
 };
 
+const NEEDS_HUMAN_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reason", "question"],
+  description:
+    "Only when you cannot go on without a human (missing credentials or permissions, a tool that fails the same way twice, " +
+    "a spec that contradicts the code, a decision only the owner can make). Never for a bug you can fix.",
+  properties: {
+    reason: { type: "string", maxLength: NEEDS_HUMAN_MAX_CHARS, description: "Why you stopped, in one or two plain sentences." },
+    question: { type: "string", maxLength: NEEDS_HUMAN_MAX_CHARS, description: "The one question the owner should answer." },
+  },
+};
+
+// summary and next_steps are not schema-required: they may be left out when needs_human is set. parseImplement
+// still requires both on every other answer.
 export const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "next_steps"],
-  properties: { summary: { type: "string" }, next_steps: { type: "string" } },
+  required: [],
+  properties: {
+    summary: { type: "string", description: "Required unless needs_human is set." },
+    next_steps: { type: "string", description: "Required unless needs_human is set." },
+    needs_human: NEEDS_HUMAN_SCHEMA,
+  },
 };
 
 export const REVIEW_SCHEMA = {
@@ -105,6 +141,7 @@ export const REVIEW_SCHEMA = {
     tier: tierSchema,
     findings: strings,
     summary: { type: "string" },
+    needs_human: NEEDS_HUMAN_SCHEMA,
   },
 };
 
@@ -182,8 +219,32 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   };
 }
 
+/** A short, non-empty plain-text field of needs_human. */
+const isShort = (v: unknown): v is string => isStr(v) && v.trim() !== "" && v.length <= NEEDS_HUMAN_MAX_CHARS;
+
+/**
+ * The optional needs_human field: absent (or null) is none; otherwise both reason and question must be
+ * non-empty and at most NEEDS_HUMAN_MAX_CHARS. Anything else is invalid output, retried like any other.
+ */
+export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> {
+  if (v === undefined || v === null) return { ok: true, value: undefined };
+  if (!isObj(v) || !isShort(v.reason) || !isShort(v.question)) {
+    return { ok: false, error: `needs_human: reason and question must be non-empty and at most ${NEEDS_HUMAN_MAX_CHARS} characters` };
+  }
+  return { ok: true, value: { reason: v.reason.trim(), question: v.question.trim() } };
+}
+
+/** An implement or resolve answer. With needs_human, summary and next_steps may be left out (they become ""). */
 export function parseImplement(v: unknown): Validation<ImplementOutput> {
-  if (!isObj(v) || !isStr(v.summary) || !isStr(v.next_steps)) return { ok: false, error: "summary/next_steps" };
+  if (!isObj(v)) return { ok: false, error: "summary/next_steps" };
+  const ask = parseNeedsHuman(v.needs_human);
+  if (!ask.ok) return ask;
+  if (ask.value) {
+    const optional = (x: unknown) => x === undefined || isStr(x);
+    if (!optional(v.summary) || !optional(v.next_steps)) return { ok: false, error: "summary/next_steps" };
+    return { ok: true, value: { summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", needs_human: ask.value } };
+  }
+  if (!isStr(v.summary) || !isStr(v.next_steps)) return { ok: false, error: "summary/next_steps" };
   return { ok: true, value: { summary: v.summary, next_steps: v.next_steps } };
 }
 
@@ -192,5 +253,7 @@ export function parseReview(v: unknown): Validation<ReviewOutput> {
   const { verdict, tier, findings, summary } = v;
   if (verdict !== "pass" && verdict !== "bug") return { ok: false, error: "verdict" };
   if (!isTier(tier) || !isStrs(findings) || !isStr(summary)) return { ok: false, error: "tier/findings/summary" };
-  return { ok: true, value: { verdict, tier, findings, summary } };
+  const ask = parseNeedsHuman(v.needs_human);
+  if (!ask.ok) return ask;
+  return { ok: true, value: { verdict, tier, findings, summary, ...(ask.value ? { needs_human: ask.value } : {}) } };
 }

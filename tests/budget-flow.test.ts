@@ -53,7 +53,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const controllerFor = (c: FactoryConfig) =>
-    new Controller({ store, source, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner });
+    new Controller({ store, source, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
   const controller = controllerFor(config);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(),
