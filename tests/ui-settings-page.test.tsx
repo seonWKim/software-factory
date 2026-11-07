@@ -18,8 +18,10 @@ const { SettingsPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { Set
 
 const AT = "2026-11-07T00:00:00.000Z";
 const TOKEN = "tok_abc";
+// Descriptions that exist only in this fixture: the page must show the API's text, not its own.
+const DESC = (key: string) => `fixture-only description of ${key}`;
 const row = (key: string, extra: Partial<SettingRow> = {}): SettingRow => ({
-  key, kind: "number", value: "3", source: "file", file_value: "3", default_value: "3", applies_at: "the controller's next decision",
+  key, description: DESC(key), kind: "number", value: "3", source: "file", file_value: "3", default_value: "3", applies_at: "the controller's next decision",
   project_settable: false, projects: [], ...extra,
 });
 const view: SettingsView = {
@@ -37,7 +39,10 @@ const view: SettingsView = {
     row("model_by", { kind: "model_by", value: '{"retry_up":true}', applies_at: "the next run that starts" }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
   ],
-  pr_only: [{ key: "plugins", note: "changes by PR only" }, { key: "secrets", note: "changes by PR only" }],
+  pr_only: [
+    { key: "plugins", note: "changes by PR only", description: DESC("plugins") },
+    { key: "secrets", note: "changes by PR only", description: DESC("secrets") },
+  ],
   ignored: [],
   history: [
     { seq: 2, at: AT, actor: "local:owner", key: "max_loops", project: null, old_value: null, new_value: "4" },
@@ -110,6 +115,23 @@ describe("Settings page", () => {
       expect(r.textContent).toContain("changes by PR only");
       expect(r.querySelectorAll("input, button, textarea, [role=switch]")).toHaveLength(0);
     }
+  });
+
+  it("shows each key's description from the API under its name, editable and PR-only rows alike", async () => {
+    const table = await show();
+    for (const k of view.keys) {
+      const cell = rowOf(table, k.key).querySelector("td")!;
+      expect(cell.textContent).toContain(k.key);
+      expect(cell.textContent).toContain(DESC(k.key));
+    }
+    const pr = screen.getByRole("table", { name: "Changes by PR only" });
+    for (const key of ["plugins", "secrets"]) {
+      const cell = pr.querySelector<HTMLElement>(`tr[data-key="${key}"] td`)!;
+      expect(cell.textContent).toContain(DESC(key));
+    }
+    // Always in the page, not behind a hover or a breakpoint.
+    const p = screen.getByText(DESC("max_loops"));
+    expect(p.className).not.toMatch(/(^|\s)(hidden|sr-only|group-hover:|sm:|md:|lg:)/);
   });
 
   it("lists the audit history", async () => {

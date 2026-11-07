@@ -139,6 +139,8 @@ export interface Health {
 /** One settable key on the Settings page. Values are JSON text, as `factory settings set` takes them. */
 export interface SettingRow {
   key: string;
+  /** What the key controls, from the settings core module. */
+  description: string;
   kind: "number" | "boolean" | "models" | "model_by";
   value: string;
   source: "override" | "file" | "default";
@@ -163,7 +165,7 @@ export interface SettingsView {
   project: string | null;
   project_keys: string[];
   keys: SettingRow[];
-  pr_only: { key: string; note: string }[];
+  pr_only: { key: string; note: string; description: string }[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
 }
