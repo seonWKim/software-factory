@@ -2,7 +2,7 @@ import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItemId } from "../../core/types.js";
 import { localIdentity } from "../../core/local-cli.js";
 import type { CliCommand, FactoryStore } from "../../interfaces/factory-store.js";
-import type { PollResult, PollSource, SourceCloseReason, SourceEvent } from "../../interfaces/source-adapter.js";
+import type { PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput } from "../../interfaces/source-adapter.js";
 import { commentEvent } from "./comment-event.js";
 
 /** The most CLI commands one poll reads (issue #199); the rest come on the next poll. */
@@ -16,6 +16,10 @@ export const LOCAL_BATCH = 100;
  *
  * Command shape: `args.item` is the work item ID, `args.text` an optional string. The command is rebuilt as
  * `/<command> <text>` and read by the same comment parser GitHub uses. The cursor is the last `seq` read.
+ *
+ * `fileSubIssue` (split specs, design 04) files nothing anywhere: a phase's ref is derived from the parent's
+ * source id and the phase number in the marker (`<parent>-phase-<n>`), so the controller's work item, keyed on
+ * that source, is the sub-task, and filing again returns the same ref.
  */
 export class LocalSource implements PollSource {
   readonly intake = "poll";
@@ -54,6 +58,15 @@ export class LocalSource implements PollSource {
 
   /** The store holds the item's state; there is nothing to close elsewhere. */
   async closeIssue(_source: SourceRef, _reason?: SourceCloseReason): Promise<void> {}
+
+  /** The phase's local ref, derived from `input` alone: no store read, no network call, the same ref every time. */
+  async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
+    if (input.parent.type !== "local") throw new Error(`local source: ${JSON.stringify(input.parent.id)} is not a local item`);
+    const n = /:(\d+) -->$/.exec(input.marker)?.[1];
+    if (!n) throw new Error(`local source: no phase number in marker ${JSON.stringify(input.marker)}`);
+    const id = `${input.parent.id}-phase-${n}`;
+    return { type: "local", id, link: `local:${id}` };
+  }
 
   /** The SourceRef of the command's item, or null when it names no item or a non-local one. */
   private async itemSource(c: CliCommand): Promise<SourceRef | null> {

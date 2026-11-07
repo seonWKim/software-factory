@@ -751,6 +751,28 @@ describe("ui: split phases wait, never stuck", () => {
   });
 });
 
+describe("ui: a split's sub-tasks on the item page (design 04)", () => {
+  it("lists the sub-tasks in phase order, each linked to its own page, and (none) without any", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const local = (id: string) => ({ type: "local" as const, id, link: `local:${id}` });
+    const parent = (await store.createWorkItem({ ...issue(1), source: local("local-p"), title: "Parent" }, system)).item;
+    const two = (await store.createWorkItem(
+      { ...issue(3), source: local("local-p-phase-2"), title: "Phase 2/2: B", parent: { id: parent.id, phase: 2 }, hold: { blocked_on: "upstream", blocked_reason: "phase_hold" } },
+      system,
+    )).item;
+    const one = (await store.createWorkItem({ ...issue(2), source: local("local-p-phase-1"), title: "Phase 1/2: A", parent: { id: parent.id, phase: 1 } }, system)).item;
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const subs = section((await renderItem(deps, parent.id))!, "subtasks");
+    const href = (id: WorkItemId) => `<a href="/items/${encodeURIComponent(id)}">`;
+    expect(subs).toContain(`${href(one.id)}Phase 1/2: A</a>`);
+    expect(subs).toContain(`${href(two.id)}Phase 2/2: B</a>`);
+    expect(subs.indexOf(href(one.id))).toBeLessThan(subs.indexOf(href(two.id)));
+    expect(subs).toMatch(/Phase 2\/2: B<\/a><\/td><td>NEW<\/td><td>phase_hold/);
+    expect(section((await renderItem(deps, one.id))!, "subtasks")).toContain("(none)");
+  });
+});
+
 describe("ui: interactive sessions (design §5, 2026-11-01)", () => {
   it("shows an interactive run in Running now and in the item timeline with the actor's user ID, never a display name", async () => {
     const clock = new FakeClock();

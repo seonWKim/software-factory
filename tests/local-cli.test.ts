@@ -116,6 +116,28 @@ describe("task list and task show", () => {
     expect(r.lines.indexOf("Runs")).toBeLessThan(r.lines.indexOf("Messages"));
   });
 
+  it("show lists a task's sub-tasks in phase order with ID, title, stage and blocked reason, or (none)", async () => {
+    const { store, run } = await setup();
+    const parent = (await run({ action: "create", title: "Parent", bodyFile: "b" })).lines[0] as WorkItemId;
+    const sub = (n: number) => ({ type: "local" as const, id: `p-phase-${n}`, link: `local:p-phase-${n}` });
+    const none = await run({ action: "show", id: parent });
+    expect(none.lines[none.lines.indexOf("Sub-tasks") + 1]).toBe("  (none)");
+    // Filed out of order: the list follows the phase number.
+    const two = (await store.createWorkItem(
+      { ...issue(2), source: sub(2), title: "Phase 2/2: B", parent: { id: parent, phase: 2 }, hold: { blocked_on: "upstream", blocked_reason: "phase_hold" } },
+      system,
+    )).item;
+    const one = (await store.createWorkItem({ ...issue(1), source: sub(1), title: "Phase 1/2: A", parent: { id: parent, phase: 1 } }, system)).item;
+    const r = await run({ action: "show", id: parent });
+    const at = r.lines.indexOf("Sub-tasks");
+    expect(at).toBeGreaterThan(r.lines.indexOf("Spec"));
+    expect(at).toBeLessThan(r.lines.indexOf("Runs"));
+    expect(r.lines.slice(at + 1, at + 3)).toEqual([
+      `  1. ${one.id}\tPhase 1/2: A\tNEW\t-`,
+      `  2. ${two.id}\tPhase 2/2: B\tNEW\tphase_hold`,
+    ]);
+  });
+
   it("show for a missing item fails", async () => {
     const { run } = await setup();
     expect((await run({ action: "show", id: "wi_missing" as WorkItemId })).code).toBe(1);
