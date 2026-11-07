@@ -532,12 +532,13 @@ export interface SharedPath {
 /**
  * The latest claim decision on a held implement run (design 2026-11-03): one row per run, rewritten when the
  * decision changes. `held`: the run stays queued; `deadlock`: claimed by the deadlock rule although held by
- * waiting items; `approved`: claimed past the hold after a human's `/approve`.
+ * waiting items; `approved`: claimed past the hold after a human's `/approve`; `timed_out`: claimed after
+ * `hold_policy` `run_after_minutes` ran out; `overlap_allowed`: claimed at once under `hold_policy` `run` (issue #314).
  */
 export interface ClaimDecision {
   run_id: RunId;
   work_item_id: WorkItemId;
-  decision: "held" | "deadlock" | "approved";
+  decision: "held" | "deadlock" | "approved" | "timed_out" | "overlap_allowed";
   /** The holding item, or null for a PR with no work item. */
   holder_work_item_id: WorkItemId | null;
   /** How the holder is named: "#92" (its issue or PR number). */
@@ -551,5 +552,7 @@ export interface ClaimDecision {
   fallback: boolean;
   /** The user whose `/approve` lifted the hold; null until then. */
   approved_by: UserId | null;
+  /** When the hold started; kept while the run stays held, whichever holder names it. Null on rows from before it. */
+  held_since: Timestamp | null;
   at: Timestamp;
 }
