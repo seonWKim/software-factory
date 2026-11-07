@@ -459,7 +459,19 @@ export const MIGRATIONS: readonly string[] = [
     checked_at    TEXT NOT NULL
   );
   `,
-  // 26: implicit verdicts (issue #316, design §4 and §6). `implicit` is 0 for a typed `/verdict`, 1 for one the
+  // 26: local users (issue #318). Who may act from the local CLI and UI under the `local` auth plugin: one row per
+  // factory user ID with its role (`owner`, `approver`, `requester`). `owner_slot` is 1 on the owner's row and NULL
+  // on every other, so UNIQUE allows one owner. IF NOT EXISTS: safe to run again below 26.
+  `
+  CREATE TABLE IF NOT EXISTS local_users (
+    user_id     TEXT PRIMARY KEY,
+    role        TEXT NOT NULL,
+    owner_slot  INTEGER UNIQUE,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+  `,
+  // 27: implicit verdicts (issue #316, design §4 and §6). `implicit` is 0 for a typed `/verdict`, 1 for one the
   // controller derives from a merge, a person's push or a revert; old rows are explicit. `pr_head` is the PR head the
   // verdict is about, NULL when not known (every old row). The index serves the one-verdict-per-head read.
   `

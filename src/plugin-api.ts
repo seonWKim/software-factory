@@ -6,6 +6,7 @@
 // module only.
 
 import type { Loaded } from "./compose.js";
+import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
@@ -155,7 +156,39 @@ export type Selection = { [K in PluginKind]: string } & {
   sources?: readonly string[];
   runners?: readonly string[];
   llms?: readonly string[];
+  /** The auth plugin for local commands (CLI, local UI), when `auth` names one per origin (issue #318). */
+  local_auth?: string;
 };
+
+/** The origins `auth` can name a plugin for (issue #318). `slack_thread` waits for a Slack source. */
+const AUTH_ORIGINS = ["github_issue", "local"] as const;
+
+/**
+ * `auth` per command origin (issue #318). A string (the form before) selects the plugin for GitHub comments;
+ * local commands then use `local`. An object maps origins to plugins: `github_issue` is required, `local`
+ * optional (default `local`).
+ */
+export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown } {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { github_issue: raw };
+  const given = raw as Record<string, unknown>;
+  const problems: string[] = [];
+  for (const key of Object.keys(given)) {
+    if (!(AUTH_ORIGINS as readonly string[]).includes(key)) {
+      problems.push(`unknown auth origin "${key}"; known origins: ${AUTH_ORIGINS.join(", ")}${suggestion(key, [...AUTH_ORIGINS])}`);
+    }
+  }
+  if (!Object.hasOwn(given, "github_issue")) problems.push('auth needs "github_issue": the auth plugin for GitHub comments');
+  if (problems.length > 0) throw new ConfigKeyError(problems);
+  return Object.hasOwn(given, "local") ? { github_issue: given.github_issue, local: given.local } : { github_issue: given.github_issue };
+}
+
+/**
+ * The auth plugin that authorizes commands from the local CLI and the local UI (issue #318): `auth.local` in the
+ * per-origin form, else `local`, whatever `auth` selects for GitHub comments. Local commands never depend on it.
+ */
+export function selectedLocalAuth(selection: Selection): string {
+  return selection.local_auth ?? "local";
+}
 
 /** Every selected SourceAdapter plugin name, in config order: `sources`, or `[source]` when one is selected. */
 export function selectedSources(selection: Selection): readonly string[] {
