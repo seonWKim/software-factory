@@ -37,7 +37,7 @@ graph TB
       TR["Triage"]
       IM["Implementer"]
       RV["Reviewer"]
-      IMP["Improver: daily improve run, files failure patterns"]
+      IMP["Improver: daily improve run, files recurring failures"]
     end
   end
 
