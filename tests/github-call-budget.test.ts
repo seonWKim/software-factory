@@ -86,7 +86,7 @@ function setup(n: number, opts: { etag_entries?: number; min_remaining?: number 
   const gh = fakeGitHub(clock, n);
   const log = recordingLog();
   const client = new GitHubClient(credentials, "https://gh.test", { fetch: gh.fetchFn, clock, log, ...opts });
-  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+  const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, { clock, history_since: null, log });
   return { clock, gh, log, client, source };
 }
 
