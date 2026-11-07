@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { alice, pipeline } from "./helpers/fakes.js";
+import { DIFF_CHECK_MS } from "../src/core/worker.js";
+import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import type { Run } from "../src/core/types.js";
+import { alice, pipeline, waitFor } from "./helpers/fakes.js";
 
 // Design §5 Restarts: four implement failures are never retried automatically, since the same spec fails the
 // same way. Each blocks the item on a human with run_failed:implement:<code> and one comment; /retry runs it again.
@@ -12,15 +15,41 @@ type Harness = Awaited<ReturnType<typeof pipeline>>;
  */
 const TOKEN = ["sf", "canary", "abcdef123456"].join("-");
 
-const CASES: { code: string; setup: (f: Harness) => void; implement?: () => { output: unknown; transcript?: string } }[] = [
-  { code: "no_commits", setup: (f) => void (f.sandbox.commits = []) },
-  { code: "scope_violation", setup: (f) => void (f.sandbox.changedFiles = ["src/core/worker.ts"]) },
+/** Nothing reaches the forge: no push at all. */
+const nothingPushed = (f: Harness) => expect(f.broker.calls.some((x) => x.name === "github.push_branch")).toBe(false);
+
+const CASES: {
+  code: string;
+  setup: (f: Harness) => void;
+  implement?: (spec: AgentRunSpec, f: Harness) => Partial<AgentRunResult> | Promise<Partial<AgentRunResult>>;
+  pushed: (f: Harness, run: Run) => void;
+}[] = [
+  { code: "no_commits", setup: (f) => void (f.sandbox.commits = []), pushed: nothingPushed },
+  { code: "scope_violation", setup: (f) => void (f.sandbox.changedFiles = ["src/core/worker.ts"]), pushed: nothingPushed },
   {
     code: "egress_blocked",
     setup: () => undefined,
     implement: () => ({ output: { summary: "s", next_steps: "n" }, transcript: `the agent printed ${TOKEN}` }),
+    pushed: nothingPushed,
   },
-  { code: "diff_too_large", setup: (f) => void (f.sandbox.numstat = `5000\t0\t.github/workflows/big.yml\0`) },
+  {
+    // The mid-run diff check stops the agent (design §4, issue #217): the commits go to the wip branch only.
+    code: "diff_too_large",
+    setup: () => undefined,
+    implement: async (spec, f) => {
+      f.sandbox.numstat = `5000\t0\t.github/workflows/big.yml\0`;
+      f.clock.advance(DIFF_CHECK_MS);
+      await waitFor(() => spec.signal.aborted, "the mid-run diff check");
+      return { status: "aborted", output: null };
+    },
+    pushed: (f, run) => {
+      const wip = `factory/wip/${run.work_item_id}/${run.id}`;
+      const pushes = f.broker.calls.filter((x) => x.name === "github.push_branch").map((x) => (x.args as { branch: string }).branch);
+      expect(pushes).toEqual([wip]);
+      expect(f.broker.calls.some((x) => x.name === "github.open_pr")).toBe(false);
+      expect(run.outcome).toMatchObject({ wip: { branch: wip, commits: 1 } });
+    },
+  },
 ];
 
 for (const c of CASES) {
@@ -28,7 +57,9 @@ for (const c of CASES) {
     const make = async () => {
       let fail = true;
       const ok = { output: { summary: "s", next_steps: "n" } };
-      const f = await pipeline({ implement: () => (fail ? (c.implement?.() ?? ok) : ok) });
+      let h: Harness | null = null;
+      const f = await pipeline({ implement: (spec) => (fail && c.implement ? c.implement(spec, h!) : ok) });
+      h = f;
       c.setup(f);
       return { f, heal: () => {
         fail = false;
@@ -56,7 +87,7 @@ for (const c of CASES) {
       expect(comments[0]!.body).toContain(`\`${c.code}\``);
       expect(comments[0]!.body).toContain("/retry");
       expect(comments[0]!.body).not.toContain(TOKEN);
-      expect(f.broker.calls.some((x) => x.name === "github.push_branch")).toBe(false);
+      c.pushed(f, runs[0]!);
       const changes = (await f.store.listStateChanges(it0.id)).map((s) => s.reason);
       expect(changes).not.toContain("run_retry_scheduled");
       expect(changes.at(-1)).toBe("run_failed");
