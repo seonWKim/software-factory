@@ -1,12 +1,17 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cliUserConfig } from "../src/core/config.js";
+import { Controller } from "../src/core/controller.js";
 import {
   CLI_COMMANDS, CLI_TOP_WORDS, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, parseLocalCliArgs,
   runLocalCli,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { cleanScanner, config, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // The writer side of local intake (issue #200): CLI commands that create local items, append item commands to
@@ -45,6 +50,8 @@ describe("parseLocalCliArgs", () => {
     expect(parseLocalCliArgs("revise", ["wi_1", "more", "tests"])).toEqual({ action: "command", command: "revise", id: "wi_1", text: "more tests" });
     expect(parseLocalCliArgs("reject", ["wi_1", "no"])).toMatchObject({ command: "reject", text: "no" });
     expect(parseLocalCliArgs("retry", ["wi_1"])).toMatchObject({ command: "retry", text: "" });
+    expect(parseLocalCliArgs("resolve", ["wi_1"])).toEqual({ action: "command", command: "resolve", id: "wi_1", text: "" });
+    expect(parseLocalCliArgs("resolve", ["wi_1", "keep", "main's", "gate"])).toEqual({ action: "command", command: "resolve", id: "wi_1", text: "keep main's gate" });
     expect(parseLocalCliArgs("users", ["list"])).toEqual({ action: "users_list" });
     expect(parseLocalCliArgs("users", ["add", "local:a@b.c", "--role", "approver"])).toEqual({ action: "users_add", user: "local:a@b.c", role: "approver" });
     expect(parseLocalCliArgs("users", ["remove", "local:a@b.c"])).toEqual({ action: "users_remove", user: "local:a@b.c" });
@@ -54,7 +61,7 @@ describe("parseLocalCliArgs", () => {
     for (const [w, a] of [
       ["task", []], ["task", ["create", "--title", "T"]], ["task", ["create", "--body-file", "b"]], ["task", ["create", "--title"]],
       ["task", ["create", "--title", "T", "--body-file", "b", "--label", "x"]], ["task", ["show"]], ["task", ["list", "x"]],
-      ["task", ["frob"]], ["approve", []], ["retry", []], ["users", []], ["users", ["add", "alice", "--role", "approver"]],
+      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["users", []], ["users", ["add", "alice", "--role", "approver"]],
       ["users", ["add", "local:a", "--role", "owner"]], ["users", ["add", "local:a"]], ["users", ["remove"]], ["users", ["list", "x"]],
     ] as [string, string[]][]) {
       const r = parseLocalCliArgs(w, a);
@@ -144,12 +151,12 @@ describe("task list and task show", () => {
   });
 });
 
-describe("approve, retry, revise, reject", () => {
+describe("approve, retry, revise, reject, resolve", () => {
   it("each stores one command in the command log and changes no item state", async () => {
     const { store, run } = await setup();
     const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     const before = await snapshot(store);
-    for (const command of ["approve", "retry", "revise", "reject"] as const) {
+    for (const command of ["approve", "retry", "revise", "reject", "resolve"] as const) {
       const r = await run({ action: "command", command, id, text: command === "retry" ? "" : `${command} text` });
       expect(r.code).toBe(0);
     }
@@ -161,6 +168,7 @@ describe("approve, retry, revise, reject", () => {
       { actor: USER, command: "retry", args: { item: id } },
       { actor: USER, command: "revise", args: { item: id, text: "revise text" } },
       { actor: USER, command: "reject", args: { item: id, text: "reject text" } },
+      { actor: USER, command: "resolve", args: { item: id, text: "resolve text" } },
     ]);
     expect(new Set(added.map((c) => c.key)).size).toBe(added.length);
   });
@@ -180,6 +188,57 @@ describe("approve, retry, revise, reject", () => {
       expect.objectContaining({ actor: USER, command: "approve", args: { item: gh.id, text: "ship it" }, mirror: true }),
     ]);
     expect((await store.listUnmirroredCliCommands(100)).map((c) => c.args.item)).toEqual([gh.id]);
+  });
+});
+
+describe("a local resolve command at the controller", () => {
+  const ME = "local:me@example.com" as UserId;
+
+  /** A local item filed from the CLI by ME (the local owner), set to `blocked_reason` on PR 42 after review. */
+  async function local(blocked_reason: string) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const controller = new Controller({
+      store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
+      repeated_failure_rule: false,
+    });
+    let n = 0;
+    const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
+    const id = (await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+    const it = (await store.getWorkItem(id))!;
+    const r = await store.transition({
+      id, expected_version: it.version, actor: system, reason: "test_setup",
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason, pr_number: 42 },
+    });
+    if (!r.ok) throw new Error("setup");
+    const resolve = async (text: string) => {
+      expect((await runLocalCli(d, { action: "command", command: "resolve", id, text })).code).toBe(0);
+      await controller.tickIntake();
+    };
+    const resolveRuns = async () => (await store.listRuns(id)).filter((x) => x.kind === "resolve");
+    return { store, id, resolve, resolveRuns, tickAgain: () => controller.tickIntake() };
+  }
+
+  it("on merge_conflict_pending: one resolve run with the notes, the item RUNNING; another tick adds none", async () => {
+    const f = await local("merge_conflict_pending");
+    await f.resolve("keep main's gate");
+    expect((await f.resolveRuns()).map((r) => [r.status, r.input])).toEqual([["queued", { notes: "keep main's gate" }]]);
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    const accepted = (await f.store.listStateChanges(f.id)).find((c) => c.reason === "resolve_requested")!;
+    expect(accepted.actor).toEqual({ kind: "user", id: ME });
+    await f.tickAgain();
+    expect(await f.resolveRuns()).toHaveLength(1);
+  });
+
+  it("in any other state: refused, the reply names the state, and nothing is enqueued", async () => {
+    const f = await local("merge_pending");
+    const before = await f.store.getWorkItem(f.id);
+    await f.resolve("");
+    expect(await f.resolveRuns()).toEqual([]);
+    expect(await f.store.getWorkItem(f.id)).toEqual(before);
+    const refusals = (await f.store.listItemMessages(f.id)).filter((m) => m.marker.startsWith("<!-- factory:refused:"));
+    expect(refusals.map((m) => m.body)).toEqual([expect.stringContaining("`/resolve` was not applied")]);
+    expect(refusals[0]!.body).toContain("waiting for a human merge");
   });
 });
 

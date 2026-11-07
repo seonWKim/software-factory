@@ -5,7 +5,7 @@ import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
- * `retry`, `revise` and `reject` append one row to the CLI command log (`command_inbox`) and change no item
+ * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the GitHub comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a GitHub item is also mirrored to its issue, best effort, once GitHub
@@ -76,15 +76,18 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   { name: "retry", usage: "retry <id> [text]",description: "Store `/retry` for the item; the controller applies it" },
   { name: "revise", usage: "revise <id> <feedback>", description: "Store `/revise` for the item; the controller applies it" },
   { name: "reject", usage: "reject <id> <reason>", description: "Store `/reject` for the item; the controller applies it" },
+  { name: "resolve", usage: "resolve <id> [notes]", description: "Store `/resolve` for the item; the controller applies it" },
   { name: "users list", usage: "users list", description: "Print your CLI identity and every local user with its role (owner, approver, requester)" },
   { name: "users add", usage: "users add <user_id> --role approver|requester", description: "Owner only: give a local user a role, e.g. `local:dev@example.com`" },
   { name: "users remove", usage: "users remove <user_id>", description: "Owner only: remove a local user's role" },
 ];
 
 /** The top-level words `factory` hands to this module. */
-export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "users"] as const;
+export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "resolve", "users"] as const;
 
-export type ItemCommand = "approve" | "retry" | "revise" | "reject";
+const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve"] as const;
+
+export type ItemCommand = (typeof ITEM_COMMANDS)[number];
 
 export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
@@ -131,11 +134,11 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
-  if (word === "approve" || word === "retry" || word === "revise" || word === "reject") {
+  if ((ITEM_COMMANDS as readonly string[]).includes(word)) {
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
-    return { action: "command", command: word, id: id as WorkItemId, text };
+    return { action: "command", command: word as ItemCommand, id: id as WorkItemId, text };
   }
   if (word === "users") {
     const [sub, user, ...rest] = args;

@@ -27,6 +27,7 @@ import { readGitHubBudget } from "./github-budget.js";
 import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
@@ -193,14 +194,17 @@ class ApiCtx {
     };
   }
 
-  /** What a Needs-you row says (need.ts): the reason through the Withholder and the command to type. */
+  /**
+   * What a Needs-you row says (need.ts): the reason through the Withholder, the command to type, and `anchor`, the
+   * item page's anchor of the newest factory thread entry (null when the item has none).
+   */
   async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
     const n = await needOf(
       { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
-    return { reason: n.reason, command: n.command };
+    return { reason: n.reason, command: n.command, anchor: await latestWhyAnchor(this.d.store, it.id) };
   }
 
   /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
@@ -457,6 +461,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       const parts = runParts(stored, id, r.id);
       return parts.length > 0 ? [[r.id, parts] as const] : [];
     })),
+    /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
+    thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
