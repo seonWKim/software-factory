@@ -148,7 +148,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
 export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
-    "createWorkItem" | "getWorkItem" | "listWorkItems" | "listRuns" | "listItemMessages" | "appendCliCommand"
+    "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
     | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser"
   >;
   /** Who every command acts as (`cliIdentity`). */

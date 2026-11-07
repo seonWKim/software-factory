@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Controller } from "../src/core/controller.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { PHASE_HOLD, PHASES_OPEN, phaseMarker } from "../src/core/split.js";
-import type { RunOutcome, SourceRef, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { CloseReason, RunOutcome, SourceRef, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
@@ -27,7 +27,7 @@ const bigSpec = {
 /** The local source, made to fail once on one phase: a filing that stops part way. */
 class FlakyLocal extends LocalSource {
   failPhase: number | null = null;
-  async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
+  override async fileSubIssue(input: SubIssueInput): Promise<SourceRef> {
     if (this.failPhase !== null && input.marker.endsWith(`:${this.failPhase} -->`)) {
       this.failPhase = null;
       throw new Error("disk full");
@@ -67,7 +67,7 @@ async function setup() {
     expect((await cli({ action: "command", command: "approve", id, text: "" })).code).toBe(0);
     await controller.tickIntake();
   };
-  const close = async (id: WorkItemId, close_reason: "completed" | "not_planned") => {
+  const close = async (id: WorkItemId, close_reason: CloseReason) => {
     const cur = (await store.getWorkItem(id))!;
     const r = await store.transition({
       id, expected_version: cur.version, patch: { stage: "CLOSED", close_reason, blocked_on: "none", blocked_reason: null }, actor: system, reason: "closed",
@@ -159,7 +159,7 @@ describe("split spec on a local task", () => {
     const p = await f.parent();
     await f.approve(p.id);
     const [one, two] = (await f.store.listPhases(p.id)) as [WorkItem, WorkItem];
-    await f.close(one.id, "not_planned");
+    await f.close(one.id, "wont_do");
     await f.controller.tickPhases();
     expect(await f.get(two.id)).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: PHASE_HOLD });
     expect(await f.get(p.id)).toMatchObject({ stage: "READY", blocked_reason: PHASES_OPEN });
