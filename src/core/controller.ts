@@ -698,8 +698,8 @@ export class Controller {
    * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push,
    * never in the owner's checkout, after the install command and the checks passed on the merge commit in a
-   * temporary worktree; a conflict or a failing check leaves the item in merge_pending and the reply says why. A merge closes the
-   * item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
+   * temporary worktree; a conflict or a failing check leaves the item in merge_pending and the reply says why.
+   * A merge closes the item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
    * automatic: only a human's command calls it. Safe to run twice: a branch the base already contains moves
    * nothing and closes the item with the base's commit; `key` keys the reply.
    */

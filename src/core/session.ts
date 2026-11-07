@@ -277,8 +277,8 @@ export class Sessions {
     await this.d.files.remove(item.id);
     await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on its branch now
     this.d.log.info("session finished", { work_item_id: item.id, run_id: file.run_id, pr_number: number });
-    const done_line = number === null ? `committed the local branch ${file.branch} (no push, no PR)` : `pushed ${file.branch} and opened PR #${number}`;
-    return { ok: true, lines: [...lines, `${done_line}; the item goes to review next`] };
+    const sent = number === null ? `committed the local branch ${file.branch} (no push, no PR)` : `pushed ${file.branch} and opened PR #${number}`;
+    return { ok: true, lines: [...lines, `${sent}; the item goes to review next`] };
   }
 
   /** The run fails `abandoned`; the controller releases the item. The remote branch and the run folder are kept. */
