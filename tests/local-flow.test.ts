@@ -11,7 +11,7 @@ import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
+  FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, mallory, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -44,13 +44,14 @@ async function factory() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const gh = new FakeSource();
+  const forge = new FakeForge(gh);
   const local = new LocalSource(store);
   const github = new GitHubGrant();
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const auth = new GitHubAuthProvider(store, grants);
   const local_auth = new LocalAuthProvider(store, grants);
   const controller = new Controller({
-    store, sources: [gh, local], auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
+    store, sources: [gh, local], forge, auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
@@ -76,7 +77,7 @@ async function factory() {
   };
   const refusals = async (id: WorkItemId) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
-  return { clock, store, gh, github, controller, broker, step, cli, refusals };
+  return { clock, store, gh, forge, github, controller, broker, step, cli, refusals };
 }
 
 describe("local task flow", () => {
@@ -97,7 +98,7 @@ describe("local task flow", () => {
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
 
-    f.gh.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${id}`, merge_sha: "m1", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
 

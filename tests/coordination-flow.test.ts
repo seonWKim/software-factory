@@ -8,6 +8,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
@@ -84,7 +85,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     await f.controller.tickCoordination();
     expect(await f.claim()).toBeNull();
     // The merge lands on the base branch: the dependency closes with its merge sha, and its dependents move.
-    const merged: SourceEvent = { kind: "pr_merged", pr_number: 192, head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
+    const merged: ForgeEvent = { kind: "pr_merged", pr_number: 192, head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
     await f.controller.handleEvent(merged);
     expect(await f.get(dep)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m192" });
     expect(await f.get(a)).toMatchObject({ blocked_on: "none", blocked_reason: null });
@@ -377,8 +378,7 @@ describe("dependency links re-read only when the issue changed (issue #254)", ()
   /** Ten issues taken in by a poll, each implementing with a queued implement run. */
   async function tenImplementing() {
     const client = new PollingGitHub();
-    const poll = { clock: new FakeClock(), history_since: null, log: silent };
-    const gh = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, null, poll);
+    const gh = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
     const f = await setup(gh);
     const ns = Array.from({ length: 10 }, (_, i) => i + 1);
     client.open = ns.map((n) => ({ number: n, title: `t${n}`, body: "", user, updated_at: T0 }));
@@ -641,7 +641,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
     f.broker.calls = [];
     const unmergeable = async () => {
-      f.source.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
+      f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
       await f.controller.tickIntake();
     };
     return { ...f, it, unmergeable };
