@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { build, loadConfig } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
-import type { WorkItem, WorkItemId } from "../src/core/types.js";
+import type { SourceType, WorkItem, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -66,8 +66,9 @@ function pushBase(other: string, file: string, text: string) {
   git(other, "push", "--quiet", "origin", "main");
 }
 
-async function readyItem(store: FactoryStore, n: number): Promise<WorkItem> {
-  const { item } = await store.createWorkItem(issue(n), system);
+/** `type`: the item's source type, so a controller with only that source applies its transitions. */
+async function readyItem(store: FactoryStore, n: number, type: SourceType = "github_issue"): Promise<WorkItem> {
+  const { item } = await store.createWorkItem({ ...issue(n), source: { ...issue(n).source, type } }, system);
   const r = await store.transition({
     id: item.id, expected_version: item.version, actor: system, reason: "seed",
     patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: PR },
@@ -186,7 +187,7 @@ class CountingSandbox extends FakeSandbox {
 async function counted(opts: { source?: FakeSource } = {}) {
   const sandbox = new CountingSandbox();
   const s = await setup({ sandbox, ...opts });
-  const item = await readyItem(s.store, 1);
+  const item = await readyItem(s.store, 1, s.source.type);
   sandbox.heads[`factory/${item.id}`] = "a".repeat(40);
   return { ...s, sandbox, item };
 }

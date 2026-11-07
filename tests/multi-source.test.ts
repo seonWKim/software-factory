@@ -9,6 +9,7 @@ import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
 import {
   FakeAuth,
   FakeSlackPollSource,
@@ -169,6 +170,67 @@ describe("multi-source controller: per-item routing", () => {
     const after = (await f.store.getWorkItem(slItem.id))!;
     expect(after.version).toBe(slItem.version);
     expect(after.stage).toBe(slItem.stage);
+  });
+});
+
+describe("multi-source controller: github-issues + local (2026-11-07)", () => {
+  const localRef = (n: number): SourceRef => ({ type: "local", id: `local-${n}`, link: `local:local-${n}` });
+
+  async function localSetup() {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const gh = new FakeSource();
+    const local = new LocalSource(store);
+    const controller = new Controller({ store, sources: [gh, local], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const create = async (source: SourceRef) =>
+      (await store.createWorkItem(
+        { source, title: "t", requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
+        { kind: "system", id: "system:test" },
+        { enqueue: { kind: "triage", idempotency_key: `${source.type}:${source.id}:triage` } },
+      )).item;
+    const finishTriage = async (c: Controller) => {
+      for (;;) {
+        const run = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
+        if (!run) break;
+        await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
+      }
+      await c.tickRuns();
+    };
+    return { clock, store, gh, controller, create, finishTriage };
+  }
+
+  it("a local item's comments are stored as item messages; a GitHub item's go to the GitHub adapter", async () => {
+    const f = await localSetup();
+    const localItem = await f.create(localRef(1));
+    const ghItem = await f.create(issueRef(7));
+    await f.finishTriage(f.controller);
+
+    expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
+    expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
+    expect(await f.store.listItemMessages(ghItem.id)).toEqual([]);
+    expect(f.gh.comments.length).toBeGreaterThan(0);
+    expect(sources(f.gh.comments)).toEqual([issueRef(7).id]);
+    expect(sources(f.gh.statusCalls)).toEqual([issueRef(7).id]);
+  });
+
+  it("a controller without the local source (an older process still draining) leaves a local item's run to one with it", async () => {
+    const f = await localSetup();
+    const localItem = await f.create(localRef(2));
+    const log = recordingLog();
+    const gh = new FakeSource();
+    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log, scanner: cleanScanner });
+
+    await f.finishTriage(ghOnly);
+    const kept = (await f.store.getWorkItem(localItem.id))!;
+    expect(kept.version).toBe(localItem.version);
+    expect(kept.stage).toBe("NEW");
+    expect(gh.comments).toEqual([]);
+    expect((await f.store.listUnacknowledgedRuns(20)).map((r) => r.work_item_id)).toEqual([localItem.id]);
+    expect(log.lines.some((l) => l.level === "warn" && l.msg.startsWith("no source adapter"))).toBe(true);
+
+    await f.controller.tickRuns();
+    expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
+    expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
   });
 });
 
