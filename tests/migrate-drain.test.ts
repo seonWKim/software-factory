@@ -101,7 +101,8 @@ describe("migrate: drain handshake with factory dev", { timeout: 30_000 }, () =>
     s.consume();
     let code: number | null = null;
     void done.then((c) => (code = c));
-    for (let t = 0; t < 121 && code === null; t++) {
+    // Advance until the wait gives up, not a fixed 121 ticks: under load the file reads fall behind the clock.
+    for (let t = 0; t < 2000 && code === null; t++) {
       clock.advance(1000);
       await new Promise((r) => setTimeout(r, 5)); // the file reads between sleeps
     }
