@@ -8,6 +8,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceAdapter, SourceEvent } from "../src/interfaces/source-adapter.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pipeline, silent, triageSpec } from "./helpers/fakes.js";
@@ -84,7 +85,7 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     await f.controller.tickCoordination();
     expect(await f.claim()).toBeNull();
     // The merge lands on the base branch: the dependency closes with its merge sha, and its dependents move.
-    const merged: SourceEvent = { kind: "pr_merged", pr_number: 192, head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
+    const merged: ForgeEvent = { kind: "pr_merged", pr_number: 192, head_branch: `factory/${dep}`, merge_sha: "m192", merger: alice };
     await f.controller.handleEvent(merged);
     expect(await f.get(dep)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m192" });
     expect(await f.get(a)).toMatchObject({ blocked_on: "none", blocked_reason: null });
@@ -151,6 +152,42 @@ describe("dependency holds (design §5, 2026-11-03)", () => {
     }
     expect(source.comments.find((c) => c.marker === `<!-- factory:dependency-cycle:${a} -->`)!.body).toContain("#10 → #11 → #10");
     expect(await f.claim()).toBeNull();
+  });
+
+  it("/retry on a dependency closed unmerged reads the dependencies again: a PR closed unmerged still refuses, a fixed link releases", async () => {
+    const source = new DepSource();
+    const f = await setup(source);
+    const dep = await f.item(92, { stage: "REVIEW", pr_number: 192 }, []);
+    source.links.set("o/r#1", [{ depends_on: "o/r#92", kind: "depends_on" }]);
+    const a = await f.item(1);
+    await f.controller.tickCoordination();
+    await f.controller.handleEvent({ kind: "pr_closed", pr_number: 192, head_branch: `factory/${dep}` });
+    expect(await f.get(a)).toMatchObject({ blocked_on: "human", blocked_reason: "dependency_closed:#92" });
+    // The block's comment names the command that re-checks it.
+    expect(source.comments.find((c) => c.marker === `<!-- factory:dependency-closed:${a}:o/r#92 -->`)!.body).toContain("`/retry`");
+
+    // The PR stays closed unmerged: refused, nothing changes, no run queued.
+    const before = await f.get(a);
+    await f.controller.handleEvent({ kind: "retry_requested", source: issue(1).source, comment_id: "601", requester: alice });
+    expect(await f.get(a)).toEqual(before);
+    expect(source.comments.find((c) => c.marker === "<!-- factory:refused:601 -->")!.body).toContain("#92 is still closed without a merge");
+    expect(await f.queued(a)).toEqual([]);
+
+    // The link now points at an open issue outside the factory: read at once (no refresh interval), a new
+    // implement run queued with the human as actor, then held as any dependency hold.
+    source.links.set("o/r#1", [{ depends_on: "other/repo#5", kind: "depends_on" }]);
+    await f.controller.handleEvent({ kind: "retry_requested", source: issue(1).source, comment_id: "602", requester: alice });
+    expect(await f.get(a)).toMatchObject({ blocked_on: "dependency", blocked_reason: "waiting for other/repo#5 to merge" });
+    expect(await f.queued(a)).toHaveLength(1);
+    expect(await f.claim()).toBeNull();
+    const retried = (await f.store.listStateChanges(a)).find((c) => c.reason === "retry_requested")!;
+    expect(retried).toMatchObject({ actor: { kind: "user" }, detail: { released: "dependency_closed:#92" } });
+
+    // It merges: released on the next read, and the run is claimed.
+    source.states.set("other/repo#5", "merged");
+    f.clock.advance(10 * 60_000);
+    await f.controller.tickCoordination();
+    expect(await f.claim()).toMatchObject({ work_item_id: a, kind: "implement" });
   });
 
   it("/approve on a dependency hold does not lift it, and the reply says why", async () => {
@@ -468,7 +505,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
     f.broker.calls = [];
     const unmergeable = async () => {
-      f.source.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
+      f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
       await f.controller.tickIntake();
     };
     return { ...f, it, unmergeable };

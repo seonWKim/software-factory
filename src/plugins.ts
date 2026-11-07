@@ -9,7 +9,8 @@
 // Guards (SecretStore, EgressScanner, ToolBroker; docs/architecture.md §5, G1–G6) can be switched to
 // another plugin, but never disabled: config that selects nothing for a guard fails at startup.
 //
-// Optional kinds (Forge, issue #172) have no default: leaving their key out, or "none", selects nothing.
+// Optional kinds (Forge, issue #172) have no default plugin: "none" selects nothing. Leaving `plugins.forge` out
+// lets src/compose.ts derive it from the sources (withForgeDefault, issue #273).
 
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -313,13 +314,16 @@ type ListKind = (typeof LIST_KINDS)[number];
 /**
  * A list-taking key (`plugins.source`, design 2026-11-01; `plugins.runner` and `plugins.llm`, the fallback
  * chains of design 2026-11-07): one registered name, or a list of them. Returns the checked names in config
- * order. An empty list, an unknown or non-string entry, or the same name twice fails, naming the key. Which
+ * order. An unknown or non-string entry, or the same name twice fails, naming the key; so does an empty
+ * `plugins.runner` or `plugins.llm`, while an empty `plugins.source` gives no source (issue #282). Which
  * source types the names build, and whether two share one, is known only once they are built: the controller
  * checks that at startup.
  */
 export function checkList(registry: Registry, kind: ListKind, value: unknown): string[] {
   if (!Array.isArray(value)) return [checkPlugin(registry, kind, value)];
   const entry = registry[kind];
+  // No source at all is allowed (issue #282): items and commands live in the store, messages wait in the outbox.
+  if (value.length === 0 && kind === "source") return [];
   if (value.length === 0) {
     throw new Error(
       `${entry.configKey} is an empty list: name at least one ${entry.interface} plugin; available: ${Object.keys(entry.plugins).join(", ")}`,
@@ -379,8 +383,9 @@ export function selectPlugins(
   const lists = { source: "sources", runner: "runners", llm: "llms" } as const;
   for (const kind of LIST_KINDS) {
     const names = checkList(registry, kind, chosen[kind]);
-    out[kind] = names[0]!;
-    if (names.length > 1) out[lists[kind]] = names;
+    // An empty source list keeps `source` a string and makes `sources` the empty list selectedSources returns.
+    out[kind] = names[0] ?? "";
+    if (names.length !== 1) out[lists[kind]] = names;
   }
   return out;
 }

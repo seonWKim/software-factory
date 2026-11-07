@@ -73,6 +73,30 @@ describe("ClaudeCodeRunner: usage and rate limits", () => {
     expect(r.usage).toEqual({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: 0, model: null });
   });
 
+  it("keeps the CLI's limit text in the error, so the reset time is not lost", async () => {
+    const text = "You've hit your 5-hour limit · resets 6:30pm";
+    const r = await runnerWith(JSON.stringify({ type: "result", is_error: true, result: text, api_error_status: 429 })).run(spec());
+    expect(r.status).toBe("rate_limited");
+    expect(r.error).toContain("resets 6:30pm");
+    expect(r.error).toBe(text);
+  });
+
+  it("a 429 with no result text keeps the error rate_limited and the reset_at rule", async () => {
+    for (const result of [undefined, "", "   "]) {
+      const r = await runnerWith(JSON.stringify({ type: "result", is_error: true, ...(result === undefined ? {} : { result }), api_error_status: 429 })).run(spec());
+      expect(r).toMatchObject({ status: "rate_limited", error: "rate_limited" });
+      expect(r.reset_at).toBeUndefined();
+    }
+  });
+
+  it("caps the limit text at 500 characters", async () => {
+    const text = `limit reached · resets 3pm (UTC) ${"x".repeat(1000)}`;
+    const r = await runnerWith(JSON.stringify({ type: "result", is_error: true, result: text, api_error_status: 429 })).run(spec());
+    expect(r.error).toHaveLength(500);
+    expect(r.error).toBe(text.slice(0, 500));
+    expect(r.reset_at).toBe("2026-11-01T15:00:00.000Z");
+  });
+
   it("a 429 whose text gives no reset time is rate_limited with no reset_at", async () => {
     const r = await runnerWith(JSON.stringify({ type: "result", is_error: true, result: "rate limited", api_error_status: 429 })).run(spec());
     expect(r.status).toBe("rate_limited");

@@ -8,6 +8,7 @@ import type { Logger } from "../src/core/log.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { type RunKind, usageTokens } from "../src/core/types.js";
 import { CountedKeepAwake, WorkerPool } from "../src/core/worker-pool.js";
+import { testWorkerShare } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
@@ -431,7 +432,7 @@ describe("SF_WORKER_INDEX", () => {
     }
   }
 
-  async function poolWith(kind: RunKind, workers: number, indexBase?: number) {
+  async function poolWith(kind: RunKind, workers: number, indexBase?: number, cpus?: number) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(1), system);
@@ -446,6 +447,7 @@ describe("SF_WORKER_INDEX", () => {
       config: { ...config, workers }, prompts, log: silent, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" },
       awake: new NoKeepAwake(),
       ...(indexBase !== undefined ? { index_base: indexBase } : {}),
+      ...(cpus !== undefined ? { cpus } : {}),
     });
     return { pool, sandbox, runner, store, item };
   }
@@ -469,6 +471,29 @@ describe("SF_WORKER_INDEX", () => {
     expect(await pool.workers[1]!.tick()).toBe(true);
     expect((await store.listRuns(item.id))[0]).toMatchObject({ status: "succeeded", outcome: { data: { result: "pushed" } } });
     expect(sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "1" }]);
+  });
+
+  it("with the host's CPUs known, SF_TEST_WORKERS (the CPUs over the claiming slots) reaches the agent and the test command", async () => {
+    const triage = await poolWith("triage", 3, undefined, 10);
+    expect(await triage.pool.workers[0]!.tick()).toBe(true);
+    expect(triage.runner.specs[0]!.env_allowlist).toMatchObject({ SF_WORKER_INDEX: "0", SF_TEST_WORKERS: "3" });
+    const update = await poolWith("update", 2, undefined, 10);
+    expect(await update.pool.workers[1]!.tick()).toBe(true);
+    expect(update.sandbox.testEnvs).toEqual([{ PATH: "/usr/bin", SF_WORKER_INDEX: "1", SF_TEST_WORKERS: "5" }]);
+  });
+});
+
+describe("testWorkerShare", () => {
+  it("splits the CPUs evenly over the slots, rounding down, never below 1", () => {
+    expect(testWorkerShare(10, 1)).toBe(10);
+    expect(testWorkerShare(10, 3)).toBe(3);
+    expect(testWorkerShare(10, 10)).toBe(1);
+    expect(testWorkerShare(4, 10)).toBe(1);
+    expect(testWorkerShare(1, 1)).toBe(1);
+  });
+
+  it("treats zero slots as one", () => {
+    expect(testWorkerShare(8, 0)).toBe(8);
   });
 });
 

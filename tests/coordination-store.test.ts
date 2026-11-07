@@ -1,8 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_COORDINATION, pathWeight } from "../src/core/coordination.js";
+import { type CoordinationSettings, DEFAULT_COORDINATION, pathWeight } from "../src/core/coordination.js";
 import type { RunKind, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { STEPS_DIR } from "../src/impl/store/mysql/migrations.js";
+import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, PROJECT_KEY, human, issue, system, w1, w2 } from "./helpers/store.js";
 
@@ -202,6 +205,55 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect((await claim(store, w2))?.work_item_id).toBe(b);
     });
 
+    it("two queued items that hold each other and an open PR: the decisions name the PR; once it merges they stop naming it at once and the oldest is claimed", async () => {
+      const { store, clock } = await make();
+      const pr = await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      const a = await item(store, clock, 2, { files_to_change: [WORKER, "SET_UP.md"] });
+      const b = await item(store, clock, 3, { files_to_change: [WORKER, "SET_UP.md"] });
+      expect(await claim(store)).toBeNull();
+      // Each also shares more (6.0) with the other than with the PR (3.0), but the PR is what holds them.
+      for (const id of [a, b]) {
+        expect(await store.listClaimDecisions(id)).toMatchObject([{ decision: "held", holder_work_item_id: pr, holder_kind: "pr", cost: 3 }]);
+      }
+      // The merge path closes the item: no decision names it from that commit on, before any claim runs.
+      const it = (await store.getWorkItem(pr))!;
+      await store.transition({
+        id: pr, expected_version: it.version, actor: system, reason: "pr_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "abc" },
+      });
+      expect(await store.listClaimDecisions(a)).toEqual([]);
+      expect(await store.listClaimDecisions(b)).toEqual([]);
+      // Now they hold only each other: the oldest goes first, the other waits for it.
+      expect((await claim(store))?.work_item_id).toBe(a);
+      expect(await claim(store, w2)).toBeNull();
+      expect(await store.listClaimDecisions(b)).toMatchObject([{ decision: "held", holder_work_item_id: a, holder_kind: "running" }]);
+    });
+
+    it("a run held only by a queued run that cannot start (an open PR holds it) is claimed", async () => {
+      const { store, clock } = await make();
+      await item(store, clock, 1, { stage: "REVIEW", pr_number: 92, pr_files: ["SET_UP.md"] }, []);
+      const older = await item(store, clock, 2, { files_to_change: ["SET_UP.md", WORKER] });
+      const younger = await item(store, clock, 3, { files_to_change: [WORKER] });
+      expect((await claim(store))?.work_item_id).toBe(younger);
+      expect((await store.listClaimDecisions(younger))[0]).toMatchObject({ decision: "deadlock", holder_work_item_id: older, holder_kind: "waiting" });
+      expect((await store.listClaimDecisions(older))[0]).toMatchObject({ decision: "held", holder_kind: "pr" });
+    });
+
+    it("closing an item keeps an approval of a run it held", async () => {
+      const { store, clock } = await make();
+      const a = await item(store, clock, 1, { files_to_change: [WORKER] });
+      const b = await item(store, clock, 2, { files_to_change: [WORKER] });
+      const first = (await claim(store))!;
+      expect(await claim(store, w2)).toBeNull();
+      const run = await runOf(store, b);
+      const before = (await store.getWorkItem(b))!;
+      expect(await store.approveClaimHold({ id: b, expected_version: before.version, actor: human as never, run_id: run.id })).toMatchObject({ ok: true });
+      await store.completeRun(first.id, first.lease!.token, ok);
+      const it = (await store.getWorkItem(a))!;
+      await store.transition({ id: a, expected_version: it.version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason: "completed" } });
+      expect(await store.listClaimDecisions(b)).toMatchObject([{ holder_work_item_id: a, approved_by: human.id }]);
+    });
+
     it("triage and review runs are never held by the coordination rule", async () => {
       const { store, clock } = await make();
       const a = await item(store, clock, 1, { files_to_change: [WORKER] });
@@ -242,6 +294,112 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       const r = await store.approveClaimHold({ id: a, expected_version: it0.version, actor: human as never, run_id: (await runOf(store, a)).id });
       expect(r).toEqual({ ok: false, reason: "not_held" });
       expect((await store.getWorkItem(a))!.version).toBe(it0.version);
+    });
+  });
+
+  describe("hold_policy (issue #314)", () => {
+    const MIN = 60_000;
+    const policy = (p: Partial<CoordinationSettings>) => ({ ...DEFAULT_COORDINATION, ...p });
+    const claimWith = (store: FactoryStore, coordination: CoordinationSettings, worker_id = w2) =>
+      store.claimRun({ worker_id, kinds: ALL, lease_ms: LEASE, coordination });
+    /** Item 1 running, item 2 queued and sharing `file` with it. */
+    async function heldPair(file = "lib/a.ts") {
+      const { store, clock } = await make();
+      const a = await item(store, clock, 1, { files_to_change: [file, "lib/b.ts", "lib/c.ts"] });
+      const b = await item(store, clock, 2, { files_to_change: [file, "lib/b.ts", "lib/c.ts"] });
+      expect((await claim(store, w1))?.work_item_id).toBe(a);
+      return { store, clock, a, b };
+    }
+
+    it("run_after_minutes 20: not claimed at 19 minutes, claimed at 20; the decision is timed_out with holder and cost", async () => {
+      const { store, clock, a, b } = await heldPair();
+      const s = policy({ hold_policy: { mode: "run_after_minutes", minutes: 20 } });
+      expect(await claimWith(store, s)).toBeNull();
+      const [held] = await store.listClaimDecisions(b);
+      expect(held).toMatchObject({ decision: "held", holder_work_item_id: a, cost: 3 });
+      clock.advance(19 * MIN);
+      expect(await claimWith(store, s)).toBeNull();
+      clock.advance(MIN);
+      expect(await claimWith(store, s)).toMatchObject({ work_item_id: b, kind: "implement" });
+      expect(await store.listClaimDecisions(b)).toMatchObject([
+        { decision: "timed_out", holder_work_item_id: a, holder_ref: "#1", holder_kind: "running", cost: 3, threshold: 2.5, held_since: held!.held_since },
+      ]);
+    });
+
+    it("run: a held run is claimed at once; the decision is overlap_allowed with holder and cost", async () => {
+      const { store, a, b } = await heldPair();
+      expect(await claimWith(store, policy({ hold_policy: { mode: "run" } }))).toMatchObject({ work_item_id: b });
+      expect(await store.listClaimDecisions(b)).toMatchObject([
+        { decision: "overlap_allowed", holder_work_item_id: a, holder_kind: "running", cost: 3, threshold: 2.5 },
+      ]);
+    });
+
+    it("hold (the default): the run stays held however long, and /approve still lifts it", async () => {
+      const { store, clock, b } = await heldPair();
+      clock.advance(24 * 60 * MIN);
+      expect(await claimWith(store, policy({ hold_policy: { mode: "hold" } }))).toBeNull();
+      expect(await claim(store, w2)).toBeNull();
+      expect(await store.listClaimDecisions(b)).toMatchObject([{ decision: "held" }]);
+      const run = await runOf(store, b);
+      const it0 = (await store.getWorkItem(b))!;
+      expect(await store.approveClaimHold({ id: b, expected_version: it0.version, actor: human as never, run_id: run.id })).toMatchObject({ ok: true });
+      expect(await claim(store, w2)).toMatchObject({ id: run.id });
+    });
+
+    it("a hold keeps its start when its holder changes, so the run_after_minutes timer does not restart", async () => {
+      const { store, clock } = await make();
+      const s = policy({ hold_policy: { mode: "run_after_minutes", minutes: 20 } });
+      await item(store, clock, 1, { stage: "REVIEW", pr_number: 91, pr_files: [WORKER] }, []);
+      const b = await item(store, clock, 2, { files_to_change: [WORKER] });
+      expect(await claimWith(store, s)).toBeNull();
+      const [first] = await store.listClaimDecisions(b);
+      expect(first).toMatchObject({ decision: "held", holder_ref: "#91" });
+      clock.advance(10 * MIN);
+      // A second PR that shares more files takes over as the named holder.
+      await item(store, clock, 3, { stage: "REVIEW", pr_number: 93, pr_files: [WORKER, "SET_UP.md"] }, []);
+      const it2 = (await store.getWorkItem(b))!;
+      await store.transition({ id: b, expected_version: it2.version, actor: system, reason: "x", patch: { files_to_change: [WORKER, "SET_UP.md"] } });
+      expect(await claimWith(store, s)).toBeNull();
+      const [second] = await store.listClaimDecisions(b);
+      expect(second).toMatchObject({ decision: "held", holder_ref: "#93", held_since: first!.held_since });
+      expect(second!.at).not.toBe(first!.at);
+      clock.advance(10 * MIN);
+      expect(await claimWith(store, s)).toMatchObject({ work_item_id: b });
+      expect((await store.listClaimDecisions(b))[0]).toMatchObject({ decision: "timed_out", holder_ref: "#93", held_since: first!.held_since });
+    });
+
+    it("dependency holds never time out nor become overlap_allowed", async () => {
+      // Held by a dependency and by cost against a running item at once.
+      const { store, clock, b: a } = await heldPair();
+      await store.replaceDependencyEdges(a, [{ depends_on: "o/r#92", kind: "depends_on" }]);
+      for (const hold_policy of [{ mode: "run" }, { mode: "run_after_minutes", minutes: 1 }] as const) {
+        clock.advance(60 * MIN);
+        expect(await claimWith(store, policy({ hold_policy }))).toBeNull();
+      }
+      expect(await store.listClaimDecisions(a)).toEqual([]);
+    });
+
+    it("hotspot_mode hold: a hotspot cost stays held under run and run_after_minutes; with the default it follows hold_policy", async () => {
+      for (const hold_policy of [{ mode: "run" }, { mode: "run_after_minutes", minutes: 1 }] as const) {
+        const { store, clock, b } = await heldPair(WORKER);
+        expect(await claimWith(store, policy({ hold_policy, hotspot_mode: "hold" }))).toBeNull();
+        clock.advance(60 * MIN);
+        expect(await claimWith(store, policy({ hold_policy, hotspot_mode: "hold" }))).toBeNull();
+        expect(await store.listClaimDecisions(b)).toMatchObject([{ decision: "held" }]);
+        expect(await claimWith(store, policy({ hold_policy }))).toMatchObject({ work_item_id: b });
+      }
+      // hotspot_mode hold leaves a cost of ordinary files to the policy.
+      const { store, b } = await heldPair();
+      expect(await claimWith(store, policy({ hold_policy: { mode: "run" }, hotspot_mode: "hold" }))).toMatchObject({ work_item_id: b });
+    });
+
+    it("SQLite migration 30 and MySQL step 0030 add the same held_since column", () => {
+      const sqlite = MIGRATIONS.find((m) => /ADD COLUMN held_since/.test(m))!;
+      const mysql = readFileSync(`${STEPS_DIR}/0030-claim-held-since.sql`, "utf8");
+      const added = (sql: string) => [...sql.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
+      expect(added(sqlite)).toEqual(["claim_decisions.held_since"]);
+      expect(added(mysql)).toEqual(added(sqlite));
+      expect(MIGRATIONS.indexOf(sqlite) + 1).toBe(30);
     });
   });
 

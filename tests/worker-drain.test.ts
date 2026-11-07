@@ -136,7 +136,7 @@ describe("dev child: two children through a swap", () => {
   };
   /** Counts each controller step a pass runs, so a test sees whether a pass started. */
   function countSteps(c: Controller) {
-    const steps = ["intake", "reaperStep", "checksStep", "coordinationStep", "appCommandsStep", "runsStep", "probeStep"] as const;
+    const steps = ["intake", "reaperStep", "checksStep", "coordinationStep", "commandsStep", "runsStep", "probeStep", "outboxStep"] as const;
     const spies = steps.map((s) => vi.spyOn(c as unknown as Record<string, () => Promise<void>>, s));
     return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<(typeof steps)[number], number>;
   }

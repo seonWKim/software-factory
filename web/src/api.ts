@@ -1,6 +1,7 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
-// POST /api/v1/settings (postSettings) and POST /api/v1/items/:id/commands (postCommand), each with the
-// per-process CSRF token (from GET /api/v1/settings or GET /api/v1/session) in x-csrf-token.
+// POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand) and POST /api/v1/pauses/resume
+// (postResume), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session or /api/v1/pauses)
+// in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -11,17 +12,33 @@ export interface FactoryState {
   target_rev: string | null;
   child_pid: number | null;
   since: string;
+  /** The effective `workers` setting (file, override or default, capped at max_workers), not the status file's value. */
   workers: number;
+  workers_source: "override" | "file" | "default";
   error: string | null;
   pending: string[];
+}
+
+/** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
+export interface SystemAction {
+  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "revision_mismatch";
+  text: string;
+  command: string;
+  /** When it ends by itself, else null. */
+  until: string | null;
+  /** The item it is about (a deadlock), else null. */
+  work_item_id: string | null;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
 export interface Overview {
   as_of: string;
+  /** The git revision the UI server runs; compared with WEB_REV. Null: unknown. */
+  server_rev?: string | null;
   stages: Record<string, number>;
-  /** Open items blocked on a person: "Needs you (N)". */
+  /** Open items blocked on a person plus the system actions: "Needs you (N)". */
   needs_you: number;
+  system_actions?: SystemAction[];
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
@@ -63,6 +80,18 @@ export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
   return !!m && m.state !== "mergeable";
 }
 
+/**
+ * Why an item waits (design §9, issue #310): one sentence, who moves it next, and the same-repo issue numbers
+ * the sentence names as `#N`. `ref_url` + a number is that issue's URL; null: show the number without a link.
+ */
+export interface Why {
+  code: string;
+  text: string;
+  next_actor: "human" | "factory" | "other_item" | "none";
+  refs: number[];
+  ref_url: string | null;
+}
+
 export interface ItemRow {
   id: string;
   source: SourceRef;
@@ -86,6 +115,9 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  /** What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows. */
+  need?: { reason: string; command: string | null };
+  why?: Why;
 }
 
 export interface Items {
@@ -116,6 +148,17 @@ export interface QueueRow {
   attempt: number;
   created_at: string;
   not_before: string | null;
+  /** Why its item waits; null when the item is gone. */
+  why?: Why | null;
+}
+
+/** One phase of a split parent, as the item API lists it. */
+export interface PhaseRow {
+  id: string;
+  phase: number;
+  title: string | null;
+  stage: string;
+  source: SourceRef;
 }
 
 export interface ItemDetail {
@@ -134,10 +177,18 @@ export interface ItemDetail {
     token_cost: number;
     pr_number: number | null;
     pr_url: string | null;
+    /** The posted spec comment; null before triage posts it. */
+    spec_comment_url?: string | null;
+    /** A phase of a split spec: its parent's id and its place in merge order; both null on any other item. */
+    parent_id?: string | null;
+    phase?: number | null;
+    /** A split parent's phases in phase order; empty for any other item. */
+    phases?: PhaseRow[];
     version: number;
     created_at: string;
     updated_at: string;
     merge_check?: MergeCheckView | null;
+    why?: Why;
   };
   timeline: {
     version: number;
@@ -160,12 +211,23 @@ export interface ItemDetail {
     /** One record per claim, in attempt order; the last one's worker is the run's worker. */
     attempts?: { attempt: number; worker_id: string | null }[];
   }[];
+  /** Host sleeps recorded during one of the item's runs, newest first. */
+  sleeps?: HostSleepRow[];
   /** The commands that apply in the item's current state, in the order to show them. */
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
+}
+
+/** One host sleep a worker saw (a wait that ended over 60 s late): ids, a time and a number only. */
+export interface HostSleepRow {
+  worker_id: string;
+  woke_at: string;
+  /** How late the wait ended, in ms. */
+  gap_ms: number;
+  run_id: string | null;
 }
 
 /** Which steps the transcript filter keeps (tool calls of that kind). */
@@ -235,6 +297,8 @@ export type CommandResult = { ok: true; seq: number } | { ok: false; error: stri
 export interface Health {
   checked_at: string;
   checks: { status: string; msg: string }[];
+  /** The 10 newest host sleeps, newest first. */
+  sleeps?: HostSleepRow[];
 }
 
 /** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */
@@ -307,8 +371,78 @@ export interface DataPageBody {
   run_items: Record<string, string>;
 }
 
+/** One claim pause in effect (design §5 Restarts). `ends_at`: for model_stall, the next probe time. */
+export interface PauseRow {
+  name: string;
+  ends_at: string;
+  /** When a model stall began; absent for the pauses that have no start time. */
+  since?: string | null;
+}
+
+/** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
+export interface PausesView {
+  pauses: PauseRow[];
+  csrf_token: string | null;
+}
+
+declare const __FACTORY_REV__: string | null | undefined;
+
+/** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
+export const WEB_REV: string | null = typeof __FACTORY_REV__ === "string" ? __FACTORY_REV__ : null;
+
+/** One live worker process of `/api/v1/workers` (`processes`). `slots` 0 is a draining process. */
+export interface WorkerProcess {
+  process_id: string;
+  pid: number;
+  host: string;
+  slots: number;
+  max_slots: number;
+  busy: number;
+  idle: number;
+  started_at: string;
+  reported_at: string;
+  runs: { id: string; kind: string; work_item_id: string; worker_id: string; started_at: string | null }[];
+}
+
+/** `/api/v1/workers`. `processes_error` is set when the processes could not be read. */
+export interface WorkersView {
+  as_of: string;
+  workers: { owner: string; running: number }[];
+  processes?: WorkerProcess[];
+  processes_error?: string;
+}
+
+/** `/api/v1/failures`: failed runs of a window grouped by error code. */
+export interface FailureRun {
+  id: string;
+  work_item_id: string;
+  kind: string;
+  attempt: number;
+  detail: string;
+  worker: string | null;
+  finished_at: string | null;
+}
+export interface FailureGroup {
+  code: string;
+  /** Plain words for a known code; null for an unknown one. */
+  description: string | null;
+  count: number;
+  last_seen: string | null;
+  items: number;
+  runs: FailureRun[];
+}
+export interface Failures {
+  as_of: string;
+  window: "24h" | "7d";
+  cap: number;
+  total: number;
+  capped: boolean;
+  groups: FailureGroup[];
+}
+
 export const API = {
-  overview: "/api/v1/overview",
+  // The app's own revision goes along, so the server lists a mismatch in Needs you.
+  overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
   items: "/api/v1/items",
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
@@ -321,8 +455,11 @@ export const API = {
   queue: "/api/v1/queue",
   workers: "/api/v1/workers",
   health: "/api/v1/health",
+  failures: (window: string) => `/api/v1/failures?window=${window}`,
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
+  pauses: "/api/v1/pauses",
+  resume: "/api/v1/pauses/resume",
   dataTables: "/api/v1/data/tables",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
@@ -377,6 +514,13 @@ export async function postCommand(token: string, id: string, command: string, no
   const text = note.trim();
   const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
+export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
+  if (r.ok) return { ok: true, ended: r.value.ended === true };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

@@ -385,3 +385,17 @@ describe("config keys: path_companions (design 04-triage.md)", () => {
     expect(err.message).not.toContain("path_companions[0]");
   });
 });
+
+describe("github.history_since (design §5, Merges)", () => {
+  it("is accepted in the github block, as a date or a UTC time", async () => {
+    await expect(loadConfig(root({ ...SQLITE, github: { history_since: "2026-01-01" } }))).resolves.toBeTruthy();
+    await expect(loadConfig(root({ ...SQLITE, github: { history_since: "2026-01-01T12:30:00Z" } }))).resolves.toBeTruthy();
+  });
+
+  it("an invalid value fails at startup, naming the setting", async () => {
+    for (const history_since of ["last week", "2026-13-45", 20260101, "2026-01-01 00:00"]) {
+      const err = await loadError({ ...SQLITE, github: { history_since } });
+      expect(err.message).toContain("github.history_since");
+    }
+  });
+});

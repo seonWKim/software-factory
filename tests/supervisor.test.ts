@@ -1,10 +1,11 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { DRAIN_MARGIN_MS, GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
+import { NoneUpdater } from "../src/impl/updater/none.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { supervise } from "../src/supervisor.js";
@@ -134,7 +135,7 @@ class FakeChild implements ChildHandle {
 const RUN_TIMEOUT = 10_000;
 const POLL = 1000;
 
-function setup() {
+function setup(opts: { ui?: boolean } = {}) {
   const f = new Fake();
   const clock = new FakeClock();
   const log = recordingLog();
@@ -151,6 +152,7 @@ function setup() {
     runTimeoutMs: RUN_TIMEOUT,
     pidAlive: (pid) => f.live.some((c) => c.pid === pid),
   });
+  if (opts.ui) updater.serveUi(["ui"]);
   const signals = new EventEmitter();
   const running = supervise({ updater, clock, pollMs: POLL, log, signals, inPlace: async () => {} });
   return { f, clock, log, updater, signals, running };
@@ -256,6 +258,61 @@ describe("supervisor: start-then-drain", () => {
   });
 });
 
+describe("supervisor: the status page child (issue #311)", () => {
+  const isUi = (c: FakeChild) => c.spec.args[0] === "ui";
+  const uiChildren = (f: Fake) => f.children.filter(isUi);
+
+  it("after a new revision lands, the UI serves the new code with no manual restart: the old one stops, then the new one starts", async () => {
+    const { f, clock, signals, running } = setup({ ui: true });
+    await waitFor(() => uiChildren(f).length === 1, "first ui child");
+    const first = uiChildren(f)[0]!;
+    expect(first.spec.entry).toBe(join(f.root, ".factory", "versions", "c1", "dist", "main.js"));
+    expect(first.spec.env.SOFTWARE_FACTORY_CODE_ROOT).toBe(join(f.root, ".factory", "versions", "c1"));
+    expect(first.spec.env.SOFTWARE_FACTORY_SUPERVISED).toBe("1");
+    expect(first.spec.env[WORKER_INDEX_BASE_ENV]).toBeUndefined();
+
+    f.drainMode = "hold";
+    f.commits.push("c2");
+    await nextPoll(clock, () => uiChildren(f).length === 2, "second ui child");
+    const second = uiChildren(f)[1]!;
+    // The new revision's build is what the new page runs (the fake build writes the revision into dist/main.js).
+    expect(readFileSync(second.spec.entry, "utf8")).toBe("c2");
+    expect(second.alive).toBe(true);
+    expect(first.alive).toBe(false);
+    // Drain-and-swap: the old page has exited (its port is free) before the new one launches.
+    const killOld = f.events.indexOf(`kill SIGTERM ${first.pid}`);
+    expect(killOld).toBeGreaterThan(f.events.indexOf("build c2"));
+    expect(f.events.indexOf(`exit ${first.pid}`)).toBeLessThan(f.events.findIndex((e) => e.startsWith(`launch ${second.pid}`)));
+    // The old dev child only drains; it is never signalled.
+    expect(f.events).not.toContain("kill SIGTERM 1");
+
+    signals.emit("SIGTERM");
+    expect(await running).toBe(0);
+    expect(second.alive).toBe(false);
+  });
+
+  it("a status page child that exits by itself starts again on the next poll, from the same folder", async () => {
+    const { f, clock, log, signals, running } = setup({ ui: true });
+    await waitFor(() => uiChildren(f).length === 1, "first ui child");
+    uiChildren(f)[0]!.exit(1);
+    await nextPoll(clock, () => uiChildren(f).length === 2, "restarted ui child");
+    expect(uiChildren(f)[1]!.spec.entry).toBe(uiChildren(f)[0]!.spec.entry);
+    expect(log.lines.some((l) => /status page child exited/.test(l.msg))).toBe(true);
+    signals.emit("SIGTERM");
+    await running;
+  });
+
+  it("without serveUi no status page child starts", async () => {
+    const { f, clock, signals, running } = setup();
+    await waitFor(() => f.children.length === 1, "first child");
+    await nextPoll(clock, () => true, "a poll");
+    await settle();
+    expect(uiChildren(f)).toEqual([]);
+    signals.emit("SIGTERM");
+    await running;
+  });
+});
+
 describe("supervisor: worker index ranges", () => {
   it("each child gets a block of `workers` indexes no live child uses: the lowest free one", async () => {
     const { f, clock, signals, running } = setup();
@@ -354,5 +411,89 @@ describe("supervisor: signals", () => {
     expect(f.events.slice(-3)).toEqual(["kill SIGTERM 1", "kill SIGKILL 1", "exit 1"]);
     expect(log.lines.some((l) => /hard stop/.test(l.msg))).toBe(true);
     expect(f.live).toEqual([]);
+  });
+});
+
+describe("supervisor: in place (updater none)", () => {
+  function inPlaceSetup(head: ExecResult | Error = ok("c9\n")) {
+    const dir = mkdtempSync(join(tmpdir(), "sf-inplace-"));
+    const statusFile = join(dir, "supervisor.json");
+    const calls: string[] = [];
+    const run: CommandRunner = async (cmd, opts) => {
+      calls.push(`${opts.cwd}: ${cmd.join(" ")}`);
+      if (head instanceof Error) throw head;
+      return head;
+    };
+    const updater = new NoneUpdater({ repoPath: dir, run, env: { PATH: "/usr/bin" }, clock: new FakeClock(), log: recordingLog(), statusFile });
+    const read = () => JSON.parse(readFileSync(statusFile, "utf8")) as Record<string, unknown>;
+    return { dir, statusFile, calls, updater, read, signals: new EventEmitter() };
+  }
+
+  it("writes running (child_pid: this process, rev: HEAD, no supervisor_pid) before the in-place run starts", async () => {
+    const s = inPlaceSetup();
+    let seen: Record<string, unknown> | null = null;
+    const code = await supervise({
+      updater: s.updater,
+      clock: new FakeClock(),
+      pollMs: POLL,
+      log: recordingLog(),
+      signals: s.signals,
+      inPlace: async () => void (seen = s.read()),
+    });
+    expect(code).toBe(0);
+    expect(seen).toMatchObject({ state: "running", child_pid: process.pid, rev: "c9", target_rev: null });
+    expect(seen).not.toHaveProperty("supervisor_pid");
+    expect(s.calls).toEqual([`${s.dir}: git rev-parse HEAD`]);
+    expect(existsSync(`${s.statusFile}.tmp`)).toBe(false);
+  });
+
+  it("rev is null when git rev-parse fails", async () => {
+    for (const head of [{ ...ok(), exit_code: 128 }, new Error("spawn git ENOENT")]) {
+      const s = inPlaceSetup(head);
+      let seen: Record<string, unknown> | null = null;
+      await supervise({ updater: s.updater, clock: new FakeClock(), pollMs: POLL, log: recordingLog(), signals: s.signals, inPlace: async () => void (seen = s.read()) });
+      expect(seen).toMatchObject({ state: "running", rev: null });
+    }
+  });
+
+  for (const sig of ["SIGTERM", "SIGINT"] as const) {
+    it(`${sig}: once the in-place run returns, the file says stopped with child_pid null`, async () => {
+      const s = inPlaceSetup();
+      let started = false;
+      const running = supervise({
+        updater: s.updater,
+        clock: new FakeClock(),
+        pollMs: POLL,
+        log: recordingLog(),
+        signals: s.signals,
+        inPlace: (signal) =>
+          new Promise<void>((resolve) => {
+            started = true;
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          }),
+      });
+      await waitFor(() => started, "in-place run started");
+      expect(s.read()).toMatchObject({ state: "running" });
+      s.signals.emit(sig);
+      expect(await running).toBe(0);
+      expect(s.read()).toMatchObject({ state: "stopped", child_pid: null, rev: "c9" });
+      expect(s.read()).not.toHaveProperty("supervisor_pid");
+    });
+  }
+
+  it("an in-place run that throws still ends stopped, and the error reaches the caller", async () => {
+    const s = inPlaceSetup();
+    const running = supervise({
+      updater: s.updater,
+      clock: new FakeClock(),
+      pollMs: POLL,
+      log: recordingLog(),
+      signals: s.signals,
+      inPlace: async () => {
+        throw new Error("store unreachable");
+      },
+    });
+    await expect(running).rejects.toThrow("store unreachable");
+    expect(s.read()).toMatchObject({ state: "stopped", child_pid: null });
   });
 });

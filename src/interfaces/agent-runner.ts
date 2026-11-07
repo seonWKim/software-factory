@@ -77,7 +77,8 @@ export interface AgentRunResult {
   transcript: string;
   /**
    * What the call used, from the harness's own report. Filled for every status when the harness printed one
-   * (also on timeout and abort); zeros and a null cost when it printed none. The cache counts and model are
+   * (also on timeout and abort). A killed call that printed no final report: what its stream reported per
+   * message before the kill, with a null cost; zeros and a null cost when it printed nothing. The cache counts and model are
    * optional so older test doubles still compile; absent counts as 0 and null.
    */
   usage: {
@@ -90,6 +91,18 @@ export interface AgentRunResult {
     model?: string | null;
   };
   error?: string;
+  /**
+   * Why a `failed` run failed, when the runner can tell it needs a person: `provider_setup` (the provider's quota,
+   * API key or model name, design §5 Restarts). The worker records it as the error code and the run is not
+   * retried. Absent: the worker's own code for the status.
+   */
+  code?: typeof PROVIDER_SETUP;
+  /**
+   * Whether the agent called a write-capable tool (capability write or exec) in this call, so its workdir may have
+   * changed. A fallback chain does not hand such a workdir to the next member on a stall (design §5 Restarts).
+   * Absent: the runner cannot tell.
+   */
+  did_work?: boolean;
   /** For `rate_limited`: when the limit resets (ISO-8601 UTC), if the runner could tell. */
   reset_at?: string;
   /**
@@ -102,6 +115,9 @@ export interface AgentRunResult {
   /** Each fall-over in this run, in order: the member that gave up, the next one tried, and why. */
   fallbacks?: { from: string; to: string; reason: string }[];
 }
+
+/** The error code of a run the provider refused for its account or config: quota, API key or model name. */
+export const PROVIDER_SETUP = "provider_setup";
 
 export interface AgentRunner {
   run(spec: AgentRunSpec): Promise<AgentRunResult>;

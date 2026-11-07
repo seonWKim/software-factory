@@ -30,8 +30,11 @@ const GUIDED: ReadonlySet<SecretName> = new Set([CLAUDE_CODE_OAUTH_TOKEN, ANTHRO
 
 // doctor
 
-/** `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. */
-export type Check = { ok: boolean; msg: string; warn?: boolean };
+/**
+ * `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. `token_days`: the
+ * GitHub token expiry check only, the whole days left.
+ */
+export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number };
 
 /** A check's result in one word: what doctor prints and the status page shows. */
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -60,7 +63,7 @@ export function checksExitCode(checks: readonly Check[]): number {
  * egress-scan them first (the status page does).
  */
 export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
-  const checks: Check[] = [...settingsChecks(loaded)];
+  const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded)];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
@@ -93,10 +96,10 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
       } finally {
         await store.close();
       }
-      // Pending MySQL steps never reach here: schemaVersion() throws "… run `npm run migrate`", which the
-      // catch below reports as a FAIL line (the factory refuses to start until `npm run migrate` ran).
+      // A pending step is a FAIL: the factory refuses to start until `npm run migrate` ran (design §9 Health).
+      // MySQL's schemaVersion() usually throws "… run `npm run migrate`" instead, a FAIL line from the catch below.
       if (v.applied === v.latest) add(true, `${where} reachable, schema up to date`);
-      else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (the factory migrates it when it starts)`, true);
+      else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (run: npm run migrate)`);
       else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
     } catch (err) {
       add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
@@ -126,14 +129,7 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     } else {
       add(r.permissions?.push === true, `GitHub token can push to ${repo.owner}/${repo.name}`);
     }
-    const exp = grant ? grant.expires_at : await client.tokenExpiration(repo);
-    // Local use may keep a non-expiring token; a shared or cloud deployment should not.
-    if (exp === null) add(false, `GitHub token never expires (fine locally; use ≤ ${MAX_TOKEN_DAYS} days when shared)`, true);
-    else if (Number.isNaN(exp.getTime())) add(false, "GitHub token expiry is readable");
-    else {
-      const days = Math.round((exp.getTime() - Date.now()) / 86_400_000);
-      add(days <= MAX_TOKEN_DAYS, `GitHub token expires in ${days} days (recommended ≤ ${MAX_TOKEN_DAYS} when shared)`, true);
-    }
+    checks.push(await tokenExpiryCheck(client, repo, new Date(), grant));
   } catch (err) {
     add(false, `GitHub API: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
     return checks;
@@ -147,6 +143,37 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/** At or under this many days left a token is a FAIL; under TOKEN_WARN_DAYS a warn (design §9 Health). */
+export const TOKEN_FAIL_DAYS = 0;
+export const TOKEN_WARN_DAYS = 3;
+
+/**
+ * The GitHub token's expiry line: an App token's from its mint response (`grant`), else the expiry header of one
+ * repository GET. Whole days left, rounded down: 0 or less is a FAIL, 1 or 2 a warn, 3 or more ok. `token_days`
+ * carries the number, so the dashboard's Needs you can read the last run's value without asking GitHub again.
+ */
+export async function tokenExpiryCheck(
+  client: Pick<GitHubClient, "tokenExpiration">,
+  repo: RepoRef,
+  now: Date,
+  grant: { expires_at: Date } | null = null,
+): Promise<Check> {
+  const exp = grant ? grant.expires_at : await client.tokenExpiration(repo);
+  // Local use may keep a non-expiring token; a shared or cloud deployment should not.
+  if (exp === null) return { ok: false, msg: `GitHub token never expires (fine locally; use ≤ ${MAX_TOKEN_DAYS} days when shared)`, warn: true };
+  if (Number.isNaN(exp.getTime())) return { ok: false, msg: "GitHub token expiry is readable" };
+  const days = Math.floor((exp.getTime() - now.getTime()) / 86_400_000);
+  if (days <= TOKEN_FAIL_DAYS) return { ok: false, msg: `GitHub token expires in ${days} days (run: npm run setup -- --rotate-github)`, token_days: days };
+  if (days < TOKEN_WARN_DAYS) return { ok: false, msg: `GitHub token expires in ${days} days (run: npm run setup -- --rotate-github)`, warn: true, token_days: days };
+  return { ok: true, msg: `GitHub token expires in ${days} days (recommended ≤ ${MAX_TOKEN_DAYS} when shared)`, token_days: days };
+}
+
+/** The one line that names the config file in use: `--config` / FACTORY_CONFIG, or the checked-in file. */
+export function configFileCheck(loaded: Pick<Loaded, "configFile" | "externalConfig">): Check {
+  const how = loaded.externalConfig === null ? "checked-in" : "--config / FACTORY_CONFIG";
+  return { ok: true, msg: `config file: ${loaded.configFile} (${how})` };
 }
 
 /**

@@ -9,6 +9,7 @@ import type {
   DependencyEdge,
   Handoff,
   HandoffId,
+  HostSleep,
   Run,
   RunAttempt,
   RunId,
@@ -283,6 +284,15 @@ export function rowToHandoff(r: Row): Handoff {
   };
 }
 
+export function rowToHostSleep(r: Row): HostSleep {
+  return {
+    worker_id: r.worker_id as WorkerId,
+    woke_at: r.woke_at as Timestamp,
+    gap_ms: Number(r.gap_ms),
+    run_id: (r.run_id as RunId | null) ?? null,
+  };
+}
+
 export function rowToVerdict(r: Row): Verdict {
   return {
     id: r.id as VerdictId,
@@ -351,6 +361,7 @@ export function rowToClaimDecision(r: Row): ClaimDecision {
     threshold: Number(r.threshold),
     fallback: Number(r.fallback) === 1,
     approved_by: (r.approved_by as UserId | null) ?? null,
+    held_since: (r.held_since as Timestamp | null) ?? null,
     at: r.at as Timestamp,
   };
 }

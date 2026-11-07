@@ -9,7 +9,7 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { PushedEvent, SourceCloseReason, SourceEvent, StreamSource } from "../../interfaces/source-adapter.js";
 import type { RepoRef } from "../github/github-client.js";
 import type { SlackApi, SlackMessage } from "./slack-api.js";
-import { commentEvent } from "./comment-event.js";
+import { commentEvent } from "../../core/comment-event.js";
 import {
   ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, escapeSlack, prUrl, renderComment, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";

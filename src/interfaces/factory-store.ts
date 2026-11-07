@@ -12,6 +12,9 @@ import type {
   DependencyState,
   Tier,
   Handoff,
+  HostSleep,
+  ImproveReport,
+  ImproveWindow,
   Run,
   RunAttempt,
   RunId,
@@ -23,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -121,6 +127,25 @@ export interface NewRun {
   not_before?: Timestamp | null;
   /** Stored with the run for the worker to read (e.g. `/resolve` notes). Absent or null: none. */
   input?: RunInput | null;
+}
+
+/** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
+export interface NewImproveReport extends ImproveWindow {
+  run_id: RunId;
+  project: string;
+  groups: ImproveReport["groups"];
+  patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -425,6 +450,21 @@ export interface FactoryStore {
   /** The end of claim pause `name` (default `rate_limit`), or null if there is none or it has passed. Read-only. */
   getClaimPause(name?: ClaimPauseName): Promise<Timestamp | null>;
   /**
+   * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
+   * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
+   * `model_answered` row and its probe time move to the earlier of the probe time and now, as an answered probe
+   * would, so `model_stall_since` reads null too and a stall right after starts a new pause.
+   * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
+   * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
+   */
+  endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Takes the probe of a due `model_stall` pause (design §5 Restarts): while the pause is in effect with probe
+   * time `due`, moves it to `next` and returns `taken`. Conditional, so among replicas that read the same due
+   * time exactly one probes it; a moved, ended or missing pause changes no row and is never started again.
+   */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
+  /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
@@ -477,6 +517,33 @@ export interface FactoryStore {
    * finished before finished_at existed (null) are never included. Read-only.
    */
   listRunsFinishedWithin(window_ms: number): Promise<Run[]>;
+  /** Runs whose finished_at is in [start, end), oldest first (finished_at, then insertion order). Read-only. */
+  listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]>;
+  /**
+   * Queues a run on an existing item with no transition (design §7: the improve run of a system work item, whose
+   * state never changes). A run with the same idempotency key already there: that run, `created: false`.
+   */
+  enqueueRun(input: NewRun): Promise<{ run: Run; created: boolean }>;
+
+  // Improve reports (design §7). One report per improve run; the filed-pattern table has no method yet.
+
+  /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
+  recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
+  getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
 
   // Coordination (design §5, 2026-11-03)
 
@@ -639,6 +706,19 @@ export interface FactoryStore {
   /** Deletes the row of `process_id` (a clean stop). Returns whether a row went. */
   removeWorkerProcess(process_id: string): Promise<boolean>;
 
+  // Host sleeps (design §5 Host sleep, issue #218).
+
+  /**
+   * Stores one host sleep. Keyed by (worker_id, woke_at): a sleep already stored is a no-op that reports the
+   * stored row with `created: false`, so the write is safe to run twice.
+   */
+  recordHostSleep(sleep: HostSleep): Promise<{ created: boolean; sleep: HostSleep }>;
+  /**
+   * The newest host sleeps first (woke_at, then worker_id, both descending), at most `limit`. With
+   * `work_item_id`: only sleeps recorded during one of that item's runs. Read-only.
+   */
+  listHostSleeps(opts: { limit: number; work_item_id?: WorkItemId }): Promise<HostSleep[]>;
+
   // Merge checks (design §5 Merge check, issue #248): the latest local merge check of each ready-to-merge item.
 
   /**
@@ -651,8 +731,42 @@ export interface FactoryStore {
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
-  // Local work items (issue #198): the messages the controller would post as comments on an item, and the log
-  // of commands the CLI sends. Store only: nothing calls these yet.
+  // GitHub sync records (design §5, GitHub call budget): the comments a source posted and the status labels it
+  // wrote, shared by every replica, so a restart or another replica needs no thread or label read to know them.
+  // Keyed by the item's source id. Only the GitHub source writes them, so a setup without it writes no rows.
+
+  /**
+   * The comment with `marker` on `source_id`, or a row of failed posts only (`comment_id` null). `same_body`
+   * says whether `body` hashes to the stored body hash (false when none is stored); `waiting`, whether its next
+   * attempt time is still ahead of the store clock. Read-only.
+   */
+  getPostedComment(source_id: string, marker: string, body: string): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null>;
+  /**
+   * Stores the posted comment (ID, URL and the hash of `body`) and clears its failed attempts. A marker already
+   * posted keeps its first record, so a second call changes nothing.
+   */
+  recordPostedComment(input: NewPostedComment): Promise<void>;
+  /**
+   * Records failed post number `attempts`; the next may be tried `delay_ms` after the store clock's now.
+   * Conditional: only when the stored count is `attempts - 1` (no row counts as 0), so two replicas recording the
+   * same failure count it once. Returns whether this call recorded it.
+   */
+  recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean>;
+
+  /**
+   * Claims the write of `status` on `target` of `source_id` for `ttl_ms`: a token, or null when the stored label
+   * state is already `status` or another unexpired claim is writing the same status. One claim per write.
+   */
+  claimLabelWrite(source_id: string, target: LabelTarget, status: string, ttl_ms: number): Promise<string | null>;
+  /** Stores `status` as written and ends claim `token`. A claim another write took over stores nothing. */
+  recordLabelState(source_id: string, target: LabelTarget, status: string, token: string): Promise<void>;
+  /** Ends claim `token` with nothing written (the write failed), so the next write need not wait for its expiry. */
+  releaseLabelClaim(source_id: string, target: LabelTarget, token: string): Promise<void>;
+  /** The stored label states of the given source ids, in no set order. Read-only. */
+  listLabelStates(source_ids: readonly string[]): Promise<LabelState[]>;
+
+  // The item thread and the command inbox (issues #198, #281, #282): every message the controller sends about an
+  // item, and the commands the CLI and the app send, which the controller reads by seq.
 
   /**
    * Stores one message for `work_item_id`. `marker` identifies it within the item: a marker already stored
@@ -669,6 +783,34 @@ export interface FactoryStore {
   /** Commands with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]>;
 
+  // The outbox (issue #282, design 05-sources "Thread first"): every factory message is a thread entry first; an
+  // entry written with `delivery` gets one outbox row, which the controller's outbox step delivers to its target
+  // source once, retrying with backoff. Delivery never changes the item's stage, blocked fields or version.
+
+  /**
+   * The undelivered outbox rows of the given source types whose retry time has come and that no live claim
+   * holds, oldest first, at most `limit`. Rows of any other source type stay pending. Read-only.
+   */
+  listPendingDeliveries(source_types: readonly SourceType[], limit: number): Promise<ThreadDelivery[]>;
+  /** Every outbox row of `work_item_id`, delivered or not, oldest first. Read-only. */
+  listDeliveries(work_item_id: WorkItemId): Promise<ThreadDelivery[]>;
+  /**
+   * Claims outbox row `seq` for `lease_ms`, so only one replica posts it. Conditional: only an undelivered row
+   * with no live claim. Returns the claim token, or null when the row is delivered or claimed by another.
+   */
+  claimDelivery(seq: number, lease_ms: number): Promise<number | null>;
+  /**
+   * Marks row `seq` delivered with the comment's `url`, under claim `token`. When the row names a link field and
+   * no newer row of the item names the same field, the item's field is set to `url` (no version change, no
+   * state change). Returns false, changing nothing, when the token is no longer the row's live claim.
+   */
+  finishDelivery(seq: number, token: number, url: string | null): Promise<boolean>;
+  /**
+   * Records a failed delivery of row `seq` under claim `token`: one more attempt, the error, the claim released
+   * and the next try `retry_in_ms` from now. Returns false, changing nothing, when the token is not the claim.
+   */
+  failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
+
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
 
@@ -677,8 +819,6 @@ export interface FactoryStore {
    * before it. A `key` already stored is a no-op that reports the existing request with `created: false`.
    */
   recordAppCommandRequest(input: NewAppCommandRequest): Promise<{ created: boolean; request: AppCommandRequest }>;
-  /** Requests not yet handled, oldest (lowest seq) first, at most `limit`. Read-only. */
-  listPendingAppCommandRequests(limit: number): Promise<AppCommandRequest[]>;
   /**
    * Marks request `seq` handled now, with `refusal` (null: applied). Conditional: only a pending request changes,
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
@@ -746,11 +886,87 @@ export interface TablePage {
   offset: number;
 }
 
+/** Where a status label goes: the item's own issue, or its PR. */
+export type LabelTarget = "issue" | `pr:${number}`;
+
+export function labelTarget(pr_number: number | null): LabelTarget {
+  return pr_number === null ? "issue" : `pr:${pr_number}`;
+}
+
+/** The status label last written on one target of one item. */
+export interface LabelState {
+  source_id: string;
+  target: LabelTarget;
+  /** Null while a first write is claimed but not done. */
+  status: string | null;
+  updated_at: Timestamp;
+}
+
+export interface NewPostedComment {
+  source_id: string;
+  marker: string;
+  comment_id: string;
+  url: string | null;
+  /** The body as posted; the store keeps only its hash. */
+  body: string;
+}
+
+export interface PostedComment {
+  source_id: string;
+  marker: string;
+  /** Null on a row that only counts failed posts. */
+  comment_id: string | null;
+  url: string | null;
+  body_hash: string | null;
+  /** Failed posts since the last one that went through. */
+  attempts: number;
+  /** When the next post may be tried; null with no failures. */
+  next_attempt_at: Timestamp | null;
+}
+
 export interface NewItemMessage {
   work_item_id: WorkItemId;
   /** Unique within the item; a repeat with the same marker stores nothing. */
   marker: string;
   body: string;
+  /**
+   * Present: the entry also gets one outbox row in the same transaction (only when the entry is new), so the
+   * controller's outbox step delivers it to that source. Absent or null: the thread is the only copy.
+   */
+  delivery?: NewThreadDelivery | null;
+}
+
+/** The item fields an outbox delivery fills with the delivered comment's URL. */
+export type ThreadLinkField = "spec_comment_url" | "failure_comment_url";
+
+/** Where a thread entry is delivered: one source, one target on it. */
+export interface NewThreadDelivery {
+  /** The adapter type that delivers it: always the item's own source type. */
+  source_type: SourceType;
+  /** What the adapter posts on: the item's source, or (same type) its PR. */
+  target: SourceRef;
+  /** The item field the delivered URL fills, if any. */
+  link_field?: ThreadLinkField | null;
+}
+
+export interface ThreadDelivery {
+  seq: number;
+  thread_seq: number;
+  work_item_id: WorkItemId;
+  source_type: SourceType;
+  target: SourceRef;
+  link_field: ThreadLinkField | null;
+  /** The thread entry's marker and body, as posted. */
+  marker: string;
+  body: string;
+  /** Failed deliveries so far. */
+  attempts: number;
+  /** When the next try may run. */
+  next_attempt_at: Timestamp;
+  delivered_at: Timestamp | null;
+  url: string | null;
+  last_error: string | null;
+  created_at: Timestamp;
 }
 
 export interface ItemMessage extends NewItemMessage {

@@ -4,6 +4,7 @@ import {
   sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { parseTriage } from "../src/core/outputs.js";
+import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { triageSpec } from "./helpers/fakes.js";
 
@@ -54,6 +55,8 @@ describe("policy", () => {
     expect(failureClass(failed("invalid_output", false))).toBe("task");
     expect(failureClass(failed("no_commits", false))).toBe("task");
     expect(failureClass(null)).toBe("task");
+    // A provider's quota, key or model error is the task's own failure, never a rate limit (no claim pause).
+    expect(failureClass(failed(PROVIDER_SETUP, false))).toBe("task");
   });
 
   it("maps factory branches back to work items", () => {

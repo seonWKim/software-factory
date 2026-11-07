@@ -14,7 +14,8 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
  * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
  * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
- * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297) are checked here at load
+ * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
+ * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts once #200 lands; listed here first so that change needs no
  * edit to this file.
@@ -69,6 +70,8 @@ export const TOP_LEVEL_KEYS = [
   "hotspot_weight",
   "mechanical_paths",
   "mechanical_weight",
+  "hold_policy",
+  "hotspot_mode",
   "tool_grants",
   "defaults",
   "projects",
@@ -96,7 +99,7 @@ export const MODELS_KEYS = ["cheap", "standard", "strong"] as const satisfies re
 export const AGENT_GIT_IDENTITY_KEYS = ["name", "email"] as const satisfies readonly (keyof FileConfig["agent_git_identity"])[];
 export const UI_KEYS = ["port", "user_id"] as const satisfies readonly (keyof NonNullable<FileConfig["ui"]>)[];
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
-export const GITHUB_KEYS = ["min_remaining"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
+export const GITHUB_KEYS = ["min_remaining", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 
 /** A suggestion is offered only within this edit distance. */

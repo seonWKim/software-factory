@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, mergeCheckLabel } from "../api.js";
-import { Badge, Empty, Table, Td } from "../components/ui/parts.js";
+import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel } from "../api.js";
+import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
@@ -41,6 +41,34 @@ export function MergeCheckNote({ check }: { check: MergeCheckView }) {
   );
 }
 
+/** `#N` not part of `owner/name#N`, as the server reads refs (src/ui/why.ts). */
+const REF = /(?<![\w./-])#(\d+)\b/g;
+
+/** The why sentence, each `#N` it names (from `refs`) linked to that issue when the API gave a `ref_url`. */
+export function WhyText({ why }: { why: Why }) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of why.text.matchAll(REF)) {
+    const n = Number(m[1]);
+    if (!why.ref_url || !why.refs.includes(n)) continue;
+    parts.push(why.text.slice(last, m.index));
+    parts.push(<a key={m.index} href={`${why.ref_url}${n}`} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{n}</a>);
+    last = m.index + m[0].length;
+  }
+  parts.push(why.text.slice(last));
+  return <span data-why={why.code}>{parts}</span>;
+}
+
+/** A Needs-you row's reason and the command to type (the same words as the classic page). */
+function NeedText({ need }: { need: NonNullable<ItemRow["need"]> }) {
+  return (
+    <span data-need>
+      {need.reason}
+      {need.command && <> · <code className="font-mono text-xs">{need.command}</code></>}
+    </span>
+  );
+}
+
 /** A link out to GitHub; only drawn for the github plugin. */
 function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   return (
@@ -62,9 +90,9 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
-        <tr key={it.id} data-key={it.id}>
+        <Tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
-            <Link href={itemPath(it.id)} className={cn("block truncate font-medium", LINK_CLASS)}>
+            <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
               {it.title ?? it.id}
             </Link>
           </Td>
@@ -72,7 +100,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
-          <Td className="text-zinc-600 dark:text-zinc-400">{it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
+          <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
           {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
           {showPr && (
@@ -80,7 +108,7 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
               {it.pr_number === null ? "–" : it.pr_url ? <Ext href={it.pr_url}>#{it.pr_number}</Ext> : `#${it.pr_number}`}
             </Td>
           )}
-        </tr>
+        </Tr>
       ))}
     </Table>
   );
@@ -95,21 +123,21 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
       {running.map((r) => {
         const it = items.get(r.work_item_id);
         return (
-          <tr key={r.id}>
+          <Tr key={r.id}>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
             <Td className="font-mono text-xs">{r.owner ?? "–"}</Td>
             <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
             <Td className="tabular-nums">{ago(r.heartbeat_at, now)} ago</Td>
-          </tr>
+          </Tr>
         );
       })}
     </Table>
   );
 }
 
-/** Queued runs in claim order, with their item and when each may start. */
+/** Queued runs in claim order, with their item and when each may start: "now" or its retry time, else why it waits. */
 export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, ItemRow>; now: number; limit?: number }) {
   if (queue.length === 0) return <Empty>The queue is empty.</Empty>;
   const shown = limit ? queue.slice(0, limit) : queue;
@@ -118,14 +146,14 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
-          <tr key={q.id}>
+          <Tr key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
             <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>
-            <Td className="tabular-nums">{until(q.not_before, now)}</Td>
-          </tr>
+            <Td className="tabular-nums">{q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)}</Td>
+          </Tr>
         );
       })}
     </Table>

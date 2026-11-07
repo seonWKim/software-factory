@@ -3,11 +3,13 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
 import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
+import { RevisionBanner } from "../web/src/views/system-banner.js";
 
 // The app shell (step 2 of #124, design §9): it fetches only /api/v1/*, polls every 3 s while the document is
 // visible and not while it is hidden, and keeps the light/dark choice in browser storage.
@@ -123,7 +125,7 @@ describe("app shell", () => {
     mount();
     expect(await screen.findByText("Needs you (4)")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Pages" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Floor", "Work items", "Workers", "Queue", "Health", "Settings"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Floor", "Work items", "Workers", "Queue", "Health", "Failures", "Settings"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
@@ -166,6 +168,28 @@ describe("app shell", () => {
     localStorage.setItem(THEME_KEY, "dark");
     mount();
     expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeTruthy();
+  });
+});
+
+describe("sidebar in the icon-only layout", () => {
+  it("each link has a title and an accessible name, though its label is hidden", async () => {
+    const wide = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    try {
+      mount();
+      await screen.findByText("Needs you (4)");
+      for (const nav of [screen.getByRole("navigation", { name: "Pages" }), screen.getByRole("navigation", { name: "Tools" })]) {
+        const links = [...nav.querySelectorAll("a")];
+        expect(links.length).toBeGreaterThan(0);
+        for (const a of links) {
+          const label = a.querySelector("span")!.textContent!;
+          expect(a.getAttribute("title")).toBe(label);
+          expect(within(nav).getByRole("link", { name: label })).toBe(a);
+        }
+      }
+    } finally {
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
+    }
   });
 });
 
@@ -463,5 +487,187 @@ describe("Floor item links (issue #228)", () => {
     mount();
     const all = await screen.findByRole("table", { name: "Work items" });
     expect(within(all).getByRole("link", { name: "Being built" }).getAttribute("href")).toBe("/app/items/wi_2");
+  });
+});
+
+// ---- Why an item waits (issue #310): one sentence from the API, #N linked, on Floor, Items, Queue and the item page ----
+describe("why an item waits (issue #310)", () => {
+  const REF_URL = "https://github.com/o/r/issues/";
+  const dep = { code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item" as const, refs: [12, 13], ref_url: REF_URL };
+  const held = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item" as const, refs: [92], ref_url: REF_URL };
+  const refLinks = (el: HTMLElement) => [...el.querySelectorAll("[data-why] a")].map((a) => [a.textContent, a.getAttribute("href")]);
+
+  function withWhy(run: () => Promise<void>) {
+    const saved = { items: items.items.map((i) => ({ ...i })), queue: queue.queue.map((q) => ({ ...q })), item: { ...detail.item } };
+    (items.items[0] as Record<string, unknown>).why = dep;
+    (items.items[2] as Record<string, unknown>).why = held;
+    (queue.queue[0] as Record<string, unknown>).why = held;
+    (detail.item as Record<string, unknown>).why = dep;
+    return run().finally(() => {
+      items.items.splice(0, items.items.length, ...saved.items);
+      queue.queue.splice(0, queue.queue.length, ...saved.queue);
+      delete (detail.item as Record<string, unknown>).why;
+    });
+  }
+  const dependencyLinks = [["#12", `${REF_URL}12`], ["#13", `${REF_URL}13`]];
+
+  it("the Floor's Needs you shows the sentence with #N linked, and a held run's Starts shows its sentence, not now", () =>
+    withWhy(async () => {
+      mount();
+      const needs = await screen.findByRole("table", { name: "Needs you" });
+      expect(within(needs).getByText("Waiting for", { exact: false }).textContent).toBe(dep.text);
+      expect(refLinks(needs)).toEqual(dependencyLinks);
+      const q = await screen.findByRole("table", { name: "Queue" });
+      const starts = q.querySelector("tbody tr td:last-child") as HTMLElement;
+      expect(starts.textContent).toBe("Held behind #92, which has an open PR");
+      expect(refLinks(starts)).toEqual([["#92", `${REF_URL}92`]]);
+    }));
+
+  it("Work items and the Queue page show the same sentences, #N linked", () =>
+    withWhy(async () => {
+      history.replaceState(null, "", "/app/items");
+      mount();
+      const all = await screen.findByRole("table", { name: "Work items" });
+      expect(refLinks(all)).toEqual([...dependencyLinks, ["#92", `${REF_URL}92`]]);
+      cleanup();
+      history.replaceState(null, "", "/app/queue");
+      mount();
+      const q = await screen.findByRole("table", { name: "Queue" });
+      expect(within(q).queryByText("now")).toBeNull();
+      expect(refLinks(q)).toEqual([["#92", `${REF_URL}92`]]);
+    }));
+
+  it("the item page shows the full sentence, not cut off, #N linked, and no raw blocked_on row", () =>
+    withWhy(async () => {
+      history.replaceState(null, "", "/app/items/wi_1");
+      mount();
+      const why = await screen.findByTestId("why");
+      expect(why.textContent).toBe(dep.text);
+      expect(refLinks(why)).toEqual(dependencyLinks);
+      for (let el: HTMLElement | null = why; el; el = el.parentElement) expect(el.className).not.toContain("truncate");
+      expect(why.querySelector(".truncate")).toBeNull();
+      expect(screen.queryByText("Blocked on")).toBeNull();
+    }));
+
+  it("a ref with no ref_url, or a number the API did not list, stays plain text", () => {
+    const c = itemsTable([trow(1, { why: { ...dep, ref_url: null } }), trow(2, { why: { ...dep, refs: [12] } })]);
+    const cells = [...c.querySelectorAll("[data-why]")] as HTMLElement[];
+    expect(refLinks(cells[0]!)).toEqual([]);
+    expect(refLinks(cells[1]!)).toEqual([["#12", `${REF_URL}12`]]);
+    expect(cells[1]!.textContent).toBe(dep.text);
+  });
+});
+
+describe("system actions, revisions and the tab title (issue #311)", () => {
+  const BANNER = "Dashboard out of date: reload / restart factory ui";
+
+  it("a revision mismatch shows the banner; equal or unknown revisions show none", () => {
+    const { container, rerender } = render(<RevisionBanner server={"a".repeat(40)} web={"b".repeat(40)} />);
+    expect(screen.getByTestId("revision-banner").textContent).toBe(BANNER);
+    expect(screen.getByRole("alert").querySelector("code")!.textContent).toBe("factory ui");
+    rerender(<RevisionBanner server={"a".repeat(40)} web={"a".repeat(40)} />);
+    expect(container.textContent).toBe("");
+    rerender(<RevisionBanner server={null} web={"a".repeat(40)} />);
+    expect(container.textContent).toBe("");
+    rerender(<RevisionBanner server={"a".repeat(40)} web={null} />);
+    expect(container.textContent).toBe("");
+  });
+
+  it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    await vi.waitFor(() => expect(document.title).toBe("(4) Floor · software-factory"));
+    cleanup();
+    const before = overview.needs_you;
+    overview.needs_you = 0;
+    try {
+      mount();
+      await screen.findByText("Needs you (0)");
+      await vi.waitFor(() => expect(document.title).toBe("Floor · software-factory"));
+    } finally {
+      overview.needs_you = before;
+    }
+  });
+
+  it("the Floor's Needs you lists each system action with its command", async () => {
+    const actions = [
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null },
+      { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
+    ];
+    (overview as Record<string, unknown>).system_actions = actions;
+    try {
+      mount();
+      const list = await screen.findByRole("list", { name: "System actions" });
+      const rows = [...list.querySelectorAll("li")];
+      expect(rows.map((r) => r.getAttribute("data-action"))).toEqual(["migration_pending", "claim_pause"]);
+      expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
+      expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
+      expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
+      // The section counts the item row and both actions.
+      const needs = screen.getByRole("region", { name: "Needs you" });
+      expect(within(needs).getByText("3")).toBeTruthy();
+    } finally {
+      delete (overview as Record<string, unknown>).system_actions;
+    }
+  });
+
+  it("Health folds ok rows behind their count; warn and fail rows stay visible", async () => {
+    const checks = [
+      ...Array.from({ length: 22 }, (_, i) => ({ status: "ok", msg: `fine ${i}` })),
+      { status: "warn", msg: "token expires in 2 days" },
+      { status: "fail", msg: "push access denied" },
+    ];
+    const saved = RESPONSES["/api/v1/health"];
+    RESPONSES["/api/v1/health"] = { checked_at: AT, checks };
+    try {
+      history.replaceState(null, "", "/app/health");
+      mount();
+      await screen.findByText("push access denied");
+      const folded = screen.getByTestId("ok-checks") as HTMLDetailsElement;
+      expect(folded.open).toBe(false);
+      expect(folded.querySelector("summary")!.textContent).toBe("22 ok");
+      expect(folded.querySelectorAll("li")).toHaveLength(22);
+      for (const msg of ["token expires in 2 days", "push access denied"]) expect(folded.textContent).not.toContain(msg);
+    } finally {
+      RESPONSES["/api/v1/health"] = saved;
+    }
+  });
+});
+
+describe("Floor banner and Needs-you Why (claim pauses)", () => {
+  const NOW = Date.parse(AT);
+  const running = { state: "running", rev: "aaaaaaa1111", target_rev: "aaaaaaa1111", child_pid: 7, since: AT, workers: 3, error: null, pending: [] } as never;
+  const bannerText = (pauses?: { name: string; ends_at: string; since?: string | null }[]) => {
+    render(<FactoryBanner factory={running} now={NOW} pauses={pauses} />);
+    return screen.getByTestId("factory-banner").textContent;
+  };
+
+  it("with no pause the banner is unchanged", () => {
+    expect(bannerText([])).toContain("Factory running: revision aaaaaaa");
+  });
+
+  it.each(["forge_auth", "preflight_access", "rate_limit"])("a %s pause replaces 'Factory running' and says when it ends", (name) => {
+    const text = bannerText([{ name, ends_at: "2026-11-07T01:00:00.000Z" }]);
+    expect(text).toContain(name);
+    expect(text).toContain("until 2026-11-07T01:00:00.000Z");
+    expect(text).not.toContain("Factory running");
+  });
+
+  it("a model stall says when it began and when the next check is; a due check says so", () => {
+    const pause = { name: "model_stall", since: "2026-11-06T23:00:00.000Z" };
+    const soon = bannerText([{ ...pause, ends_at: "2026-11-07T00:30:00.000Z" }]);
+    expect(soon).toContain("since 2026-11-06T23:00:00.000Z");
+    expect(soon).toContain("next check at 2026-11-07T00:30:00.000Z");
+    cleanup();
+    const due = bannerText([{ ...pause, ends_at: "2026-11-06T23:30:00.000Z" }]);
+    expect(due).toContain("the next check is due");
+    expect(due).not.toContain("2026-11-06T23:30:00.000Z");
+  });
+
+  it("the Why column shows the need's reason and command, not the badges", () => {
+    const need = { reason: "failed: diff_too_large", command: "/retry" };
+    render(<ItemsTable items={[row(1, "needs_human", "Failed one", { blocked_on: "human", badges: ["failed"], need }) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
+    const cell = document.querySelector("[data-need]")!.closest("td")!;
+    expect(cell.textContent).toBe("failed: diff_too_large · /retry");
   });
 });

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import type { RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
+import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
@@ -803,6 +803,91 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
       clock.advance(1);
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
+    });
+
+    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const later = (clock: { now(): Date }, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+
+    it.each(["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const)(
+      "endClaimPause ends an active %s pause, and the next claim takes a queued triage run",
+      async (pause) => {
+        const { store, clock } = await make();
+        await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
+        await store.pauseClaims(later(clock, 60_000), pause);
+        expect(await store.getClaimPause(pause)).not.toBeNull();
+        expect(await store.endClaimPause(pause)).toEqual({ ended: true });
+        expect(await store.getClaimPause(pause)).toBeNull();
+        expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.idempotency_key).toBe("t");
+      },
+    );
+
+    it("ending a model_stall pause also clears model_stall_since, even after the probe time passed", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 1_000), "model_stall");
+      clock.advance(5_000);
+      expect(await store.getClaimPause("model_stall_since")).not.toBeNull();
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.getClaimPause("model_stall_since")).toBeNull();
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
+    it("a second endClaimPause, or one with no pause in effect, succeeds and changes no claim_pauses row", async () => {
+      const { store, clock } = await make();
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+      }
+      expect(await pauseRows(store)).toEqual([]);
+
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        await store.pauseClaims(later(clock, 60_000), pause);
+        await store.endClaimPause(pause);
+      }
+      // A pause that ran out by itself is not in effect either.
+      const sorted = async () => (await pauseRows(store)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      const before = await sorted();
+      clock.advance(1_000);
+      for (const pause of ["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const) {
+        expect(await store.endClaimPause(pause)).toEqual({ ended: false });
+      }
+      expect(await sorted()).toEqual(before);
+    });
+
+    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+      const { store, clock } = await make();
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      const next = later(clock, 60_000);
+      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+      // The same due time again, also with another next time: already taken, nothing moves.
+      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBe(next);
+    });
+
+    it("a stall right after a model_stall pause ended before its probe time starts a new pause", async () => {
+      const { store, clock } = await make();
+      await store.pauseClaims(later(clock, 60_000), "model_stall");
+      expect(await store.endClaimPause("model_stall")).toEqual({ ended: true });
+      expect(await store.pauseClaims(later(clock, 60_000), "model_stall")).toMatchObject({ started: true });
+      expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
+    });
+
+    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+      const { store, clock } = await make();
+      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      const due = later(clock, 1_000);
+      await store.pauseClaims(due, "model_stall");
+      clock.advance(1_000);
+      await store.endClaimPause("model_stall");
+      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.getClaimPause("model_stall")).toBeNull();
+    });
+
+    it("endClaimPause refuses model_stall_since and model_answered, which are not pauses of their own", async () => {
+      const { store } = await make();
+      await expect(store.endClaimPause("model_stall_since")).rejects.toThrow(/not a pause/);
+      await expect(store.endClaimPause("model_answered")).rejects.toThrow(/not a pause/);
     });
   });
 
@@ -1719,6 +1804,54 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect([0, 2]).toContain(rows[0]!.busy);
     });
   });
+  describe("host sleeps (migration 28)", () => {
+    const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
+    const sleep = (over: Partial<HostSleep> = {}): HostSleep => ({ worker_id: w1, woke_at: at(0), gap_ms: 120_000, run_id: null, ...over });
+
+    it("stores a sleep with its ids, time and gap; recording it again keeps one row", async () => {
+      const { store } = await make();
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([]);
+      expect(await store.recordHostSleep(sleep())).toEqual({ created: true, sleep: sleep() });
+      // Same worker and wake time: the stored row, not a second one, even with another gap.
+      expect(await store.recordHostSleep(sleep({ gap_ms: 1 }))).toEqual({ created: false, sleep: sleep() });
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([sleep()]);
+    });
+
+    it("lists newest first, honours the limit, and keeps one row per worker for the same wake time", async () => {
+      const { store } = await make();
+      await store.recordHostSleep(sleep({ woke_at: at(1000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(3000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(2000) }));
+      await store.recordHostSleep(sleep({ worker_id: w2, woke_at: at(3000) }));
+      expect((await store.listHostSleeps({ limit: 10 })).map((h) => [h.worker_id, h.woke_at])).toEqual([
+        [w2, at(3000)], [w1, at(3000)], [w1, at(2000)], [w1, at(1000)],
+      ]);
+      expect((await store.listHostSleeps({ limit: 2 })).map((h) => h.woke_at)).toEqual([at(3000), at(3000)]);
+    });
+
+    it("concurrent writes of one sleep leave one row", async () => {
+      const { store } = await make();
+      const results = await Promise.all([store.recordHostSleep(sleep()), store.recordHostSleep(sleep())]);
+      expect(results.filter((r) => r.created)).toHaveLength(1);
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([sleep()]);
+    });
+
+    it("by work item: only sleeps recorded during that item's runs", async () => {
+      const { store } = await make();
+      const a = (await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } })).item;
+      const b = (await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "t2" } })).item;
+      const [ra] = await store.listRuns(a.id);
+      const [rb] = await store.listRuns(b.id);
+      await store.recordHostSleep(sleep({ woke_at: at(1000), run_id: ra!.id }));
+      await store.recordHostSleep(sleep({ woke_at: at(2000), run_id: rb!.id }));
+      await store.recordHostSleep(sleep({ woke_at: at(3000) }));
+      await store.recordHostSleep(sleep({ woke_at: at(4000), run_id: ra!.id }));
+      expect((await store.listHostSleeps({ limit: 10, work_item_id: a.id })).map((h) => [h.woke_at, h.run_id])).toEqual([
+        [at(4000), ra!.id], [at(1000), ra!.id],
+      ]);
+      expect(await store.listHostSleeps({ limit: 10, work_item_id: "wi_none" as WorkItemId })).toEqual([]);
+    });
+  });
   // App command requests (issue #245, migration 23 on both backends).
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
@@ -1738,21 +1871,15 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
       const again = await store.recordAppCommandRequest(req("k1", { command: "reject" }));
       expect(again).toEqual({ created: false, request: first.request });
-      expect(await store.listPendingAppCommandRequests(10)).toEqual([first.request]);
       expect(await store.getAppCommandRequest(first.request.seq)).toEqual(first.request);
       expect(await store.getAppCommandRequest(first.request.seq + 1000)).toBeNull();
     });
 
-    it("pending read is oldest first, at most `limit`, and leaves out handled requests", async () => {
+    it("each request's seq is greater than the ones recorded before it", async () => {
       const { store } = await make();
       const seqs: number[] = [];
       for (const k of ["a", "b", "c", "d"]) seqs.push((await store.recordAppCommandRequest(req(k))).request.seq);
-      expect(seqs).toEqual([...seqs].sort((x, y) => x - y));
-      expect((await store.listPendingAppCommandRequests(2)).map((r) => r.key)).toEqual(["a", "b"]);
-      expect(await store.listPendingAppCommandRequests(0)).toEqual([]);
-      await store.markAppCommandRequest(seqs[0]!, null);
-      await store.markAppCommandRequest(seqs[2]!, "no");
-      expect((await store.listPendingAppCommandRequests(10)).map((r) => r.key)).toEqual(["b", "d"]);
+      expect(seqs).toEqual([...new Set(seqs)].sort((x, y) => x - y));
     });
 
     it("a conditional mark sets handled_at and the refusal once; a second mark changes nothing", async () => {
@@ -1950,5 +2077,123 @@ describe("MySQL step 19 (worker-processes)", () => {
       process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
     });
     expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+  });
+});
+
+describe("migration 28 on an existing SQLite database", () => {
+  it("adds host_sleeps and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig28-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 27; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)").run(
+      "workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z",
+    );
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+      expect(await store.getCursor("poll")).toBe("c1");
+      const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
+      await store.recordHostSleep(s);
+      expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 28 (host-sleeps)", () => {
+  const file = "0028-host-sleeps.sql";
+  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
+
+  it("is the repo's step after 27, a .sql file", () => {
+    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "host-sleeps")).toMatchObject({ number: 28, from: 27, kind: "sql", file });
+  });
+
+  it("creates the same columns as SQLite migration 28, idempotently (IF NOT EXISTS)", () => {
+    const columns = (text: string) =>
+      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
+    const sqlite = MIGRATIONS[27]!;
+    expect(sqlite).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
+    expect(columns(sql())).toEqual(columns(sqlite));
+    expect(columns(sqlite)).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
+    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
+  });
+
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-27 database: host_sleeps added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(27) }).apply(() => undefined);
+    await conn.query(
+      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
+      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
+    );
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const clock = new FakeClock();
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
+    expect(await store.getCursor("poll")).toBe("c1");
+    const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
+    await store.recordHostSleep(s);
+    expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
+  });
+});
+
+describe("migration 32 on an existing SQLite database", () => {
+  it("adds standing_rules and standing_proposals and keeps every earlier row", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig32-"));
+    const path = join(dir, "factory.db");
+    const raw = new DatabaseSync(path);
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= 31; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
+    raw.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await store.migrate();
+      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
+      expect(await store.getCursor("poll")).toBe("c1");
+      const { created } = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+      expect(created).toBe(true);
+      expect((await store.putStandingRule({ gate: "spec", tier: 2, enabled: false, set_by: "github:1" as UserId })).enabled).toBe(false);
+    } finally {
+      await store.close();
+    }
+  });
+});
+
+describe("MySQL step 32 (standing-approvals)", () => {
+  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-31 database: both tables added, every earlier row kept", async () => {
+    const db = await newEmptyMysqlDatabase();
+    const conn = await db.connect();
+    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
+    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
+    await new MysqlMigrations(conn).apply(() => undefined);
+    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    expect(await store.getCursor("poll")).toBe("c1");
+    const first = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    const again = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
+    expect([first.created, again.created]).toEqual([true, false]);
+    await store.putStandingRule({ gate: "spec", tier: 2, enabled: true, set_by: "github:1" as UserId });
+    expect((await store.listStandingRules()).map((r) => [r.gate, r.tier, r.enabled])).toEqual([["spec", 2, true]]);
   });
 });

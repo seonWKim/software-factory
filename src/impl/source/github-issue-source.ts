@@ -2,14 +2,17 @@ import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
+import type { Logger } from "../../core/log.js";
 import type { DependencyState, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import type { Clock } from "../../interfaces/clock.js";
+import { type FactoryStore, labelTarget } from "../../interfaces/factory-store.js";
 import type {
-  ClosePrInput, PollResult, PollSource, PrChecks, PrLineComment, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
+  PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 
-interface GhUser {
+export interface GhUser {
   id: number;
   login: string;
   type: string;
@@ -53,71 +56,23 @@ interface GhComment {
   user: GhUser;
   updated_at: string;
 }
-interface GhPull {
+/** A PR as the comment commands need it: its number and head branch. */
+interface GhPullHead {
   number: number;
-  merged_at: string | null;
-  merge_commit_sha: string | null;
-  updated_at: string;
-  /** `repo` is null when the head repository was deleted (a fork that is gone). */
-  head: { ref: string; sha: string; repo?: { full_name: string } | null };
-  base: { ref: string; sha: string };
-  draft?: boolean;
-  title?: string;
-  body?: string | null;
-  user?: GhUser | null;
-  labels?: { name: string }[];
-}
-/** A PR review. `state`: APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING. */
-interface GhReview {
-  id: number;
-  state: string;
-  body: string | null;
-  user: GhUser | null;
-  /** Absent on a pending review. */
-  submitted_at?: string | null;
-}
-/** A line comment of a review. `line` is null on an outdated comment; `original_line` is where it was made. */
-interface GhReviewComment {
-  path: string;
-  line?: number | null;
-  original_line?: number | null;
-  body: string;
-}
-interface GhPullFile {
-  filename: string;
-  previous_filename?: string;
-}
-interface GhTimelineEvent {
-  event: string;
-  label?: { name: string };
-  actor?: GhUser | null;
-}
-interface GhPullFull extends GhPull {
-  /** null while GitHub is still computing it. */
-  mergeable: boolean | null;
-  merged_by: GhUser | null;
-}
-interface GhCheckRun {
-  name: string;
-  /** queued, in_progress, completed, waiting, requested, pending. */
-  status: string;
-  /** Set once completed: success, failure, neutral, cancelled, skipped, timed_out, action_required, stale, ... */
-  conclusion: string | null;
-}
-interface GhStatus {
-  context: string;
-  /** error, failure, pending, success. */
-  state: string;
+  head: { ref: string };
 }
 interface GhCommit {
   sha: string;
   commit: { message: string; committer: { date: string } | null };
 }
 
+/**
+ * The source's cursor. Cursors written before issue #273 also hold the PR position (`pulls`, `start`, `reviews`,
+ * ...): carried along unread; the forge starts from them (GitHubForge.handover_cursor).
+ */
 interface Cursor {
   issues: string | null;
   comments: string | null;
-  pulls: string | null;
   /**
    * Highest comment id already read. `since` is inclusive and keyed on updated_at, so the last comment
    * (and any edit of an old one) comes back on the next poll; ids only grow, so anything at or below this
@@ -138,14 +93,14 @@ interface Cursor {
    */
   closed?: string | null;
   closed_numbers?: number[];
-  /**
-   * Reviews (design §4): reviews submitted before this time are never delivered, and only open PRs updated at
-   * or after it are read. `review_ids` are the reviews already read that were submitted at or after it. Absent
-   * in cursors written before reviews were read, and on the first poll: that poll sets the time to the newest
-   * open PR update and delivers no review, so a review from before the factory read reviews starts nothing.
-   */
-  reviews?: string | null;
-  review_ids?: number[];
+}
+
+/** What the GitHub forge's poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
+export interface PollContext {
+  clock: Clock;
+  /** In GitHub's UTC format (githubHistorySince); null when not set. */
+  history_since: string | null;
+  log: Logger;
 }
 
 /**
@@ -188,17 +143,51 @@ export function prFlagLabels(prefix: string): { name: string; color: string; des
   return [{ name: incompleteLabel(prefix), color: "b60205", description: "Factory: the PR reports missing work; not done when merged" }];
 }
 
-/** Check-run pages read per prChecks call, 100 each. */
-const CHECK_PAGES = 3;
-/** Check-run conclusions that do not fail the gate. */
-const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
+/** How long a label write's claim holds before another replica may take it over (design §5, GitHub call budget). */
+const LABEL_CLAIM_MS = 60_000;
+/** Pages of an issue's thread read to find a marker the store has no record of. */
+const THREAD_PAGES = 10;
+/** Backoff of a failing comment post: 1 s after the first failure, doubling, at most 5 min. */
+const COMMENT_BACKOFF_BASE_MS = 1_000;
+const COMMENT_BACKOFF_MAX_MS = 5 * 60_000;
+
+/** The wait after failed post number `attempts` (1-based) before the next try. */
+export function commentBackoffMs(attempts: number): number {
+  return Math.min(COMMENT_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts - 1), COMMENT_BACKOFF_MAX_MS);
+}
 
 /** Commit pages read per poll, 100 each, newest first. Older commits in the window are not read. */
 const COMMIT_PAGES = 5;
 
+/** A time in the UTC format GitHub returns for updated_at: `2026-11-07T00:00:00Z`, no milliseconds. */
+export function githubTime(d: Date): string {
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * `github.history_since`: how far back the GitHub forge checks merges (design §5, Merges). Absent: null. A date or an ISO
+ * time, returned in GitHub's UTC format; anything else throws an error naming the setting (startup fails).
+ */
+export function githubHistorySince(github: { history_since?: unknown } | undefined): string | null {
+  const v = github?.history_since;
+  if (v === undefined || v === null) return null;
+  const ms = typeof v === "string" && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2}))?$/.test(v) ? Date.parse(v) : NaN;
+  if (Number.isNaN(ms)) {
+    throw new Error(`github.history_since must be a date like 2026-01-01 or a UTC time like 2026-01-01T00:00:00Z, got ${JSON.stringify(v) ?? String(v)}`);
+  }
+  return githubTime(new Date(ms));
+}
+
+/**
+ * GitHub issues as a source: issues, their comments, base-branch commits and dependency links. Pull requests are
+ * the GitHub forge's (src/impl/forge/github-forge.ts, issue #273), which posts PR comments and labels through this
+ * class's store-backed postComment and setStatus.
+ */
 export class GitHubIssueSource implements PollSource, DependencySource {
   readonly type = "github_issue" as const;
   readonly intake = "poll" as const;
+  /** The intake label is the gate: a refused issue gets no reply. */
+  readonly silent_intake_refusal = true as const;
 
   constructor(
     private readonly client: GitHubClient,
@@ -207,10 +196,15 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
     private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
+    /**
+     * Where posted comments and written labels are recorded, shared by every replica (design §5, GitHub call
+     * budget). Without one every post reads the thread and every status reads the labels.
+     */
+    private readonly store: FactoryStore | null = null,
   ) {}
 
   async poll(cursor: string | null): Promise<PollResult> {
-    const c: Cursor = cursor ? (JSON.parse(cursor) as Cursor) : { issues: null, comments: null, pulls: null };
+    const c: Cursor = cursor ? (JSON.parse(cursor) as Cursor) : { issues: null, comments: null };
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const events: SourceEvent[] = [];
     const next: Cursor = { ...c, last_comment_id: c.last_comment_id ?? null };
@@ -231,8 +225,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       });
     }
 
-    // Closed factory issues. Read before the pulls (a merge that closes its issue happens before the close, so
-    // the pulls read below already sees it) but delivered after them, so pr_merged is applied first.
+    // Closed factory issues, delivered last. The controller polls the forge after this read (a merge that closes its
+    // issue happens before the close, so the forge's read already sees it) and handles its events first.
     const closes = await this.closedIssues(c, next);
 
     const comments = await this.client.list<GhComment>(
@@ -304,74 +298,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       }
     }
 
-    // Pulls have no `since`: read newest-updated first and stop at the cursor, without reading the pages
-    // past it (design §5 Sources, GitHub call budget).
-    // Every PR, not only factory ones (design 2026-11-01): a merge with no work item is an unreviewed merge.
-    const pastCursor = (page: GhPull[]) => c.pulls !== null && (page.at(-1)?.updated_at ?? "") < c.pulls;
-    const pulls = await this.client.list<GhPull>(`${base}/pulls?state=closed&sort=updated&direction=desc`, c.pulls ? 5 : 1, pastCursor);
-    for (const p of pulls) {
-      if (c.pulls && p.updated_at < c.pulls) break;
-      next.pulls = max(next.pulls, p.updated_at);
-      const fork = this.isFork(p) ? { fork: true as const } : {};
-      if (p.merged_at && p.merge_commit_sha) {
-        // The list endpoint omits merged_by; the single-PR endpoint has it.
-        const full = await this.client.request<Pick<GhPullFull, "merged_by">>("GET", `${base}/pulls/${p.number}`);
-        events.push({
-          kind: "pr_merged",
-          pr_number: p.number,
-          head_branch: p.head.ref,
-          merge_sha: p.merge_commit_sha,
-          merger: full.merged_by ? identity(full.merged_by) : null,
-          ...fork,
-        });
-      } else {
-        events.push({ kind: "pr_closed", pr_number: p.number, head_branch: p.head.ref, ...fork });
-      }
-    }
-
-    // Open PRs. Not cursored: reported on every poll while open. pr_open for every factory PR and every other
-    // non-draft PR against the base from this repository (design 2026-11-01); the controller reads more about a
-    // PR only when it does not know it yet. Then factory PRs that cannot merge into their base: the controller
-    // keys the update on (head sha, base sha). The list endpoint omits `mergeable`.
-    const open = await this.client.list<GhPull>(`${base}/pulls?state=open&sort=updated&direction=desc`);
-    // Under the budget threshold the reads below wait for the reset; the next poll makes them (they are not cursored,
-    // or keep their cursor). The intake lists above always run.
-    const low = this.client.lowBudget();
-    const reviewed: GhPull[] = [];
-    for (const p of open) {
-      const factory = p.head.ref.startsWith(this.branchPrefix);
-      if (p.base.ref === this.baseBranch && !this.isFork(p) && (factory || !p.draft)) {
-        reviewed.push(p);
-        events.push({
-          kind: "pr_open",
-          source: this.prRef(p.number),
-          pr_number: p.number,
-          head_branch: p.head.ref,
-          head_sha: p.head.sha,
-          title: p.title ?? "",
-          body: p.body ?? "",
-          author: p.user ? identity(p.user) : null,
-          labels: (p.labels ?? []).map((l) => l.name),
-        });
-      }
-      if (!factory || low) continue;
-      const full = await this.client.request<GhPullFull>("GET", `${base}/pulls/${p.number}`);
-      if (full.mergeable !== false) continue;
-      events.push({
-        kind: "pr_unmergeable",
-        pr_number: full.number,
-        head_branch: full.head.ref,
-        head_sha: full.head.sha,
-        base_sha: full.base.sha,
-      });
-    }
-
-    // "Request changes" reviews on the PRs reported open, after their pr_open (design §4).
-    if (!low) events.push(...(await this.changeRequests(base, reviewed, c, next)));
-
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     // Under the budget threshold the cursor stays put, so the next poll reads them.
-    const commits = low ? [] : await this.client.list<GhCommit>(
+    const commits = this.client.lowBudget() ? [] : await this.client.list<GhCommit>(
       `${base}/commits?sha=${encodeURIComponent(this.baseBranch)}` + (c.commits ? `&since=${c.commits}` : ""),
       COMMIT_PAGES,
     );
@@ -402,7 +331,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    */
   private async factoryPull(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
     try {
-      const p = await this.client.request<Pick<GhPull, "number" | "head">>("GET", `${base}/pulls/${n}`);
+      const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
       return p.head.ref.startsWith(this.branchPrefix) ? { pr_number: p.number, head_branch: p.head.ref } : null;
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
@@ -416,85 +345,12 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    */
   private async pullHead(base: string, n: number): Promise<{ pr_number: number; head_branch: string } | null> {
     try {
-      const p = await this.client.request<Pick<GhPull, "number" | "head">>("GET", `${base}/pulls/${n}`);
+      const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
       return { pr_number: p.number, head_branch: p.head.ref };
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
     }
-  }
-
-  /**
-   * One pr_changes_requested per "Request changes" review by a person (not a bot) submitted since the cursor's
-   * review time, on the open PRs given that were updated since then, with the review's line comments. Approvals,
-   * plain comments, dismissed and pending reviews give nothing. With no review time yet, sets it and reads none.
-   */
-  private async changeRequests(base: string, pulls: GhPull[], c: Cursor, next: Cursor): Promise<SourceEvent[]> {
-    const newest = pulls.reduce<string | null>((m, p) => max(m, p.updated_at), null);
-    if (!c.reviews) {
-      next.reviews = newest;
-      next.review_ids = [];
-      return [];
-    }
-    const since = c.reviews;
-    const already = new Set(c.review_ids ?? []);
-    const mark = max(since, newest ?? since);
-    const seen: number[] = [];
-    const events: SourceEvent[] = [];
-    for (const p of pulls) {
-      if (p.updated_at < since) continue;
-      for (const r of await this.client.list<GhReview>(`${base}/pulls/${p.number}/reviews`, 3)) {
-        if (!r.submitted_at || r.submitted_at < since || already.has(r.id)) continue;
-        if (r.submitted_at >= mark) seen.push(r.id);
-        if (r.state !== "CHANGES_REQUESTED" || !r.user || r.user.type === "Bot") continue;
-        const comments = await this.client.list<GhReviewComment>(`${base}/pulls/${p.number}/reviews/${r.id}/comments`, 3);
-        events.push({
-          kind: "pr_changes_requested",
-          source: this.prRef(p.number),
-          pr_number: p.number,
-          head_branch: p.head.ref,
-          review_id: String(r.id),
-          reviewer: identity(r.user),
-          body: r.body ?? "",
-          comments: comments.map((cm): PrLineComment => ({ path: cm.path, line: cm.line ?? cm.original_line ?? null, body: cm.body })),
-        });
-      }
-    }
-    next.reviews = mark;
-    // Ids read at exactly the old time stay known while the time does not move.
-    next.review_ids = mark === since ? [...already, ...seen] : seen;
-    return events;
-  }
-
-  /** A head in another repository, or in one that was deleted. A list without `repo` (older fixtures) counts as ours. */
-  private isFork(p: GhPull): boolean {
-    if (p.head.repo === undefined) return false;
-    return p.head.repo === null || p.head.repo.full_name.toLowerCase() !== `${this.repo.owner}/${this.repo.name}`.toLowerCase();
-  }
-
-  /** Every path the PR changes, both sides of a rename. GitHub lists at most 3000 files per PR. */
-  async prFiles(pr_number: number): Promise<string[]> {
-    const files = await this.client.list<GhPullFile>(`/repos/${this.repo.owner}/${this.repo.name}/pulls/${pr_number}/files`, 30);
-    const paths = new Set<string>();
-    for (const f of files) {
-      paths.add(f.filename);
-      if (f.previous_filename) paths.add(f.previous_filename);
-    }
-    return [...paths];
-  }
-
-  /** The actor of the latest `labeled` event for `label` in the issue or PR timeline; null when none. */
-  async labelAddedBy(number: number, label: string): Promise<ExternalIdentity | null> {
-    const events = await this.client.list<GhTimelineEvent>(`/repos/${this.repo.owner}/${this.repo.name}/issues/${number}/timeline`, 10);
-    const added = events.filter((e) => e.event === "labeled" && e.label?.name === label).at(-1);
-    return added?.actor ? identity(added.actor) : null;
-  }
-
-  /** The account linked to the commit's author, or null (an email GitHub does not know). */
-  async commitAuthor(sha: string): Promise<ExternalIdentity | null> {
-    const c = await this.client.request<{ author: GhUser | null }>(
-      "GET", `/repos/${this.repo.owner}/${this.repo.name}/commits/${encodeURIComponent(sha)}`);
-    return c.author ? identity(c.author) : null;
   }
 
   /** source_closed for each closed factory issue updated since the cursor; pull requests are skipped. */
@@ -529,9 +385,38 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     return events;
   }
 
+  /**
+   * Posts once per marker. A marker the store has a record of costs no call: its stored URL is returned, whatever
+   * the body (the comment is not edited). Otherwise the thread is read once for the marker (a post from before the
+   * store kept records, or one whose record write failed), the comment is posted if it is not there, and its ID,
+   * URL and body hash are stored. A failed post is counted in the store and the next try waits its backoff
+   * (commentBackoffMs): until then this throws without a call, on any replica.
+   */
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
-    const { url } = await this.client.commentOnce(this.repo, issueNumberFromSourceId(source.id), body, marker);
-    return { url };
+    const stored = await this.store?.getPostedComment(source.id, marker, body);
+    if (stored?.comment_id) return { url: stored.url };
+    if (stored?.waiting) {
+      throw new Error(`comment post waits until ${stored.next_attempt_at} after ${stored.attempts} failed attempts`);
+    }
+    try {
+      const comment = await this.findOrPost(source, body, marker);
+      const url = comment?.html_url ?? null;
+      if (comment?.id !== undefined) {
+        await this.store?.recordPostedComment({ source_id: source.id, marker, comment_id: String(comment.id), url, body });
+      }
+      return { url };
+    } catch (err) {
+      const attempts = (stored?.attempts ?? 0) + 1;
+      await this.store?.recordCommentFailure(source.id, marker, attempts, commentBackoffMs(attempts));
+      throw err;
+    }
+  }
+
+  /** The thread's comment carrying `marker`, else a new one with it. */
+  private async findOrPost(source: SourceRef, body: string, marker: string): Promise<{ id: number; html_url?: string } | undefined> {
+    const path = `/repos/${this.repo.owner}/${this.repo.name}/issues/${issueNumberFromSourceId(source.id)}/comments`;
+    return (await this.client.list<{ id: number; body?: string; html_url?: string }>(path, THREAD_PAGES)).find((c) => c.body?.includes(marker))
+      ?? await this.client.request<{ id: number; html_url?: string } | undefined>("POST", path, { body: `${body}\n\n${marker}` });
   }
 
   /** Closes the issue as "not planned" (or `reason`). GitHub accepts the same PATCH on an issue that is already closed. */
@@ -613,25 +498,6 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     }
   }
 
-  /**
-   * Reads the PR; if it is still open, posts the comment (once per marker) naming who closed the issue, then
-   * closes the PR (state closed, never a merge). A merged or closed PR is left alone.
-   */
-  async closePr(input: ClosePrInput): Promise<"closed" | "not_open"> {
-    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const pull = await this.client.request<{ state: string }>("GET", `${base}/pulls/${input.pr_number}`);
-    if (pull.state !== "open") return "not_open";
-    let closer: ExternalIdentity | null = null;
-    if (input.closed.type === "github_issue") {
-      const issue = await this.client.request<Pick<GhIssueFull, "closed_by">>(
-        "GET", `${base}/issues/${issueNumberFromSourceId(input.closed.id)}`);
-      closer = issue.closed_by ? identity(issue.closed_by) : null;
-    }
-    await this.client.commentOnce(this.repo, input.pr_number, input.body(closer), input.marker);
-    await this.client.request("PATCH", `${base}/pulls/${input.pr_number}`, { state: "closed" });
-    return "closed";
-  }
-
   /** 👀 on the comment, or on the issue when `commentId` is null. GitHub returns the existing reaction if present. */
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}/issues`;
@@ -646,8 +512,26 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * if the target is missing, create the label if missing and add it; then remove the other seven fixed status
    * names. Nothing more when the labels are already right. Any other label, including one a human made under
    * the same prefix, is left alone. Each step is idempotent.
+   *
+   * With a store, the label state stored for the item and target decides first: the same status makes no call,
+   * and a different one (or none stored) is written under a store claim, so of two replicas only one writes it,
+   * then stored. A failed write ends its claim and stores nothing.
    */
   async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+    if (!this.store) return this.writeStatus(source, status, pr_number);
+    const target = labelTarget(pr_number);
+    const token = await this.store.claimLabelWrite(source.id, target, status, LABEL_CLAIM_MS);
+    if (token === null) return;
+    try {
+      await this.writeStatus(source, status, pr_number);
+    } catch (err) {
+      await this.store.releaseLabelClaim(source.id, target, token);
+      throw err;
+    }
+    await this.store.recordLabelState(source.id, target, status, token);
+  }
+
+  private async writeStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     const repo = `/repos/${this.repo.owner}/${this.repo.name}`;
     const n = pr_number ?? issueNumberFromSourceId(source.id);
     const all = statusLabels(this.statusPrefix);
@@ -671,41 +555,6 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * The checks on the PR's current head commit: its check runs (GitHub Actions and apps; the latest run per
-   * name, GitHub's default) and its commit statuses (older integrations). Three read-only GETs and at most
-   * CHECK_PAGES pages of check runs. A check run with a conclusion other than success, neutral or skipped,
-   * and a status in `failure` or `error`, is failed; any unfinished one is pending; none at all is passed.
-   */
-  async prChecks(pr_number: number): Promise<PrChecks> {
-    // Under the budget threshold the gate waits (pending) and a later pass reads the checks.
-    if (this.client.lowBudget()) return { state: "pending" };
-    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${pr_number}`);
-    const sha = encodeURIComponent(pull.head.sha);
-    const runs: GhCheckRun[] = [];
-    for (let page = 1; page <= CHECK_PAGES; page++) {
-      const r = await this.client.request<{ total_count: number; check_runs: GhCheckRun[] }>(
-        "GET", `${base}/commits/${sha}/check-runs?per_page=100&page=${page}`);
-      runs.push(...r.check_runs);
-      if (r.check_runs.length < 100 || runs.length >= r.total_count) break;
-    }
-    const status = await this.client.request<{ statuses: GhStatus[] }>("GET", `${base}/commits/${sha}/status?per_page=100`);
-
-    const failed: string[] = [];
-    let pending = false;
-    for (const r of runs) {
-      if (r.status !== "completed") pending = true;
-      else if (!PASSING_CONCLUSIONS.has(r.conclusion ?? "")) failed.push(r.name);
-    }
-    for (const s of status.statuses) {
-      if (s.state === "pending") pending = true;
-      else if (s.state !== "success") failed.push(s.context);
-    }
-    if (failed.length) return { state: "failed", failed };
-    return pending ? { state: "pending" } : { state: "passed" };
-  }
-
-  /**
    * Where a `/verdict` comment was written. Issue comments and PR conversation comments share one list;
    * the issue's `pull_request` field tells them apart. A PR names its head branch, so the controller can
    * map it to the work item; a PR not on a factory branch gives null (not the factory's, ignored).
@@ -714,18 +563,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issue = await this.client.request<Pick<GhIssue, "pull_request">>("GET", `${base}/issues/${number}`);
     if (!issue.pull_request) return { kind: "issue", source: this.ref(number) };
-    const pull = await this.client.request<Pick<GhPull, "head">>("GET", `${base}/pulls/${number}`);
+    const pull = await this.client.request<GhPullHead>("GET", `${base}/pulls/${number}`);
     if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
     return { kind: "pr", pr_number: number, head_branch: pull.head.ref };
-  }
-
-  /** A pull request as a source: same id space as issues (comments and labels share the issues API), its own link. */
-  private prRef(number: number): SourceRef {
-    return {
-      type: "github_issue",
-      id: `${this.repo.owner}/${this.repo.name}#${number}`,
-      link: `https://github.com/${this.repo.owner}/${this.repo.name}/pull/${number}`,
-    };
   }
 
   private ref(number: number): SourceRef {
@@ -737,7 +577,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 }
 
-function identity(u: GhUser): ExternalIdentity {
+export function identity(u: GhUser): ExternalIdentity {
   return { provider: "github", subject: String(u.id), login: u.login };
 }
 
@@ -752,7 +592,7 @@ function closeReason(r: string | null | undefined): SourceCloseReason | null {
   return r === "completed" || r === "not_planned" ? r : null;
 }
 
-function max(a: string | null, b: string): string {
+export function max(a: string | null, b: string): string {
   return a === null || b > a ? b : a;
 }
 

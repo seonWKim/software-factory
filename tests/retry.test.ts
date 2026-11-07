@@ -6,7 +6,7 @@ import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
+import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
@@ -292,6 +292,70 @@ describe("rate limits", () => {
     expect(await f.w2.tick()).toBe(false);
     f.clock.advance(1);
     expect(await f.w2.tick()).toBe(true);
+  });
+});
+
+describe("provider_setup", () => {
+  const QUOTA = "openai-compatible: provider_setup: insufficient_quota (HTTP 429): You exceeded your current quota";
+  const setup = (error = QUOTA): Outcome => ({ status: "failed", code: PROVIDER_SETUP, error, transcript: "a request, then a 429" });
+
+  it("is not retried for any run kind: the item blocks on a human naming provider_setup, with one comment saying what to fix", async () => {
+    for (const kind of ["triage", "implement", "review"] as const) {
+      const f = await factory({ [kind]: setup } as never);
+      const it0 = await f.submit();
+      await f.step();
+      f.clock.advance(MAX);
+      await f.step();
+      const [run, ...more] = await f.runs(it0, kind);
+      expect(more).toEqual([]);
+      expect(run!.outcome).toMatchObject({ status: "failed", error_code: PROVIDER_SETUP, infra: false });
+      expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain("You exceeded your current quota");
+      expect(await f.item(it0)).toMatchObject({ blocked_on: "human", blocked_reason: `run_failed:${kind}:${PROVIDER_SETUP}`, restart_count: 0 });
+      expect(f.source.comments).toHaveLength(1);
+      const body = f.source.comments[0]!.body;
+      expect(body).toContain(`\`${PROVIDER_SETUP}\``);
+      expect(body).toContain("You exceeded your current quota");
+      expect(body).toMatch(/quota.*API key.*model/);
+      expect(body).toContain("`/retry`");
+    }
+  });
+
+  it("sets no claim pause and is not reported as rate_limited", async () => {
+    const f = await factory({ triage: setup });
+    const it0 = await f.submit();
+    await f.step();
+    expect(await f.store.getClaimPause()).toBeNull();
+    expect(f.log.lines.some((l) => l.msg.startsWith("rate limited"))).toBe(false);
+    const [run] = await f.runs(it0);
+    expect(run!.outcome).not.toMatchObject({ error_code: "rate_limited" });
+    // Another item is claimed at once.
+    const b = await f.submit();
+    expect(await f.w1.tick()).toBe(true);
+    expect((await f.runs(b))[0]!.status).not.toBe("queued");
+  });
+
+  it("a provider message the egress scan flags keeps the code and drops the text", async () => {
+    const key = `sk-ant-api03-${"B".repeat(40)}`;
+    const f = await factory({ triage: () => setup(`openai-compatible: provider_setup: invalid_api_key (HTTP 401): Incorrect API key provided: ${key}`) });
+    const it0 = await f.submit();
+    await f.step();
+    const [run] = await f.runs(it0);
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: PROVIDER_SETUP });
+    expect(JSON.stringify(run!.outcome)).not.toContain(key);
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "human", blocked_reason: `run_failed:triage:${PROVIDER_SETUP}` });
+    for (const c of f.source.comments) expect(c.body).not.toContain(key);
+  });
+
+  it("/retry runs it again", async () => {
+    let fails = 1;
+    const f = await factory({ triage: () => (fails-- > 0 ? setup() : undefined) as Outcome });
+    const it0 = await f.submit();
+    await f.step();
+    f.source.queue.push({ kind: "retry_requested", source: it0.source, comment_id: "902", requester: alice });
+    await f.controller.tickIntake();
+    expect((await f.runs(it0)).at(-1)).toMatchObject({ status: "queued", not_before: null });
+    await f.step();
+    expect((await f.item(it0)).stage).toBe("REVIEW");
   });
 });
 

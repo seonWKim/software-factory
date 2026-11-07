@@ -19,11 +19,11 @@ registry, so whatever config selects is what runs and what the canary tests.
 | LLMProvider | `plugins.llm` | `claude-cli` | no |
 | SourceAdapter | `plugins.source` (a name, or a list of names; see [source-adapter.md](source-adapter.md)) | `github-issues` | no |
 | SharedStorage | `plugins.storage` | `fs` | no |
-| CapabilitySearch | `plugins.capability` | `list-all` (`bm25` available) | no |
+| CapabilitySearch | `plugins.capability` | `bm25` (checked in; `list-all` when the key is left out) | no |
 | Clock | `plugins.clock` | `system` | no |
 | Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
-| Forge | `plugins.forge` | none: **optional**, no default (`github` available; see [forge.md](forge.md)) | no |
+| Forge | `plugins.forge` | **optional**, no default plugin: left out, `github` when `plugins.source` lists `github-issues`, else none (see [forge.md](forge.md)) | no |
 
 ```jsonc
 // factory.config.json (the checked-in defaults)
@@ -32,7 +32,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 "plugins": {
   "secrets": "env-file", "egress": "pattern", "broker": "github",
   "sandbox": "noop", "runner": "claude-code", "llm": "claude-cli",
-  "source": "github-issues", "storage": "fs", "capability": "list-all", "clock": "system",
+  "source": "github-issues", "storage": "fs", "capability": "bm25", "clock": "system",
   "updater": "git-worktree"
   // "awake" is left out on purpose: it defaults per platform (see keep-awake.md)
 }
@@ -40,15 +40,24 @@ registry, so whatever config selects is what runs and what the canary tests.
 
 Rules, checked by `loadConfig` at startup (and again by `build()`):
 
-- **No `plugins` object** means today's defaults for every interface in it that has one (`awake`'s default depends on the platform; the optional `forge` has none, so no forge is selected). Store and auth keep their own keys.
-- **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default; an optional key you leave out selects nothing.
-- **Optional kinds** (`forge`) have no default. Leaving the key out, or setting it to `"none"`, `null`, `false` or `""`, selects nothing: the selection has no entry for it and no plugin of it is built. An optional kind is never a guard.
+- **No `plugins` object** means today's defaults for every interface in it that has one (`awake`'s default depends on the platform; the optional `forge` follows the sources: the default source `github-issues` selects the `github` forge). Store and auth keep their own keys.
+- **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default; the optional `forge` left out follows `plugins.source`.
+- **Optional kinds** (`forge`) have no default plugin. `"none"`, `null`, `false` or `""` selects nothing: the selection has no entry for it and no plugin of it is built. Left out, the forge is derived from the sources (issue #273): `github` when `plugins.source` lists `github-issues`, else nothing; an off value next to `github-issues` fails startup, naming `plugins.forge`. An optional kind is never a guard.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
 - **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `auth` under `plugins` are rejected with a pointer to their own keys.
 - **Unknown config keys are rejected at load**, at every level of `factory.config.json` (top level, `store` for its `type`, `repo`, `dials`, each `floors[i]`, `models`, `agent_git_identity`, `ui`, `stats`, `plugins`): one error lists every unknown key with its path and the valid keys, and adds `did you mean "…"?` when a valid key is within edit distance 2. `npm run factory -- doctor` prints each as a FAIL line and exits 1.
 - **Guards cannot be disabled.** For `secrets`, `egress` and `broker`, leaving the key out of a `plugins` object, or setting it to `null`, `false`, `""`, `"none"` or anything that is not a registered name, fails startup with an error that the plugin is a guard and points to `docs/architecture.md` §5. You can switch a guard to another registered plugin; you cannot turn it off.
 
 To switch back to the defaults, set the key back to the default name above, or delete the whole `plugins` object. There is no loading from external packages: a plugin is a descriptor file in this repository.
+
+## Which config file, and where state lives
+
+Since 2026-11-07 (issue #336):
+
+- **Config path.** Every command takes `--config <path>` (or `--config=<path>`, before or after the command); `FACTORY_CONFIG` does the same, and the flag wins when both are set. `src/main.ts` parses it once at startup and makes a relative path absolute against the cwd; that absolute path is what the process loads and what the `git-worktree` supervisor passes to each child and each `migrate` call (as `FACTORY_CONFIG`). Neither set: the checked-in `factory.config.json` under the code root (the version folder under `git-worktree`, else the cwd), as before. A missing, unreadable or invalid file stops startup with an error naming the path. `factory doctor` prints one line naming the file in use. Prompts always come from the code root.
+- **State location.** With an external config, `state_dir` and `worktrees_dir` resolve from the config file's folder. Without one they resolve from the cwd, as before. `repo.path` resolves from the cwd in both cases.
+- **Reviewed keys.** Solo (`store.type` `sqlite`): an external config may set any key. On a shared store (`mysql`, the enterprise case) `dials`, `floors` (also `defaults.floors`), `plugins`, `permissions` and `auth` come only from the checked-in file under the code root, the one a reviewed PR changes; the external file's values for them are ignored.
+- **Not supported:** loading config from a URL or a package, or from any other env var; several projects in one process. The secret file stays at `~/.config/software-factory/.env`.
 
 ## The discovered registry
 
@@ -65,6 +74,11 @@ Since 2026-11-01:
 **Declared secrets.** Each descriptor lists the secret names its plugin reads, each with a one-line purpose (`secrets` in the `*.plugin.ts` file; `withPlugin` takes the same list as an optional last argument). A name is checked by `secretName()`: upper-case letters, digits and `_`, starting with a letter. The secret set is the union of the names the **selected** plugins declare (`declaredSecretNames`): the `SecretStore` loads, returns and scans exactly those, so switching a plugin in config changes the set with no code edit (for example `store.type` `sqlite` drops `MYSQL_PASSWORD`). Any other key in the secret file, a plain setting such as `MYSQL_HOST` or a secret no selected plugin declares, is never returned and never scanned. A declared secret missing from the file does not stop startup; `npm run factory -- doctor` reports it as FAIL and `npm run setup` asks for it. Declarations that share a `oneOf` label are alternatives (the model credential: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). Each plugin's **Secrets:** line in its interface's topic file lists exactly its declared names; `tests/secret-names.test.ts` fails when they drift, and checks that `.env.example` lists every name the default selection declares.
 
 ## History
+
+- **The forge default** (changed 2026-11-07, issue #273). Before, `plugins.forge` left out selected no forge, whatever the sources; now it follows `plugins.source` (`github` with `github-issues`, else none), and `"none"` next to `github-issues` fails startup.
+- **Checked-in `CapabilitySearch`** (changed 2026-11-07, issue #337). Before, the checked-in config selected `list-all`; now it selects `bm25`. `list-all` stays the registry default when the key is left out.
+
+- **Config path and state location** (changed 2026-11-07, issue #336). Before: `loadConfig` read `factory.config.json` only from the code root, so under `git-worktree` a local edit was ignored, and there was no flag; `state_dir` and `worktrees_dir` always resolved from the cwd.
 
 - **Optional kinds** (changed 2026-11-07, issue #272). Before, every non-guard `plugins` kind needed a `default: true` plugin and every kind had a name in the selection; now an optional kind (`forge`) has no default and may be left unselected.
 

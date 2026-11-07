@@ -1,5 +1,6 @@
 // Several sources in one controller (docs/plugins.md, SourceAdapter; design 2026-11-01): each item's calls go
-// to the adapter of its own source type, PR status goes to GitHub, and one source failing does not stop another.
+// to the adapter of its own source type, PR status goes to the forge (issue #273), and one source failing does not
+// stop another.
 
 import { describe, expect, it } from "vitest";
 import { Controller } from "../src/core/controller.js";
@@ -12,6 +13,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import {
   FakeAuth,
+  FakeForge,
   FakeSlackPollSource,
   FakeSource,
   FakeStreamSource,
@@ -44,10 +46,11 @@ async function setup(log: Logger = silent) {
   const { store } = await newStore(clock);
   const gh = new FakeSource();
   const sl = new FakeSlackPollSource();
+  const forge = new FakeForge(gh);
   const controller = new Controller({
-    store, sources: [gh, sl], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, llm: new ApproveLLM(),
+    store, sources: [gh, sl], forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, llm: new ApproveLLM(),
   });
-  return { clock, store, gh, sl, controller };
+  return { clock, store, gh, sl, forge, controller };
 }
 
 type F = Awaited<ReturnType<typeof setup>>;
@@ -120,7 +123,7 @@ describe("multi-source controller: per-item routing", () => {
     expect(f.sl.closed).toEqual([slackRef(1)]);
   });
 
-  it("status for the PR of a non-GitHub item goes to the GitHub adapter; the item's own status stays on its source", async () => {
+  it("status for the PR of a non-GitHub item goes to the forge; the item's own status stays on its source", async () => {
     const f = await setup();
     const { slItem } = await intakeBoth(f);
     await finishAll(f, "triage", { spec: triageSpec });
@@ -130,12 +133,11 @@ describe("multi-source controller: per-item routing", () => {
 
     expect((await f.store.getWorkItem(slItem.id))!.pr_number).toBe(42);
     expect(f.sl.statusCalls.filter((c) => c.pr_number !== null)).toEqual([]);
-    expect(f.gh.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
+    expect(f.forge.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
       { source: slackRef(1), status: "in_review", pr_number: 42 },
     ]);
-    expect(f.gh.statusCalls.some((c) => c.source.id === slackRef(1).id && c.pr_number === null)).toBe(false);
+    expect(f.gh.statusCalls.some((c) => c.source.id === slackRef(1).id)).toBe(false);
     expect(f.sl.statusLabels(slackRef(1))).toEqual(["in_review"]);
-    expect(f.gh.statusLabels(slackRef(1), 42)).toEqual(["in_review"]);
   });
 
   it("with one source, PR status still goes to that source (today's behaviour)", async () => {
@@ -207,30 +209,27 @@ describe("multi-source controller: github-issues + local (2026-11-07)", () => {
 
     expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
     expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
-    expect(await f.store.listItemMessages(ghItem.id)).toEqual([]);
+    // Every item's messages are in its thread (issue #282); only the GitHub item's have outbox rows, all delivered.
+    expect(await f.store.listDeliveries(localItem.id)).toEqual([]);
+    const ghRows = await f.store.listDeliveries(ghItem.id);
+    expect(ghRows.length).toBeGreaterThan(0);
+    expect(ghRows.every((r) => r.source_type === "github_issue" && r.delivered_at !== null)).toBe(true);
     expect(f.gh.comments.length).toBeGreaterThan(0);
     expect(sources(f.gh.comments)).toEqual([issueRef(7).id]);
     expect(sources(f.gh.statusCalls)).toEqual([issueRef(7).id]);
   });
 
-  it("a controller without the local source (an older process still draining) leaves a local item's run to one with it", async () => {
+  it("a controller without the local source still applies a local item's run: the store is its surface (issue #282)", async () => {
     const f = await localSetup();
     const localItem = await f.create(localRef(2));
-    const log = recordingLog();
     const gh = new FakeSource();
-    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log, scanner: cleanScanner });
+    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
 
     await f.finishTriage(ghOnly);
-    const kept = (await f.store.getWorkItem(localItem.id))!;
-    expect(kept.version).toBe(localItem.version);
-    expect(kept.stage).toBe("NEW");
-    expect(gh.comments).toEqual([]);
-    expect((await f.store.listUnacknowledgedRuns(20)).map((r) => r.work_item_id)).toEqual([localItem.id]);
-    expect(log.lines.some((l) => l.level === "warn" && l.msg.startsWith("no source adapter"))).toBe(true);
-
-    await f.controller.tickRuns();
     expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
     expect((await f.store.listItemMessages(localItem.id)).length).toBeGreaterThan(0);
+    expect(gh.comments).toEqual([]);
+    expect(await f.store.listUnacknowledgedRuns(20)).toEqual([]);
   });
 });
 
@@ -339,8 +338,8 @@ describe("multi-source controller: startup checks", () => {
   const make = (sources: SourceAdapter[]) => () =>
     new Controller({ store: {} as never, sources, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent, scanner: cleanScanner });
 
-  it("no sources fails, naming plugins.source", () => {
-    expect(make([])).toThrow(/plugins\.source/);
+  it("no sources is allowed: items and commands live in the store (issue #282)", () => {
+    expect(make([])).not.toThrow();
   });
 
   it("two sources of the same type fail, naming plugins.source and the type", () => {
@@ -348,13 +347,14 @@ describe("multi-source controller: startup checks", () => {
     expect(make([new FakeSlackPollSource(), new FakeStreamSource()])).toThrow(/plugins\.source.*slack_thread/);
   });
 
-  it("several sources without a github_issue one fail, naming plugins.source", () => {
+  it("several sources with none of type github_issue are accepted: PRs come from the forge (issue #273)", () => {
     const other = new FakeStreamSource();
     (other as { type: string }).type = "local" as never;
-    expect(make([new FakeSlackPollSource(), other])).toThrow(/plugins\.source.*github_issue/);
+    expect(make([new FakeSlackPollSource(), other])).not.toThrow();
   });
 
-  it("one non-GitHub source alone still works, as today", () => {
+  it("one non-GitHub source alone is accepted", () => {
     expect(make([new FakeStreamSource()])).not.toThrow();
+    expect(make([new FakeSlackPollSource()])).not.toThrow();
   });
 });

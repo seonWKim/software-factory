@@ -9,7 +9,9 @@ import type { DependencyKind, DependencyState, SharedPath, SourceRef } from "./t
  *   cost against any holder is at or above `max_cost` is held. Holders: items with an implement run in progress,
  *   items with an open PR, and other queued implement runs.
  * - Deadlock rule: a run held only by other queued runs (no running item, no open PR) is claimed when its turn
- *   comes, so the oldest of a group that holds each other goes first.
+ *   comes, so the oldest of a group that holds each other goes first. A queued run never holds on its own: it
+ *   cannot make progress before it is claimed, so only a running item or an open PR keeps a run queued.
+ * - Hold policy (issue #314): a `held` run then waits, starts after `minutes`, or starts at once (`holdOutcome`).
  * - Dependencies: an item waits for every item it depends on to merge. A cycle is refused.
  */
 
@@ -51,6 +53,35 @@ export const DEFAULT_MECHANICAL: readonly string[] = [
 /** Default `mechanical_weight`: well below BASE_WEIGHT, so a few index and History lines never hold a run. */
 export const DEFAULT_MECHANICAL_WEIGHT = 0.25;
 
+/**
+ * `hold_policy` (design §5, issue #314): what a cost hold does. `hold` keeps the run queued until `/approve` (the
+ * default); `run_after_minutes` claims it once it has been held `minutes`; `run` claims it at once. Settable live.
+ */
+export type HoldPolicy = { mode: "hold" } | { mode: "run_after_minutes"; minutes: number } | { mode: "run" };
+export const HOLD_POLICY_MODES = ["hold", "run_after_minutes", "run"] as const;
+/** `minutes` of `run_after_minutes` when the value gives none. */
+export const DEFAULT_HOLD_MINUTES = 20;
+export const DEFAULT_HOLD_POLICY: HoldPolicy = { mode: "hold" };
+/** `hotspot_mode`: `policy` (default) lets a hotspot hold follow `hold_policy`; `hold` always keeps it held. */
+export const HOTSPOT_MODES = ["policy", "hold"] as const;
+export type HotspotMode = (typeof HOTSPOT_MODES)[number];
+
+/** A checked `hold_policy`; throws the config loader's message. `minutes` absent: DEFAULT_HOLD_MINUTES. */
+export function parseHoldPolicy(value: unknown): HoldPolicy {
+  const v = value as { mode?: unknown; minutes?: unknown } | null;
+  if (typeof v !== "object" || v === null || Array.isArray(v) || !(HOLD_POLICY_MODES as readonly unknown[]).includes(v.mode)) {
+    throw new Error(`hold_policy must be { "mode": ${HOLD_POLICY_MODES.map((m) => `"${m}"`).join(" | ")} } (got ${JSON.stringify(value) ?? String(value)})`);
+  }
+  const extra = Object.keys(v).filter((k) => k !== "mode" && !(k === "minutes" && v.mode === "run_after_minutes"));
+  if (extra.length > 0) throw new Error(`hold_policy with mode "${String(v.mode)}" takes no ${extra.join(", ")}`);
+  if (v.mode !== "run_after_minutes") return { mode: v.mode as "hold" | "run" };
+  const minutes = v.minutes ?? DEFAULT_HOLD_MINUTES;
+  if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < 1) {
+    throw new Error(`hold_policy.minutes must be a positive integer (got ${JSON.stringify(v.minutes) ?? String(v.minutes)})`);
+  }
+  return { mode: "run_after_minutes", minutes };
+}
+
 export interface CoordinationSettings {
   /** `max_coordination_cost`: a cost at or above it holds the run. */
   max_cost: number;
@@ -62,6 +93,10 @@ export interface CoordinationSettings {
   mechanical: readonly string[];
   /** `mechanical_weight`: above 0, below 1.0. */
   mechanical_weight: number;
+  /** `hold_policy`: what a cost hold does (issue #314). */
+  hold_policy: HoldPolicy;
+  /** `hotspot_mode`: whether a hold on a hotspot follows `hold_policy` or always stays held. */
+  hotspot_mode: HotspotMode;
 }
 
 export const DEFAULT_COORDINATION: CoordinationSettings = {
@@ -70,6 +105,8 @@ export const DEFAULT_COORDINATION: CoordinationSettings = {
   hotspot_weight: DEFAULT_HOTSPOT_WEIGHT,
   mechanical: DEFAULT_MECHANICAL,
   mechanical_weight: DEFAULT_MECHANICAL_WEIGHT,
+  hold_policy: DEFAULT_HOLD_POLICY,
+  hotspot_mode: "policy",
 };
 
 /** A file's weight from its recorded conflicts: 1.0 below two, then 1.0 + 0.5 per conflict, at most 4.0. */
@@ -163,8 +200,10 @@ export interface Hold {
 }
 
 /**
- * Every holder whose cost against the candidate is at or above `max_cost`, highest cost first (running and PR
- * holders before waiting ones at the same cost). Only holders of the same project and another item count.
+ * Every holder whose cost against the candidate is at or above `max_cost`: running and PR holders first, then
+ * waiting ones, each group highest cost first. So the first hold is the one that decides (claimDecision) and the
+ * one the stored decision names: a run held by an open PR names the PR, even when a queued run shares more files.
+ * Only holders of the same project and another item count.
  */
 export function holdsOn(
   candidate: { work_item_id: string; project: string; files: readonly string[] },
@@ -179,7 +218,7 @@ export function holdsOn(
     if (shared.length > 0 && cost >= s.max_cost) holds.push({ holder: h, shared, cost });
   }
   const rank = (h: Hold) => (h.holder.kind === "waiting" ? 1 : 0);
-  return holds.sort((x, y) => y.cost - x.cost || rank(x) - rank(y));
+  return holds.sort((x, y) => rank(x) - rank(y) || y.cost - x.cost);
 }
 
 /**
@@ -189,6 +228,20 @@ export function holdsOn(
 export function claimDecision(holds: readonly Hold[]): "free" | "deadlock" | "held" {
   if (holds.length === 0) return "free";
   return holds.every((h) => h.holder.kind === "waiting") ? "deadlock" : "held";
+}
+
+/**
+ * What `hold_policy` makes of a `held` claim decision (issue #314), `heldMs` after the hold started (`held_since`):
+ * `held` (stays queued), `timed_out` (claimed: held `minutes` under `run_after_minutes`) or `overlap_allowed`
+ * (claimed at once under `run`). With `hotspot_mode: hold`, a running item or open PR that shares a hotspot keeps
+ * the run held whatever the policy.
+ */
+export function holdOutcome(holds: readonly Hold[], s: CoordinationSettings, heldMs: number): "held" | "timed_out" | "overlap_allowed" {
+  const p = s.hold_policy;
+  if (p.mode === "hold") return "held";
+  if (s.hotspot_mode === "hold" && holds.some((h) => h.holder.kind !== "waiting" && h.shared.some((x) => x.hotspot))) return "held";
+  if (p.mode === "run") return "overlap_allowed";
+  return heldMs >= p.minutes * 60_000 ? "timed_out" : "held";
 }
 
 /** A cost: one decimal (4.0, 2.5), two when a mechanical weight needs them (2.75). */

@@ -2,9 +2,9 @@
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
 import { mkdir, readFile } from "node:fs/promises";
-import { hostname } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
+import { type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, cliUserConfig, coordinationConfig, toolGrantsConfig } from "./core/config.js";
 import { type ProjectRef, githubProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
@@ -33,16 +33,17 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubClient, type GitHubClientOptions, GitHubError, type RepoIdentity, type RepoRef, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { DEFAULT_STATUS_LABEL_PREFIX } from "./impl/source/github-issue-source.js";
+import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/source/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
@@ -134,8 +135,11 @@ export interface FileConfig {
   ui?: { port?: number; user_id?: string };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
   updater?: { auto_migrate?: unknown };
-  /** The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the reset. */
-  github?: { min_remaining?: unknown };
+  /**
+   * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
+   * reset. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
+   */
+  github?: { min_remaining?: unknown; history_since?: unknown };
   /** Token budget per tier, e.g. {"2": 2000000} (design §6). Absent: no limits. Checked by settingsLayers. */
   budgets?: unknown;
   /** Finished items a tier needs before suggestions come from history. Absent: 10. */
@@ -176,13 +180,82 @@ export interface FileConfig {
   path_companions?: unknown;
 }
 
-export { CODE_ROOT_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+
+/** The checked-in config's name under the code root. */
+export const CONFIG_FILE = "factory.config.json";
+
+/**
+ * The config path for this process, parsed once at startup for every command: `--config <path>` (or
+ * `--config=<path>`) anywhere in `argv`, else FACTORY_CONFIG, made absolute against `cwd`. `args` is `argv`
+ * without the flag. No flag and no env var: `configFile` is undefined (the code root's checked-in file).
+ */
+export function cliConfig(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+  cwd: string,
+): { args: string[]; configFile: string | undefined } {
+  const args: string[] = [];
+  let flag: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--config" || a.startsWith("--config=")) {
+      const value = a === "--config" ? argv[++i] : a.slice("--config=".length);
+      if (!value) throw new Error("--config needs a path to a factory.config.json");
+      flag = value;
+    } else args.push(a);
+  }
+  const chosen = flag ?? (env[CONFIG_ENV] || undefined);
+  return { args, configFile: chosen === undefined ? undefined : resolve(cwd, chosen) };
+}
+
+/**
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth). On a shared store (MySQL: the enterprise
+ * case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
+ */
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth"] as const;
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
+async function readConfigFile(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as unknown;
+  } catch (err) {
+    throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+  }
+}
+
+/** An external config on a shared store, with REVIEWED_KEYS (and `defaults.floors`) taken from the checked-in file. */
+async function withReviewedKeys(raw: unknown, checkedIn: string): Promise<unknown> {
+  if (!isRecord(raw) || !isRecord(raw.store) || raw.store.type !== "mysql") return raw;
+  const reviewed = await readConfigFile(checkedIn);
+  if (!isRecord(reviewed)) return raw; // checkConfigKeys reports the external file's own shape
+  const out: Record<string, unknown> = { ...raw };
+  const take = (to: Record<string, unknown>, from: Record<string, unknown>, k: string) => {
+    if (k in from) to[k] = from[k];
+    else delete to[k];
+  };
+  for (const k of REVIEWED_KEYS) take(out, reviewed, k);
+  if (isRecord(out.defaults) || isRecord(reviewed.defaults)) {
+    const defaults = { ...(isRecord(out.defaults) ? out.defaults : {}) };
+    take(defaults, isRecord(reviewed.defaults) ? reviewed.defaults : {}, "floors");
+    out.defaults = defaults;
+  }
+  return out;
+}
 
 export interface Loaded {
-  /** The state root: the main checkout. State dir, worktrees, repo path and the database resolve here. */
+  /** The cwd: the main checkout. Repo path resolves here; so do state and worktrees without an external config. */
   root: string;
-  /** Where factory.config.json and prompts/ were read: the runtime copy under the updater, else `root`. */
+  /** Where prompts/ (and the checked-in factory.config.json) were read: the runtime copy under the updater, else `root`. */
   codeRoot: string;
+  /** The config file that was read, absolute. */
+  configFile: string;
+  /** The `--config` / FACTORY_CONFIG file, absolute; null when the code root's checked-in file is used. */
+  externalConfig: string | null;
+  /** `worktrees_dir`, resolved like the state dir. */
+  worktreesDir: string;
   file: FileConfig;
   /** Not yet resolved to a project key: build() finds the configured repo's key in the store, or asks GitHub (startupProject). */
   config: LoadedConfig;
@@ -216,16 +289,44 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"]): string {
   return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks);
 }
 
+/** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
+const GITHUB_SOURCE = "github-issues";
+const GITHUB_FORGE = "github";
+
 /**
- * `codeRoot` is where config and prompts are read (the updater's runtime copy); `root` is where state lives.
- * `platform` picks the platform-dependent plugin defaults (docs/plugins.md); the host's unless a test passes one.
+ * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
+ * lists github-issues, else none. Derived, not a setting, so a local-only setup makes no GitHub call. An off value
+ * next to github-issues fails, naming plugins.forge: that source's PRs would never close their items.
+ */
+export function withForgeDefault(registry: Registry, selection: Selection, plugins: unknown): Selection {
+  if (!selectedSources(selection).includes(GITHUB_SOURCE)) return selection;
+  const given = plugins !== null && typeof plugins === "object" && Object.hasOwn(plugins, "forge");
+  if (!given) return Object.hasOwn(registry.forge.plugins, GITHUB_FORGE) ? { ...selection, forge: GITHUB_FORGE } : selection;
+  if (selection.forge !== undefined) return selection;
+  const value = JSON.stringify((plugins as { forge?: unknown }).forge) ?? "nothing";
+  throw new Error(
+    `plugins.forge is ${value} but plugins.source lists "${GITHUB_SOURCE}": its pull requests (merges, closes, reviews) are read ` +
+      `only through a forge, so its factory PRs would never close their items; leave plugins.forge out (it then follows ` +
+      `plugins.source) or set it to "${GITHUB_FORGE}"`,
+  );
+}
+
+/**
+ * `codeRoot` is where prompts are read (the updater's runtime copy); `root` is the cwd. `configFile` (from
+ * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
+ * folder becomes where `state_dir` and `worktrees_dir` resolve; without it they resolve from `root`.
+ * `repo.path` always resolves from `root`. `platform` picks the platform-dependent plugin defaults
+ * (docs/plugins.md); the host's unless a test passes one.
  */
 export async function loadConfig(
   root = process.cwd(),
-  opts: { registry?: Registry; codeRoot?: string | undefined; platform?: string | undefined } = {},
+  opts: { registry?: Registry; codeRoot?: string | undefined; configFile?: string | undefined; platform?: string | undefined } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
-  const raw: unknown = JSON.parse(await readFile(join(codeRoot, "factory.config.json"), "utf8"));
+  const checkedIn = join(codeRoot, CONFIG_FILE);
+  const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
+  const configFile = externalConfig ?? checkedIn;
+  const raw = externalConfig === null ? await readConfigFile(checkedIn) : await withReviewedKeys(await readConfigFile(externalConfig), checkedIn);
   checkConfigKeys(raw);
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
@@ -240,6 +341,7 @@ export async function loadConfig(
   uiUserId(file.ui);
   autoMigrate(file.updater);
   githubMinRemaining(file.github);
+  githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
@@ -252,12 +354,16 @@ export async function loadConfig(
   const model_by = parseModelBy(file.model_by);
   const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
-  const plugins = selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform });
+  const plugins = withForgeDefault(
+    registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
+  );
   const grants = selectGrants(GRANTS, file.permissions);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
-  const stateDir = resolve(root, file.state_dir);
+  const stateBase = externalConfig === null ? root : dirname(externalConfig);
+  const stateDir = resolve(stateBase, file.state_dir);
+  const worktreesDir = resolve(stateBase, file.worktrees_dir);
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
@@ -320,7 +426,7 @@ export async function loadConfig(
     throw err;
   });
   if (resolvePrompt !== undefined) prompts.resolve = resolvePrompt;
-  return { root, codeRoot, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
+  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
 }
 
 /** What startup resolution needs from the GitHub client: one read of the repository. */
@@ -482,12 +588,15 @@ export class Plugins {
     return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
   }
   /**
-   * The selected forge (`plugins.forge`, issue #172), or null when config selects none: then nothing is built.
-   * Optional and not yet used by build(): the controller still reads PR facts from its sources.
+   * The selected forge (`plugins.forge`, or the one `plugins.source` implies; issue #273), or null when config
+   * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
+   * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubClient): Promise<Forge | null> {
+  async forge(github: GitHubClient, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
-    return name === undefined ? null : createPlugin(this.loaded.registry, "forge", name, { ...this.base, github });
+    if (name === undefined) return null;
+    const ctx = { ...this.base, github, ...sync };
+    return createPlugin(this.loaded.registry, "forge", name, ctx);
   }
 }
 
@@ -513,8 +622,10 @@ export async function build(
   const sources = [];
   const sourceLog = new ConsoleLogger(clock, "source");
   for (const name of selectedSources(sel)) {
-    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog }));
+    sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
+  // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
+  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -558,6 +669,7 @@ export async function build(
   const controller = new Controller({
     store,
     sources,
+    forge,
     auth,
     local_auth,
     clock,
@@ -587,6 +699,8 @@ export async function build(
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
+    // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
+    cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake,
     capability,
@@ -652,8 +766,16 @@ export interface UiParts {
   settings: UiSettings;
   /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
   commands: UiCommands;
+  /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
+  pauses: UiPauses;
   close(): Promise<void>;
 }
+
+/** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
+const NO_FORGE = new Proxy({}, {
+  // Not a thenable: awaiting the client itself must not hang.
+  get: (_target, key) => (key === "then" ? undefined : () => Promise.reject(new Error("the UI process makes no forge call"))),
+}) as unknown as GitHubClient;
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
@@ -662,7 +784,8 @@ export interface UiParts {
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
  * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
- * commands route acts as `ui.user_id` (null: not configured) and takes the same token.
+ * commands route acts as `ui.user_id` (null: not configured) and takes the same token. The pause route's owner
+ * check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -681,9 +804,26 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // One token per process for both write routes; held only in memory, never written to a file, the store or a log.
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
-  return { clock, store, scanner, settings, commands, close: () => store.close() };
+  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
+  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  const base = p.base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const cliUser = cliUserConfig(loaded.file);
+  const pauses: UiPauses = {
+    // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
+    authorize: async (user_id) => {
+      const project = await settings.resolveProject();
+      if (!project) return { allow: false, reason: "no project is stored yet" };
+      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
+    },
+    csrfToken: token,
+    log: new ConsoleLogger(clock, "ui"),
+  };
+  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

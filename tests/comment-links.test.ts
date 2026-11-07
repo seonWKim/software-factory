@@ -10,7 +10,8 @@ import { FakeAuth, FakeSource, alice, cleanScanner, config, gates, issueRef, sil
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
-// The spec and failure comment URLs land on the item in the transition that blocks it (design §9).
+// The spec and failure comment URLs land on the item once the outbox delivers the comment (issue #282): the
+// transition that blocks it writes the thread entry and leaves the link empty; delivery fills it, version unchanged.
 
 // Built here so no secret-shaped literal sits in the repository.
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
@@ -62,10 +63,10 @@ describe("controller: comment links", () => {
     expect(url).toMatch(/^https:\/\/github\.com\/o\/r\/issues\/7#issuecomment-\d+$/);
     expect(await f.get(item)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", spec_comment_url: url, failure_comment_url: null });
     const triaged = await f.change(item, "triaged");
-    expect(triaged!.changes).toMatchObject({
-      blocked_reason: { from: null, to: "spec_pending" },
-      spec_comment_url: { from: null, to: url },
-    });
+    expect(triaged!.changes).toMatchObject({ blocked_reason: { from: null, to: "spec_pending" } });
+    // Filled by the delivery, after the transition: no state change carries it, and the version is the transition's.
+    expect(triaged!.changes).not.toHaveProperty("spec_comment_url");
+    expect((await f.get(item)).version).toBe(triaged!.version);
   });
 
   it("stores the failure comment URL in the transition that blocks at max_attempts", async () => {
@@ -75,7 +76,7 @@ describe("controller: comment links", () => {
     const url = f.urlOf("run-failed:");
     expect(url).toBeDefined();
     expect(await f.get(item)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts", failure_comment_url: url });
-    expect((await f.change(item, "max_attempts"))!.changes).toMatchObject({ failure_comment_url: { from: null, to: url } });
+    expect((await f.change(item, "max_attempts"))!.changes).not.toHaveProperty("failure_comment_url");
   });
 
   it("stores null when the egress scan withholds the failure comment, replacing an older link", async () => {
@@ -106,7 +107,7 @@ describe("controller: comment links", () => {
     const url = f.urlOf("run-failed:");
     expect(url).toBeDefined();
     expect(await f.get(item)).toMatchObject({ blocked_reason: "run_failed:update:git_failed", failure_comment_url: url });
-    expect((await f.change(item, "run_failed"))!.changes).toMatchObject({ failure_comment_url: { from: null, to: url } });
+    expect((await f.change(item, "run_failed"))!.changes).not.toHaveProperty("failure_comment_url");
   });
 
   it("a re-applied decision gets the URL of the comment already posted", async () => {

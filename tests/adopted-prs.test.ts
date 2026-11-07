@@ -6,11 +6,16 @@ import type { SourceRef, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { GitHubClient } from "../src/impl/github/github-client.js";
+import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
+import { GitHubForge } from "../src/impl/forge/github-forge.js";
+import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, mallory, prompts, recordingLog, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
@@ -24,7 +29,7 @@ function prRef(n: number): SourceRef {
   return { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/pull/${n}` };
 }
 
-function prOpen(n: number, o: Partial<Extract<SourceEvent, { kind: "pr_open" }>> = {}): SourceEvent {
+function prOpen(n: number, o: Partial<Extract<ForgeEvent, { kind: "pr_open" }>> = {}): ForgeEvent {
   return {
     kind: "pr_open",
     source: prRef(n),
@@ -43,6 +48,7 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const runner = new FakeRunner({
@@ -51,13 +57,17 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
     review: () => ({ output: { verdict: "pass", tier: 1, findings: [], summary: "fine" } }),
     ...script,
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
     scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
   });
-  const poll = async (...events: SourceEvent[]) => {
-    source.queue.push(...events);
+  /** One poll tick: PR events come from the forge, the rest from the source. */
+  const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
+    for (const e of events) {
+      if (e.kind.startsWith("pr_")) forge.queue.push(e as ForgeEvent);
+      else source.queue.push(e as SourceEvent);
+    }
     await controller.tickIntake();
   };
   const work = async () => {
@@ -65,13 +75,13 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
     await controller.tickRuns();
   };
   const item = async (n: number) => store.getWorkItemBySource("github_issue", `o/r#${n}`);
-  return { clock, store, source, sandbox, broker, runner, controller, worker, poll, work, item };
+  return { clock, store, source, forge, sandbox, broker, runner, controller, worker, poll, work, item };
 }
 
 describe("adopting a pull request a person opened", () => {
   it("one non-draft PR on a non-factory branch becomes one item at REVIEW with one review run; a second poll adds nothing", async () => {
     const f = await factory();
-    f.source.prFileMap[50] = ["src/core/stats.ts", "docs/design.md"];
+    f.forge.prFileMap[50] = ["src/core/stats.ts", "docs/design.md"];
     await f.poll(prOpen(50));
     await f.poll(prOpen(50));
 
@@ -95,7 +105,7 @@ describe("adopting a pull request a person opened", () => {
     const runs = await f.store.listRuns(it.id);
     expect(runs.map((r) => [r.kind, r.status])).toEqual([["review", "queued"]]);
     // Full details are read only for a PR the store does not know yet.
-    expect(f.source.fileCalls).toEqual([50]);
+    expect(f.forge.fileCalls).toEqual([50]);
     const sc = await f.store.listStateChanges(it.id);
     expect(sc.map((c) => [c.reason, c.actor])).toEqual([["pr_adopted", { kind: "user", id: "github:2" }]]);
     // The status label goes on the pull request (its source).
@@ -104,7 +114,7 @@ describe("adopting a pull request a person opened", () => {
 
   it("the review reads the PR's head branch, its title, body and diff with no spec, and comments on the PR", async () => {
     const f = await factory();
-    f.source.prFileMap[50] = ["src/core/stats.ts"];
+    f.forge.prFileMap[50] = ["src/core/stats.ts"];
     await f.poll(prOpen(50));
     await f.work();
 
@@ -121,14 +131,15 @@ describe("adopting a pull request a person opened", () => {
 
     const it = (await f.item(50))!;
     expect(it).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", tier: 1 });
-    const merge = f.source.comments.find((c) => c.body.includes("human merge is required"))!;
-    expect(merge.source).toEqual(prRef(50));
+    // The adopted item's own source is the PR: its comments go through the forge, onto the PR.
+    const merge = f.forge.comments.find((c) => c.body.includes("human merge is required"))!;
+    expect(merge.pr_number).toBe(50);
     expect(f.source.statusLabels(prRef(50))).toEqual(["ready_to_merge"]);
   });
 
   it("a floor path among the PR's files raises the tier", async () => {
     const f = await factory();
-    f.source.prFileMap[50] = ["src/impl/broker/github-broker.ts"];
+    f.forge.prFileMap[50] = ["src/impl/broker/github-broker.ts"];
     await f.poll(prOpen(50));
     expect((await f.item(50))!.tier).toBe(4);
     await f.work();
@@ -154,13 +165,13 @@ describe("adopting a pull request a person opened", () => {
 describe("factory: skip", () => {
   it("added by a user with write permission: no item, and its merge writes one unreviewed merge", async () => {
     const f = await factory();
-    f.source.labelAdders[`51:${SKIP_LABEL}`] = alice;
+    f.forge.labelAdders[`51:${SKIP_LABEL}`] = alice;
     await f.poll(prOpen(51, { labels: [SKIP_LABEL] }));
     await f.poll(prOpen(51, { labels: [SKIP_LABEL] }));
     expect(await f.store.listWorkItems(10)).toEqual([]);
-    expect(f.source.fileCalls).toEqual([]);
+    expect(f.forge.fileCalls).toEqual([]);
 
-    const merged: SourceEvent = { kind: "pr_merged", pr_number: 51, head_branch: "feature/x", merge_sha: "m51", merger: alice };
+    const merged: ForgeEvent = { kind: "pr_merged", pr_number: 51, head_branch: "feature/x", merge_sha: "m51", merger: alice };
     await f.poll(merged);
     await f.poll(merged);
     expect(await f.store.listWorkItems(10)).toEqual([]);
@@ -171,7 +182,7 @@ describe("factory: skip", () => {
 
   it("added by a user without write permission is ignored, and the PR is adopted", async () => {
     const f = await factory();
-    f.source.labelAdders[`52:${SKIP_LABEL}`] = mallory;
+    f.forge.labelAdders[`52:${SKIP_LABEL}`] = mallory;
     await f.poll(prOpen(52, { labels: [SKIP_LABEL] }));
     expect((await f.item(52))!).toMatchObject({ origin: "adopted", stage: "REVIEW" });
   });
@@ -179,7 +190,7 @@ describe("factory: skip", () => {
   it("a label added after adoption does nothing", async () => {
     const f = await factory();
     await f.poll(prOpen(53));
-    f.source.labelAdders[`53:${SKIP_LABEL}`] = alice;
+    f.forge.labelAdders[`53:${SKIP_LABEL}`] = alice;
     await f.poll(prOpen(53, { labels: [SKIP_LABEL] }));
     const it = (await f.item(53))!;
     expect(it).toMatchObject({ stage: "REVIEW", version: 1 });
@@ -191,7 +202,7 @@ describe("a person's push to a factory or adopted PR", () => {
     const f = await factory();
     await f.poll(prOpen(50));
     const before = (await f.item(50))!;
-    f.source.commitAuthors.h2 = alice;
+    f.forge.commitAuthors.h2 = alice;
     await f.poll(prOpen(50, { head_sha: "h2" }));
     await f.poll(prOpen(50, { head_sha: "h2" }));
 
@@ -239,7 +250,7 @@ describe("a person's push to a factory or adopted PR", () => {
     await f.poll(open("base"));
     expect((await f.store.listRuns(it.id)).filter((r) => r.kind === "manual")).toEqual([]);
 
-    f.source.commitAuthors.h9 = alice;
+    f.forge.commitAuthors.h9 = alice;
     await f.poll(open("h9"));
     const manual = (await f.store.listRuns(it.id)).filter((r) => r.kind === "manual");
     expect(manual).toHaveLength(1);
@@ -299,5 +310,63 @@ describe("merges of pull requests the factory did not open", () => {
     await f.poll({ kind: "pr_closed", pr_number: 62, head_branch: "feature/x", fork: true });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     expect(await f.store.listUnreviewedMerges(10)).toEqual([]);
+  });
+});
+
+describe("the first start on a repository with history (design §5, Merges)", () => {
+  /** Closed PRs on one page and the merger of each; counts the single-PR reads; every other list is empty. */
+  class Repo extends GitHubClient {
+    closed: unknown[] = [];
+    prReads = 0;
+    constructor() {
+      super({} as GitHubCredentials, "http://unused");
+    }
+    override async request<T>(method: string, path: string): Promise<T> {
+      if (method !== "GET") return {} as T;
+      if (path.startsWith("/repos/o/r/pulls?state=closed")) return (path.includes("page=1") ? this.closed : []) as T;
+      if (/^\/repos\/o\/r\/pulls\/\d+$/.test(path)) {
+        this.prReads++;
+        return { merged_by: { id: 2, login: "bob", type: "User" } } as T;
+      }
+      return [] as T;
+    }
+  }
+  const merged = (n: number, at: string) => ({
+    number: n, merged_at: at, merge_commit_sha: `m${n}`, updated_at: at,
+    head: { ref: `feature/${n}`, sha: `h${n}`, repo: { full_name: "o/r" } }, base: { ref: "main", sha: "b" },
+  });
+
+  async function start() {
+    const clock = new FakeClock("2026-11-07T00:00:00Z");
+    const { store } = await newStore(clock);
+    const log = recordingLog();
+    const repo = new Repo();
+    const ctx = { clock, history_since: null, log };
+    const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
+    const forge = new GitHubForge(repo, { owner: "o", name: "r" }, "factory/", "main", source, ctx);
+    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
+    return { clock, store, repo, controller, unreviewed };
+  }
+
+  it("50 old merged PRs: no unreviewed merge warning, no row, no per-PR read", async () => {
+    const f = await start();
+    f.repo.closed = Array.from({ length: 50 }, (_, i) => merged(100 + i, `2026-10-01T00:${String(i).padStart(2, "0")}:00Z`));
+    await f.controller.tickIntake();
+    expect(f.unreviewed()).toEqual([]);
+    expect(await f.store.listUnreviewedMerges(100)).toEqual([]);
+    expect(f.repo.prReads).toBe(0);
+  });
+
+  it("a PR merged without review after the first start is recorded as an unreviewed merge with one warning", async () => {
+    const f = await start();
+    f.repo.closed = [merged(1, "2026-10-01T00:00:00Z")];
+    await f.controller.tickIntake();
+    f.clock.advance(60_000);
+    f.repo.closed = [merged(2, "2026-11-07T00:00:30Z"), merged(1, "2026-10-01T00:00:00Z")];
+    await f.controller.tickIntake();
+    await f.controller.tickIntake();
+    expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.pr_number, r.merge_sha])).toEqual([[2, "m2"]]);
+    expect(f.unreviewed().map((l) => l.fields?.pr_number)).toEqual([2]);
   });
 });
