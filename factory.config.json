@@ -18,6 +18,8 @@
     { "prefix": "src/impl/egress/", "tier": 4 },
     { "prefix": "src/impl/secrets/", "tier": 4 },
     { "prefix": "src/impl/auth/", "tier": 4 },
+    { "prefix": "src/impl/github/app-credentials.ts", "tier": 4 },
+    { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
