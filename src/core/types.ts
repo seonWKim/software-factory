@@ -415,14 +415,16 @@ export interface Handoff {
 }
 
 export type VerdictId = Brand<string, "VerdictId">;
-export type VerdictKind = "accept" | "changes" | "reject";
+/** `reverted` is implicit only: written when a base commit reverts the item's merge, never typed by a user. */
+export type VerdictKind = "accept" | "changes" | "reject" | "reverted";
 export type VerdictSeverity = "none" | "minor" | "major" | "critical";
 /** Where the `/verdict` comment was written: the item's issue or its PR. */
 export type VerdictTarget = "issue" | "pr";
 
 /**
- * A human's structured verdict on a work item (`/verdict`, design §4). Linked to the state_changes row
- * (reason `human_verdict`) that carries the actor; changes no work-item field.
+ * A verdict on a work item (design §4): a human's `/verdict`, linked to its own state_changes row (reason
+ * `human_verdict`, the user as actor), or an implicit one the controller derives from a merge, a person's push or a
+ * revert, linked to the existing row of that event (it writes none). Changes no work-item field.
  */
 export interface Verdict {
   id: VerdictId;
@@ -432,9 +434,19 @@ export interface Verdict {
   severity: VerdictSeverity;
   /** Null only for `accept` without a reason. */
   reason: string | null;
-  /** The comment that held the command. Unique: a redelivered comment records nothing. */
+  /**
+   * The comment that held the command, or for an implicit verdict a synthetic key (`implicit:<event>:...`).
+   * Unique: a redelivered comment or a repeated event records nothing.
+   */
   comment_id: string;
   target: VerdictTarget;
+  /** Derived by the controller, not typed by a person. False on every row written before the flag existed. */
+  implicit: boolean;
+  /**
+   * The PR head the verdict is about. At most one `accept`/`changes`/`reject` per (item, head): an explicit verdict
+   * replaces the head's earlier one, an implicit one never replaces anything. Null when the head is not known.
+   */
+  pr_head: string | null;
   at: Timestamp;
 }
 

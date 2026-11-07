@@ -702,6 +702,84 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listStateChanges(item.id)).toHaveLength(2);
       expect(await store.recordVerdict(verdict("wi_missing" as WorkItemId, 1))).toEqual({ ok: false, reason: "not_found" });
     });
+
+    it("an explicit verdict without a head is stored as explicit with no head", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const r = await store.recordVerdict(verdict(item.id, 1));
+      expect(r.ok && r.verdict).toMatchObject({ implicit: false, pr_head: null });
+      expect(r.ok && r.replaced).toEqual([]);
+    });
+
+    it("an implicit verdict: flagged, on its head, linked to an existing row; no version, no new row, no field change", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const [row] = await store.listStateChanges(item.id);
+      const r = await store.recordImplicitVerdict({
+        id: item.id, state_change_id: row!.id, verdict: "accept", severity: "none", reason: null,
+        key: "implicit:merged:x", target: "pr", pr_head: "h1",
+      });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.verdict).toMatchObject({ state_change_id: row!.id, comment_id: "implicit:merged:x", implicit: true, pr_head: "h1", verdict: "accept" });
+      expect(await store.getWorkItem(item.id)).toEqual(item);
+      expect(await store.listStateChanges(item.id)).toEqual([row]);
+      expect(await store.listVerdicts(item.id)).toEqual([r.verdict]);
+      // The same key again stores nothing.
+      expect(await store.recordImplicitVerdict({
+        id: item.id, state_change_id: row!.id, verdict: "accept", severity: "none", reason: null, key: "implicit:merged:x", target: "pr", pr_head: "h9",
+      })).toEqual({ ok: false, reason: "duplicate", verdict: r.verdict });
+      expect(await store.recordImplicitVerdict({
+        id: "wi_missing" as WorkItemId, state_change_id: row!.id, verdict: "accept", severity: "none", reason: null, key: "k", target: "pr", pr_head: null,
+      })).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("one verdict per head: an implicit one never replaces, an explicit one replaces the head's verdict; reverted rows stay", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const version = async () => (await store.getWorkItem(item.id))!.version;
+      const [row] = await store.listStateChanges(item.id);
+      const implicit = (key: string, kind: "accept" | "changes" | "reverted", pr_head: string) =>
+        store.recordImplicitVerdict({ id: item.id, state_change_id: row!.id, verdict: kind, severity: "minor", reason: "r", key, target: "pr", pr_head });
+      const pushed = await implicit("implicit:push:h1", "changes", "h1");
+      if (!pushed.ok) throw new Error(pushed.reason);
+      // A second implicit verdict on h1 (the merge's accept) is refused and writes nothing.
+      expect(await implicit("implicit:merged:h1", "accept", "h1")).toEqual({ ok: false, reason: "head_taken", verdict: pushed.verdict });
+      // reverted is outside the rule: one per reverting commit, on the same head.
+      expect((await implicit("implicit:reverted:c1", "reverted", "h1")).ok).toBe(true);
+      expect((await implicit("implicit:reverted:c2", "reverted", "h1")).ok).toBe(true);
+      // Another head is its own.
+      expect((await implicit("implicit:push:h2", "changes", "h2")).ok).toBe(true);
+
+      const explicit = await store.recordVerdict({ ...verdict(item.id, await version(), "c9"), pr_head: "h1" });
+      if (!explicit.ok) throw new Error(explicit.reason);
+      expect(explicit.replaced).toEqual([pushed.verdict]);
+      expect(explicit.state_change).toMatchObject({ reason: "human_verdict", detail: { replaced_verdict_ids: pushed.verdict.id } });
+      const onH1 = (await store.listVerdicts(item.id)).filter((x) => x.pr_head === "h1");
+      expect(onH1.map((x) => [x.comment_id, x.verdict, x.implicit])).toEqual([
+        ["implicit:reverted:c1", "reverted", true], ["implicit:reverted:c2", "reverted", true], ["c9", "changes", false],
+      ]);
+      // An implicit verdict does not replace the explicit one either.
+      expect(await implicit("implicit:merged:h1b", "accept", "h1")).toMatchObject({ ok: false, reason: "head_taken" });
+      // A later explicit one replaces the earlier explicit one: one verdict remains for the head.
+      const again = await store.recordVerdict({ ...verdict(item.id, await version(), "c10"), verdict: "accept", severity: "none", reason: null, pr_head: "h1" });
+      expect(again.ok && again.replaced.map((x) => x.comment_id)).toEqual(["c9"]);
+      expect((await store.listVerdicts(item.id)).filter((x) => x.pr_head === "h1" && x.verdict !== "reverted").map((x) => x.comment_id)).toEqual(["c10"]);
+      expect((await store.listVerdicts(item.id)).filter((x) => x.pr_head === "h2")).toHaveLength(1);
+    });
+
+    it("listStatsRecords splits explicit and implicit severities", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      await store.recordVerdict(verdict(item.id, 1));
+      const [row] = await store.listStateChanges(item.id);
+      await store.recordImplicitVerdict({
+        id: item.id, state_change_id: row!.id, verdict: "reverted", severity: "critical", reason: null,
+        key: "implicit:reverted:c1", target: "pr", pr_head: "h1",
+      });
+      expect(await store.listStatsRecords([])).toEqual([
+        expect.objectContaining({ id: item.id, severities: ["minor"], implicit_severities: ["critical"] }),
+      ]);
+    });
   });
 
   describe("listStatsRecords", () => {
@@ -730,8 +808,11 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
 
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
-        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], origin: "factory" },
-        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], origin: "factory" },
+        {
+          id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"],
+          implicit_severities: [], origin: "factory",
+        },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], implicit_severities: [], origin: "factory" },
       ]);
       expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
     });
@@ -1930,5 +2011,35 @@ describe("MySQL step 19 (worker-processes)", () => {
       process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
     });
     expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
+  });
+});
+
+describe("the implicit-verdict migration on an existing SQLite database", () => {
+  it("adds implicit and pr_head; a verdict row from before reads as explicit with no head", async () => {
+    const step = MIGRATIONS.findIndex((m) => m.includes("ALTER TABLE verdicts ADD COLUMN implicit"));
+    expect(step).toBeGreaterThan(0);
+    const dir = mkdtempSync(join(tmpdir(), "sf-mig-verdicts-"));
+    const path = join(dir, "factory.db");
+    // No foreign keys: the old verdict row stands alone, without its item and state change.
+    const raw = new DatabaseSync(path, { enableForeignKeyConstraints: false });
+    raw.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)");
+    for (let v = 1; v <= step; v++) {
+      raw.exec(MIGRATIONS[v - 1]!);
+      raw.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
+    }
+    raw.prepare(
+      "INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("vd_old", "wi_old", "sc_old", "changes", "minor", "r", "c1", "pr", "2026-01-01T00:00:00.000Z");
+    raw.close();
+
+    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await store.migrate();
+      expect(await store.listVerdicts("wi_old" as WorkItemId)).toEqual([
+        expect.objectContaining({ id: "vd_old", verdict: "changes", comment_id: "c1", implicit: false, pr_head: null }),
+      ]);
+    } finally {
+      await store.close();
+    }
   });
 });

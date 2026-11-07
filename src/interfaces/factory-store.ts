@@ -25,6 +25,7 @@ import type {
   SourceType,
   StateChange,
   StateChangeDetail,
+  StateChangeId,
   Stage,
   Timestamp,
   UnreviewedMerge,
@@ -166,19 +167,48 @@ export interface RecordVerdictInput {
   expected_version: number;
   /** The human who wrote the verdict. */
   actor: Extract<Actor, { kind: "user" }>;
-  verdict: VerdictKind;
+  /** Never `reverted`: that kind is implicit only. */
+  verdict: Exclude<VerdictKind, "reverted">;
   severity: VerdictSeverity;
   reason: string | null;
   comment_id: string;
   target: VerdictTarget;
+  /** The PR head the verdict is about. Absent or null: not known, and the one-verdict-per-head rule does not apply. */
+  pr_head?: string | null;
 }
 
 export type RecordVerdictResult =
-  | { ok: true; item: WorkItem; state_change: StateChange; verdict: Verdict }
+  /** `replaced`: the verdicts on the same head this one replaced, now deleted. */
+  | { ok: true; item: WorkItem; state_change: StateChange; verdict: Verdict; replaced: Verdict[] }
   | { ok: false; reason: "not_found" }
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   /** A verdict from this comment is already stored (checked before the version). Nothing changed. */
   | { ok: false; reason: "duplicate"; verdict: Verdict };
+
+/** A verdict nobody typed (design §4): derived from a merge, a person's push or a revert. */
+export interface RecordImplicitVerdictInput {
+  id: WorkItemId;
+  /**
+   * The item's state_changes row it is derived from (the `pr_merged` row, the `reverted` row, or for a push the
+   * newest row when the push was seen). The verdict writes no row of its own and changes no version.
+   */
+  state_change_id: StateChangeId;
+  verdict: VerdictKind;
+  severity: VerdictSeverity;
+  reason: string | null;
+  /** The synthetic unique key, stored as `comment_id` (`implicit:<event>:...`). */
+  key: string;
+  target: VerdictTarget;
+  pr_head: string | null;
+}
+
+export type RecordImplicitVerdictResult =
+  | { ok: true; verdict: Verdict }
+  | { ok: false; reason: "not_found" }
+  /** A verdict with this key is already stored. Nothing changed. */
+  | { ok: false; reason: "duplicate"; verdict: Verdict }
+  /** The head already has an `accept`/`changes`/`reject` verdict, implicit or explicit. Nothing changed. */
+  | { ok: false; reason: "head_taken"; verdict: Verdict };
 
 /** What a budget checkpoint records when it opens (design §6). The held run is kept here, not queued. */
 export interface NewBudgetCheckpoint {
@@ -341,14 +371,22 @@ export interface FactoryStore {
   /**
    * Stores a human verdict: bumps the version and writes a state_changes row (reason `human_verdict`, the
    * user as actor, `changes` = {}) and a linked verdicts row, in one transaction. No other field changes.
-   * Idempotent on `comment_id`.
+   * Idempotent on `comment_id`. With a `pr_head`, one verdict per (item, head), `reverted` rows aside: it deletes
+   * the head's earlier verdicts, implicit or explicit, in the same transaction (the row's `detail` names them).
    */
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
+  /**
+   * Stores an implicit verdict (flag set), linked to an existing state_changes row of the item: no version bump, no
+   * new state_changes row, no field change. Idempotent on `key`. With a `pr_head` and a kind other than `reverted`,
+   * refused with `head_taken` when the head already has a verdict: an implicit verdict never replaces one.
+   */
+  recordImplicitVerdict(input: RecordImplicitVerdictInput): Promise<RecordImplicitVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
   /**
    * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
-   * `reasons` (in version order) and the severities of its verdicts (oldest first). For `factory stats`.
+   * `reasons` (in version order) and the severities of its explicit and of its implicit verdicts (oldest first).
+   * For `factory stats`.
    * Read-only.
    */
   listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;

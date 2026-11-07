@@ -459,4 +459,12 @@ export const MIGRATIONS: readonly string[] = [
     checked_at    TEXT NOT NULL
   );
   `,
+  // 26: implicit verdicts (issue #316, design §4 and §6). `implicit` is 0 for a typed `/verdict`, 1 for one the
+  // controller derives from a merge, a person's push or a revert; old rows are explicit. `pr_head` is the PR head the
+  // verdict is about, NULL when not known (every old row). The index serves the one-verdict-per-head read.
+  `
+  ALTER TABLE verdicts ADD COLUMN implicit INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE verdicts ADD COLUMN pr_head TEXT;
+  CREATE INDEX IF NOT EXISTS verdicts_head ON verdicts (work_item_id, pr_head);
+  `,
 ];

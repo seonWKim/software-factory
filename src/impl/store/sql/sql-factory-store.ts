@@ -86,6 +86,8 @@ import type {
   RecordConflictsInput,
   RecordPrHeadInput,
   RecordPrHeadResult,
+  RecordImplicitVerdictInput,
+  RecordImplicitVerdictResult,
   RecordVerdictInput,
   RecordVerdictResult,
   RedeemLinkResult,
@@ -314,6 +316,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult> {
     const { forUpdate } = this.db.dialect;
+    const pr_head = input.pr_head ?? null;
     try {
       return await this.db.transaction(async (tx): Promise<RecordVerdictResult> => {
         const current = await this.selectItem(tx, input.id, forUpdate);
@@ -330,7 +333,13 @@ export class SqlFactoryStore implements FactoryStore {
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
 
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, "human_verdict", {});
+        // One verdict per (item, head), `reverted` aside: this one replaces the head's earlier ones.
+        const replaced = await this.selectVerdictsAtHead(tx, input.id, pr_head);
+        const state_change = await this.insertStateChange(
+          tx, input.id, version, input.actor, "human_verdict", {},
+          replaced.length > 0 ? { replaced_verdict_ids: replaced.map((v) => v.id).join(",") } : null,
+        );
+        for (const v of replaced) await tx.run("DELETE FROM verdicts WHERE id = ?", [v.id]);
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -340,25 +349,72 @@ export class SqlFactoryStore implements FactoryStore {
           reason: input.reason,
           comment_id: input.comment_id,
           target: input.target,
+          implicit: false,
+          pr_head,
           at: now,
         };
-        const inserted = await this.insertOnce(
-          tx,
-          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
-            verdict.reason, verdict.comment_id, verdict.target, verdict.at,
-          ],
-        );
         // A concurrent delivery of the same comment committed first: undo the version bump and state change.
-        if (!inserted) throw new DuplicateVerdict();
-        return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict };
+        if (!(await this.insertVerdict(tx, verdict))) throw new DuplicateVerdict();
+        return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict, replaced };
       });
     } catch (err) {
       if (!(err instanceof DuplicateVerdict)) throw err;
       return { ok: false, reason: "duplicate", verdict: (await this.selectVerdictByComment(this.db, input.comment_id))! };
     }
+  }
+
+  async recordImplicitVerdict(input: RecordImplicitVerdictInput): Promise<RecordImplicitVerdictResult> {
+    const { forUpdate } = this.db.dialect;
+    try {
+      return await this.db.transaction(async (tx): Promise<RecordImplicitVerdictResult> => {
+        // The item row lock serializes this with an explicit verdict on the same head (MySQL; SQLite writes one at a time).
+        if (!(await this.selectItem(tx, input.id, forUpdate))) return { ok: false, reason: "not_found" };
+        const existing = await this.selectVerdictByComment(tx, input.key);
+        if (existing) return { ok: false, reason: "duplicate", verdict: existing };
+        if (input.verdict !== "reverted") {
+          const [taken] = await this.selectVerdictsAtHead(tx, input.id, input.pr_head);
+          if (taken) return { ok: false, reason: "head_taken", verdict: taken };
+        }
+        const verdict: Verdict = {
+          id: newId("vd") as VerdictId,
+          work_item_id: input.id,
+          state_change_id: input.state_change_id,
+          verdict: input.verdict,
+          severity: input.severity,
+          reason: input.reason,
+          comment_id: input.key,
+          target: input.target,
+          implicit: true,
+          pr_head: input.pr_head,
+          at: this.now(),
+        };
+        if (!(await this.insertVerdict(tx, verdict))) throw new DuplicateVerdict();
+        return { ok: true, verdict };
+      });
+    } catch (err) {
+      if (!(err instanceof DuplicateVerdict)) throw err;
+      return { ok: false, reason: "duplicate", verdict: (await this.selectVerdictByComment(this.db, input.key))! };
+    }
+  }
+
+  /** The item's `accept`/`changes`/`reject` verdicts on `head`, oldest first; none when the head is not known. */
+  private async selectVerdictsAtHead(q: SqlExecutor, id: WorkItemId, head: string | null): Promise<Verdict[]> {
+    if (head === null) return [];
+    const rows = await q.all(
+      `SELECT * FROM verdicts WHERE work_item_id = ? AND pr_head = ? AND verdict <> 'reverted' ORDER BY at, ${this.db.dialect.seq}`,
+      [id, head],
+    );
+    return rows.map(rowToVerdict);
+  }
+
+  /** False when the comment id (or implicit key) is already taken. */
+  private async insertVerdict(tx: SqlExecutor, v: Verdict): Promise<boolean> {
+    return this.insertOnce(
+      tx,
+      `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [v.id, v.work_item_id, v.state_change_id, v.verdict, v.severity, v.reason, v.comment_id, v.target, v.implicit ? 1 : 0, v.pr_head, v.at],
+    );
   }
 
   async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
@@ -443,6 +499,7 @@ export class SqlFactoryStore implements FactoryStore {
         token_cost: Number(r.token_cost),
         reasons: [],
         severities: [],
+        implicit_severities: [],
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
       });
     }
@@ -454,8 +511,11 @@ export class SqlFactoryStore implements FactoryStore {
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity FROM verdicts ORDER BY at, ${seq}`);
-    for (const v of verdicts) records.get(v.work_item_id as string)?.severities.push(v.severity as VerdictSeverity);
+    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM verdicts ORDER BY at, ${seq}`);
+    for (const v of verdicts) {
+      const r = records.get(v.work_item_id as string);
+      (Number(v.implicit) === 1 ? r?.implicit_severities : r?.severities)?.push(v.severity as VerdictSeverity);
+    }
     return [...records.values()];
   }
 
