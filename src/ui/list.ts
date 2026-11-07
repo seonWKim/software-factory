@@ -33,6 +33,9 @@ export interface ListRow extends FilterRow {
   /** The full title as shown, for the title attribute; null when withheld or untitled. */
   titlePlain: string | null;
   runStatus: "queued" | "running" | null;
+  /** The item's queued or running run, and a queued run's 1-based place in the queue. */
+  run: Run | null;
+  position: number | null;
   /** Merge conflicts resolved automatically and those that needed a person, from the item's history. */
   conflicts: ConflictCounts;
   /** Why the item waits (why.ts); its text is not withheld yet. */
@@ -90,6 +93,8 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       titleHtml: t.html,
       titlePlain: t.plain,
       runStatus: r.input.run?.status ?? null,
+      run: active.get(it.id) ?? null,
+      position: position.get(active.get(it.id)?.id ?? "") ?? null,
       conflicts: r.input.conflicts,
       why: r.input.why,
     });

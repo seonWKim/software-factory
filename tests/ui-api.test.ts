@@ -2,7 +2,7 @@
 // rows as the HTML page, that store text leaves only through the Withholder, and that it never writes.
 // Everything goes through respond(), the server's whole request handling without a socket.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -1206,5 +1206,50 @@ describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () =>
     clock.advance(600_000);
     const o = await json<{ github_budget: Record<string, unknown> }>(d, "/api/v1/overview");
     expect(o.github_budget).toMatchObject({ state: "ok", counted: 0, wait_reason: null });
+  });
+});
+
+describe("ui api: items for the tree (issue #295)", () => {
+  type Row = {
+    id: string; parent_id: string | null; phase: number | null; title: string | null; pr_url: string | null;
+    run: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
+    claim: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
+  };
+  const rowsOf = async (d: UiDeps) => new Map((await json<{ items: Row[] }>(d, "/api/v1/items")).items.map((r) => [r.id, r]));
+
+  it("each row has parent_id and phase, and its run with the worker (through the Withholder), start and queue position", async () => {
+    const { d, store, items, claimed, claimed2 } = await seeded();
+    const parent = await make(store, 50, "Split parent");
+    const phase = (await store.createWorkItem({ ...issue(51), title: "Phase", parent: { id: parent.id, phase: 2 } }, system)).item;
+    const rows = await rowsOf(d);
+    expect(rows.get(parent.id)).toMatchObject({ parent_id: null, phase: null, run: null, claim: null });
+    expect(rows.get(phase.id)).toMatchObject({ parent_id: parent.id, phase: 2 });
+    expect(rows.get(items.running.id)!.run).toEqual({
+      kind: "implement", status: "running", attempt: claimed.attempt, worker_id: "host:11:1", started_at: claimed.started_at, position: null,
+    });
+    expect(rows.get(items.running2.id)!.run!.worker_id).toBe("[withheld: github_token]");
+    expect(rows.get(items.queued.id)!.run).toMatchObject({ kind: "triage", status: "queued", worker_id: null, started_at: null, position: 1 });
+    expect(rows.get(items.queued2.id)!.run!.position).toBe(2);
+    expect(rows.get(items.approve.id)!.run).toBeNull();
+    void claimed2;
+  });
+
+  it("a held run carries the latest claim decision: holder, cost and threshold, from one batched read", async () => {
+    const { d, store, clock } = await seeded();
+    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const a = await make(store, 60, "Holder");
+    await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
+    clock.advance(1_000);
+    const b = await make(store, 61, "Held");
+    await enqueue(store, b, "implement", "h:b", { stage: "RUNNING", ...PATHS });
+    const first = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))!;
+    expect(first.work_item_id).toBe(a.id);
+    expect(await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE })).toBeNull();
+    expect(await store.listLatestClaimDecisions([])).toEqual(new Map());
+    const batched = vi.spyOn(store, "listLatestClaimDecisions");
+    const rows = await rowsOf(d);
+    expect(rows.get(b.id)!.claim).toEqual({ decision: "held", holder: "#60", holder_id: a.id, approved: false, cost: 3, threshold: 2.5 });
+    expect([...rows.values()].filter((r) => r.claim === null).length).toBeGreaterThan(0);
+    expect(batched).toHaveBeenCalledTimes(1);
   });
 });

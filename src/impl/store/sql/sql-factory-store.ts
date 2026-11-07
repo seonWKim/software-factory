@@ -1313,6 +1313,20 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToClaimDecision);
   }
 
+  async listLatestClaimDecisions(ids: readonly WorkItemId[]): Promise<Map<WorkItemId, ClaimDecision>> {
+    const out = new Map<WorkItemId, ClaimDecision>();
+    if (ids.length === 0) return out;
+    const rows = await this.db.all(
+      `SELECT * FROM claim_decisions WHERE work_item_id IN (${placeholders(ids.length)}) ORDER BY at, ${this.db.dialect.seq}`,
+      [...ids],
+    );
+    for (const row of rows) {
+      const d = rowToClaimDecision(row);
+      out.set(d.work_item_id, d); // oldest first: the last one wins
+    }
+    return out;
+  }
+
   async approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult> {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<ApproveClaimHoldResult> => {
