@@ -2,7 +2,7 @@ import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
-import type { RunKind, Tier, VerdictSeverity } from "./types.js";
+import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 
 /**
@@ -212,6 +212,21 @@ export function coordinationConfig(raw: unknown): CoordinationSettings {
     hotspots: (r.hotspot_paths as string[] | undefined) ?? DEFAULT_COORDINATION.hotspots,
     hotspot_weight: (r.hotspot_weight as number | undefined) ?? DEFAULT_COORDINATION.hotspot_weight,
   };
+}
+
+/**
+ * `cli_user` from the top level of factory.config.json (issue #200): the factory user ID the local CLI
+ * commands (`factory task …`, `factory approve …`) act as, e.g. `github:12345`. Never a display name. Absent:
+ * null, and every such command fails with an error. A value that is not `<provider>:<id>` throws.
+ */
+export function cliUserConfig(raw: unknown): UserId | null {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const v = (raw as Record<string, unknown>).cli_user;
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string" || !/^[a-z]+:\S+$/.test(v)) {
+    throw new Error(`cli_user must be a factory user ID (<provider>:<id>, e.g. github:12345), got ${JSON.stringify(v) ?? String(v)}`);
+  }
+  return v as UserId;
 }
 
 export interface Prompts {
