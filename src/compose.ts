@@ -13,7 +13,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -77,6 +77,8 @@ export interface FileConfig {
    */
   model_by?: unknown;
   max_loops: number;
+  /** A split phase's spec counts as approved by the parent's `/approve`. Absent: false. */
+  phases_auto_approve?: boolean;
   /** Task failures of one step before it blocks on a human. Per-project setting; absent everywhere: 3. */
   max_attempts?: number;
   /** Infra failures of one step before it blocks on a human. Absent: 3. */
@@ -214,6 +216,7 @@ export async function loadConfig(
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
     settings,
     max_loops: file.max_loops,
+    phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),
     max_restart: retry.max_restart,
     retry_base_ms: retry.retry_base_ms,
     retry_max_ms: retry.retry_max_ms,
