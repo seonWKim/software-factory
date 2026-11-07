@@ -132,7 +132,7 @@ import type {
   WorkerProcessReport,
 } from "../../../interfaces/factory-store.js";
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
-import { migrationPendingError } from "../../../interfaces/updater.js";
+import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
@@ -1995,6 +1995,22 @@ export class SqlFactoryStore implements FactoryStore {
     // limit is an integer computed here, inlined as the other paged reads do.
     const rows = await this.db.all(`SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
     return rows.map(rowToAlert);
+  }
+
+  // Restart history (design 05-restarts): the key is the restart's time and a hash of its reason, so the same
+  // restart read again from the supervisor's file, on this replica or another, is one row.
+
+  async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
+    const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
+    const created = await this.insertOnce(this.db, "INSERT INTO child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
+      key, restart.at, restart.reason, this.now(),
+    ]);
+    return { created };
+  }
+
+  async listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]> {
+    const rows = await this.db.all("SELECT at, reason FROM child_restarts WHERE at >= ? ORDER BY at, restart_key", [this.after(-window_ms)]);
+    return rows.map((r) => ({ at: r.at as string, reason: r.reason as string }));
   }
 
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).

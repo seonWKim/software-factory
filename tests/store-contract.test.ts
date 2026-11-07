@@ -1929,6 +1929,38 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
     });
   });
+  describe("restart history (design 05-restarts)", () => {
+    const MIN = 60_000;
+    const at = (clock: FakeClock, ago_ms: number) => new Date(clock.now().getTime() - ago_ms).toISOString();
+
+    it("applying the same restart twice leaves one record; another reason at the same time is its own", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      expect(await store.recordChildRestart(r)).toEqual({ created: true });
+      expect(await store.recordChildRestart({ ...r })).toEqual({ created: false });
+      expect(await store.recordChildRestart({ at: r.at, reason: "boom" })).toEqual({ created: true });
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual(expect.arrayContaining([r, { at: r.at, reason: "boom" }]));
+      expect((await store.listChildRestartsWithin(30 * MIN)).filter((x) => x.reason === r.reason)).toEqual([r]);
+    });
+
+    it("concurrent writes of one restart leave one record", async () => {
+      const { store, clock } = await make();
+      const r = { at: at(clock, 0), reason: "exit code 1" };
+      const results = await Promise.all([store.recordChildRestart(r), store.recordChildRestart(r)]);
+      expect(results.filter((x) => x.created)).toHaveLength(1);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([r]);
+    });
+
+    it("lists the restarts inside the window on the store's clock, oldest first", async () => {
+      const { store, clock } = await make();
+      const old = { at: at(clock, 31 * MIN), reason: "r1" };
+      const mid = { at: at(clock, 10 * MIN), reason: "r2" };
+      const last = { at: at(clock, 0), reason: "r3" };
+      for (const r of [last, old, mid]) await store.recordChildRestart(r);
+      expect(await store.listChildRestartsWithin(30 * MIN)).toEqual([mid, last]);
+      expect(await store.listChildRestartsWithin(60 * MIN)).toEqual([old, mid, last]);
+    });
+  });
   describe("host sleeps (migration 28)", () => {
     const at = (ms: number) => new Date(Date.UTC(2026, 0, 1) + ms).toISOString() as Timestamp;
     const sleep = (over: Partial<HostSleep> = {}): HostSleep => ({ worker_id: w1, woke_at: at(0), gap_ms: 120_000, run_id: null, ...over });

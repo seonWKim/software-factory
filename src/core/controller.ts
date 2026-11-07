@@ -12,7 +12,7 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { alarmStep } from "./alarms.js";
+import { RESTART_WINDOW_MS, alarmStep } from "./alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
@@ -946,11 +946,23 @@ export class Controller {
     await this.alarmsStep();
   }
 
-  /** Looks across items for the three alarm patterns; reads only the store and the restart list. */
+  /**
+   * Looks across items for the three alarm patterns; reads only the store and the restart list. This host's
+   * restarts are stored first, one conditional insert each (design 05-restarts, restart history), and counted as
+   * the host lists them. A process with no restart list of its own counts the store's restarts of every host.
+   */
   private async alarmsStep(): Promise<void> {
     const c = this.cfg;
+    const store = this.d.store;
+    const own = this.d.restarts;
+    const restarts = async () => {
+      if (!own) return store.listChildRestartsWithin(RESTART_WINDOW_MS);
+      const list = await own();
+      for (const r of list) await store.recordChildRestart(r);
+      return list;
+    };
     await alarmStep(
-      { store: this.d.store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, ...(this.d.restarts ? { restarts: this.d.restarts } : {}) },
+      { store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, restarts },
       {
         alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
         alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,

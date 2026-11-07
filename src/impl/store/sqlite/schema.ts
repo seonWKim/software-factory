@@ -653,4 +653,16 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE command_inbox ADD COLUMN mirrored_at TEXT;
   CREATE INDEX IF NOT EXISTS command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq);
   `,
+  // 38: restart history (design 05-restarts). One row per unexpected child exit the supervisor recorded: its time,
+  // its reason and when the store saw it. `restart_key` (the time and a hash of the reason) makes a second write of
+  // the same restart a no-op. No backfill: older restarts were never stored. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS child_restarts (
+    restart_key  TEXT PRIMARY KEY,
+    at           TEXT NOT NULL,
+    reason       TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS child_restarts_at ON child_restarts (at);
+  `,
 ];
