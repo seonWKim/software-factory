@@ -22,7 +22,7 @@ import {
   unverifiedOf,
 } from "./outputs.js";
 import {
-  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
+  AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, PREFLIGHT_FAILED, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge,
   failureClass, isCovered, wipBranchFor,
 } from "./policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "./pr-body.js";
@@ -478,6 +478,16 @@ export class Worker {
       const pause = await this.d.store.pauseClaims(resume);
       if (pause.extended) {
         this.d.log.warn(`rate limited: all runs paused, work resumes at ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
+      }
+    }
+    if (outcome.status === "failed" && outcome.error_code === GITHUB_RATE_LIMITED) {
+      // GitHub's rate limit (design §5 Restarts): implement, update and review claims and the GitHub poll wait for
+      // the reset the broker's message carries, set before the outcome is stored. Not the model's rate_limit pause.
+      const reset = outcome.reset_at ?? githubRateLimitReset(outcome.detail) ?? this.after(this.cfg.retry_max_ms);
+      const pause = await this.d.store.pauseClaims(reset, GITHUB_RATE_LIMIT);
+      outcome = { ...outcome, reset_at: pause.resume_at };
+      if (pause.started) {
+        this.d.log.warn(`GitHub rate limited: implement, update and review runs paused until ${pause.resume_at}`, { ...log, resume_at: pause.resume_at });
       }
     }
     if (outcome.status === "failed" && outcome.error_code === AGENT_STALLED) {
@@ -1200,7 +1210,8 @@ export class Worker {
   /**
    * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
    * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
-   * A failed check fails the run with the broker's code (`forge_auth` on a 401/403, else `preflight_access` for
+   * A failed check fails the run with the broker's code (`github_rate_limited` on a GitHub rate limit, which pauses
+   * claims until its reset; `forge_auth` on another 401/403, else `preflight_access` for
    * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
    * starts with the check's name. A task failure, so max_attempts bounds it; it spends no agent tokens.
    */

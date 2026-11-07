@@ -52,6 +52,9 @@ import {
   parseAutoResolveKey,
   retryDelayMs,
   retryKey,
+  retryNotBefore,
+  GITHUB_RATE_LIMIT,
+  GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
   workItemIdFromBranch,
@@ -416,14 +419,16 @@ export class Controller {
 
   /**
    * Each source's step runs on its own guard, so one source failing (a poll that throws, a bad cursor) never
-   * stops the others in the same tick. Poll sources run only when `pollDue`. Unfinished rejects are retried
-   * once per tick that polled.
+   * stops the others in the same tick. Poll sources run only when `pollDue`, and the GitHub source not while the
+   * `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes no log line, the next due one after
+   * the reset polls. Unfinished rejects are retried once per tick that polled.
    */
   private async intake(pollDue: boolean): Promise<void> {
     let polled = false;
+    const githubPaused = pollDue && this.byType.has(PR_SOURCE_TYPE) && (await this.d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null;
     for (const s of this.sources) {
       if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue) {
+      else if (pollDue && !(githubPaused && s.type === PR_SOURCE_TYPE)) {
         polled = true;
         await this.guard(`intake:${s.type}`, () => this.tickPoll(s));
       }
@@ -2475,7 +2480,8 @@ export class Controller {
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-    if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
+    // A GitHub rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
+    if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
       `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
@@ -2723,16 +2729,12 @@ export class Controller {
     if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
-    const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
-    // A forge 401/403 or a failed access check: the retry also waits for its claim pause to end (design §5 Restarts).
-    const authEnd = (code === FORGE_AUTH || code === PREFLIGHT_ACCESS) && reset ? Date.parse(reset) : Number.NaN;
-    // A stall: no backoff, the stall pause holds every claim until a probe answers.
-    const notBefore = cls === "rate_limited"
-      ? (reset ?? iso(failedAt + retry_max_ms))
-      : cls === "stalled"
-        ? iso(failedAt)
-        : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
+    // A forge 401/403, a failed access check or a GitHub rate limit also waits for its claim pause to end; a stall
+    // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
+    const notBefore = retryNotBefore({
+      cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
+      reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
+    });
     // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
@@ -3686,6 +3688,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  github_rate_limited: "GitHub's API rate limit was hit; implement, update and review runs are paused until it resets",
   provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

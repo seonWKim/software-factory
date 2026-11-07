@@ -54,7 +54,7 @@ import {
   shortRef,
 } from "../../../core/coordination.js";
 import {
-  IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
+  GITHUB_RATE_LIMIT, IMPLEMENT_KINDS, INTERACTIVE, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_LOST, failureClass, pathsOverlap,
 } from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
@@ -497,12 +497,13 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
-      // implement-type claims only, and so does a failed push_access or pr_api preflight check (design §5
-      // Restarts). All are rows of claim_pauses, read under the lock.
+      // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
+      // limit pauses implement-type and review claims (design §5 Restarts). All are rows of claim_pauses, read
+      // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?)", [
-            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, MODEL_STALL, MODEL_ANSWERED,
+          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?)", [
+            RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
       );
@@ -514,6 +515,7 @@ export class SqlFactoryStore implements FactoryStore {
       const [workerPaused] = await tx.all("SELECT worker_id FROM worker_pauses WHERE worker_id IN (?, ?)", [input.worker_id, ALL_WORKERS]);
       if (workerPaused) return null;
       const forgePaused = active(FORGE_AUTH_PAUSE) || active(PREFLIGHT_ACCESS_PAUSE);
+      const githubPaused = active(GITHUB_RATE_LIMIT);
 
       // Items with an implement-type run in progress (architecture §4, one branch writer per item). Items whose
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
@@ -550,6 +552,9 @@ export class SqlFactoryStore implements FactoryStore {
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // A GitHub rate limit holds every kind that calls GitHub on its way (implement, update, review) until the
+        // reset; triage and resolve still claim.
+        if (githubPaused && (writer || next.kind === "review")) continue;
         if (writer && (await overlapsSession(next.work_item_id as string))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {

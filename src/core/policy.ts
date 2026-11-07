@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
 import type { Floor } from "./settings.js";
-import type { Run, RunKind, RunOutcome, Tier, WorkItem } from "./types.js";
+import type { Run, RunKind, RunOutcome, Tier, Timestamp, WorkItem } from "./types.js";
 
 // Deterministic gate rules (control plane). Same input, same output.
 
@@ -66,7 +66,7 @@ export type FailureClass = "rate_limited" | "stalled" | "infra" | "task";
 
 export function failureClass(outcome: RunOutcome | null): FailureClass {
   if (outcome?.status !== "failed") return "task";
-  if (outcome.error_code === RATE_LIMITED) return "rate_limited";
+  if (outcome.error_code === RATE_LIMITED || outcome.error_code === GITHUB_RATE_LIMITED) return "rate_limited";
   if (outcome.error_code === AGENT_STALLED) return "stalled";
   return outcome.infra ? "infra" : "task";
 }
@@ -90,6 +90,29 @@ export const MODEL_ANSWERED = "model_answered" as const;
 export const RATE_LIMITED = "rate_limited";
 
 /**
+ * The error code of a GitHub REST rate limit (decided 2026-11-07): a 403 or 429 that names the primary or the
+ * secondary limit, or the client's own refusal with no calls left before the reset. Not an attempt and not a
+ * restart (failureClass `rate_limited`); it sets the `github_rate_limit` claim pause until the reset, and its retry
+ * waits for the later of its backoff and the pause end. Never `forge_auth`: the credentials were not refused.
+ */
+export const GITHUB_RATE_LIMITED = "github_rate_limited";
+/** The claim pause of a GitHub rate limit: no implement, update or review claim, and no GitHub poll, until it ends. */
+export const GITHUB_RATE_LIMIT = "github_rate_limit" as const;
+
+const RESETS_AT = "GitHub rate limit, calls resume at ";
+
+/** The broker's message for a GitHub rate limit: the check or tool, then the reset time the worker reads back. */
+export function githubRateLimitMessage(what: string, reset_at: string): string {
+  return `${what}: ${RESETS_AT}${reset_at}`;
+}
+
+/** The reset time a `githubRateLimitMessage` carries; null when the text carries none. */
+export function githubRateLimitReset(detail: string): Timestamp | null {
+  const at = detail.split(RESETS_AT)[1]?.split(/\s/)[0] ?? "";
+  return at !== "" && Number.isFinite(Date.parse(at)) ? (at as Timestamp) : null;
+}
+
+/**
  * The error code of a forge 401 or 403 (preflight, push or PR). A task failure; it also pauses implement-type
  * claims for every worker (the `forge_auth` claim pause, design §5 Restarts), and its retry waits for the pause.
  */
@@ -108,6 +131,29 @@ export const PREFLIGHT_ACCESS = "preflight_access";
 
 /** The error codes whose failure pauses implement-type claims, each in the claim pause row of the same name. */
 export const IMPLEMENT_PAUSE_CODES = [FORGE_AUTH, PREFLIGHT_ACCESS] as const;
+
+/**
+ * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
+ * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed
+ * access check or a GitHub rate limit: the later of the backoff and the pause end in `reset`. Else the backoff.
+ */
+export function retryNotBefore(o: {
+  cls: FailureClass;
+  code: string;
+  failed_at: number;
+  backoff_at: number;
+  reset: Timestamp | null | undefined;
+  retry_max_ms: number;
+}): Timestamp {
+  const at = (ms: number) => new Date(ms).toISOString() as Timestamp;
+  if (o.cls === "rate_limited" && o.code !== GITHUB_RATE_LIMITED) return o.reset ?? at(o.failed_at + o.retry_max_ms);
+  if (o.cls === "stalled") return at(o.failed_at);
+  const pauseEnd = PAUSE_CODES.includes(o.code) && o.reset ? Date.parse(o.reset) : Number.NaN;
+  return at(Number.isNaN(pauseEnd) ? o.backoff_at : Math.max(o.backoff_at, pauseEnd));
+}
+
+/** The codes whose retry waits for the claim pause the failure set (its end is the outcome's `reset_at`). */
+const PAUSE_CODES: readonly string[] = [FORGE_AUTH, PREFLIGHT_ACCESS, GITHUB_RATE_LIMITED];
 
 /** The implement preflight's checks, in order. Each failure's detail starts with `<check>: `. */
 export const PREFLIGHT_CHECKS = ["push_access", "pr_api", "base_fetch"] as const;
