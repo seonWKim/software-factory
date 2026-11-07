@@ -2061,7 +2061,9 @@ export class Controller {
       };
     }
     const phase = commandPhase(it);
-    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure";
+    // At the review loop limit too: a human chose to go back through triage or to close (design §4).
+    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
+      phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
       const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
@@ -2384,11 +2386,12 @@ export class Controller {
   }
 
   /**
-   * `/revise <feedback>` at a failed implement run or a `diff_too_large` block (design §4): the item goes back
-   * through triage with the feedback, then to the spec gate. The revision counter and `max_loops` apply as at
-   * the spec gate, but at the limit nothing changes: the item keeps its block, where `/retry` and `/reject`
-   * still apply. restart_count + 1 so the implement run after the next `/approve` gets a new run key; the old
-   * failure comment is unlinked.
+   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block or the review loop limit (design §4):
+   * the item goes back through triage with the feedback, then to the spec gate. The revision counter and
+   * `max_loops` apply as at the spec gate, but at the limit nothing changes: the item keeps its block, where
+   * `/retry` and `/reject` still apply. restart_count + 1 so the implement run after the next `/approve` gets a
+   * new run key; the old failure comment is unlinked. At the loop limit loop_count goes back to 0; the PR and
+   * its branch stay.
    */
   private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
     const feedback = e.feedback.trim();
@@ -2408,6 +2411,7 @@ export class Controller {
         blocked_reason: null,
         revision_count: n,
         restart_count: it.restart_count + 1,
+        ...(it.blocked_reason === "max_loops" ? { loop_count: 0 } : {}),
         spec_feedback: feedback,
         failure_comment_url: null,
       },
@@ -3670,8 +3674,9 @@ export class Controller {
     return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
   }
 
-  /** The step a `/retry` restarts: the run behind an agent block, else what the item's fields say. */
+  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block, else what the item's fields say. */
   private async retryKind(it: WorkItem): Promise<RunKind | undefined> {
+    if (it.blocked_on === "human" && it.blocked_reason === "max_loops") return "implement";
     return (await this.blockedBy(it)) ?? failedRunKind(it);
   }
 
@@ -4183,7 +4188,8 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
 /**
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
- * (and is a resolve run's notes).
+ * (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
+ * the item RUNNING (a human chose to try again).
  */
 function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
@@ -4192,14 +4198,15 @@ function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: stri
   }
   const w = widen ?? NO_WIDENING;
   const detail = { ...(note ? { note } : {}), ...w.detail };
-  const next = { ...it, restart_count: it.restart_count + 1 };
+  const loops = it.blocked_reason === "max_loops" ? { stage: "RUNNING" as const, loop_count: 0 } : {};
+  const next = { ...it, restart_count: it.restart_count + 1, ...loops };
   // A retried update goes back to waiting for the merge, which is the state an update run expects.
   const unblocked = kind === "update"
     ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
     : { blocked_on: "none" as const, blocked_reason: null };
   // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
   return {
-    patch: { ...unblocked, restart_count: next.restart_count, ...w.patch },
+    patch: { ...unblocked, restart_count: next.restart_count, ...loops, ...w.patch },
     actor,
     reason: "retry_requested",
     ...(Object.keys(detail).length > 0 ? { detail } : {}),

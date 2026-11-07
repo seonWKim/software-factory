@@ -98,6 +98,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     description: "Close the item without a merge, giving your reason",
     phases: [
       "spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
+      "max_loops",
     ],
     needs_pr: false,
     changes_state: true,
@@ -106,7 +107,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
+    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
     needs_pr: false,
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
@@ -118,9 +119,10 @@ export const COMMANDS: readonly CommandSpec[] = [
     description:
       "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
-      "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed",
+      "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
+      "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too",
     // At a dependency closed unmerged it reads the dependencies again and releases the item if they merged (design §5).
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops"],
     needs_pr: false,
     changes_state: true,
   },
