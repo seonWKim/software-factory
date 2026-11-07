@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { uiPort } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
-import type { WorkItem, WorkItemId } from "../src/core/types.js";
+import type { UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -14,6 +14,7 @@ import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiServer, startUi } from "../src/ui/server.js";
+import { renderIndex, renderItem } from "../src/ui/pages.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { FakeAuth, FakeSource, PROJECT, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system, w1, w2 } from "./helpers/store.js";
@@ -679,5 +680,56 @@ describe("ui: factory status banner", () => {
     writeFileSync(file, JSON.stringify({ state: "draining", rev: "a", target_rev: "b", child_pid: 99, since: "x" }));
     expect(await readFactoryStatus(file, 3, () => true)).toMatchObject({ state: "draining", workers: 3 });
     expect(await readFactoryStatus(file, 3, () => false)).toMatchObject({ state: "stopped", child_pid: null });
+  });
+});
+
+describe("ui: interactive sessions (design 2026-11-01)", () => {
+  // Rendered straight from the page functions: the same HTML the server sends, with no port to bind.
+  const NO_FILTERS = { state: undefined, stage: undefined, tier: undefined, kind: undefined, unblocks: false, q: "", closed: false };
+
+  async function withSession() {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    await saveProjectLabel(store, PROJECT);
+    const { item } = await store.createWorkItem({ ...issue(1), title: "Session item" }, system);
+    const moved = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", allowed_paths: ["src/"] } });
+    if (!moved.ok) throw new Error(moved.reason);
+    const person = { kind: "user" as const, id: "github:4242" as UserId };
+    const r = await store.startSession({
+      id: item.id, expected_version: moved.item.version, actor: person, owner: "session:host:1" as WorkerId, lease_ms: LEASE,
+      patch: {}, reason: "session_started", detail: { spec_source: "triage" },
+    });
+    if (!r.ok) throw new Error(r.reason);
+    const deps = {
+      store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: (label: string, n: number) => `https://${label}/pull/${n}`,
+      health: new HealthMonitor(async () => HEALTHY, clock),
+    };
+    return { store, clock, item, run: r.run, deps };
+  }
+
+  it("Running now shows an interactive run with the person's user ID, never a display name", async () => {
+    const { deps, item } = await withSession();
+    const running = section(await renderIndex(deps, NO_FILTERS), "running");
+    expect(running).toContain("<td>interactive</td>");
+    expect(running).toContain("person github:4242");
+    expect(running).toContain(`/items/${item.id}`);
+    expect(running).not.toContain("alice");
+  });
+
+  it("the item timeline shows the session's state changes with the person's user ID as actor, and the run with its actor", async () => {
+    const { deps, item, store, run } = await withSession();
+    await store.updateSession(run.id, 1, { tokens: 77 });
+    await store.completeRun(run.id, 1, { status: "failed", error_code: "abandoned", detail: "by github:4242", infra: false, tokens: 77 });
+    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock: deps.clock, config, log: silent, scanner: cleanScanner });
+    await controller.tickRuns();
+    const page = (await renderItem(deps, item.id))!;
+    const timeline = section(page, "timeline");
+    expect(timeline).toContain("session_started");
+    expect(timeline).toContain("github:4242");
+    expect(timeline).toContain("session_released");
+    const runs = section(page, "runs");
+    expect(runs).toContain("interactive (github:4242)");
+    expect(runs).toContain("<td>77</td>");
+    expect(runs).toContain("abandoned");
   });
 });

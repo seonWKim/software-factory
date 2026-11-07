@@ -125,6 +125,46 @@ Each work item's issue carries exactly one status label, and so does its PR once
 
 The factory removes only these eight names (under the current prefix) when it changes the status. Other labels, including your own labels that start with `sf: `, are never touched. Changing a label by hand does nothing; the factory does not read them.
 
+### Working on an item yourself (`factory session`)
+
+To work on an item with an LLM in your own terminal, run the work as a session. The factory then records it as an
+`interactive` run: it has a lease, a run folder, a token count and a transcript link. At the end it runs the same
+gates as a factory worker, and the push and the PR go through the factory's own GitHub login. The session's LLM
+runs as you, with your access. It is not sandboxed (see the design, §5).
+
+| Command | What it does |
+|---|---|
+| `npm run factory -- session start <issue number \| work item id> [--as <login>] [--spec <file>] [--transcript <url>]` | Takes the item (it creates the work item when the issue has none) and makes a run folder on the item's branch through the sandbox. It prints the folder's path. It stays in the foreground and renews the lease. Ctrl-C stops renewing: the lease expires and the session ends as `session_lost`. Work in the printed folder from another terminal. |
+| `npm run factory -- session status [<item id>]` | Prints the item, the run, the lease expiry and the result of the last `finish`. |
+| `npm run factory -- session note [--item <item id>] [--tokens <n>] [--transcript <url>] <text>` | Stores a note on the run. The leak scanner checks it first: a flagged note is refused with the rule name and nothing is stored. |
+| `npm run factory -- session finish [<item id>] [--tokens <n>]` | Runs, in order, the scope gate, the size gate, the floor check and `repo.test_command` in the run folder. If any fails, it lists every reason, pushes nothing and the session stays open: fix the cause and run it again. If all pass, it pushes the branch and opens or updates the PR through the broker. The item then goes to review. Running it again after a success opens no second PR. |
+| `npm run factory -- session abandon [<item id>] [--tokens <n>]` | Ends the session as `abandoned`. The remote branch and the run folder stay. |
+
+Flags:
+
+- `--as <login>`: the GitHub login you act as. The default is `repo.owner` in `factory.config.json`. It maps to a factory user the way commenters do, and `start` needs write permission on the repository.
+- `--spec <file>`: for a NEW item, or an issue with no work item yet. The file is a spec in the triage output format (JSON), checked by the same parser as a triage run. The spec counts as yours (`spec_source: owner`), and the queued triage run is cancelled. An invalid file is refused and nothing changes.
+- `--tokens <n>`: a whole number of 0 or more. It sets the run's latest total; the total is added to the item's `token_cost` once, when the run ends. Tokens come only from this flag.
+- `--transcript <url>`: an http or https URL, stored on the run after the leak scan.
+- Without an item id, `status`, `note`, `finish` and `abandon` use the only open session on this machine. Open sessions are kept under `<state_dir>/sessions/`, one file per item.
+
+`start` is refused, and changes nothing, for an item that:
+
+- is CLOSED or in REVIEW;
+- is READY with a spec waiting for approval (reply `/approve` first);
+- has no `allowed_paths`;
+- has a queued or running implement or update run;
+- already has an open session;
+- overlaps the `allowed_paths` of another item's running implement or update run, or of another item's session.
+
+While a session is open, no worker starts an implement or update run on an item whose allowed paths overlap it.
+
+`finish` refuses a floor hit: it names the paths and the tier they need. A session cannot raise the tier, so leave
+those files to a factory run. A session that ends without a PR (abandoned or lost) releases the item: it stays
+`RUNNING`, blocked on a human with `session_released`, and no run is queued. The next `session start` takes it up
+again. The size limits are the ones in `factory.config.json` (`max_diff_lines`, `max_diff_files`); a session gets
+no other limits. Nothing stops a `git push` you run outside the factory; the gates run only at `finish`.
+
 ### Several items at once
 
 By default the factory builds one item at a time. To build several in parallel, set `workers` in `factory.config.json`, e.g. `"workers": 3`, and restart `npm run factory -- dev` (or `worker`). It must be a whole number of 1 or more; anything else stops startup with an error. Absent means 1.

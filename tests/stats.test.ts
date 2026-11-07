@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { STATS_MIN_SAMPLE_DEFAULT, buildStatsStore, loadConfig, statsConfig } from "../src/compose.js";
 import type { StatsConfig } from "../src/core/config.js";
 import { type StatsRecord, aggregateStats, collectStats, formatStatsText } from "../src/core/stats.js";
-import type { Tier, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
+import type { Tier, UserId, VerdictSeverity, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { human, issue, newStore, system } from "./helpers/store.js";
 
@@ -192,8 +192,44 @@ describe("factory stats", () => {
       },
     });
     await collectStats(spy, config);
-    expect(calls).toEqual(["listStatsRecords"]);
+    expect(calls).toEqual(["listStatsRecords", "sessionStats"]);
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe("stats: interactive sessions (design 2026-11-01)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+  async function session(store: Store, n: number, end: "succeeded" | "failed" | "open", tokens: number | null) {
+    const { item } = await store.createWorkItem(issue(n), system);
+    const moved = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", allowed_paths: [`p${n}/`] } });
+    if (!moved.ok) throw new Error(moved.reason);
+    const r = await store.startSession({
+      id: item.id, expected_version: moved.item.version, actor: { kind: "user", id: "github:1" as UserId }, owner: "session:h:1" as WorkerId,
+      lease_ms: 60_000, patch: {}, reason: "session_started",
+    });
+    if (!r.ok) throw new Error(r.reason);
+    if (tokens !== null) await store.updateSession(r.run.id, 1, { tokens });
+    if (end === "succeeded") await store.completeRun(r.run.id, 1, { status: "succeeded", summary: "", data: { pr_number: n, tokens: tokens ?? 0 } });
+    if (end === "failed") await store.completeRun(r.run.id, 1, { status: "failed", error_code: "abandoned", detail: "", infra: false, ...(tokens === null ? {} : { tokens }) });
+  }
+
+  it("counts finished interactive runs and their tokens, in text and in --json, reading only", async () => {
+    const { store } = await newStore();
+    await session(store, 1, "succeeded", 500);
+    await session(store, 2, "failed", 40);
+    await session(store, 3, "failed", null);
+    await session(store, 4, "open", 999);
+    const before = await store.listWorkItems(100);
+    const report = await collectStats(store, config);
+    expect(report.interactive).toEqual({ runs: 3, tokens: 540 });
+    expect(formatStatsText(report)).toContain("interactive sessions: 3 finished, 540 tokens");
+    expect(JSON.parse(JSON.stringify(report)).interactive).toEqual({ runs: 3, tokens: 540 });
+    expect(await store.listWorkItems(100)).toEqual(before);
+  });
+
+  it("an empty store reports no sessions", async () => {
+    const { store } = await newStore();
+    expect((await collectStats(store, config)).interactive).toEqual({ runs: 0, tokens: 0 });
   });
 });
 

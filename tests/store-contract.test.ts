@@ -637,6 +637,92 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ make }) => {
     });
   });
 
+  describe("interactive sessions (design 2026-11-01)", () => {
+    const person = { kind: "user" as const, id: "github:1" as UserId };
+    const owner = "session:host:1" as typeof w1;
+    async function running(store: FactoryStore, n: number, paths: string[]) {
+      const { item } = await store.createWorkItem(issue(n), system);
+      const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", allowed_paths: paths } });
+      if (!r.ok) throw new Error(r.reason);
+      return r.item;
+    }
+    const startOn = (store: FactoryStore, it: { id: WorkItemId; version: number }, extra: Partial<Parameters<FactoryStore["startSession"]>[0]> = {}) =>
+      store.startSession({ id: it.id, expected_version: it.version, actor: person, owner, lease_ms: LEASE, patch: {}, reason: "session_started", ...extra });
+
+    it("runs from before the session fields existed read actor, transcript and tokens as null", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
+      const [run] = await store.listRuns(item.id);
+      expect(run).toMatchObject({ actor_id: null, transcript_url: null, tokens: null });
+      const claimed = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE });
+      await store.completeRun(claimed!.id, claimed!.lease!.token, { status: "succeeded", summary: "", data: { tokens: 5 } });
+      expect(await store.getRun(run!.id)).toMatchObject({ actor_id: null, transcript_url: null, tokens: null });
+    });
+
+    it("startSession writes the transition and one running interactive run with the person as actor", async () => {
+      const { store, clock } = await make();
+      const it = await running(store, 1, ["src/"]);
+      const r = await startOn(store, it, { transcript_url: "https://example.com/t", detail: { spec_source: "triage" } });
+      if (!r.ok) throw new Error(r.reason);
+      expect(r.item.version).toBe(it.version + 1);
+      expect(r.state_change).toMatchObject({ reason: "session_started", actor: person, detail: { spec_source: "triage" } });
+      expect(r.run).toMatchObject({
+        kind: "interactive", status: "running", attempt: 1, actor_id: "github:1", transcript_url: "https://example.com/t", tokens: null,
+        lease: { owner, token: 1, expires_at: new Date(clock.now().getTime() + LEASE).toISOString() },
+      });
+      expect(await store.listRuns(it.id)).toEqual([r.run]);
+    });
+
+    it("startSession refuses an open session, an implement-type run of the item, and an overlapping run of another item", async () => {
+      const { store } = await make();
+      const a = await running(store, 1, ["src/"]);
+      const first = await startOn(store, a);
+      expect(first.ok).toBe(true);
+      const a2 = (await store.getWorkItem(a.id))!;
+      expect(await startOn(store, a2)).toMatchObject({ ok: false, reason: "session_open" });
+      const b = await running(store, 2, ["src/core/x.ts"]);
+      expect(await startOn(store, b)).toMatchObject({ ok: false, reason: "overlap", work_item_id: a.id, kind: "interactive" });
+      const c = await running(store, 3, ["docs/"]);
+      await store.transition({ id: c.id, expected_version: c.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "implement", idempotency_key: "c" } });
+      const c2 = (await store.getWorkItem(c.id))!;
+      expect(await startOn(store, c2)).toMatchObject({ ok: false, reason: "implement_run" });
+      expect(await startOn(store, { id: c.id, version: 1 })).toMatchObject({ ok: false, reason: "version_conflict" });
+      expect((await store.getWorkItem(c.id))!.version).toBe(c2.version);
+    });
+
+    it("updateSession changes tokens, transcript, notes and the last finish only under the session's token", async () => {
+      const { store } = await make();
+      const it = await running(store, 1, ["src/"]);
+      const r = await startOn(store, it);
+      if (!r.ok) throw new Error(r.reason);
+      expect(await store.updateSession(r.run.id, 2, { tokens: 1 })).toEqual({ ok: false, reason: "lease_lost" });
+      await store.updateSession(r.run.id, 1, { tokens: 40, note: "one" });
+      await store.updateSession(r.run.id, 1, { transcript_url: "https://x.example/t", note: "two", last_finish: { ok: false, reasons: ["scope: a"] } });
+      const run = (await store.getRun(r.run.id))!;
+      expect(run).toMatchObject({ tokens: 40, transcript_url: "https://x.example/t" });
+      expect(run.input!.session!.notes.map((n) => n.text)).toEqual(["one", "two"]);
+      expect(run.input!.session!.last_finish).toMatchObject({ ok: false, reasons: ["scope: a"] });
+      await store.completeRun(r.run.id, 1, { status: "failed", error_code: "abandoned", detail: "", infra: false, tokens: 40 });
+      expect(await store.updateSession(r.run.id, 1, { tokens: 50 })).toEqual({ ok: false, reason: "lease_lost" });
+      expect(await store.sessionStats()).toEqual({ finished: 1, tokens: 40 });
+    });
+
+    it("the reaper ends an expired session as session_lost with its tokens, never requeued, and claims skip overlapping writers", async () => {
+      const { store, clock } = await make();
+      const it = await running(store, 1, ["src/"]);
+      const r = await startOn(store, it);
+      if (!r.ok) throw new Error(r.reason);
+      const other = await running(store, 2, ["src/a.ts"]);
+      await store.transition({ id: other.id, expected_version: other.version, actor: system, reason: "x", patch: {}, enqueue: { kind: "implement", idempotency_key: "o" } });
+      expect(await store.claimRun({ worker_id: w1, kinds: ["implement", "interactive"], lease_ms: LEASE })).toBeNull();
+      await store.updateSession(r.run.id, 1, { tokens: 9 });
+      clock.advance(LEASE + 1);
+      expect(await store.expireLeases(3)).toEqual([r.run.id]);
+      expect(await store.getRun(r.run.id)).toMatchObject({ status: "failed", lease: null, outcome: { error_code: "session_lost", tokens: 9 } });
+      expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(other.id);
+    });
+  });
+
   describe("run input", () => {
     it("stores a run's input (e.g. /resolve notes) with the run; runs enqueued without one have input null", async () => {
       const { store } = await make();
