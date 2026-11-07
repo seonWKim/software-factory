@@ -22,6 +22,7 @@
   ],
   "auth": "github",
   "workers": 5,
+  "max_workers": 8,
   "plugins": {
     "secrets": "env-file",
     "egress": "pattern",

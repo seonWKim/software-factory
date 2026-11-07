@@ -6,13 +6,13 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 
 export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active"> {
   /**
-   * `<host>:<pid>`. Worker n's id is `<id_prefix>:<n>`. The pool has `config.workers` slots (the config file's
-   * value); how many of them claim is the live `workers` setting, capped at that.
+   * `<host>:<pid>`. Worker n's id is `<id_prefix>:<n>`. The pool has `config.max_workers` slots (absent:
+   * `config.workers`); how many of them claim is the live `workers` setting, capped at that.
    */
   id_prefix: string;
   /**
    * The first worker index (SF_WORKER_INDEX_BASE from the supervisor; absent: 0). Workers are numbered
-   * base … base + workers - 1, so two processes alive at once on one host (an old version draining beside the
+   * base … base + max_workers - 1, so two processes alive at once on one host (an old version draining beside the
    * new one) never hand the same SF_WORKER_INDEX to two runs.
    */
   index_base?: number;
@@ -25,7 +25,7 @@ interface Slot {
 }
 
 /**
- * Up to `config.workers` Worker loops in one process (architecture §4). They share every dependency, so they
+ * Up to `config.max_workers` Worker loops in one process (architecture §4). They share every dependency, so they
  * share nothing in memory that matters for correctness: each claims through the store, whose claim keeps
  * implement-type runs of overlapping items apart, and each run gets its own worktree. Shared handling:
  * one counted KeepAwake (held while any run is in progress), and one signal, so a drain stops every loop
@@ -33,8 +33,8 @@ interface Slot {
  *
  * Live size (design 2026-11-03): each tick the pool re-reads the settings. Slots below the effective `workers`
  * run; a slot at or above it stops claiming, finishes its current run and stops; a stopped slot starts again
- * once `workers` rises. The slot count never exceeds the file's `workers`, which sizes the supervisor's index
- * block, so no index is ever shared with another process.
+ * once `workers` rises. The slot count is the file's `max_workers` (absent: its `workers`), which sizes the
+ * supervisor's index block, so no index is ever shared with another process.
  */
 export class WorkerPool {
   /** Every slot's Worker, running or not. Slot i has index `index_base + i`. */
@@ -46,13 +46,13 @@ export class WorkerPool {
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     const settings = this.live;
-    this.workers = Array.from({ length: d.config.workers }, (_, i) => {
+    this.workers = Array.from({ length: d.config.max_workers ?? d.config.workers }, (_, i) => {
       const index = index_base + i;
       return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake, active: () => i < settings.workers() });
     });
   }
 
-  /** Slots that may claim now: the live `workers`, capped at the file's value. */
+  /** Slots that may claim now: the live `workers`, capped at the slot count. */
   size(): number {
     return Math.min(this.live.workers(), this.workers.length);
   }

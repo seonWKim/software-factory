@@ -13,7 +13,7 @@ import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./c
 import { Controller } from "./core/controller.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -101,6 +101,8 @@ export interface FileConfig {
   inbox_retention_days?: number;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
+  /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
+  max_workers?: unknown;
   state_dir: string;
   worktrees_dir: string;
   agent_git_identity: { name: string; email: string };
@@ -175,6 +177,7 @@ export async function loadConfig(
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
   const workers = workerCount(file.workers);
+  const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
   // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
   const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
@@ -218,6 +221,7 @@ export async function loadConfig(
     ...stallConfig(file),
     inbox_retention_days: retention,
     workers,
+    max_workers,
     deny_paths: [
       dirname(secretsFile),
       join(stateDir, "db"),
@@ -284,7 +288,7 @@ export interface Built {
   /** The configured repo, resolved at startup. */
   project: ProjectRef;
   controller: Controller;
-  /** `config.workers` worker loops; `run(signal)` runs them all. */
+  /** `config.max_workers` worker slots, `workers` of them claiming; `run(signal)` runs them all. */
   worker: WorkerPool;
   close(): Promise<void>;
 }
@@ -424,7 +428,7 @@ export async function build(
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
-export { workerCount };
+export { maxWorkers, workerCount };
 
 /**
  * What factory.config.json says about each settable key, before any override (design 2026-11-03): the global keys
@@ -438,7 +442,7 @@ export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsB
     if (isProjectSettableKey(k)) continue;
     if (raw[k] !== undefined) file[k] = raw[k];
   }
-  return { file, layers: loaded.config.settings };
+  return { file, layers: loaded.config.settings, ...(loaded.config.max_workers !== undefined ? { max_workers: loaded.config.max_workers } : {}) };
 }
 
 /** SF_WORKER_INDEX_BASE as set by the supervisor: unset, empty or not a non-negative integer means 0. */
