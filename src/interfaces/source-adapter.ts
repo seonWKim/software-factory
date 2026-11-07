@@ -9,7 +9,12 @@ import type { ExternalIdentity } from "./auth-provider.js";
  * react to it (`markSeen`) and key a refusal reply on it. `item_requested` is identified by `source.id`.
  */
 export type SourceEvent =
-  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string }
+  /**
+   * An open source item, delivered when it is new and again after each edit (GitHub: the open-issue list since the
+   * cursor). `updated_at`: when the source item last changed, ISO time; the controller re-reads its dependency
+   * links only when it moved past the time they were read at (issue #254). Absent when the source gives none.
+   */
+  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string }
   /**
    * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
    * empty; untrusted. The controller splits a leading `+paths <path>...` line off it (parseCommandPaths), then
@@ -141,8 +146,8 @@ interface SourceAdapterBase {
   markSeen(source: SourceRef, commentId: string | null): Promise<void>;
   /**
    * Shows the work item's status on the source (GitHub: one status label). `pr_number` null means the item
-   * itself (the issue); non-null means the item's PR, which the controller sends here only when no forge is
-   * selected (the forge shows PR status, `Forge.setPrStatus`). Afterwards the target carries exactly one of the factory's status markers; markers the
+   * itself (the issue); non-null means the item's PR: PR status goes to the forge when one is selected
+   * (`Forge.setPrStatus`, which may call this to write the label); the source does not route it. Afterwards the target carries exactly one of the factory's status markers; markers the
    * factory does not own are left alone. Idempotent: the same call twice changes nothing. Best effort:
    * failures are the caller's to log and must not block a transition. Sources with no such surface may
    * do nothing.
@@ -161,6 +166,12 @@ interface SourceAdapterBase {
    * the caller retries. Agents never call this. Absent on sources that cannot file items.
    */
   fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
+  /**
+   * True while the source's request budget is low (GitHub: under 10% or `min_remaining` of the hourly limit left,
+   * until the reset): the controller skips its optional reads (dependency state refreshes, status catch-up) until
+   * it is false again. Read-only, no request. Absent on sources without a budget.
+   */
+  lowBudget?(): boolean;
 }
 
 /** A source the controller polls on a timer (GitHub issues). */

@@ -224,7 +224,7 @@ const resolveA: AgentStep = (wd) => {
 };
 
 // Real git clone/merge work per test: 2–5s each alone, more under a full parallel run.
-describe("implement run: sync with base before push", { timeout: 30_000 }, () => {
+describe("implement run: sync with base before push", { timeout: 60_000 }, () => {
   it("main moved with no conflict: the pushed branch contains the new base commit and merges cleanly", async () => {
     let mainSha = "";
     const f = await setup({
@@ -392,7 +392,7 @@ describe("implement run: sync with base before push", { timeout: 30_000 }, () =>
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ blocked_on: "human", blocked_reason: "max_attempts" });
     const last = f.source.comments.at(-1)!.body;
     expect(last).toContain("`merge_conflict`: the branch conflicts with the base branch and the conflict could not be resolved");
-  }, 30_000); // max_attempts full implement runs, each with real git clone/merge work
+  }, 60_000); // max_attempts full implement runs, each with real git clone/merge work
 
   it("a resolution that touches a non-conflicting file outside allowed_paths is stopped by the scope gate", async () => {
     const f = await setup({

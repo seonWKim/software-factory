@@ -1,6 +1,9 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
+import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
 
@@ -26,10 +29,14 @@ function bullet(text: string, field: string): string {
 describe("prompts/triage.md", () => {
   const text = prompt("triage");
 
-  it("allows every store's migration paths for a store schema change (issue #229)", () => {
+  it("allows every store's migration paths for a store schema change, naming no repo path (issues #229, #335)", () => {
     expect(text).toContain("store schema change");
-    expect(text).toContain("`migrations/mysql/`");
-    expect(text).toContain("`src/impl/store/mysql/migrations.ts`");
+    expect(text).toMatch(/migration for every store the repository\s+ships/);
+    expect(text).not.toContain("migrations/mysql/");
+  });
+
+  it("its output example uses neutral paths (issue #335)", () => {
+    expect(text).toContain('"allowed_paths": ["src/example/"]');
   });
   const produce = text.slice(text.indexOf("Produce:"));
 
@@ -39,8 +46,7 @@ describe("prompts/triage.md", () => {
 
   it("names the topic files as the documentation targets, not the index (issue #224)", () => {
     const b = bullet(produce, "files_to_change");
-    expect(b).toContain("`docs/design/<topic>.md`");
-    expect(b).toContain("`docs/plugins/<interface>.md`");
+    expect(b).toMatch(/topic files the change touches/);
     expect(b).not.toMatch(/Name an index only when/);
     expect(b).toMatch(/not the index/i);
   });
@@ -73,6 +79,59 @@ describe("prompts/triage.md", () => {
   });
 });
 
+describe("owner defaults (issue #315)", () => {
+  const text = prompt("triage");
+  const defaults = prompt("owner-defaults");
+  const CLAUDE = readFileSync(join(import.meta.dirname, "..", "CLAUDE.md"), "utf8");
+
+  it("the triage prompt applies owner defaults, lists them, and asks only what no default covers", () => {
+    expect(text).toMatch(/CLAUDE\.md already decides is not a decision/);
+    expect(text).toMatch(/owner defaults/i);
+    const b = bullet(text.slice(text.indexOf("Produce:")), "applied_defaults");
+    expect(b).toMatch(/each owner default you applied/i);
+    expect(b).toMatch(/rule/);
+    expect(bullet(text.slice(text.indexOf("Produce:")), "decisions")).toMatch(/changes? behaviou?r and no owner default covers/);
+  });
+
+  it("the defaults file has one rule per line, each with its source issue, none repeating CLAUDE.md", () => {
+    const rules = defaults.split("\n").filter((l) => l.startsWith("- "));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) {
+      expect(r).toMatch(/\(issue #\d+\)$/);
+      expect(CLAUDE).not.toContain(r.slice(2).replace(/\s*\(issue #\d+\)$/, ""));
+    }
+    expect(defaults).toMatch(/in-process state is fine only when no other replica needs it/i);
+  });
+
+  describe("loading at startup", () => {
+    afterEach(() => vi.unstubAllEnvs());
+    const REAL = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.config.json"), "utf8")) as Record<string, unknown>;
+    const root = (ownerDefaults?: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-defaults-"));
+      mkdirSync(join(dir, "prompts"));
+      for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+      if (ownerDefaults !== undefined) writeFileSync(join(dir, "prompts", "owner-defaults.md"), ownerDefaults);
+      writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, store: { type: "sqlite" } }));
+      mkdirSync(join(dir, "secrets"));
+      writeFileSync(join(dir, "secrets", ".env"), "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n");
+      vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets", ".env"));
+      return dir;
+    };
+
+    it("appends the file to the triage prompt when it exists", async () => {
+      const loaded = await loadConfig(root("- a rule (issue #1)\n"));
+      expect(loaded.prompts.triage.startsWith("triage")).toBe(true);
+      expect(loaded.prompts.triage).toContain("- a rule (issue #1)");
+      expect(loaded.prompts.implement).toBe("implement");
+    });
+
+    it("a missing file means no defaults and no error", async () => {
+      const loaded = await loadConfig(root());
+      expect(loaded.prompts.triage).toBe("triage");
+    });
+  });
+});
+
 describe.each([
   ["implement", "PR description"],
   ["resolve", "resolution summary"],
@@ -92,5 +151,68 @@ describe.each([
     const fileLevel = b.search(/file-level|each (conflicting )?file|files/);
     expect(inShort).toBeGreaterThanOrEqual(0);
     expect(fileLevel).toBeGreaterThan(inShort);
+  });
+});
+
+// The core prompts serve every project the factory works on (issue #335): no npm or repo-specific paths, and the
+// configured checks filled in at load.
+const CORE = ["triage", "implement", "review", "resolve"] as const;
+const repo = (over: Partial<FactoryConfig["repo"]>): FactoryConfig["repo"] =>
+  ({ owner: "o", name: "n", path: ".", base_branch: "main", install_command: ["make", "deps"], test_command: ["make", "unit"], ...over }) as FactoryConfig["repo"];
+
+describe.each(CORE)("prompts/%s.md is project-neutral", (name) => {
+  const text = prompt(name);
+
+  it("names no npm, doc index or src/core/ path", () => {
+    for (const s of ["npm", "docs/design.md", "docs/plugins.md", "src/core/"]) expect(text, s).not.toContain(s);
+  });
+
+  it("renders for non-npm checks with no npm, no docs/design.md and no unfilled placeholder", () => {
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    expect(out).not.toContain("npm");
+    expect(out).not.toContain("docs/design.md");
+    expect(out).not.toContain("{{");
+  });
+});
+
+describe.each(["implement", "review"])("prompts/%s.md names the configured checks", (name) => {
+  const text = prompt(name);
+
+  it("has the placeholder", () => {
+    expect(text).toContain(CHECK_COMMANDS_PLACEHOLDER);
+  });
+
+  it("puts each check_commands entry in the text, in order", () => {
+    const out = fillPrompt(text, repo({ check_commands: [["make", "check"], ["make", "test"]] }));
+    expect(out).toContain("`make check`");
+    expect(out).toContain("`make test`");
+    expect(out.indexOf("`make check`")).toBeLessThan(out.indexOf("`make test`"));
+    expect(out).toMatch(/project's own scripts, never the test runner directly/);
+  });
+
+  it("falls back to test_command when check_commands is absent", () => {
+    const out = fillPrompt(text, repo({}));
+    expect(out).toContain("`make unit`");
+    expect(out).not.toContain("{{");
+  });
+});
+
+describe("on this repo", () => {
+  const root = join(import.meta.dirname, "..");
+  const config = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as FactoryConfig;
+
+  it.each(["implement", "review"])("prompts/%s.md renders with npm run typecheck and npm test", (name) => {
+    const out = fillPrompt(prompt(name), config.repo);
+    expect(out).toContain("`npm run typecheck`");
+    expect(out).toContain("`npm test`");
+  });
+
+  it("CLAUDE.md links to AGENTS.md, which holds the moved test-running rule", () => {
+    expect(readlinkSync(join(root, "CLAUDE.md"))).toBe("AGENTS.md");
+    const rule = readFileSync(join(root, "AGENTS.md"), "utf8").split("\n").find((l) => l.startsWith("- Tests:"));
+    expect(rule, "the test-running rule").toBeDefined();
+    expect(rule).toMatch(/through the project's scripts/);
+    expect(rule).toContain("never the test runner directly (`npx vitest ...`)");
+    expect(rule).toMatch(/never run `npm install`, `npm ci`, or `npx`/);
   });
 });

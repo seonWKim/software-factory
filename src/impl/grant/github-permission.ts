@@ -1,5 +1,5 @@
 import type { GrantSource, GrantSubject, Role } from "../../interfaces/auth-provider.js";
-import { type GitHubClient, GitHubError, type RepoRef } from "../github/github-client.js";
+import { type GitHubClient, GitHubError, GitHubRateLimitError, type RepoRef } from "../github/github-client.js";
 
 const APPROVER = new Set(["admin", "maintain", "write"]);
 const REQUESTER = new Set(["triage", "read"]);
@@ -33,7 +33,11 @@ export class GitHubPermissionGrant implements GrantSource {
     return [...out];
   }
 
-  /** The account's permission on the repository; "none" when GitHub does not know it as a collaborator. */
+  /**
+   * The account's permission on the repository; "none" when GitHub does not know it as a collaborator. A rate limit
+   * throws until the reset (design §5 Restarts): it says nothing about the account's access, and no stored grant
+   * stands in for it.
+   */
   private async permission(id: string): Promise<string> {
     try {
       const user = await this.client.request<{ login: string }>("GET", `/user/${id}`);
@@ -43,7 +47,7 @@ export class GitHubPermissionGrant implements GrantSource {
       );
       return perm.permission;
     } catch (err) {
-      if (err instanceof GitHubError && (err.status === 404 || err.status === 403)) return "none";
+      if (err instanceof GitHubError && !(err instanceof GitHubRateLimitError) && (err.status === 404 || err.status === 403)) return "none";
       throw err;
     }
   }
