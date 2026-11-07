@@ -16,6 +16,7 @@ import { GitHubError } from "../src/impl/github/github-client.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
 import { GitHubIssueSource } from "../src/impl/source/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
+import { parseComment } from "../src/core/commands.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import {
@@ -45,8 +46,14 @@ class Hub extends FakeGitHubClient {
   open: { number: number; title: string; body: string; user: typeof alice; updated_at: string }[] = [];
   polled: Comment[] = [];
   pulls = new Map<number, { number: number; head: { ref: string } }>();
+  /** When set, every call fails with it, as an outage or a rate limit does. */
+  down: Error | null = null;
 
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    if (this.down) {
+      this.calls.push(`FAILED ${method} ${path.split("?")[0]}`);
+      throw this.down;
+    }
     const [bare, query = ""] = path.split("?") as [string, string?];
     const firstPage = !/(^|&)page=([2-9]|\d\d)/.test(query);
     if (method === "GET" && bare === "/repos/o/r/issues") {
@@ -132,9 +139,11 @@ async function factory(o: { store?: FactoryStore; clock?: FakeClock } = {}) {
     await controller.tickRuns();
   };
   let n = 0;
+  // Each fixture its own terminal: command keys never collide across replicas on one store.
+  const terminal = Math.random().toString(36).slice(2, 8);
   const cli = (user: UserId, a: CliAction) => {
     const d: LocalCliDeps = {
-      store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}`,
+      store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `${terminal}-${++n}`,
     };
     return runLocalCli(d, a);
   };
@@ -236,13 +245,16 @@ describe("GitHub comments in the local store (issue #284)", () => {
     expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")?.actor).toEqual({ kind: "user", id: OWNER });
     expect(f.local_auth.asked.filter((a) => a.startsWith("github:"))).toEqual([]);
 
-    // A row the GitHub source did not write never gets provider github: a CLI key with a GitHub actor, and a
-    // GitHub key with a local actor, are not applied to the GitHub item.
+    // A row the GitHub source did not write never gets provider github: a GitHub key with a local actor is not
+    // applied, and a CLI key with a GitHub actor is judged by the local auth plugin as provider local.
     const other = await f.specced(8);
-    await f.store.appendCliCommand({ key: "cli:x", actor: "github:1", command: "approve", args: { item: other.id, source: other.source } });
     await f.store.appendCliCommand({ key: "github:999", actor: ME, command: "approve", args: { source: other.source, text: "" } });
     await f.controller.tickCommands();
     expect(await f.store.getWorkItem(other.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    const asked = f.local_auth.asked.length;
+    await f.store.appendCliCommand({ key: "cli:x", actor: "github:1", command: "approve", args: { item: other.id, source: other.source } });
+    await f.controller.tickCommands();
+    expect(f.local_auth.asked.slice(asked)).toContain("local:github:1");
   });
 
   it("a spec written to the thread is mirrored to GitHub once; a second delivery of the same marker posts nothing", async () => {
@@ -383,4 +395,150 @@ describe("GitHub comments in the local store (issue #284)", () => {
     expect(f.hub.calls).toHaveLength(calls);
     expect(log.lines.filter((l) => l.level === "error")).toEqual([]);
   });
+});
+
+describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => {
+  const OUTAGE = new Error("GitHub unreachable");
+  const RATE_LIMITED = new GitHubError(403, "API rate limit exceeded", "2026-11-07T02:00:00Z");
+  const approve = (id: WorkItemId, text = ""): CliAction => ({ action: "command", command: "approve", id, text });
+  const mirrors = (f: Awaited<ReturnType<typeof factory>>, n = 7) => f.hub.postedOn(n).filter((b) => b.includes("<!-- factory:cli:cli:"));
+  const refusal = async (f: Awaited<ReturnType<typeof factory>>, id: WorkItemId) =>
+    (await f.store.listItemMessages(id)).find((m) => m.marker.startsWith("<!-- factory:refused:cli:"))?.body;
+
+  it("is stored and exits 0 with GitHub unreachable: the CLI makes no GitHub call", async () => {
+    const f = await factory();
+    const item = await f.specced();
+    f.hub.down = OUTAGE;
+    const calls = f.hub.calls.length;
+    const r = await f.cli(ME, approve(item.id, "ship it"));
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toContain(`stored \`/approve\` for ${item.id} as ${ME}`);
+    expect(f.hub.calls).toHaveLength(calls);
+    expect(await f.store.listUnmirroredCliCommands(10)).toEqual([
+      expect.objectContaining({ actor: ME, command: "approve", args: { item: item.id, text: "ship it" }, mirror: true }),
+    ]);
+  });
+
+  it("solo: the environment user becomes the owner on the first command and approves through the same transition a GitHub comment gives, while every GitHub call fails", async () => {
+    const f = await factory();
+    const byComment = await f.specced(7);
+    const byCli = await f.specced(8);
+    f.hub.comment(7, 140, "/approve");
+    await f.controller.tickIntake();
+
+    f.hub.down = OUTAGE;
+    expect((await f.cli(ME, approve(byCli.id))).code).toBe(0);
+    expect(await f.store.listLocalUsers()).toEqual([expect.objectContaining({ user_id: ME, role: "owner" })]);
+    await f.controller.tickCommands();
+
+    const state = (it: WorkItem | null) => ({ stage: it!.stage, blocked_on: it!.blocked_on, blocked_reason: it!.blocked_reason });
+    expect(state(await f.store.getWorkItem(byCli.id))).toEqual(state(await f.store.getWorkItem(byComment.id)));
+    expect(await f.store.getWorkItem(byCli.id)).toMatchObject({ stage: "RUNNING" });
+    const approval = (await f.store.listStateChanges(byCli.id)).find((c) => c.reason === "spec_approved");
+    expect(approval?.actor).toEqual({ kind: "user", id: ME });
+    // The local auth plugin judged it; the GitHub calls it made on the way (labels, the mirror) all failed.
+    expect(f.local_auth.asked).toContain(`local:${ME.slice("local:".length)}`);
+    expect(f.hub.calls.filter((c) => c.startsWith("FAILED")).length).toBeGreaterThan(0);
+    // The mirror's failure is logged, and it waits: the item moved on.
+    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "outbox delivery failed; retried later")).toBe(true);
+    expect((await f.store.listUnmirroredCliCommands(10)).map((c) => c.args.item)).toEqual([byCli.id]);
+  });
+
+  it("an owner or an approver is allowed; a requester or anonymous is refused with the local wording, and nothing changes", async () => {
+    const f = await factory();
+    const items = [await f.specced(7), await f.specced(8), await f.specced(9), await f.specced(10)];
+    f.hub.down = OUTAGE;
+    expect((await f.cli(ME, { action: "users_add", user: "local:bob" as UserId, role: "approver" })).code).toBe(0);
+    expect((await f.cli(ME, { action: "users_add", user: "local:carol" as UserId, role: "requester" })).code).toBe(0);
+    await f.cli(ME, approve(items[0]!.id));
+    await f.cli("local:bob" as UserId, approve(items[1]!.id));
+    await f.cli("local:carol" as UserId, approve(items[2]!.id));
+    await f.cli("local:anonymous" as UserId, approve(items[3]!.id));
+    await f.controller.tickCommands();
+
+    expect(await f.store.getWorkItem(items[0]!.id)).toMatchObject({ stage: "RUNNING" });
+    expect(await f.store.getWorkItem(items[1]!.id)).toMatchObject({ stage: "RUNNING" });
+    for (const [it, who] of [[items[2]!, "local:carol"], [items[3]!, "local:anonymous"]] as const) {
+      expect(await f.store.getWorkItem(it.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", version: it.version });
+      expect(await refusal(f, it.id)).toBe(
+        `\`/approve\` was not applied: ${who} has no role that allows it (\`no_role\`); the local owner can grant one with \`factory users add ${who} --role approver\`.`,
+      );
+    }
+    expect(f.local_auth.asked).toEqual(expect.arrayContaining(["local:bob", "local:carol", "local:anonymous"]));
+  });
+
+  it("enterprise: on a shared store, an approver added with `factory users add` approves a GitHub item on another replica; a requester cannot", async () => {
+    const f = await factory();
+    const a = await f.specced(7);
+    const b = await f.specced(8);
+    // Each person's terminal and a second controller replica, all on the one store.
+    const replica = await factory({ store: f.store, clock: f.clock });
+    expect((await f.cli(ME, { action: "users_add", user: "local:bob@example.com" as UserId, role: "approver" })).code).toBe(0);
+    expect((await replica.cli(ME, { action: "users_add", user: "local:carol@example.com" as UserId, role: "requester" })).code).toBe(0);
+    await replica.cli("local:bob@example.com" as UserId, approve(a.id));
+    await f.cli("local:carol@example.com" as UserId, approve(b.id));
+    f.hub.down = OUTAGE;
+    replica.hub.down = OUTAGE;
+    await replica.controller.tickCommands();
+    await f.controller.tickCommands();
+
+    expect((await f.store.listStateChanges(a.id)).find((c) => c.reason === "spec_approved")?.actor).toEqual({ kind: "user", id: "local:bob@example.com" });
+    expect(await f.store.getWorkItem(b.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect(await refusal(f, b.id)).toContain("local:carol@example.com has no role that allows it");
+  });
+
+  it("mirrors each command once on its issue, keyed by the command key; another mirror pass or replica posts nothing new", async () => {
+    const f = await factory();
+    const item = await f.specced();
+    await f.cli(ME, { action: "command", command: "revise", id: item.id, text: "split the parser\n/retry is not a command here" });
+    const [cmd] = await f.store.listUnmirroredCliCommands(10);
+    await f.controller.tickCommands();
+    await f.controller.tickCommands();
+
+    expect(mirrors(f)).toEqual([
+      `\`/revise\` was sent from the factory CLI by \`${ME}\` (command \`${cmd!.key}\`).\n\n> split the parser\n> /retry is not a command here\n\n<!-- factory:cli:${cmd!.key} -->`,
+    ]);
+    expect(await f.store.listUnmirroredCliCommands(10)).toEqual([]);
+    const posts = f.hub.calls.filter((c) => c === "POST /repos/o/r/issues/7/comments").length;
+    await f.controller.tickCommands();
+    await (await factory({ store: f.store, clock: f.clock })).controller.tickCommands();
+    expect(f.hub.calls.filter((c) => c === "POST /repos/o/r/issues/7/comments")).toHaveLength(posts);
+    expect(mirrors(f)).toHaveLength(1);
+  });
+
+  it("the mirror never starts with `/`, so the GitHub poll reads it as a plain comment", async () => {
+    const f = await factory();
+    const item = await f.specced();
+    await f.cli(ME, { action: "command", command: "retry", id: item.id, text: "" });
+    await f.cli(ME, { action: "command", command: "reject", id: item.id, text: "/approve" });
+    await f.controller.tickCommands();
+    await f.controller.tickCommands();
+    const posted = mirrors(f);
+    expect(posted).toHaveLength(2);
+    for (const body of posted) {
+      expect(body.startsWith("/")).toBe(false);
+      expect(parseComment(body)).toBeNull();
+    }
+  });
+
+  for (const [what, failure] of [["fails", OUTAGE], ["is rate limited", RATE_LIMITED]] as const) {
+    it(`when the post ${what}, the command stays unmirrored, and a later tick posts it once GitHub works`, async () => {
+      const f = await factory();
+      const item = await f.specced();
+      await f.cli(ME, approve(item.id));
+      f.hub.down = failure;
+      await f.controller.tickCommands();
+      await f.controller.tickCommands();
+      expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING" });
+      expect((await f.store.listUnmirroredCliCommands(10)).map((c) => c.args.item)).toEqual([item.id]);
+      expect(mirrors(f)).toEqual([]);
+
+      f.hub.down = null;
+      f.clock.advance(3_600_000);
+      await f.controller.tickCommands();
+      await f.controller.tickCommands();
+      expect(mirrors(f)).toHaveLength(1);
+      expect(await f.store.listUnmirroredCliCommands(10)).toEqual([]);
+    });
+  }
 });

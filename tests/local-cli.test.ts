@@ -165,14 +165,21 @@ describe("approve, retry, revise, reject", () => {
     expect(new Set(added.map((c) => c.key)).size).toBe(added.length);
   });
 
-  it("a missing or non-local item stores nothing", async () => {
+  it("a missing item stores nothing", async () => {
+    const { store, run } = await setup();
+    expect((await run({ action: "command", command: "approve", id: "wi_missing" as WorkItemId, text: "" })).code).toBe(1);
+    expect(await store.listCliCommandsAfter(0, 100)).toEqual([]);
+  });
+
+  it("a GitHub item's command is stored like a local one's, marked to be mirrored on its issue; a local one's is not", async () => {
     const { store, run } = await setup();
     const gh = (await store.createWorkItem(issue(3), system)).item;
-    expect((await run({ action: "command", command: "approve", id: "wi_missing" as WorkItemId, text: "" })).code).toBe(1);
-    const r = await run({ action: "command", command: "approve", id: gh.id, text: "" });
-    expect(r.code).toBe(1);
-    expect(r.lines[0]).toContain("not a local work item");
-    expect(await store.listCliCommandsAfter(0, 100)).toEqual([]);
+    const r = await run({ action: "command", command: "approve", id: gh.id, text: "ship it" });
+    expect(r).toEqual({ code: 0, lines: [expect.stringContaining(`stored \`/approve\` for ${gh.id} as ${USER}`)] });
+    expect(await store.listCliCommandsAfter(0, 100)).toEqual([
+      expect.objectContaining({ actor: USER, command: "approve", args: { item: gh.id, text: "ship it" }, mirror: true }),
+    ]);
+    expect((await store.listUnmirroredCliCommands(100)).map((c) => c.args.item)).toEqual([gh.id]);
   });
 });
 

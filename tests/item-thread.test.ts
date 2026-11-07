@@ -68,7 +68,10 @@ async function expectCopied(q: Exec, store: SqlFactoryStore, before: Record<stri
   for (const [from, to] of PAIRS) {
     expect(await count(q, to), to).toBe(await count(q, from));
     expect(await count(q, to), to).toBe(before[from]!.length);
-    expect(await allRows(q, to), to).toEqual(before[from]);
+    // The old table's columns only: a later migration may add columns to the new table (e.g. 36, the mirror mark).
+    const cols = Object.keys(before[from]![0]!);
+    const copied = (await allRows(q, to)).map((r) => Object.fromEntries(cols.map((c) => [c, r[c]])));
+    expect(copied, to).toEqual(before[from]);
   }
   expect((await store.listItemMessages(items[0]!)).map((m) => [m.seq, m.marker, m.body, m.created_at])).toEqual([
     [3, "m1", "first", "2026-01-01T00:00:01.000Z"],

@@ -70,6 +70,7 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent, syncedCommand } from "./command-inbox.js";
+import { isCliCommandKey } from "./local-cli.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
@@ -310,6 +311,8 @@ const COMMAND_BATCH = 100;
 /** The command inbox's cursor, and the `local` source's cursor it starts from (issue #282). */
 const COMMANDS_CURSOR = "commands";
 const LEGACY_LOCAL_CURSOR = "intake:local";
+/** CLI commands mirrored to their issue per tick at most (design 05-sources, CLI intake). */
+const MIRROR_BATCH = 50;
 /** Outbox rows delivered per tick at most (issue #282). */
 const OUTBOX_BATCH = 50;
 /** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
@@ -434,6 +437,7 @@ export class Controller {
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
       // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
       await this.guard("commands", () => this.commandsStep());
+      await this.guard("cli mirror", () => this.mirrorStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
@@ -477,10 +481,11 @@ export class Controller {
     await this.outboxStep();
   }
 
-  /** One command inbox step: the CLI and app commands after the cursor (issue #282). */
+  /** One command inbox step: the CLI and app commands after the cursor (issue #282), then their mirrors. */
   async tickCommands(): Promise<void> {
     await this.live.refresh();
     await this.commandsStep();
+    await this.mirrorStep();
     await this.outboxStep();
   }
 
@@ -597,8 +602,8 @@ export class Controller {
   }
 
   /**
-   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
-   * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
+   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for an
+   * item of any source becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
    * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
    * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
@@ -646,10 +651,47 @@ export class Controller {
     const id = c.args.item;
     if (typeof id !== "string" || id === "") return;
     const item = await this.d.store.getWorkItem(id as WorkItemId);
-    // CLI commands act on local items only; the CLI refuses any other when it writes one.
-    if (!item || item.source.type !== "local") return;
+    // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
+    // judges it, and a GitHub item's transition never waits on GitHub. Its mirror on the issue is the mirror step's.
+    if (!item) return;
     const e = commandEvent(c, item.source);
     if (e) await this.handle(e);
+  }
+
+  /**
+   * The CLI mirror (design 05-sources, CLI intake): each CLI command on an item of a sync source (appended with
+   * `mirror`) is written once to its item's thread, keyed `cli:<command key>`, so the outbox posts it on the issue
+   * once, with its retries and backoff. The command is marked mirrored only when that post was delivered, so a
+   * failed or rate-limited post leaves it for a later tick. Best effort: it never touches the item's state, and the
+   * transition the command gives never waits on it. Safe on any replica and safe to run twice.
+   */
+  private async mirrorStep(): Promise<void> {
+    for (const c of await this.d.store.listUnmirroredCliCommands(MIRROR_BATCH)) {
+      const id = c.args.item;
+      const item = typeof id === "string" && id !== "" ? await this.d.store.getWorkItem(id as WorkItemId) : null;
+      // No item, or a local one: nothing to post anywhere.
+      if (!item || item.source.type === LOCAL_TYPE) {
+        await this.d.store.markCliCommandMirrored(c.key);
+        continue;
+      }
+      const marker = `<!-- factory:cli:${c.key} -->`;
+      await this.post(item, item.source, await this.mirrorBody(c), marker);
+      const row = (await this.d.store.listDeliveries(item.id)).find((d) => d.marker === marker);
+      if (row?.delivered_at) await this.d.store.markCliCommandMirrored(c.key);
+    }
+  }
+
+  /**
+   * A CLI command as a comment on its issue: who sent which command, and its note quoted, egress-scanned first (a
+   * flagged note is left out). It never starts with `/`, so the GitHub poll reads it as a plain comment.
+   */
+  private async mirrorBody(c: CliCommand): Promise<string> {
+    const name = QUOTABLE_COMMAND.test(c.command) ? `\`/${c.command}\`` : "A command";
+    const head = `${name} was sent from the factory CLI by \`${c.actor}\` (command \`${c.key}\`).`;
+    const text = typeof c.args.text === "string" ? c.args.text.trim() : "";
+    if (text === "") return head;
+    if (!(await this.d.scanner.scan("comment", text)).clean) return `${head}\n\nIts note is not shown: the leak scanner flagged it.`;
+    return `${head}\n\n${text.split(/\r?\n/).map((l) => `> ${l}`).join("\n")}`;
   }
 
   /**
@@ -3686,6 +3728,8 @@ export class Controller {
 
   /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
   private async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    // A CLI command has no comment on the source to react to: its mirror is the mirror step's.
+    if (commentId !== null && isCliCommandKey(commentId)) return;
     try {
       await this.adapterFor(source, "markSeen")?.markSeen(source, commentId);
     } catch (err) {
