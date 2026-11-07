@@ -21,9 +21,10 @@ export function transcriptSeparator(name: string): string {
 /**
  * Whether the next member may take the run. Only when this member did no real work: a rate limit, a stall with no
  * write-capable tool call (`did_work`; a runner that does not report it: no model output), or a failure with no
- * model output (an up-front refusal such as a missing secret or config fails the same way). A stall after edits
- * stands, so no next member gets a half-edited workdir (design §5 Restarts). Completed (also with invalid
- * output), timed out, aborted, or failed after output: the result stands.
+ * model output (an up-front refusal such as a missing secret or config fails the same way, and so does
+ * `provider_setup`: the provider refused this member's quota, key or model, so the next may still answer). A stall
+ * after edits stands, so no next member gets a half-edited workdir (design §5 Restarts). Completed (also with
+ * invalid output), timed out, aborted, or failed after output: the result stands.
  */
 export function canFallOver(r: AgentRunResult): boolean {
   if (r.status === "rate_limited") return true;

@@ -285,13 +285,15 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
 
     if (parsed.api_error_status === 429) {
-      const reset_at = parseRateLimitReset(typeof parsed.result === "string" ? parsed.result : "", (this.opts.now ?? (() => new Date()))());
+      const text = typeof parsed.result === "string" ? parsed.result : "";
+      const reset_at = parseRateLimitReset(text, (this.opts.now ?? (() => new Date()))());
       return {
         status: "rate_limited",
         output: null,
         transcript: result.stdout,
         usage,
-        error: "rate_limited",
+        // The CLI's own text names when the limit resets (design §5 Restarts): kept, capped, for the failure detail.
+        error: text.trim().slice(0, RATE_LIMIT_DETAIL_CHARS) || "rate_limited",
         did_work,
         ...(reset_at ? { reset_at } : {}),
       };
@@ -371,6 +373,9 @@ function parseJsonResult(stdout: string): ClaudeJsonResult | null {
   }
   return parseObject(stdout) as ClaudeJsonResult | null;
 }
+
+/** The longest part of the CLI's rate-limit text a rate_limited result keeps as its error. */
+const RATE_LIMIT_DETAIL_CHARS = 500;
 
 /** The silence limit when the spec gives none (design §5 Restarts; `stall_ms` in factory.config.json). */
 export const DEFAULT_STALL_MS = 300_000;
