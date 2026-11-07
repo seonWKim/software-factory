@@ -52,6 +52,9 @@ import {
   parseAutoResolveKey,
   retryDelayMs,
   retryKey,
+  retryNotBefore,
+  GITHUB_RATE_LIMIT,
+  GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
   workItemIdFromBranch,
@@ -66,7 +69,7 @@ import {
   CHECKS_ENV_LIMIT,
   SESSION_RELEASED,
 } from "./policy.js";
-import { commandEvent } from "./command-inbox.js";
+import { commandEvent, syncedCommand } from "./command-inbox.js";
 import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
@@ -315,6 +318,9 @@ const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
 
+/** GitHub's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
+const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
+
 /** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
 function forgeCursorName(forge: Forge): string {
   return `forge:${forge.ref_type}`;
@@ -472,19 +478,25 @@ export class Controller {
 
   /**
    * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
-   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`. The poll sources
-   * are read first and the forge after them, and the forge's events are handled first (issue #273): a merge that
-   * closed an issue happened before the close, so the forge's read already sees it and the merge is applied
-   * before the source's close. Unfinished rejects are retried once per tick that polled.
+   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the GitHub
+   * source and GitHub forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
+   * no log line, the next due one after the reset polls. The poll sources are read first and the forge after them,
+   * and the forge's events are handled first (issue #273): a merge that closed an issue happened before the close,
+   * so the forge's read already sees it and the merge is applied before the source's close. Unfinished rejects are
+   * retried once per tick that polled.
    */
   private async intake(pollDue: boolean): Promise<void> {
     const polled: Polled[] = [];
+    const usesGithub = this.byType.has(GITHUB_SOURCE_TYPE) || this.forge?.ref_type === GITHUB_SOURCE_TYPE;
+    const githubPaused = pollDue && usesGithub && (await this.d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null;
     for (const s of this.sources) {
       if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue) await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
+      else if (pollDue && !(githubPaused && s.type === GITHUB_SOURCE_TYPE)) {
+        await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
+      }
     }
     const forge = this.forge;
-    if (pollDue && forge) await this.guard("forge", () => this.tickForge(forge));
+    if (pollDue && forge && !(githubPaused && forge.ref_type === GITHUB_SOURCE_TYPE)) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
     if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
@@ -580,7 +592,8 @@ export class Controller {
    * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for a
    * local item becomes the event the same comment gives on GitHub (the same parser) and goes through handleEvent,
    * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
+   * applyAppRequest. A GitHub comment command the GitHub poll wrote (key `github:<comment id>`, issue #284) becomes
+   * its comment's event with provider `github`, so the GitHub auth provider judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
    * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
    * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
    */
@@ -612,6 +625,14 @@ export class Controller {
     if (typeof app === "number") {
       const r = await this.d.store.getAppCommandRequest(app);
       if (r && r.handled_at === null) await this.applyAppRequest(r);
+      return;
+    }
+    const synced = syncedCommand(c);
+    if (synced) {
+      // A source's own command (issue #284): applied only where that source's adapter runs, and a failure is logged
+      // and passed like a polled event's, so a sync plugin's outage never holds the local commands after it.
+      const e = synced.event;
+      if (e && this.byType.has(synced.source.type)) await this.guard(`event:${e.kind}`, () => this.handle(e));
       return;
     }
     const id = c.args.item;
@@ -2666,7 +2687,8 @@ export class Controller {
     }
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
-    if (run.kind !== "update") return this.retryOrBlock(it, run, failureClass(run.outcome), code);
+    // A GitHub rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
+    if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.comment(it, `run-failed:${run.id}`,
       `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
@@ -2926,16 +2948,12 @@ export class Controller {
     if (cls === "infra" && this.d.repeated_failure_rule !== false && repeatsFastInfraFailure(step, run)) {
       return this.repeatedInfraFailure(it, run, code, { ...detail, fast_repeat: true });
     }
-    const reset = run.outcome?.status === "failed" ? run.outcome.reset_at : null;
-    const backoff = failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms);
-    // A forge 401/403 or a failed access check: the retry also waits for its claim pause to end (design §5 Restarts).
-    const authEnd = (code === FORGE_AUTH || code === PREFLIGHT_ACCESS) && reset ? Date.parse(reset) : Number.NaN;
-    // A stall: no backoff, the stall pause holds every claim until a probe answers.
-    const notBefore = cls === "rate_limited"
-      ? (reset ?? iso(failedAt + retry_max_ms))
-      : cls === "stalled"
-        ? iso(failedAt)
-        : iso(Number.isNaN(authEnd) ? backoff : Math.max(backoff, authEnd));
+    // A forge 401/403, a failed access check or a GitHub rate limit also waits for its claim pause to end; a stall
+    // has no backoff, the stall pause holds every claim until a probe answers (design §5 Restarts).
+    const notBefore = retryNotBefore({
+      cls, code, failed_at: failedAt, backoff_at: failedAt + retryDelayMs(task + infra, retry_base_ms, retry_max_ms),
+      reset: run.outcome?.status === "failed" ? run.outcome.reset_at : null, retry_max_ms,
+    });
     // The run kept its commits on a wip branch: after a failed push or PR the retry pushes them with no agent run;
     // after a stop mid-work (rate limit, stall, timeout) the wip ref is marked `continue` by the worker, and the
     // retry runs the agent on it (design §5 Restarts).
@@ -3907,6 +3925,7 @@ const FAILURES: Record<string, string> = {
   preflight_failed: "a check before the agent started failed (the base fetch); no agent ran",
   preflight_access: "the push access or PR API check before the agent started failed; implement and update runs are paused",
   rate_limited: "the model provider's usage or rate limit was hit",
+  github_rate_limited: "GitHub's API rate limit was hit; implement, update and review runs are paused until it resets",
   provider_setup: "the model provider refused the account or config: its quota, the API key or the model name; nothing was retried",
   egress_blocked: "the output was stopped by the leak scanner",
   agent_failed: "the agent exited with an error",

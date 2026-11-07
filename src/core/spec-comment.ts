@@ -71,7 +71,7 @@ export function repeatsDone(desired: string, done: readonly string[]): boolean {
 
 /**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
- * short, Problem, Decisions for you, Done when, scope, Files, Risk. `footer` replaces the default last line;
+ * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
  * the controller passes the command footer for the spec gate (`commandFooter`).
  */
 export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
@@ -85,6 +85,8 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   if (decisions.length > 0) {
     out.push("### Decisions for you", ...bulletsFolded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
   }
+  // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
+  if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");
   out.push("### Done when", ...bulletsFolded(spec.done_criteria, VISIBLE_DONE, (n) => `${n} more done criteria`), "");
   if (!repeatsDone(spec.desired_output, spec.done_criteria)) {
     out.push("<details><summary>What the PR contains</summary>", "", spec.desired_output, "", "</details>", "");

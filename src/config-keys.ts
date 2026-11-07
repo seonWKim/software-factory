@@ -53,6 +53,7 @@ export const TOP_LEVEL_KEYS = [
   "stall_ms",
   "first_output_ms",
   "probe_interval_ms",
+  "agent_stop_checks",
   "workers",
   "max_workers",
   "state_dir",

@@ -1,12 +1,14 @@
+import { type CommandPr, githubCommand, githubCommentKey, syncedCommand } from "../../core/command-inbox.js";
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
+import { workItemIdFromBranch } from "../../core/policy.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { Logger } from "../../core/log.js";
-import type { DependencyState, SourceRef } from "../../core/types.js";
+import type { DependencyState, SourceRef, WorkItemId } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { Clock } from "../../interfaces/clock.js";
-import { type FactoryStore, labelTarget } from "../../interfaces/factory-store.js";
+import { type FactoryStore, type NewCliCommand, labelTarget } from "../../interfaces/factory-store.js";
 import type {
   PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
@@ -55,6 +57,13 @@ interface GhComment {
   body: string;
   user: GhUser;
   updated_at: string;
+}
+/** A new comment as the poll read it: its command inbox row (null for a plain comment) and PR context. */
+interface ReadComment {
+  cm: GhComment;
+  source: SourceRef;
+  command: NewCliCommand | null;
+  pr: CommandPr | null;
 }
 /** A PR as the comment commands need it: its number and head branch. */
 interface GhPullHead {
@@ -239,6 +248,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       `${base}/issues/comments?sort=updated&direction=asc` + (c.comments ? `&since=${c.comments}` : ""),
     );
     const seen = new Set<number>();
+    const read: ReadComment[] = [];
     for (const cm of comments) {
       next.comments = max(next.comments, cm.updated_at);
       // Compare with the previous poll's mark, not the running one: this page is ordered by updated_at, not id.
@@ -246,63 +256,12 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       seen.add(cm.id);
       next.last_comment_id = Math.max(next.last_comment_id ?? 0, cm.id);
       if (cm.user.type === "Bot") continue;
-      const source = this.ref(Number(cm.issue_url.split("/").pop()));
-      const comment_id = String(cm.id);
-      const parsed = parseComment(cm.body);
-      const who = identity(cm.user);
-      if (parsed === null) {
-        // Suggestions answer issue comments only; PR conversation comments are left alone (design §4).
-        if (!cm.html_url?.includes("/pull/")) events.push({ kind: "plain_comment", source, comment_id, author: who, body: cm.body });
-        continue;
-      }
-      if (parsed.kind === "unknown") {
-        events.push({ kind: "unknown_command", source, comment_id, requester: who, command: parsed.word });
-        continue;
-      }
-      const text = parsed.text;
-      switch (parsed.name) {
-        case "approve":
-          events.push({ kind: "spec_approved", source, comment_id, approver: who, note: text });
-          break;
-        case "reject":
-          events.push({ kind: "spec_rejected", source, comment_id, approver: who, reason: text });
-          break;
-        case "revise":
-        {
-          // On a PR's conversation: any PR of this repository (factory or adopted); one that is gone is ignored.
-          if (cm.html_url?.includes("/pull/")) {
-            const pr = await this.pullHead(base, Number(cm.issue_url.split("/").pop()));
-            if (pr) events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text, pr });
-            break;
-          }
-          events.push({ kind: "revise_requested", source, comment_id, requester: who, feedback: text });
-          break;
-        }
-        case "retry":
-          events.push({ kind: "retry_requested", source, comment_id, requester: who, ...(text ? { note: text } : {}) });
-          break;
-        case "budget": {
-          // Only the same line counts: `/budget` or `/budget <tokens>`.
-          const amount = (text.split(/\r?\n/)[0] ?? "").trim();
-          events.push({ kind: "budget_continue", source, comment_id, approver: who, amount: amount === "" ? null : amount });
-          break;
-        }
-        case "resolve": {
-          const onPr = cm.html_url?.includes("/pull/") ? await this.factoryPull(base, Number(cm.issue_url.split("/").pop())) : null;
-          if (cm.html_url?.includes("/pull/") && !onPr) break;
-          events.push({ kind: "resolve_requested", source, comment_id, requester: who, notes: text, pr: onPr });
-          break;
-        }
-        case "help":
-          events.push({ kind: "help_requested", source, comment_id, requester: who });
-          break;
-        case "verdict": {
-          const target = await this.verdictTarget(Number(cm.issue_url.split("/").pop()));
-          if (target) events.push({ kind: "verdict_submitted", target, comment_id, approver: who, args: text });
-          break;
-        }
-      }
+      const r = await this.readComment(base, cm);
+      if (r) read.push(r);
     }
+    // In comment-id order, so the commands of one poll are applied in the order they were written (issue #284).
+    read.sort((a, b) => a.cm.id - b.cm.id);
+    for (const r of read) events.push(...(await this.recordComment(r)));
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     // Under the budget threshold the cursor stays put, so the next poll reads them. With no cursor yet (a first
@@ -331,6 +290,66 @@ export class GitHubIssueSource implements PollSource, DependencySource {
 
     events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /**
+   * One new comment by a person: a plain comment on an issue, or a command as its command inbox row with the PR
+   * context a command on a PR's conversation needs (read here, so applying it reads nothing more). Null for what
+   * is left alone: a plain comment on a PR's conversation (design §4), a `/revise` on a PR that is gone, a
+   * `/resolve` or `/verdict` on a PR that is not a factory PR.
+   */
+  private async readComment(base: string, cm: GhComment): Promise<ReadComment | null> {
+    const n = Number(cm.issue_url.split("/").pop());
+    const source = this.ref(n);
+    const onPr = cm.html_url?.includes("/pull/") ?? false;
+    const parsed = parseComment(cm.body);
+    if (parsed === null) return onPr ? null : { cm, source, command: null, pr: null };
+    let pr: CommandPr | null = null;
+    if (parsed.kind === "command" && parsed.name === "verdict") {
+      const target = await this.verdictTarget(n);
+      if (!target) return null;
+      if (target.kind === "pr") pr = { pr_number: target.pr_number, head_branch: target.head_branch };
+    } else if (onPr && parsed.kind === "command" && (parsed.name === "revise" || parsed.name === "resolve")) {
+      // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
+      pr = parsed.name === "revise" ? await this.pullHead(base, n) : await this.factoryPull(base, n);
+      if (!pr) return null;
+    }
+    const command = githubCommand({
+      comment_id: cm.id, user_id: cm.user.id, source, pr,
+      ...(parsed.kind === "unknown" ? { command: parsed.word, text: "" } : { command: parsed.name, text: parsed.text }),
+    });
+    return { cm, source, command, pr };
+  }
+
+  /**
+   * Stores one comment (issue #284): a command once in the command inbox, which the controller applies from, and
+   * the comment once in its work item's thread (an issue that is no work item has no thread), both keyed on
+   * `github:<comment id>`, so a repeat poll or a second replica writes nothing more. Returns the events the
+   * controller still takes from the poll: a plain comment's (for `/link` and suggestions). Without a store a
+   * command is returned as the event its row maps to.
+   */
+  private async recordComment(r: ReadComment): Promise<SourceEvent[]> {
+    const { cm, source, command, pr } = r;
+    const plain: SourceEvent[] = command
+      ? []
+      : [{ kind: "plain_comment", source, comment_id: String(cm.id), author: identity(cm.user), body: cm.body }];
+    if (!this.store) {
+      const e = command ? syncedCommand(command)?.event : null;
+      return e ? [e] : plain;
+    }
+    const item = await this.itemOf(source, pr);
+    if (item) await this.store.recordItemMessage({ work_item_id: item, marker: githubCommentKey(cm.id), body: cm.body });
+    if (command) await this.store.appendCliCommand(command);
+    return plain;
+  }
+
+  /** The work item a comment belongs to: the one with this issue (or adopted PR) as its source, else a factory PR's. */
+  private async itemOf(source: SourceRef, pr: CommandPr | null): Promise<WorkItemId | null> {
+    const own = await this.store!.getWorkItemBySource(source.type, source.id);
+    if (own) return own.id;
+    const id = pr ? workItemIdFromBranch(pr.head_branch, this.branchPrefix) : null;
+    const it = id ? await this.store!.getWorkItem(id as WorkItemId) : null;
+    return it && it.pr_number === pr?.pr_number ? it.id : null;
   }
 
   /**

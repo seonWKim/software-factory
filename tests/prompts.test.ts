@@ -1,7 +1,8 @@
-import { readFileSync, readlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt } from "../src/compose.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CHECK_COMMANDS_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -75,6 +76,59 @@ describe("prompts/triage.md", () => {
     expect(p).toMatch(/2 to 4 phases/);
     expect(p).toMatch(/mergeable on its own/);
     expect(p).toMatch(/its own done criteria/);
+  });
+});
+
+describe("owner defaults (issue #315)", () => {
+  const text = prompt("triage");
+  const defaults = prompt("owner-defaults");
+  const CLAUDE = readFileSync(join(import.meta.dirname, "..", "CLAUDE.md"), "utf8");
+
+  it("the triage prompt applies owner defaults, lists them, and asks only what no default covers", () => {
+    expect(text).toMatch(/CLAUDE\.md already decides is not a decision/);
+    expect(text).toMatch(/owner defaults/i);
+    const b = bullet(text.slice(text.indexOf("Produce:")), "applied_defaults");
+    expect(b).toMatch(/each owner default you applied/i);
+    expect(b).toMatch(/rule/);
+    expect(bullet(text.slice(text.indexOf("Produce:")), "decisions")).toMatch(/changes? behaviou?r and no owner default covers/);
+  });
+
+  it("the defaults file has one rule per line, each with its source issue, none repeating CLAUDE.md", () => {
+    const rules = defaults.split("\n").filter((l) => l.startsWith("- "));
+    expect(rules.length).toBeGreaterThan(0);
+    for (const r of rules) {
+      expect(r).toMatch(/\(issue #\d+\)$/);
+      expect(CLAUDE).not.toContain(r.slice(2).replace(/\s*\(issue #\d+\)$/, ""));
+    }
+    expect(defaults).toMatch(/in-process state is fine only when no other replica needs it/i);
+  });
+
+  describe("loading at startup", () => {
+    afterEach(() => vi.unstubAllEnvs());
+    const REAL = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.config.json"), "utf8")) as Record<string, unknown>;
+    const root = (ownerDefaults?: string): string => {
+      const dir = mkdtempSync(join(tmpdir(), "sf-defaults-"));
+      mkdirSync(join(dir, "prompts"));
+      for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+      if (ownerDefaults !== undefined) writeFileSync(join(dir, "prompts", "owner-defaults.md"), ownerDefaults);
+      writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, store: { type: "sqlite" } }));
+      mkdirSync(join(dir, "secrets"));
+      writeFileSync(join(dir, "secrets", ".env"), "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n");
+      vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets", ".env"));
+      return dir;
+    };
+
+    it("appends the file to the triage prompt when it exists", async () => {
+      const loaded = await loadConfig(root("- a rule (issue #1)\n"));
+      expect(loaded.prompts.triage.startsWith("triage")).toBe(true);
+      expect(loaded.prompts.triage).toContain("- a rule (issue #1)");
+      expect(loaded.prompts.implement).toBe("implement");
+    });
+
+    it("a missing file means no defaults and no error", async () => {
+      const loaded = await loadConfig(root());
+      expect(loaded.prompts.triage).toBe("triage");
+    });
   });
 });
 

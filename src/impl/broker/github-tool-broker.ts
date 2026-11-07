@@ -8,9 +8,9 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import { FORGE_AUTH, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, networkDetail, unreachableHost } from "../../core/policy.js";
+import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import { envExampleValueLines } from "../egress/pattern-egress-scanner.js";
-import { GitHubError, type GitHubClient, type RepoRef } from "../github/github-client.js";
+import { GitHubError, GitHubRateLimitError, type GitHubClient, type RepoRef } from "../github/github-client.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 
 /**
@@ -299,7 +299,9 @@ export class GitHubToolBroker implements ToolBroker {
       }
       return { ok: true, content: { number: pr.number, url: pr.html_url } };
     } catch (err) {
-      // A 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.
+      // A rate limit or a 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.
+      const limited = rateLimited("open_pr", err);
+      if (limited) return limited;
       if (refusedStatus(err)) return { ok: false, error_code: FORGE_AUTH, message: `open_pr: GitHub refused the credentials (${refusedStatus(err)})` };
       throw err;
     }
@@ -307,9 +309,10 @@ export class GitHubToolBroker implements ToolBroker {
 
   /**
    * The implement preflight's forge checks (design §5 Restarts), read-only: one GET of the repository (it answers;
-   * its push flag is only reported) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A 401
-   * or 403 is `forge_auth`; a DNS or connect error `network_unavailable` (the network pause, its message the host
-   * only); anything else `preflight_access` (since 2026-11-07, issue #216; before, `preflight_failed`),
+   * its push flag is only reported) and one GET of the branch's open PRs (the PR API answers). The base fetch is the worker's. A
+   * GitHub rate limit is `github_rate_limited` with its reset; another 401 or 403 is `forge_auth`; a DNS or connect error
+   * `network_unavailable` (the network pause, its message the host only); anything else `preflight_access` (since
+   * 2026-11-07, issue #216; before, `preflight_failed`),
    * which pauses implement-type claims. The message starts with the failed check's name and
    * carries the status only: no response body, no header, no credential.
    */
@@ -322,6 +325,8 @@ export class GitHubToolBroker implements ToolBroker {
       try {
         return { value: await this.deps.client.request<T>("GET", path) };
       } catch (err) {
+        const limited = rateLimited(what, err);
+        if (limited) return limited;
         const status = refusedStatus(err);
         if (status) return { ok: false, error_code: FORGE_AUTH, message: `${what}: GitHub refused the credentials (${status})` };
         // DNS or connect: the network pause (design §5 Restarts), the host only, no attempt spent.
@@ -348,8 +353,13 @@ export class GitHubToolBroker implements ToolBroker {
   private async comment(a: CommentArgs): Promise<ToolResult> {
     const scan = await this.deps.scanner.scan("comment", a.body);
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
-    const r = await this.deps.client.commentOnce(this.deps.repo, a.number, a.body, a.marker);
-    return { ok: true, content: r };
+    try {
+      return { ok: true, content: await this.deps.client.commentOnce(this.deps.repo, a.number, a.body, a.marker) };
+    } catch (err) {
+      const limited = rateLimited("comment", err);
+      if (limited) return limited;
+      throw err;
+    }
   }
 }
 
@@ -360,8 +370,15 @@ function causeText(err: unknown): string {
   return parts.join(": ");
 }
 
-/** The status of a GitHub 401 or 403, else null. */
+/** A GitHub rate limit as a result (design §5 Restarts): its message carries the reset; else null. */
+function rateLimited(what: string, err: unknown): ToolResult | null {
+  if (!(err instanceof GitHubRateLimitError)) return null;
+  return { ok: false, error_code: GITHUB_RATE_LIMITED, message: githubRateLimitMessage(what, err.reset_at) };
+}
+
+/** The status of a GitHub 401 or 403 that is not a rate limit, else null. */
 function refusedStatus(err: unknown): 401 | 403 | null {
+  if (err instanceof GitHubRateLimitError) return null;
   return err instanceof GitHubError && (err.status === 401 || err.status === 403) ? err.status : null;
 }
 

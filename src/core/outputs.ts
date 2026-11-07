@@ -25,6 +25,11 @@ export interface TriageOutput {
    * the schema (a cheap model often leaves it out when there are none); the validator defaults it to [].
    */
   decisions?: string[];
+  /**
+   * Owner defaults triage applied instead of asking (issue #315), one rule per entry. Optional in the schema;
+   * the validator defaults it to [].
+   */
+  applied_defaults?: string[];
   allowed_paths: string[];
   /** Every file or directory the done criteria create or edit; each must be covered by `allowed_paths`. */
   files_to_change: string[];
@@ -144,6 +149,9 @@ const count = { type: "integer", minimum: 0 };
 /** The most "Decisions for you" lines a spec shows (issue #229). */
 export const MAX_DECISIONS = 5;
 
+/** The most applied owner defaults a triage answer may list (issue #315). */
+export const MAX_APPLIED_DEFAULTS = 10;
+
 /** The stored `scope` text for separate in-scope and out-of-scope lists. */
 export function scopeText(inScope: readonly string[], outOfScope: readonly string[]): string {
   const list = (xs: readonly string[]) => (xs.length > 0 ? xs.map((x) => `- ${x}`) : ["- (none)"]);
@@ -162,6 +170,7 @@ export const TRIAGE_SCHEMA = {
     problem: { type: "string" },
     done_criteria: { ...strings, minItems: 1 },
     decisions: { ...strings, maxItems: MAX_DECISIONS },
+    applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
     desired_output: { type: "string" },
     in_scope: strings,
     out_of_scope: strings,
@@ -331,6 +340,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   // Optional: a triage output without `decisions` means none (the schema does not require it).
   const decisions = v.decisions ?? [];
   if (!isStrs(decisions)) return { ok: false, error: "decisions" };
+  const applied_defaults = v.applied_defaults ?? [];
+  if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
     return { ok: false, error: "allowed_paths" };
@@ -352,7 +363,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
 }
