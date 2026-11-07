@@ -8,7 +8,7 @@ import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
  */
 
 /** Below this the model's answer is treated as "none". */
-export const SUGGEST_MIN_CONFIDENCE = 0.7;
+export const SUGGEST_MIN_CONFIDENCE = 0.85;
 /** Comments longer than this are never sent to the model. */
 export const SUGGEST_MAX_CHARS = 300;
 /** Commands never suggested: `/verdict` takes structured args a model should not invent. */
