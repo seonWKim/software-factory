@@ -189,6 +189,12 @@ describe("slack source: intake", () => {
     expect(await f.store.listInboxAfter("slack_thread", 0, 10)).toEqual([]);
   });
 
+  it("does not store replies in threads that are not work items", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(message("1800000004.000700", "unrelated reply", { thread_ts: "1800000004.000600" })));
+    expect(await f.store.listInboxAfter("slack_thread", 0, 10)).toEqual([]);
+  });
+
   it("stores IDs only: no Slack display or real names in the inbox, the store, the logs or the posts", async () => {
     const f = await setup();
     const ts = "1800000005.000100";

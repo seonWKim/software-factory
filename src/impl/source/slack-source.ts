@@ -91,7 +91,8 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * socket only once the listener stored it. Anything else is acked at once and dropped. Only events in the
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
  * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a mention followed by a command, a
- * reply in an item's thread and a button press are the same events a GitHub comment gives. People are Slack user
+ * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
+ * thread is not stored. People are Slack user
  * IDs (provider `slack`); no display name is read or kept. Dedupe keys: Slack's `event_id`, or for a button press
  * the team, user and `action_ts`. A mention arrives twice (a `message` and an `app_mention` event, two event ids):
  * only the `app_mention` counts, and intake is idempotent on the source id anyway.
@@ -176,6 +177,8 @@ export class SlackSource implements StreamSource {
     if (type === "message") {
       // A mention comes again as `app_mention`; a top-level message without one is not for the factory.
       if (mentioned || !inThread) return null;
+      // A reply in a thread that is not a work item is other people's conversation: not stored at all.
+      if (!(await this.d.store.getWorkItemBySource("slack_thread", source.id))) return null;
       const e = commentEvent(source, ts, who, said);
       return e ? { event: e, key } : null;
     }
