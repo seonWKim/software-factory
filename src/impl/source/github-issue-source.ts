@@ -227,6 +227,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         requester: identity(i.user),
         title: i.title,
         body: i.body ?? "",
+        updated_at: i.updated_at,
       });
     }
 
@@ -569,6 +570,11 @@ export class GitHubIssueSource implements PollSource, DependencySource {
         if (!(err instanceof GitHubError && err.status === 404)) throw err;
       }
     }
+  }
+
+  /** The client's rate-limit budget (`GitHubClient.lowBudget`): true while optional reads should wait. */
+  lowBudget(): boolean {
+    return this.client.lowBudget();
   }
 
   /**
