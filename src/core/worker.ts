@@ -1,7 +1,8 @@
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
-import { type FloorHit, diffStat, floorHits, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
+import { type FloorHit, requiredTier } from "./diff-gate.js";
+import { PrePushGitError, scopeGate, sizeAndFloor } from "./pre-push.js";
 import type { Logger } from "./log.js";
 import { CHECKS_FAILED_RUN, type CheckResult, type CheckRound, checkCommands, checkedLines, commandText, redact, runChecks } from "./checks.js";
 import {
@@ -12,7 +13,7 @@ import {
   parseReview,
   parseTriage,
 } from "./outputs.js";
-import { AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, scopeViolations, wipBranchFor } from "./policy.js";
+import { AGENT_STALLED, AUTO_RESOLVE_LIMIT, FORGE_AUTH, MODEL_STALL, PREFLIGHT_FAILED, RATE_LIMITED, branchFor, wipBranchFor } from "./policy.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "./resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "./tools/index.js";
 import {
@@ -1268,19 +1269,19 @@ export class Worker {
     conflicts: readonly string[] = [],
   ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
     await this.scopeGate(run, item, handle, ctx, baseSha, conflicts);
-    const numstat = await this.git(handle, ["diff", "--numstat", "-z", "-M", `${baseSha}...HEAD`]);
-    let stat;
-    try {
-      stat = diffStat(numstat);
-    } catch (err) {
-      throw new RunFailure("git_failed", `git diff --numstat: ${err instanceof Error ? err.message : "unparsable"}`, true);
-    }
     // The item's project's gate settings (design 2026-11-01), read only through settingValues.
     const s = settingValues(item.project, this.cfg.settings, this.d.learned);
     const limits = { max_diff_lines: s.max_diff_lines, max_diff_files: s.max_diff_files };
-    if (overSizeLimit(stat, limits)) throw new RunFailure("diff_too_large", sizeDetail(stat, limits));
-    const hits = floorHits(stat.paths, s.floors, item.tier ?? 1);
-    return { floor: hits.length > 0 ? hits : null, paths: stat.paths };
+    // The same size and floor checks a session's finish runs (src/core/pre-push.ts).
+    let gates;
+    try {
+      gates = await sizeAndFloor((args) => this.git(handle, args), baseSha, { limits, floors: s.floors, tier: item.tier });
+    } catch (err) {
+      if (err instanceof PrePushGitError) throw new RunFailure("git_failed", err.message, true);
+      throw err;
+    }
+    if (gates.oversize) throw new RunFailure("diff_too_large", gates.oversize);
+    return { floor: gates.floor.length > 0 ? gates.floor : null, paths: gates.stat.paths };
   }
 
   /**
@@ -1308,8 +1309,7 @@ export class Worker {
     baseSha: string,
     conflicts: readonly string[],
   ) {
-    const diff = await this.git(handle, ["diff", "--name-only", "-z", "--no-renames", `${baseSha}...HEAD`]);
-    const outside = scopeViolations(diff, item.allowed_paths, conflicts);
+    const outside = await scopeGate((args) => this.git(handle, args), baseSha, item.allowed_paths, conflicts);
     if (outside.length === 0) return;
     const body = [
       "## Factory scope check: push blocked",

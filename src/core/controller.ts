@@ -46,6 +46,7 @@ import {
   MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
+  SESSION_RELEASED,
 } from "./policy.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
@@ -1843,6 +1844,21 @@ export class Controller {
         case "manual":
           // Written already acknowledged, so never here; kept for exhaustiveness.
           return ack("run_ignored");
+        case "interactive": {
+          // A person's session passed the gates and pushed through the broker (design 2026-11-01): the item goes
+          // to review like an implement run's PR. The review's key comes from this run's id, so it never collides
+          // with an earlier loop's review, and the ack fences a second apply.
+          const pr = Number(data.pr_number);
+          const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
+          return {
+            patch: { stage: "REVIEW", pr_number: pr, token_cost: tokens, ...(files ? { pr_files: files } : {}) },
+            actor: SYSTEM,
+            reason: "session_finished",
+            detail: { run_id: run.id, actor_id: run.actor_id },
+            ack_run: run.id,
+            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-session:${run.id}` },
+          };
+        }
         case "update": {
           // The worker already commented on the PR. The item stays in REVIEW waiting for a human either way.
           switch (data.result) {
@@ -1881,6 +1897,17 @@ export class Controller {
     }
     if (!this.expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
     const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+    // A session that ended without a PR (abandoned, lease lost) releases the item: no retry, no run queued; the next
+    // `session start` takes it up again (design 2026-11-01).
+    if (run.kind === "interactive") {
+      return {
+        patch: { blocked_on: "human", blocked_reason: SESSION_RELEASED },
+        actor: SYSTEM,
+        reason: SESSION_RELEASED,
+        detail: { run_id: run.id, error_code: code, actor_id: run.actor_id },
+        ack_run: run.id,
+      };
+    }
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     // Deterministic codes, diff_too_large among them (design §5 Restarts): the same spec fails the same way.
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
@@ -2301,7 +2328,7 @@ export class Controller {
     if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;
     if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
     if (kind === "triage") return it.stage === "NEW";
-    if (kind === "implement" || kind === "resolve") return it.stage === "RUNNING";
+    if (kind === "implement" || kind === "resolve" || kind === "interactive") return it.stage === "RUNNING";
     return it.stage === "REVIEW";
   }
 
@@ -2693,6 +2720,8 @@ const FAILURES: Record<string, string> = {
   agent_stalled: "the model printed nothing for stall_ms with no tool call open; runs are paused until a probe answers",
   lease_lost: "the worker lost its lease on the run (stopped, crashed or slept)",
   lease_expired: "the run's lease expired with no heartbeat (the worker stopped, crashed or slept)",
+  abandoned: "the person ended the session with `factory session abandon`",
+  session_lost: "the session's lease expired (the terminal stopped or closed)",
   exception: "the worker hit an unexpected error",
   git_failed: "a git command failed",
   cancelled: "the run was cancelled",

@@ -19,6 +19,7 @@ import type {
   RunOutcome,
   RunResume,
   RunStatus,
+  SessionFinishAttempt,
   SourceRef,
   SourceType,
   StateChange,
@@ -252,6 +253,57 @@ export interface RecordConflictsInput {
 
 export type LeaseResult = { ok: true; run: Run } | { ok: false; reason: "lease_lost" };
 
+/**
+ * `session start` (design 2026-11-01): a transition of the item plus one `interactive` run, written `running`
+ * with a lease for `owner`, in one transaction under the claim lock (so no claim interleaves with the checks).
+ */
+export interface StartSessionInput {
+  id: WorkItemId;
+  /** Applies only if the item's current version equals this. */
+  expected_version: number;
+  /** The person: the actor of the state change and of the run. Never the bot. */
+  actor: Extract<Actor, { kind: "user" }>;
+  /** The lease owner, e.g. `session:<host>:<pid>`: the terminal that renews the lease. */
+  owner: WorkerId;
+  lease_ms: number;
+  patch: WorkItemPatch;
+  reason: string;
+  detail?: StateChangeDetail;
+  /** Cancel the item's queued runs (a NEW item's triage) in the same transaction. */
+  cancel_queued_runs?: boolean;
+  /** Egress-scanned before it gets here. */
+  transcript_url?: string | null;
+}
+
+export type StartSessionResult =
+  | { ok: true; item: WorkItem; run: Run; state_change: StateChange; cancelled: RunId[] }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "version_conflict"; current: WorkItem }
+  /** The item has a queued or running implement-type run. Nothing changed. */
+  | { ok: false; reason: "implement_run"; run_id: RunId }
+  /** The item already has an open session. Nothing changed. */
+  | { ok: false; reason: "session_open"; run_id: RunId }
+  /** A running implement-type run or open session of another item overlaps the item's allowed_paths. Nothing changed. */
+  | { ok: false; reason: "overlap"; run_id: RunId; work_item_id: WorkItemId; kind: RunKind };
+
+/** What `updateSession` changes on an open session; absent fields stay as they are. */
+export interface SessionUpdate {
+  /** The latest token total, a whole number of 0 or more. */
+  tokens?: number;
+  /** Egress-scanned before it gets here. */
+  transcript_url?: string;
+  /** Egress-scanned before it gets here; appended with the store's time. */
+  note?: string;
+  /** The result of a `finish` attempt; stamped with the store's time. */
+  last_finish?: Omit<SessionFinishAttempt, "at">;
+}
+
+/** Finished `interactive` runs (succeeded or failed) and the tokens their outcomes count. For `factory stats`. */
+export interface SessionStats {
+  finished: number;
+  tokens: number;
+}
+
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion {
   applied: number;
@@ -350,6 +402,9 @@ export interface FactoryStore {
    * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
    * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
+   * An open session (a running `interactive` run, design 2026-11-01) holds its item like a running implement-type
+   * run, and a queued implement-type run whose item's allowed_paths overlap an open session's is skipped and stays
+   * queued. An `interactive` run is never claimed.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
    * clears paused_at and paused_by; its session_id and resume stay for the worker.
    */
@@ -389,6 +444,18 @@ export interface FactoryStore {
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
   heartbeat(runId: RunId, token: number, lease_ms: number): Promise<LeaseResult>;
+  /**
+   * `session start` (design 2026-11-01). Refused, with nothing written, when the item has a queued or running
+   * implement-type run, already has an open session, or when a running implement-type run or open session of
+   * another item overlaps the allowed_paths the item will have (pathsOverlap). Otherwise applies the transition
+   * (as `transition`) and inserts the `interactive` run: status running, attempt 1, a lease for `owner` with
+   * token 1, `input.session` holding the actor and transcript. Under the claim lock.
+   */
+  startSession(input: StartSessionInput): Promise<StartSessionResult>;
+  /** Changes an open session's record while it is a running `interactive` run with this `token`. */
+  updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult>;
+  /** Finished interactive runs and their tokens (outcomeTokens). Read-only. */
+  sessionStats(): Promise<SessionStats>;
   /** Records the outcome and clears the lease while the run is `running` with this `token`, even past `expires_at`. */
   completeRun(runId: RunId, token: number, outcome: RunOutcome): Promise<LeaseResult>;
   /** Finished runs the controller has not applied yet, oldest first. */
@@ -397,6 +464,8 @@ export interface FactoryStore {
    * Reaper: running runs whose lease expired → queued again, or failed once `attempt` (counted per claim)
    * reached max_attempts. A requeued run gets `not_before` = now + `backoff_ms(attempt)` (absent: at once).
    * A run whose item is CLOSED is cancelled instead of requeued, so a closed item never runs again.
+   * An `interactive` run is never requeued (a closed terminal does not come back): it fails with `session_lost`,
+   * its latest token total on the outcome.
    */
   expireLeases(max_attempts: number, backoff_ms?: (attempt: number) => number): Promise<RunId[]>;
   getRun(id: RunId): Promise<Run | null>;

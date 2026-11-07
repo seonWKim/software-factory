@@ -12,9 +12,11 @@ import type {
   Handoff,
   Run,
   RunId,
+  RunInput,
   RunKind,
   RunOutcome,
   RunStatus,
+  SessionState,
   SourceType,
   Stage,
   StateChange,
@@ -35,6 +37,7 @@ import type {
   WorkerId,
   WorkerPause,
 } from "../../../core/types.js";
+import { outcomeTokens } from "../../../core/types.js";
 import {
   type CoordinationSettings,
   type DependencyLink,
@@ -45,7 +48,9 @@ import {
   holdsOn,
   shortRef,
 } from "../../../core/coordination.js";
-import { IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE } from "../../../core/policy.js";
+import {
+  IMPLEMENT_KINDS, MODEL_ANSWERED, MODEL_STALL, MODEL_STALL_SINCE, SESSION_KIND, SESSION_LOST, pathsOverlap,
+} from "../../../core/policy.js";
 import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
@@ -75,7 +80,11 @@ import type {
   RedeemLinkResult,
   ResetSettingInput,
   SchemaVersion,
+  SessionStats,
+  SessionUpdate,
   SetSettingInput,
+  StartSessionInput,
+  StartSessionResult,
   SettingChange,
   SettingOverride,
   TransitionInput,
@@ -470,6 +479,10 @@ export class SqlFactoryStore implements FactoryStore {
           await tx.all(`SELECT work_item_id FROM runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
         ).map((r) => r.work_item_id as string),
       );
+      // Open sessions (design 2026-11-01): a person works on the item's branch, so it is busy like a running writer,
+      // and no worker writes to files the session's item may change.
+      const sessions = await this.openSessionPaths(tx);
+      for (const id of sessions.keys()) busy.add(id);
 
       // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
       // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
@@ -486,11 +499,14 @@ export class SqlFactoryStore implements FactoryStore {
         ? await this.coordinationContext(tx, queued, busy)
         : null;
       const settings = input.coordination ?? DEFAULT_COORDINATION;
+      const pathsOf = sessions.size > 0 ? await this.allowedPathsOf(tx, queued) : new Map<string, string[]>();
       for (const next of queued) {
         // An implement-type run waits while its own item has one running, or while the forge refuses the
         // credentials; it stays queued. Triage and review never wait.
         const writer = (IMPLEMENT_KINDS as readonly string[]).includes(next.kind as string);
         if (writer && (forgePaused || busy.has(next.work_item_id as string))) continue;
+        // It also waits while an open session's item overlaps its own (design 2026-11-01).
+        if (writer && [...sessions.values()].some((p) => pathsOverlap(p, pathsOf.get(next.work_item_id as string) ?? []))) continue;
         // An implement run also waits for its dependencies and, before its PR exists, while its cost is too high.
         if (next.kind === "implement" && coord && !(await this.coordinate(tx, next.id as RunId, next.work_item_id as WorkItemId, coord, settings))) {
           continue;
@@ -508,6 +524,122 @@ export class SqlFactoryStore implements FactoryStore {
       }
       return null;
     });
+  }
+
+  /** The allowed_paths of each open session's item (running `interactive` runs), by item id. */
+  private async openSessionPaths(tx: SqlExecutor): Promise<Map<string, string[]>> {
+    const rows = await tx.all(
+      `SELECT r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+       WHERE r.status = 'running' AND r.kind = ?`,
+      [SESSION_KIND],
+    );
+    return new Map(rows.map((r) => [r.work_item_id as string, parseList(r.allowed_paths)]));
+  }
+
+  /** The allowed_paths of the items of `queued` runs, by item id. */
+  private async allowedPathsOf(tx: SqlExecutor, queued: Row[]): Promise<Map<string, string[]>> {
+    const ids = [...new Set(queued.map((q) => q.work_item_id as string))];
+    if (ids.length === 0) return new Map();
+    const rows = await tx.all(`SELECT id, allowed_paths FROM work_items WHERE id IN (${placeholders(ids.length)})`, ids);
+    return new Map(rows.map((r) => [r.id as string, parseList(r.allowed_paths)]));
+  }
+
+  // Sessions (design 2026-11-01)
+
+  async startSession(input: StartSessionInput): Promise<StartSessionResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<StartSessionResult> => {
+      // The claim lock first: no claim moves a run to running between these checks and the insert below.
+      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      const current = await this.selectItem(tx, input.id, forUpdate);
+      if (!current) return { ok: false, reason: "not_found" };
+      if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
+      const kinds = [...IMPLEMENT_KINDS, SESSION_KIND];
+      const own = await tx.all(
+        `SELECT id, kind, status FROM runs WHERE work_item_id = ? AND kind IN (${placeholders(kinds.length)})
+           AND status IN ('queued', 'running') ORDER BY created_at, ${this.db.dialect.seq}`,
+        [input.id, ...kinds],
+      );
+      const session = own.find((r) => r.kind === SESSION_KIND && r.status === "running");
+      if (session) return { ok: false, reason: "session_open", run_id: session.id as RunId };
+      const writer = own.find((r) => r.kind !== SESSION_KIND);
+      if (writer) return { ok: false, reason: "implement_run", run_id: writer.id as RunId };
+      const paths = input.patch.allowed_paths ?? current.allowed_paths;
+      const others = await tx.all(
+        `SELECT r.id, r.kind, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+         WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) AND r.work_item_id <> ?
+         ORDER BY r.created_at, r.${this.db.dialect.seq}`,
+        [...kinds, input.id],
+      );
+      const hit = others.find((r) => pathsOverlap(paths, parseList(r.allowed_paths)));
+      if (hit) {
+        return { ok: false, reason: "overlap", run_id: hit.id as RunId, work_item_id: hit.work_item_id as WorkItemId, kind: hit.kind as RunKind };
+      }
+      const r = await this.applyTransition(tx, {
+        id: input.id,
+        expected_version: input.expected_version,
+        patch: input.patch,
+        actor: input.actor,
+        reason: input.reason,
+        ...(input.detail ? { detail: input.detail } : {}),
+        ...(input.cancel_queued_runs ? { cancel_queued_runs: true } : {}),
+      });
+      if (!r.ok) {
+        // applyTransition refuses before it writes; run_not_ackable cannot happen without ack_run.
+        return r.reason === "version_conflict" ? r : { ok: false, reason: "not_found" };
+      }
+      const id = newId("run") as RunId;
+      const now = this.now();
+      const state: SessionState = {
+        actor_id: input.actor.id,
+        transcript_url: input.transcript_url ?? null,
+        tokens: null,
+        notes: [],
+        last_finish: null,
+      };
+      await tx.run(
+        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at,
+           input, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?)`,
+        [
+          id, input.id, SESSION_KIND, `${input.id}:${SESSION_KIND}:${id}`, input.owner, this.after(input.lease_ms),
+          JSON.stringify({ session: state }), now, now, now,
+        ],
+      );
+      return { ok: true, item: r.item, run: (await this.selectRun(tx, id))!, state_change: r.state_change, cancelled: r.cancelled };
+    });
+  }
+
+  async updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult> {
+    const { forUpdate } = this.db.dialect;
+    return this.db.transaction(async (tx): Promise<LeaseResult> => {
+      const run = await this.selectRun(tx, runId, forUpdate);
+      const session = run?.input?.session;
+      if (!run || run.kind !== SESSION_KIND || run.status !== "running" || run.lease?.token !== token || !session) {
+        return { ok: false, reason: "lease_lost" };
+      }
+      const now = this.now();
+      const next: SessionState = {
+        ...session,
+        ...(update.tokens !== undefined ? { tokens: update.tokens } : {}),
+        ...(update.transcript_url !== undefined ? { transcript_url: update.transcript_url } : {}),
+        notes: update.note !== undefined ? [...session.notes, { at: now, text: update.note }] : session.notes,
+        ...(update.last_finish !== undefined ? { last_finish: { at: now, ...update.last_finish } } : {}),
+      };
+      const n = await tx.run(
+        "UPDATE runs SET input = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
+        [JSON.stringify({ ...run.input, session: next }), now, runId, token],
+      );
+      return n === 1 ? { ok: true, run: (await this.selectRun(tx, runId))! } : { ok: false, reason: "lease_lost" };
+    });
+  }
+
+  async sessionStats(): Promise<SessionStats> {
+    const rows = await this.db.all("SELECT outcome FROM runs WHERE kind = ? AND status IN ('succeeded', 'failed')", [SESSION_KIND]);
+    return {
+      finished: rows.length,
+      tokens: rows.reduce((n, r) => n + outcomeTokens(r.outcome === null || r.outcome === undefined ? null : (JSON.parse(r.outcome as string) as RunOutcome)), 0),
+    };
   }
 
   /**
@@ -827,7 +959,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick.
       const expired = await tx.all(
-        `SELECT id, attempt, work_item_id FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+        `SELECT id, attempt, work_item_id, kind, input FROM runs WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
       const failed: RunOutcome = {
@@ -844,6 +976,22 @@ export class SqlFactoryStore implements FactoryStore {
             `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [now, run.id as string],
+          );
+        } else if (run.kind === SESSION_KIND) {
+          // A closed terminal does not come back (design 2026-11-01): the session ends, never requeued.
+          const session = (run.input ? (JSON.parse(run.input as string) as RunInput) : null)?.session;
+          const lost: RunOutcome = {
+            status: "failed",
+            error_code: SESSION_LOST,
+            detail: "the session's lease expired with no heartbeat (the terminal stopped or closed)",
+            infra: false,
+            ...(session?.tokens != null ? { tokens: session.tokens } : {}),
+          };
+          await tx.run(
+            `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
+               updated_at = ?
+             WHERE id = ? AND status = 'running'`,
+            [JSON.stringify(lost), now, now, run.id as string],
           );
         } else if (Number(run.attempt) >= max_attempts) {
           await tx.run(

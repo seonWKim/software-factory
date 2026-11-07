@@ -156,8 +156,10 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * `resolve` is the agent run a human starts with `/resolve` on a merge conflict (design §5).
  * `manual` is a record, not work: a person pushed to the item's PR branch (design 2026-11-01). It is written
  * already succeeded and acknowledged, so no worker claims it and the controller applies nothing from it.
+ * `interactive` is a person's own session (`factory session`, design 2026-11-01): written `running` with a lease the
+ * person's terminal renews, never queued, so no worker claims it. Its actor is the person's user ID.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -166,6 +168,32 @@ export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" |
 export interface RunInput {
   notes?: string;
   wip?: WipRef;
+  /** An `interactive` run's session record (design 2026-11-01). Absent on every other run. */
+  session?: SessionState;
+}
+
+/**
+ * What an `interactive` run records beyond the run row (design 2026-11-01): who runs it, its transcript link,
+ * its latest token total, its notes and its last `finish` attempt. Written only while the run is `running`
+ * with the session's lease token.
+ */
+export interface SessionState {
+  actor_id: UserId;
+  /** An http or https URL, egress-scanned before it is stored. */
+  transcript_url: string | null;
+  /** The latest total from `--tokens`; null until one is given. Added to the item's token_cost once, when the run ends. */
+  tokens: number | null;
+  /** Egress-scanned notes, oldest first. */
+  notes: { at: Timestamp; text: string }[];
+  /** The result of the last `session finish`; null before the first. */
+  last_finish: SessionFinishAttempt | null;
+}
+
+export interface SessionFinishAttempt {
+  at: Timestamp;
+  ok: boolean;
+  /** Why it was refused, one line each, in gate order; empty when it passed. */
+  reasons: string[];
 }
 
 /**
@@ -273,6 +301,15 @@ export interface Run {
   session_id: string | null;
   /** Where a paused run's work is (folder, WIP commit, bundle), written by the pause; null when never paused. */
   resume: RunResume | null;
+  /**
+   * The person who runs an `interactive` run (design 2026-11-01): a user ID, never a display name, never the
+   * bot's. Null on every other run and on rows from before it existed.
+   */
+  actor_id: UserId | null;
+  /** An `interactive` run's transcript URL; null when none was given, and on other runs. */
+  transcript_url: string | null;
+  /** An `interactive` run's latest token total (`--tokens`); null when none was given, and on other runs. */
+  tokens: number | null;
   created_at: Timestamp;
   /** Rewritten by every heartbeat; on a running run it is the time of the last heartbeat (or the claim). */
   updated_at: Timestamp;
@@ -299,8 +336,8 @@ export function usageTokens(u: RunUsage): number {
 
 /**
  * The tokens an outcome adds to its item's `token_cost`. Succeeded: `data.tokens` (the full count since
- * 2026-11-02; older rows keep the input + output count they stored). Failed: its `usage`, 0 when it has none
- * (rows from before it existed, reaper failures, cancelled runs).
+ * 2026-11-02; older rows keep the input + output count they stored). Failed: its `usage`, else its `tokens` (an
+ * interactive session's total), 0 when it has neither (rows from before it existed, reaper failures, cancelled runs).
  */
 export function outcomeTokens(outcome: RunOutcome | null): number {
   if (!outcome) return 0;
@@ -308,7 +345,9 @@ export function outcomeTokens(outcome: RunOutcome | null): number {
     const t = Number(outcome.data.tokens);
     return Number.isFinite(t) && t >= 0 ? t : 0;
   }
-  return outcome.usage ? usageTokens(outcome.usage) : 0;
+  if (outcome.usage) return usageTokens(outcome.usage);
+  const t = Number(outcome.tokens);
+  return Number.isFinite(t) && t >= 0 ? t : 0;
 }
 
 /** The harness cost of an outcome in USD, or null when unknown (no usage stored, or the harness gave none). */
@@ -326,6 +365,8 @@ export type RunOutcome =
       status: "failed";
       /** What the run's agent calls used before it failed. Absent on rows from before it existed. */
       usage?: RunUsage;
+      /** An interactive session's latest token total (`--tokens`), when it gave one. Absent on agent runs. */
+      tokens?: number;
       /**
        * `rate_limited` means a usage or rate limit, `agent_stalled` a model that printed nothing for `stall_ms`;
        * neither is a failed attempt (design §5 Restarts).

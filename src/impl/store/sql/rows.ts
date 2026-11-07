@@ -203,6 +203,10 @@ export function rowToWorkItem(r: Row): WorkItem {
 }
 
 export function rowToRun(r: Row): Run {
+  const input = parseJson<Run["input"]>(r.input ?? null);
+  // An interactive run's actor, transcript and tokens live in its session record (design 2026-11-01); every
+  // other run, and every row from before it existed, reads them as null.
+  const session = input?.session ?? null;
   return {
     id: r.id as RunId,
     work_item_id: r.work_item_id as WorkItemId,
@@ -223,11 +227,14 @@ export function rowToRun(r: Row): Run {
     started_at: (r.started_at as Timestamp | null | undefined) ?? null,
     finished_at: (r.finished_at as Timestamp | null | undefined) ?? null,
     not_before: (r.not_before as Timestamp | null | undefined) ?? null,
-    input: parseJson(r.input ?? null),
+    input,
     paused_at: (r.paused_at as Timestamp | null | undefined) ?? null,
     paused_by: (r.paused_by as string | null | undefined) ?? null,
     session_id: (r.session_id as string | null | undefined) ?? null,
     resume: parseJson(r.pause_state ?? null),
+    actor_id: session?.actor_id ?? null,
+    transcript_url: session?.transcript_url ?? null,
+    tokens: session?.tokens ?? null,
     created_at: r.created_at as Timestamp,
     updated_at: r.updated_at as Timestamp,
   };

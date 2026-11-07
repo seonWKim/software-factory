@@ -187,3 +187,28 @@ export function autoResolveAttempts(keys: readonly string[], id: string, baseSha
 export function nextAutoResolveAttempt(done: number): number | null {
   return done < AUTO_RESOLVE_LIMIT ? done + 1 : null;
 }
+
+/**
+ * A person's own session (design 2026-11-01, `factory session`): written `running` with a lease, never queued,
+ * so no worker claims it. Not an implement kind: no worker writes for it, but it holds the item's branch.
+ */
+export const SESSION_KIND: RunKind = "interactive";
+
+/** The error code of a session the person ended with `session abandon`. */
+export const SESSION_ABANDONED = "abandoned";
+/** The error code of a session whose lease expired (the terminal closed or Ctrl-C): ended, never requeued. */
+export const SESSION_LOST = "session_lost";
+/**
+ * blocked_reason (with `blocked_on: human`, stage RUNNING) of an item whose session ended without a PR. No run is
+ * queued; the next `session start` takes it up again.
+ */
+export const SESSION_RELEASED = "session_released";
+
+/**
+ * Whether two path lists overlap: some path of one equals, contains or sits under some path of the other (an
+ * allowed path ending in `/` is a folder). Used to keep a session and a worker off the same files.
+ */
+export function pathsOverlap(a: readonly string[], b: readonly string[]): boolean {
+  const under = (p: string, q: string) => p === q || (q.endsWith("/") && p.startsWith(q));
+  return a.some((p) => b.some((q) => under(p, q) || under(q, p)));
+}
