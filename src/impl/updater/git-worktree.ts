@@ -7,6 +7,7 @@ import type { Clock } from "../../interfaces/clock.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import {
   CODE_ROOT_ENV,
+  CONFIG_ENV,
   type ChildHandle,
   MIGRATION_PENDING,
   type SupervisorRequest,
@@ -81,6 +82,11 @@ export interface GitWorktreeOptions {
   autoMigrate?: boolean;
   /** `<state_dir>/supervisor-request.json`, written by `npm run migrate`; read and removed on each poll. */
   requestFile?: string;
+  /**
+   * The external config (`--config` / FACTORY_CONFIG), absolute: every child gets it as FACTORY_CONFIG and its
+   * block size comes from it. Absent: each child reads its own folder's factory.config.json.
+   */
+  configFile?: string;
 }
 
 /**
@@ -462,7 +468,10 @@ export class GitWorktreeUpdater implements Updater {
       entry: join(dir, "dist", "main.js"),
       args: this.o.childArgs ?? ["dev"],
       cwd: repoPath,
-      env: { [CODE_ROOT_ENV]: dir, [SUPERVISED_ENV]: "1", [WORKER_INDEX_BASE_ENV]: String(base) },
+      env: {
+        [CODE_ROOT_ENV]: dir, [SUPERVISED_ENV]: "1", [WORKER_INDEX_BASE_ENV]: String(base),
+        ...(this.o.configFile ? { [CONFIG_ENV]: this.o.configFile } : {}),
+      },
     });
     const started: Live = { child, dir, rev, base, size, draining: false, timer: null };
     const older = this.live.filter((l) => !l.draining);
@@ -528,12 +537,13 @@ export class GitWorktreeUpdater implements Updater {
   }
 
   /**
-   * The child's slot count from the folder's factory.config.json, the file its child reads: `max_workers` when it
-   * is a valid integer of at least `workers`, else `workers`. Absent or invalid: 1.
+   * The child's slot count from the file its child reads (the external config, else the folder's
+   * factory.config.json): `max_workers` when it is a valid integer of at least `workers`, else `workers`.
+   * Absent or invalid: 1.
    */
   private async blockSize(dir: string): Promise<number> {
     try {
-      const file = JSON.parse(await readFile(join(dir, "factory.config.json"), "utf8")) as { workers?: unknown; max_workers?: unknown };
+      const file = JSON.parse(await readFile(this.o.configFile ?? join(dir, "factory.config.json"), "utf8")) as { workers?: unknown; max_workers?: unknown };
       const ok = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1;
       const workers = ok(file.workers) ? file.workers : 1;
       return ok(file.max_workers) && file.max_workers >= workers ? file.max_workers : workers;

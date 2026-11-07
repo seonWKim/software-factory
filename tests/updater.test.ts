@@ -12,7 +12,7 @@ import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, isCodePath, remo
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import { autoMigrate } from "../src/impl/updater/auto-migrate.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
-import { type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
+import { CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { SUPERVISED_ENV, createUpdater, supervise } from "../src/supervisor.js";
 import { recordingLog, waitFor } from "./helpers/fakes.js";
@@ -234,7 +234,7 @@ class FakeLauncher implements ChildLauncher {
 function setup(
   opts: { runTimeoutMs?: number; statusFile?: string; world?: World } & Pick<
     GitWorktreeOptions,
-    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile"
+    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile" | "configFile"
   > = {},
 ) {
   const world = opts.world ?? new World();
@@ -258,6 +258,7 @@ function setup(
     ...(opts.applyMigrations ? { applyMigrations: opts.applyMigrations } : {}),
     ...(opts.autoMigrate !== undefined ? { autoMigrate: opts.autoMigrate } : {}),
     ...(opts.requestFile ? { requestFile: opts.requestFile } : {}),
+    ...(opts.configFile ? { configFile: opts.configFile } : {}),
   });
   return { world, launcher, log, clock, updater };
 }
@@ -561,6 +562,44 @@ describe("updater: git-worktree start-then-drain", () => {
     world.events = [];
     await updater.poll();
     expect(world.events).toEqual(["fetch"]);
+  });
+});
+
+describe("updater: git-worktree with an external config (--config / FACTORY_CONFIG)", () => {
+  /** An external config outside the checkout, with its own worker counts. */
+  const externalConfig = (workers: Record<string, number>) => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-x-")), "factory.config.json");
+    writeFileSync(file, JSON.stringify(workers));
+    return file;
+  };
+
+  it("each new child gets the same absolute config path, so an update keeps using the external file", async () => {
+    const configFile = externalConfig({ workers: 1 });
+    const { world, launcher, updater } = setup({ configFile });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    world.push("c3", ["factory.config.json"]);
+    await updater.poll();
+    await settle();
+    expect(launcher.children.map((c) => c.spec.env[CONFIG_ENV])).toEqual([configFile, configFile, configFile]);
+    expect(launcher.children.map((c) => c.spec.env[CODE_ROOT_ENV])).toEqual([world.path(V("c1")), world.path(V("c2")), world.path(V("c3"))]);
+  });
+
+  it("without one, a child gets no FACTORY_CONFIG and reads its own folder's file", async () => {
+    const { launcher, updater } = setup();
+    await updater.start();
+    expect(launcher.children[0]!.spec.env[CONFIG_ENV]).toBeUndefined();
+  });
+
+  it("the worker block size comes from the external config's workers and max_workers, not the folder's file", async () => {
+    const { world, launcher, updater } = setup({ configFile: externalConfig({ workers: 2, max_workers: 3 }) });
+    world.workers = 7; // the version folder's factory.config.json: ignored
+    launcher.drainMode = "hold";
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    await updater.poll();
+    expect(launcher.children.map((c) => c.spec.env[WORKER_INDEX_BASE_ENV])).toEqual(["0", "3"]);
   });
 });
 
