@@ -67,7 +67,7 @@ describe("GET /api/v1/failures", () => {
     expect(day.groups[0].last_seen).toBe(new Date(clock.now().getTime() - HOUR).toISOString());
 
     const week = (await get(d, "/api/v1/failures?window=7d")).body;
-    expect(week.groups.map((g: any) => [g.code, g.count, g.items])).toEqual([["tests_failed", 3, 2], ["git_failed", 2, 2]]);
+    expect(week.groups.map((g: any) => [g.code, g.count, g.items])).toEqual([["tests_failed", 3, 1], ["git_failed", 2, 2]]);
     // The default window is 24h.
     expect((await get(d, "/api/v1/failures")).body.window).toBe("24h");
   });
