@@ -1965,10 +1965,10 @@ function renderNewSessionResume(wip: string | null): string {
   ].join("\n");
 }
 
-/** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
 /** State change reasons that start an implement loop on an existing PR. */
 const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested"];
 
+/** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
 function fenced(text: string): string {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(longest + 1);
