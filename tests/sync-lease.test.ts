@@ -193,6 +193,35 @@ describe("sync lease takeover", () => {
     expect(await store.getCursor("intake:github_issue")).toBe(moved);
   });
 
+  it("a holder whose fenced write is refused drops the lease at once and logs it", async () => {
+    const { store, log, a, b, write } = await pair();
+    await a.controller.tickOutbox();
+    expect(await store.getSyncLease(LEASE)).toMatchObject({ owner: "host:a", token: 1 });
+    // Another replica takes the lease before a's next heartbeat: a still believes it holds token 1.
+    await store.releaseSyncLease(LEASE, 1);
+    expect(await store.acquireSyncLease(LEASE, "host:b", config.lease_ms)).toMatchObject({ ok: true });
+    const markers = [await write(), await write()];
+    await a.controller.tickOutbox();
+    expect(a.source.comments).toEqual([]);
+    expect(log.lines.filter((l) => l.msg === "sync lease lost").map((l) => l.fields)).toEqual([
+      expect.objectContaining({ sync: "github_issue", owner: "host:a", reason: "fenced_write_refused" }),
+    ]);
+    await b.controller.tickOutbox();
+    expect(b.source.comments.map((c) => c.marker)).toEqual(markers);
+  });
+
+  it("a refused cursor write under a live lease keeps the lease", async () => {
+    const { store, log, a } = await pair();
+    await a.controller.tickIntake();
+    // The cursor moved under a (e.g. the same tick ran twice); the lease token is still a's.
+    const cursor = await store.getCursor("intake:github_issue");
+    await store.advanceCursor("intake:github_issue", cursor, "elsewhere");
+    a.source.queue.push({ kind: "help_requested", source: issue(1).source, comment_id: "1", requester: { provider: "github", subject: "1", login: "alice" } });
+    await a.controller.tickIntake();
+    expect(log.lines.filter((l) => l.msg === "sync lease lost")).toEqual([]);
+    expect(await store.getSyncLease(LEASE)).toMatchObject({ owner: "host:a", token: 1 });
+  });
+
   it("a controller that stops releases the lease, so another replica takes it at once", async () => {
     const { store, a, b } = await pair();
     const stop = new AbortController();

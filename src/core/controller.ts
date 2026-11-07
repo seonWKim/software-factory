@@ -607,9 +607,19 @@ export class Controller {
 
   /** Moves cursor `name`, fenced with the sync lease token for the synced type: a stale token moves nothing. */
   private async moveCursor(type: SourceType, name: string, expected: string | null, next: string): Promise<void> {
+    if (type === GITHUB_SOURCE_TYPE && this.syncedElsewhere()) return;
     const fence = this.fenceFor(type);
-    if (fence) await this.d.store.advanceSyncCursor(fence, name, expected, next);
-    else await this.d.store.advanceCursor(name, expected, next);
+    if (!fence) await this.d.store.advanceCursor(name, expected, next);
+    else if (!(await this.d.store.advanceSyncCursor(fence, name, expected, next))) await this.fenceRefused(fence);
+  }
+
+  /**
+   * A write fenced with `fence` was refused. When the lease's token moved on, another replica took it: the lease is
+   * dropped now rather than at the next heartbeat. A refusal under the current token (the cursor or the delivery
+   * moved elsewhere) keeps it.
+   */
+  private async fenceRefused(fence: SyncFence): Promise<void> {
+    if ((await this.d.store.getSyncLease(fence.name))?.token !== fence.token) this.sync?.lost();
   }
 
   /** This process's forge budget, stored for the status page; the stored value is replaced, never merged. */
@@ -4058,9 +4068,13 @@ export class Controller {
     const post = this.poster(row);
     if (!post) return;
     // Fenced: a replica whose sync lease was taken over claims nothing, so no comment goes out twice.
+    if (row.source_type === GITHUB_SOURCE_TYPE && this.syncedElsewhere()) return;
     const fence = this.fenceFor(row.source_type);
     const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms, ...(fence ? [fence] : []));
-    if (token === null) return;
+    if (token === null) {
+      if (fence) await this.fenceRefused(fence);
+      return;
+    }
     // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
     // edited, only logged.
     const stored = await this.d.store.getPostedComment(row.target.id, row.marker, row.body);
