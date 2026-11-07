@@ -30,4 +30,5 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | KeepAwake | `caffeinate`, `none` | [keep-awake.md](plugins/keep-awake.md) |
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
 | TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
+| NetworkProbe | `http` | [network-probe.md](plugins/network-probe.md) |
 | Forge (optional, no default) | `github` | [forge.md](plugins/forge.md) |
