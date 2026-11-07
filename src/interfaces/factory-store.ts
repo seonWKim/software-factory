@@ -588,6 +588,22 @@ export interface FactoryStore {
    */
   redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult>;
 
+  // Local users (issue #318): who may act from the local CLI and UI under the `local` auth plugin.
+
+  /** The local user row for `user_id`, or null. */
+  getLocalUser(user_id: UserId): Promise<LocalUser | null>;
+  /** Every local user, the owner first, then oldest first. */
+  listLocalUsers(): Promise<LocalUser[]>;
+  /**
+   * Makes `user_id` the owner when the store has no owner yet, and returns the owner (the existing one, or
+   * `user_id`). At most one owner, whatever replicas or terminals race: a second claim returns the first owner.
+   */
+  claimLocalOwner(user_id: UserId): Promise<LocalUser>;
+  /** Gives a non-owner user `role` (added or changed). The owner's row is never changed by this. */
+  setLocalUserRole(user_id: UserId, role: Exclude<LocalRole, "owner">, added_by: UserId): Promise<{ ok: true; created: boolean } | { ok: false; reason: "owner" }>;
+  /** Removes a non-owner user's row. */
+  removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner">;
+
   // Runtime settings overrides (design 2026-11-03, "Settings change at runtime"). The store keeps rows as they
   // are given; checking a key or value is the caller's job (src/core/settings.ts).
 
@@ -857,6 +873,19 @@ export interface ResetSettingInput {
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
 /** Wrong codes after which every live code is locked. */
 export const LINK_CODE_MAX_FAILURES = 5;
+
+/** A local user's role (issue #318): `owner` (one, the first identity; may manage users) > `approver` > `requester`. */
+export type LocalRole = "owner" | "approver" | "requester";
+
+export const LOCAL_ROLES: readonly LocalRole[] = ["owner", "approver", "requester"];
+
+export interface LocalUser {
+  user_id: UserId;
+  role: LocalRole;
+  /** Who added the row: the owner's own ID for the owner. */
+  added_by: UserId;
+  created_at: Timestamp;
+}
 
 export type RedeemLinkResult =
   | { ok: true; user_id: UserId }
