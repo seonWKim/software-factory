@@ -23,6 +23,7 @@ import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
+import { readGitHubBudget } from "./github-budget.js";
 import { effectiveWorkers, readSettings } from "./settings-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
@@ -274,6 +275,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: token,
+    /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
+    github_budget: await readGitHubBudget(s, c.now),
     running: running.length,
     queued: queued.length,
     last_24h: {

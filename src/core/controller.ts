@@ -93,6 +93,32 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
+/**
+ * The GitHub core rate limit as one process sees it (design §5 Sources, GitHub call budget): GitHub's limit,
+ * remaining calls and reset time, this process's `budget_share`, the calls it may count (`share_limit`, null before
+ * GitHub reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
+ * optional reads wait (under `min_remaining`, or the share is used).
+ */
+export interface GitHubBudgetStatus {
+  limit: number;
+  remaining: number;
+  reset_at: string;
+  budget_share: number;
+  share_limit: number | null;
+  counted: number;
+  state: "ok" | "low" | "waiting";
+  as_of: string;
+}
+
+/** The store cursor the controller writes its GitHub budget to after each poll, for the status page. */
+export const GITHUB_BUDGET_CURSOR = "github:budget";
+
+/** The reset time a call refused for a used-up rate limit waits for (its `wait_until`), else null. */
+export function rateLimitWait(err: unknown): string | null {
+  const v = err instanceof Error ? (err as { wait_until?: unknown }).wait_until : undefined;
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
 export interface ControllerDeps {
   store: FactoryStore;
   /**
@@ -150,6 +176,11 @@ export interface ControllerDeps {
    * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
    */
   sandbox?: Sandbox;
+  /**
+   * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
+   * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
+   */
+  github_budget?: () => GitHubBudgetStatus | null;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -442,6 +473,7 @@ export class Controller {
     const forge = this.forge;
     if (pollDue && forge) await this.guard("forge", () => this.tickForge(forge));
     for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
+    if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
     if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
     await this.guard("source closes", () => this.tickSourceCloses());
     // Phases are GitHub sub-issues, so their holds and parents move once per poll, after its closes are applied.
@@ -457,6 +489,14 @@ export class Controller {
   private async applyPoll({ source, cursor, result }: Polled): Promise<void> {
     for (const e of result.events) await this.guard(`event:${e.kind}`, () => this.handle(e));
     await this.d.store.advanceCursor(`intake:${source.type}`, cursor, result.next_cursor);
+  }
+
+  /** This process's GitHub budget, stored for the status page; the stored value is replaced, never merged. */
+  private async recordGitHubBudget(): Promise<void> {
+    const status = this.d.github_budget?.();
+    if (!status) return;
+    const current = await this.d.store.getCursor(GITHUB_BUDGET_CURSOR);
+    await this.d.store.advanceCursor(GITHUB_BUDGET_CURSOR, current, JSON.stringify({ ...status, replica_id: this.d.replica_id ?? null }));
   }
 
   /**
@@ -3515,7 +3555,11 @@ export class Controller {
     try {
       await fn();
     } catch (err) {
-      this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      // A GitHub call refused with no calls left is a wait for the reset, not a failure: the step runs again next
+      // poll, and every other step (local work) goes on.
+      const until = rateLimitWait(err);
+      if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
+      else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
     }
   }
 }
