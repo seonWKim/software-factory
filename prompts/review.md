@@ -18,7 +18,10 @@ When to stop and ask (needs_human):
 
 Output:
 - verdict: "bug" if any done criterion is unmet, a test fails, or you found a real defect; otherwise "pass".
-- findings: one line each, specific (file, behavior, how to reproduce). Empty when passing.
+- findings: one object each, with `kind` and `text`. `text` is one line, specific (file, behavior, how to reproduce). Empty when passing.
+  - kind `code`: a defect the implementer can fix inside the spec (a bug, a failing test, an unmet criterion that the allowed paths can meet). It goes back to the implementer.
+  - kind `spec`: a finding that needs the spec changed, not the code: a criterion that needs a file outside the allowed paths, or a criterion that conflicts with a repo rule. It sends the spec back to triage for a revision.
+- unverified: checks you could not run or confirm, one line each (for example "could not run the tests: listen EPERM in the sandbox"). They are listed on the PR under "Not verified". Never put them in findings, and an unverified item never makes the verdict "bug" on its own. Empty when you verified everything.
 - tier: your rechecked tier.
 - summary: two to four sentences.
 

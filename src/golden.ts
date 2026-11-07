@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { LoadedConfig, Prompts } from "./core/config.js";
 import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/model-choice.js";
 import type { ProjectRef } from "./core/project.js";
-import { REVIEW_SCHEMA, parseReview } from "./core/outputs.js";
+import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
 import { toolsNamed } from "./core/worker.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
@@ -325,6 +325,7 @@ export interface CaseResult {
   id: string;
   expect: Expect;
   verdict: Verdict;
+  /** One line per finding: a code finding's text, a spec finding's text marked `(spec)` (issue #222). */
   findings: string[];
 }
 
@@ -477,7 +478,8 @@ async function runOne(deps: GoldenRunDeps, c: LoadedCase, stamp: string, signal:
     if (result.status !== "completed") return errored;
     const review = parseReview(result.output);
     if (!review.ok) return errored;
-    return { id: c.id, expect: c.expect, verdict: review.value.verdict, findings: review.value.findings };
+    // Scored on the verdict alone: unverified checks never make a case flagged (issue #222).
+    return { id: c.id, expect: c.expect, verdict: review.value.verdict, findings: review.value.findings.map(findingLine) };
   } catch {
     return errored;
   } finally {
