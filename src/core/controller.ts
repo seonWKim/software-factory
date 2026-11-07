@@ -57,7 +57,6 @@ import {
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
-  MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
   SESSION_RELEASED,
@@ -68,6 +67,7 @@ import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -631,23 +631,25 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, one short prompt on the cheap
-   * model class through the LLM provider. An answer ends the pause (`model_answered`), so claims resume; no
-   * answer (an error, a refusal, a throw or no reply within stall_ms) moves the pause probe_interval_ms later.
-   * Both are store writes that only move times later, so two replicas probing at once end in the same state.
+   * The stall pause's probe (design §5 Restarts): once its probe time has passed, any live controller may probe
+   * it, and the store's conditional move of the probe time (`takeStallProbe`) lets one replica ask per due time.
+   * One short prompt on the cheap model class through the LLM provider: an answer ends the pause as
+   * `endClaimPause("model_stall")` does (`model_answered`), so claims resume; no answer (an error, a refusal, a
+   * throw or no reply within stall_ms) keeps it and moves the probe probe_interval_ms after the failed probe.
    * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
    */
   private async probeStep(): Promise<void> {
     const due = await this.d.store.getClaimPause(MODEL_STALL);
+    const interval = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
     if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
+    if (!(await this.d.store.takeStallProbe(due, iso(this.d.clock.now().getTime() + interval))).taken) return;
     const answered = this.d.llm ? await this.probe(this.d.llm) : true;
-    const now = this.d.clock.now().getTime();
     if (answered) {
-      await this.d.store.pauseClaims(iso(now), MODEL_ANSWERED);
+      await this.d.store.endClaimPause(MODEL_STALL);
       this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(now + (this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms)), MODEL_STALL);
+    const next = await this.d.store.pauseClaims(iso(this.d.clock.now().getTime() + interval), MODEL_STALL);
     this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
   }
 
@@ -1188,10 +1190,24 @@ export class Controller {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
+      return this.decide(id, async (x) =>
+        withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
+  }
+
+  /**
+   * A spec decision (approve, reject, revise) gets the standing-approval detail (design 05-standing-approvals):
+   * gate, tier, kind, outcome, whether the spec changed, and the deciding user's ID. Any other decision as it is.
+   */
+  private async withSpecDecision(it: WorkItem, d: Decision | Refusal): Promise<Decision | Refusal> {
+    if (!d || "refuse" in d) return d;
+    const outcome = SPEC_DECISIONS[d.reason];
+    if (!outcome) return d;
+    const kind = specKind(it, it.parent_id === null && (await this.specPhases(it)) !== null);
+    const gate = specDecisionDetail({ tier: it.tier, kind, outcome, spec_changed: specChanged(outcome, d.patch), actor: d.actor });
+    return { ...d, detail: { ...d.detail, ...gate } };
   }
 
   /**
@@ -1762,7 +1778,13 @@ export class Controller {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+      detail: {
+        phases: phases.length,
+        sub_issues: JSON.stringify(refs.map((r) => r.id)),
+        ...(note ? { note } : {}),
+        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor }),
+        ...tag,
+      },
     });
     return null;
   }

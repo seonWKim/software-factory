@@ -26,6 +26,9 @@ import type {
   SessionFinish,
   SourceRef,
   SourceType,
+  StandingGate,
+  StandingProposal,
+  StandingRule,
   StateChange,
   StateChangeDetail,
   Stage,
@@ -152,6 +155,17 @@ export interface NewImproveReport extends ImproveWindow {
   project: string;
   groups: ImproveReport["groups"];
   patterns: ImproveReport["patterns"];
+}
+
+/** A standing-approval rule as written; the store adds the timestamps. */
+export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
+
+/** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
+export interface NewStandingProposal {
+  gate: StandingGate;
+  tier: Tier;
+  run_length: number;
+  threshold: number;
 }
 
 export interface TransitionInput {
@@ -458,11 +472,18 @@ export interface FactoryStore {
   /**
    * Ends claim pause `name` now (`factory resume`, the dashboard's "Resume now"; design §5 Restarts). `rate_limit`,
    * `forge_auth`, `preflight_access`: a row still in effect gets `resume_at` = now. `model_stall`: in effect, its
-   * `model_answered` row moves to the probe time, as an answered probe would, so `model_stall_since` reads null too.
+   * `model_answered` row and its probe time move to the earlier of the probe time and now, as an answered probe
+   * would, so `model_stall_since` reads null too and a stall right after starts a new pause.
    * `ended` is true when a pause was in effect. A pause not in effect (none, already over, a second call) changes
    * no row. `model_stall_since` and `model_answered` are not pauses of their own and throw.
    */
   endClaimPause(name: ClaimPauseName): Promise<{ ended: boolean }>;
+  /**
+   * Takes the probe of a due `model_stall` pause (design §5 Restarts): while the pause is in effect with probe
+   * time `due`, moves it to `next` and returns `taken`. Conditional, so among replicas that read the same due
+   * time exactly one probes it; a moved, ended or missing pause changes no row and is never started again.
+   */
+  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
   /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
@@ -529,6 +550,20 @@ export interface FactoryStore {
   /** Stores the report of `input.run_id`. A report for that run already there: that one, `created: false`. */
   recordImproveReport(input: NewImproveReport): Promise<{ report: ImproveReport; created: boolean }>;
   getImproveReport(run_id: RunId): Promise<ImproveReport | null>;
+
+  // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
+
+  /** Writes the rule of (gate, tier): a new row, or the stored row's `enabled` and `set_by` with a new `updated_at`. */
+  putStandingRule(input: NewStandingRule): Promise<StandingRule>;
+  /** Every rule, by gate then tier. */
+  listStandingRules(): Promise<StandingRule[]>;
+  /**
+   * Stores one proposal per (gate, tier, run_length). One already there: that one, `created: false`, nothing
+   * written (another replica or a second pass found the same run).
+   */
+  recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }>;
+  /** Every proposal, by gate, tier, then run length. */
+  listStandingProposals(): Promise<StandingProposal[]>;
 
   // Coordination (design §5, 2026-11-03)
 

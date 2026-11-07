@@ -575,7 +575,31 @@ export const MIGRATIONS: readonly string[] = [
     UNIQUE (project_key, pattern_key)
   );
   `,
-  // 32: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
+  // 32: standing approvals (design 05-standing-approvals, issue #298). `standing_rules`: one row per (gate, tier),
+  // `enabled` 0 or 1, `set_by` a user ID. `standing_proposals`: one row per (gate, tier, run_length), the run of
+  // unchanged approvals that reached `threshold`. Stored only: nothing acts on either yet. IF NOT EXISTS: safe to run
+  // again on a database whose recorded version was set back below 32.
+  `
+  CREATE TABLE IF NOT EXISTS standing_rules (
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    enabled     INTEGER NOT NULL,
+    set_by      TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (gate, tier)
+  );
+  CREATE TABLE IF NOT EXISTS standing_proposals (
+    id          TEXT PRIMARY KEY,
+    gate        TEXT NOT NULL,
+    tier        INTEGER NOT NULL,
+    run_length  INTEGER NOT NULL,
+    threshold   INTEGER NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (gate, tier, run_length)
+  );
+  `,
+  // 33: alerts (design 05-alarms). `alerts`: one row per alert the alarm step stored, its code, count and scanned
   // detail (NULL when the egress scanner flagged it). `alert_patterns`: one row per pattern, the time it last
   // alerted; the conditional update on it is the 6-hour dedupe. IF NOT EXISTS: safe to run again.
   `
