@@ -6,8 +6,11 @@ import { alice, pipeline } from "./helpers/fakes.js";
 
 type Harness = Awaited<ReturnType<typeof pipeline>>;
 
-/** A token-shaped string the pattern scanner flags (built here so this file holds no token literal). */
-const TOKEN = `ghp_${"a".repeat(36)}`;
+/**
+ * The canary, which fails a run when a transcript holds it (a token-shaped string alone only keeps the transcript
+ * out of storage). Built here so this file holds no literal the scanner flags.
+ */
+const TOKEN = ["sf", "canary", "abcdef123456"].join("-");
 
 const CASES: { code: string; setup: (f: Harness) => void; implement?: () => { output: unknown; transcript?: string } }[] = [
   { code: "no_commits", setup: (f) => void (f.sandbox.commits = []) },
