@@ -597,7 +597,7 @@ export class Controller {
           "",
           ...r.conflicts.map((f) => `- \`${f}\``),
           "",
-          `Reply \`/revise <feedback>\` (\`factory revise ${item.id} <feedback>\`) or resolve it on the branch, then run \`factory merge ${item.id}\` again`,
+          `\`${branch}\` is a local branch of this repository: merge \`${repo.base_branch}\` into it and commit the resolution there, then run \`factory merge ${item.id}\` again`,
         ].join("\n");
       } else refusal = r.refused;
     }
