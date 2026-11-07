@@ -53,7 +53,7 @@ export interface WorkerDeps {
   id: WorkerId;
   /**
    * The worker's index n in its process's pool. Set: passed as SF_WORKER_INDEX to the agent and to the update
-   * run's test command, so parallel runs on one host can pick their own ports or test DB. Unique only within
+   * and resolve runs' gate commands, so parallel runs on one host can pick their own ports or test DB. Unique only within
    * one process. Absent (a lone Worker): SF_WORKER_INDEX is not set.
    */
   index?: number;
@@ -69,6 +69,11 @@ export interface WorkerDeps {
   log: Logger;
   /** Non-secret env for the worker's own git commands inside the sandbox (PATH etc.). */
   toolEnv: Readonly<Record<string, string>>;
+  /**
+   * The host's CPU count (compose: `os.availableParallelism()`). Set: each run's agent and check commands get
+   * SF_TEST_WORKERS, this run's share of it (testWorkerShare). Absent: SF_TEST_WORKERS is not set.
+   */
+  cpus?: number;
   /** Held while a claimed run executes, released after; never held while idle. */
   awake: KeepAwake;
   /**
@@ -108,6 +113,17 @@ export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];
 
 /** The worker's index in its process (WorkerDeps.index), for per-worker ports or test DBs. Not a secret. */
 export const WORKER_INDEX_ENV = "SF_WORKER_INDEX";
+
+/** How many test workers (vitest `maxWorkers`) one run's test command may start (design §5 Parallel workers). Not a secret. */
+export const TEST_WORKERS_ENV = "SF_TEST_WORKERS";
+
+/**
+ * One run's share of the host's CPUs: the CPUs split evenly over the claiming slots, at least 1. Ten slots on ten
+ * CPUs give 1 each, so ten test runs at once start ten test workers in all, not a hundred.
+ */
+export function testWorkerShare(cpus: number, slots: number): number {
+  return Math.max(1, Math.floor(cpus / Math.max(1, slots)));
+}
 
 /** Git hooks off for every command the worker runs after an agent step (merge, commit, checkout). */
 const NO_HOOKS = ["-c", "core.hooksPath=/dev/null"];
@@ -1545,8 +1561,8 @@ export class Worker {
   }
 
   /**
-   * The check list in the run folder with the check env: the tool env, the worker index and the run's test
-   * database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
+   * The check list in the run folder with the check env: the tool env, the slot env (worker index, test workers)
+   * and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an agent. Stops at the first failure.
    */
   private async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal): Promise<CheckRound> {
     const db = await this.database(run);
@@ -1554,7 +1570,7 @@ export class Worker {
       sandbox: this.d.sandbox,
       handle,
       commands: checkCommands(this.cfg.repo),
-      env: { ...this.d.toolEnv, ...this.indexEnv(), ...db?.env },
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
@@ -2046,7 +2062,7 @@ export class Worker {
   }
 
   /**
-   * One gate command (install, or a check) in the sandbox with the worker's tool env; a check also gets the
+   * One gate command (install, or a check) in the sandbox with the worker's tool env and slot env; a check also gets the
    * run's test database env, and its output is redacted. Non-zero: `tests_failed`.
    */
   private async gate(run: Run, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal, check: boolean): Promise<void> {
@@ -2055,7 +2071,7 @@ export class Worker {
       sandbox: this.d.sandbox,
       handle,
       commands: [cmd],
-      env: { ...this.d.toolEnv, ...db?.env },
+      env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
       redact: db?.redact ?? [],
@@ -2108,7 +2124,7 @@ export class Worker {
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...role,
-      env_allowlist: { ...role.env_allowlist, ...this.indexEnv() },
+      env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
@@ -2165,8 +2181,12 @@ export class Worker {
   }
 
   /** SF_WORKER_INDEX for the agent and the update test command; empty for a Worker outside a pool. */
-  private indexEnv(): Record<string, string> {
-    return this.d.index === undefined ? {} : { [WORKER_INDEX_ENV]: String(this.d.index) };
+  /** SF_WORKER_INDEX and SF_TEST_WORKERS, each when known: for the agent and the check commands. Not secrets. */
+  private slotEnv(): Record<string, string> {
+    return {
+      ...(this.d.index === undefined ? {} : { [WORKER_INDEX_ENV]: String(this.d.index) }),
+      ...(this.d.cpus === undefined ? {} : { [TEST_WORKERS_ENV]: String(testWorkerShare(this.d.cpus, this.live.workers())) }),
+    };
   }
 
   /**

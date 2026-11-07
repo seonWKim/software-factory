@@ -266,3 +266,35 @@ describe("ui app: merge check labels", () => {
     expect(html).toMatch(/checked \S+ ago/);
   });
 });
+
+// The item page's command buttons (design §9, issue #228), rendered to static markup in the node environment.
+describe("ui app: item commands markup", () => {
+  it("the item page has a button per command, in order, and the note box for revise and reject", () => {
+    const AT = "2026-11-07T00:00:00.000Z";
+    const names = ["approve", "revise", "reject"];
+    const detail: ItemDetail = {
+      as_of: AT,
+      item: {
+        id: "wi_1", source: { type: "local", id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "READY", close_reason: null,
+        blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null,
+        version: 1, created_at: AT, updated_at: AT, merge_check: null,
+      },
+      timeline: [],
+      runs: [],
+      commands: names.map((name) => ({ name, usage: `/${name}`, description: name })),
+      replies: [],
+    };
+    const client = new QueryClient();
+    client.setQueryData([API.item("wi_1")], detail);
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
+    const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
+    expect(buttons).toEqual(names.map((n) => [n, n]));
+    expect(html).toMatch(/<textarea aria-label="Note"/);
+    // Blank box: revise and reject start disabled, approve does not.
+    const tag = (n: string) => html.match(new RegExp(`<li data-command="${n}"[^>]*><button[^>]*>`))![0];
+    expect(tag("revise")).toContain(" disabled=\"\"");
+    expect(tag("reject")).toContain(" disabled=\"\"");
+    expect(tag("approve")).not.toContain(" disabled=\"\"");
+  });
+});
