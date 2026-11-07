@@ -12,10 +12,11 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
@@ -28,11 +29,12 @@ async function factory(
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
+  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const storage = new MemoryStorage();
   const scanner = new PatternEgressScanner(async () => knownSecrets);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
+  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: opts.workerConfig ?? config, prompts, log: silent,
     scanner,
@@ -43,7 +45,7 @@ async function factory(
     while (await worker.tick()) await controller.tickRuns();
     await controller.tickRuns();
   };
-  return { clock, store, source, sandbox, broker, storage, controller, worker, step };
+  return { clock, store, source, forge, sandbox, broker, storage, controller, worker, step };
 }
 
 const review = (verdict: "pass" | "bug", tier = 2) => () => ({
@@ -51,14 +53,14 @@ const review = (verdict: "pass" | "bug", tier = 2) => () => ({
 });
 
 describe("CI check gate before merge_pending", () => {
-  async function toReview(results: import("../src/interfaces/source-adapter.js").PrChecks[]) {
+  async function toReview(results: import("../src/interfaces/forge.js").PrChecks[]) {
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
       review: review("pass"),
     });
     const f = await factory(runner);
-    f.source.checkResults = results;
+    f.forge.checkResults = results;
     const src = issueRef(61);
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await f.step();
@@ -73,7 +75,7 @@ describe("CI check gate before merge_pending", () => {
   it("checks passed: the item moves to merge_pending", async () => {
     const f = await toReview([{ state: "passed" }]);
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
-    expect(f.source.checkCalls).toEqual([42]);
+    expect(f.forge.checkCalls).toEqual([42]);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["review_passed"]);
   });
@@ -85,16 +87,16 @@ describe("CI check gate before merge_pending", () => {
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["checks_pending"]);
 
     // Still pending on the next look: nothing changes, no new state change.
-    f.source.checkResults = [{ state: "pending" }];
+    f.forge.checkResults = [{ state: "pending" }];
     const before = (await f.store.getWorkItem(f.item.id))!;
     await f.controller.tickChecks();
     expect((await f.store.getWorkItem(f.item.id))!.version).toBe(before.version);
 
     // A source error is not a verdict: the item keeps waiting.
-    f.source.checksError = new Error("boom");
+    f.forge.checksError = new Error("boom");
     await f.controller.tickChecks();
     expect((await f.store.getWorkItem(f.item.id))!.version).toBe(before.version);
-    f.source.checksError = null;
+    f.forge.checksError = null;
 
     await f.controller.tickChecks();
     const after = (await f.store.getWorkItem(f.item.id))!;
@@ -171,7 +173,7 @@ describe("one issue to one merged PR", () => {
     expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
-    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
@@ -182,6 +184,9 @@ describe("one issue to one merged PR", () => {
     ]);
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
+    // Standing approvals (issue #298): the decision detail, IDs and codes only.
+    expect(approval.detail).toMatchObject({ gate: "spec", tier: item.tier, kind: "single", outcome: "approved", spec_changed: false, owner_id: "github:1" });
+    expect(JSON.stringify(approval.detail)).not.toContain(alice.login!);
     const merge = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "pr_merged")!;
     expect(merge.actor).toEqual({ kind: "user", id: "github:1" });
     expect(item.token_cost).toBe(15 * 5);
@@ -553,6 +558,10 @@ describe("one issue to one merged PR", () => {
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#6"))!;
     expect(item).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    // The stored row holds the decision detail (issue #298) and no display name.
+    const reject = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_rejected")!;
+    expect(reject.detail).toEqual({ gate: "spec", tier: item.tier, kind: "single", outcome: "rejected", spec_changed: false, owner_id: "github:1" });
+    expect(JSON.stringify(reject)).not.toContain(alice.login!);
   });
 
   it("the PR title is the issue title, full length, with no prefix, not cut from the spec", async () => {
@@ -630,6 +639,8 @@ describe("spec gate: /revise and /reject", () => {
     expect(item).toMatchObject({ stage: "NEW", blocked_on: "none", close_reason: null, revision_count: 1 });
     const change = (await f.store.listStateChanges(f.item.id)).at(-1)!;
     expect(change).toMatchObject({ reason: "spec_revision_requested", actor: { kind: "user", id: "github:1" } });
+    expect(change.detail).toMatchObject({ gate: "spec", tier: f.item.tier, kind: "single", outcome: "revised", spec_changed: true, owner_id: "github:1" });
+    expect(JSON.stringify(change.detail)).not.toContain(alice.login!);
 
     await f.step();
     const prompt = f.runner.specs.filter((s) => s.role === "triage")[1]!.prompt;
@@ -1268,7 +1279,7 @@ describe("/resolve on a merge conflict", () => {
     f.sandbox.files = { "src/gate.ts": CONFLICT, ".github/workflows/scope.yml": "<<<<<<< HEAD\nours: 1\n=======\ntheirs: 2\n>>>>>>> origin/main\n" };
     const resolve = runner.script.resolve!;
     if (!opts.auto) runner.script.resolve = () => ({ status: "timed_out" });
-    f.source.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
+    f.forge.queue.push({ kind: "pr_unmergeable", pr_number: 42, head_branch: `factory/${id}`, head_sha: "h1", base_sha: "b1" });
     if (opts.auto) return { ...f, runner, src, id, item: (await f.store.getWorkItem(id))! };
     await f.step();
     runner.script.resolve = resolve;
@@ -1358,7 +1369,7 @@ describe("/resolve on a merge conflict", () => {
       "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "review_passed",
     ]);
 
-    f.source.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
+    f.forge.queue.push({ kind: "pr_merged", pr_number: 42, head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
     await f.step();
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
   });
@@ -1606,8 +1617,8 @@ describe("/resolve on a merge conflict", () => {
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
     const trail = (await f.store.listStateChanges(f.id)).map((c) => c.reason);
     expect(trail.slice(-4)).toEqual(["update_started", "auto_resolve_started", "resolved", "review_passed"]);
-    const note = f.source.comments.find((c) => c.marker === `<!-- factory:auto-resolved:${resolves[0]!.id} -->`)!;
-    expect(note.source).toMatchObject({ type: "github_issue", id: "o/r#42" });
+    const note = f.forge.comments.find((c) => c.marker === `<!-- factory:auto-resolved:${resolves[0]!.id} -->`)!;
+    expect(note.pr_number).toBe(42);
     expect(note.body).toContain("resolved the merge conflict on PR #42 automatically");
     expect(note.body).toContain("Merge conflicts on this item so far: 1 resolved automatically, 0 needed a person.");
   });
@@ -2224,5 +2235,158 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "10002", requester: alice, note: "+paths src/loader.ts" });
     await f.step();
     expect(await current(f)).toMatchObject({ stage: "REVIEW", allowed_paths: [".github/workflows/", "src/loader.ts"] });
+  });
+});
+
+describe("pre-push checks that also fail on the base branch: checks_env", () => {
+  const FLAKY = " FAIL  tests/flaky.test.ts > times out\nError: Test timed out in 5000ms.\n";
+  const BASE_DIR = ".factory-base";
+  type Out = { exit: number; stdout: string };
+
+  /** FakeSandbox whose `npm test` prints vitest FAIL lines: one output in the run folder, one in the base checkout. */
+  class CheckSandbox extends FakeSandbox {
+    branch: Out = { exit: 1, stdout: FLAKY };
+    base: Out = { exit: 1, stdout: FLAKY };
+    /** The checks run in the base checkout, argv joined by spaces. */
+    baseRuns: string[] = [];
+    override async exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
+      if (cmd[0] !== "npm" || cmd[1] !== "test") return super.exec(h, cmd, o);
+      const onBase = o.cwd === BASE_DIR;
+      if (onBase) this.baseRuns.push(cmd.join(" "));
+      else this.commands.push(cmd.join(" "));
+      const r = onBase ? this.base : this.branch;
+      return { exit_code: r.exit, signal: null, stdout: r.stdout, stderr: "", timed_out: false };
+    }
+  }
+
+  /** An item approved and implemented once, with the sandbox and broker set up by `prime` first. */
+  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, b: FakeBroker) => void } = {}) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const source = new FakeSource();
+    const sandbox = new CheckSandbox();
+    const broker = new FakeBroker();
+    o.prime?.(sandbox, broker);
+    const log = recordingLog();
+    const cfg: FactoryConfig = { ...config, settings: settingsWith({ max_attempts: o.max_attempts ?? 3 }) };
+    const runner = new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    });
+    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log,
+      scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
+    });
+    const step = async () => {
+      await controller.tickIntake();
+      while (await worker.tick()) await controller.tickRuns();
+      await controller.tickRuns();
+    };
+    const src = issueRef(71);
+    source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await step();
+    source.queue.push({ kind: "spec_approved", source: src, comment_id: "700", approver: alice });
+    await step();
+    const item = (await store.getWorkItemBySource("github_issue", src.id))!;
+    const implementRuns = async () => (await store.listRuns(item.id)).filter((r) => r.kind === "implement");
+    const codes = async () => (await implementRuns()).map((r) => (r.outcome?.status === "failed" ? r.outcome.error_code : r.status));
+    const again = async () => {
+      clock.advance(cfg.retry_max_ms);
+      await step();
+    };
+    const checkComments = () =>
+      broker.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { body: string; marker: string })
+        .filter((c) => c.marker.startsWith("<!-- factory:checks:"));
+    return { store, source, sandbox, log, item, implementRuns, codes, again, checkComments };
+  }
+
+  it("failing test files that fail on base too: checks_env, no attempt or restart spent, the item requeued", async () => {
+    // max_attempts 1: a task failure would block at once.
+    const f = await setup({ max_attempts: 1 });
+    const [run] = await f.implementRuns();
+    const wip = { branch: `factory/wip/${f.item.id}/${run!.id}` };
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_env", wip });
+    expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain("failing tests: tests/flaky.test.ts");
+    // Only the failing file ran on base, with the same command.
+    expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
+    // A temporary detached worktree of the base commit, removed afterwards.
+    const add = f.sandbox.gitCalls.findIndex((g) => g.includes(`worktree add --quiet --detach ${BASE_DIR} basesha`));
+    expect(add).toBeGreaterThanOrEqual(0);
+    expect(f.sandbox.gitCalls.slice(add + 1).some((g) => g.includes(`worktree remove --force ${BASE_DIR}`))).toBe(true);
+
+    const now = (await f.store.getWorkItem(f.item.id))!;
+    expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: f.item.restart_count });
+    const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
+    expect(scheduled?.detail).toMatchObject({ error_code: "checks_env", failure: "checks_env", task_failures: 0, infra_failures: 0 });
+    expect((await f.implementRuns())[1]).toMatchObject({ status: "queued", input: { wip } });
+  });
+
+  it("one owner comment per checks_env run names the flaky test files, keyed on the run id", async () => {
+    const f = await setup();
+    await f.again();
+    const runs = await f.implementRuns();
+    const comments = f.checkComments();
+    expect(comments.map((c) => c.marker)).toEqual(runs.slice(0, 2).map((r) => `<!-- factory:checks:${r.id} -->`));
+    for (const c of comments) {
+      expect(c.body).toContain("failing on the base branch too");
+      expect(c.body).toContain("`tests/flaky.test.ts`");
+    }
+  });
+
+  it("a failed owner comment is logged and does not hold up the requeue", async () => {
+    const f = await setup({
+      prime: (_s, b) => void (b.responses["github.comment"] = [{ ok: false, error_code: "forge_down", message: "503" }]),
+    });
+    const runs = await f.implementRuns();
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
+    expect(runs[1]).toMatchObject({ status: "queued" });
+    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "checks env comment failed" && l.fields?.run_id === runs[0]!.id)).toBe(true);
+  });
+
+  it("the third checks_env on an item blocks it for a human and queues nothing", async () => {
+    const f = await setup();
+    await f.again();
+    await f.again();
+    expect(await f.codes()).toEqual(["checks_env", "checks_env", "checks_env"]);
+    const now = (await f.store.getWorkItem(f.item.id))!;
+    expect(now).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:checks_env", restart_count: f.item.restart_count });
+    const block = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "checks_env");
+    expect(block?.detail).toMatchObject({ checks_env_failures: 3, task_failures: 0, infra_failures: 0 });
+    const last = f.source.comments.at(-1)!.body;
+    expect(last).toContain("failed on the base branch too 3 times");
+    expect(last).toContain("tests/flaky.test.ts");
+    await f.again();
+    expect(await f.codes()).toEqual(["checks_env", "checks_env", "checks_env"]);
+  });
+
+  it("failing test files that pass on base: checks_failed, the same comment and the same attempt charge", async () => {
+    const f = await setup({ prime: (s) => void (s.base = { exit: 0, stdout: "" }) });
+    const [run] = await f.implementRuns();
+    expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed", infra: false });
+    expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
+    expect(f.checkComments().map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
+    const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
+    expect(scheduled?.detail).toMatchObject({ error_code: "checks_failed", failure: "task", task_failures: 1 });
+  });
+
+  it("a failing test file the base run does not report as failed (missing there): checks_failed", async () => {
+    const f = await setup({ prime: (s) => void (s.base = { exit: 1, stdout: "No test files found, exiting with code 1\n" }) });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toHaveLength(1);
+  });
+
+  it("a failing check that names no test file (lint, typecheck): checks_failed, no base run", async () => {
+    const f = await setup({ prime: (s) => void (s.branch = { exit: 2, stdout: "src/a.ts(1,7): error TS2322: Type 'string' is not assignable.\n" }) });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toEqual([]);
+    expect(f.sandbox.gitCalls.some((c) => c.includes("worktree add"))).toBe(false);
+  });
+
+  it("a base rerun that cannot start: checks_failed, as today", async () => {
+    const f = await setup({ prime: (s) => void s.failGit.push("-c core.hooksPath=/dev/null worktree add") });
+    expect((await f.codes())[0]).toBe("checks_failed");
+    expect(f.sandbox.baseRuns).toEqual([]);
+    expect(f.log.lines.some((l) => l.msg.startsWith("base rerun could not start"))).toBe(true);
   });
 });

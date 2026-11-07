@@ -56,16 +56,19 @@ import {
   sameStep,
   workItemIdFromBranch,
   FORGE_AUTH,
-  MODEL_ANSWERED,
   MODEL_STALL,
   NO_AUTO_RETRY,
+  CHECKS_ENV,
+  CHECKS_ENV_LIMIT,
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent } from "./command-inbox.js";
+import { enqueueImprove, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
 import { renderSpec } from "./spec-comment.js";
+import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "./standing.js";
 import { applyCompanions } from "./companions.js";
 import {
   PHASE_HOLD, PHASE_MARKER, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, SPLIT_FILING_STALE_MS, parseSizeDetail, parseSubIssues, phaseIssueBody,
@@ -89,18 +92,51 @@ import { labelTarget } from "../interfaces/factory-store.js";
 import { PROVIDER_SETUP } from "../interfaces/agent-runner.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
-import type { PollSource, PrChecks, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
+import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+
+/**
+ * The GitHub core rate limit as one process sees it (design §5 Sources, GitHub call budget): GitHub's limit,
+ * remaining calls and reset time, this process's `budget_share`, the calls it may count (`share_limit`, null before
+ * GitHub reported a limit) and its counted calls in the window. `waiting`: no calls left before the reset; `low`:
+ * optional reads wait (under `min_remaining`, or the share is used).
+ */
+export interface GitHubBudgetStatus {
+  limit: number;
+  remaining: number;
+  reset_at: string;
+  budget_share: number;
+  share_limit: number | null;
+  counted: number;
+  state: "ok" | "low" | "waiting";
+  as_of: string;
+}
+
+/** The store cursor the controller writes its GitHub budget to after each poll, for the status page. */
+export const GITHUB_BUDGET_CURSOR = "github:budget";
+
+/** The reset time a call refused for a used-up rate limit waits for (its `wait_until`), else null. */
+export function rateLimitWait(err: unknown): string | null {
+  const v = err instanceof Error ? (err as { wait_until?: unknown }).wait_until : undefined;
+  return typeof v === "string" && v !== "" ? v : null;
+}
 
 export interface ControllerDeps {
   store: FactoryStore;
   /**
    * The configured sources (`plugins.source`), at most one per source type (design 2026-11-01). Each item's
-   * comments, mark-seen, status and close go to the adapter of its own source type; status on a PR goes to
-   * the `github_issue` adapter. Give `sources`, or `source` for exactly one.
+   * comments, mark-seen, status and close go to the adapter of its own source type. Give `sources`, or `source`
+   * for exactly one.
    */
   sources?: readonly SourceAdapter[];
   /** One source: the same as `sources: [source]`. */
   source?: SourceAdapter;
+  /**
+   * The forge (`plugins.forge`, issue #273): every PR event and PR fact is read from it, and every PR comment and
+   * PR status goes through it, whatever source the item came from. Absent or null: no PR is read or written; a PR
+   * comment or status then goes to the item's own source.
+   */
+  forge?: Forge | null;
   /** Authorizes commands from GitHub (and every non-local origin). */
   auth: AuthProvider;
   /**
@@ -142,6 +178,11 @@ export interface ControllerDeps {
    * its read-only merge check. Absent, or without fetchBranch and mergeCheck: no local merge check.
    */
   sandbox?: Sandbox;
+  /**
+   * The GitHub client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
+   * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
+   */
+  github_budget?: () => GitHubBudgetStatus | null;
 }
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
@@ -156,14 +197,16 @@ type CommandEvent = Extract<SourceEvent, { kind: "spec_approved" | "spec_rejecte
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type ReviseEvent = Extract<SourceEvent, { kind: "revise_requested" }>;
-type PrReviewEvent = Extract<SourceEvent, { kind: "pr_changes_requested" }>;
+type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
 type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 type InfoEvent = Extract<SourceEvent, { kind: "help_requested" | "unknown_command" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
-type PrOpenEvent = Extract<SourceEvent, { kind: "pr_open" }>;
-type PrFinishedEvent = Extract<SourceEvent, { kind: "pr_merged" | "pr_closed" }>;
+type PrOpenEvent = Extract<ForgeEvent, { kind: "pr_open" }>;
+type PrFinishedEvent = Extract<ForgeEvent, { kind: "pr_merged" | "pr_closed" }>;
+/** One poll of a poll source, read but not handled yet: its events wait for the forge's (see intake). */
+type Polled = { source: PollSource; cursor: string | null; result: PollResult };
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -216,6 +259,8 @@ const CONFLICT_PENDING = MERGE_CONFLICT_PENDING;
 const DIFF_TOO_LARGE = "diff_too_large";
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
 const CATCH_UP_LIMIT = 1000;
+/** How long the state of a dependency the store does not track, read from the forge, is reused (issue #254). */
+export const DEPENDENCY_STATE_TTL_MS = 10 * 60_000;
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "pr_number"] as const;
 /**
@@ -241,14 +286,6 @@ const CLOSE_BATCH = 50;
 const PHASE_BATCH = 50;
 /** Queued implement runs and dependency-held items looked at per coordination tick (design §5, 2026-11-03). */
 const COORDINATION_BATCH = 50;
-/**
- * How old this process's last forge read of an item's dependency links may get before a coordination pass reads
- * them again (design §5, 2026-11-07). Edits reach the item on intake; this only catches link changes (sub-issues,
- * blocked-by) that GitHub may not count as an issue update.
- */
-const EDGES_REFRESH_MS = 30 * 60_000;
-/** How old the forge's answer for a dependency outside the factory may get before a pass reads it again. */
-const DEPENDENCY_STATE_REFRESH_MS = 10 * 60_000;
 /** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
 /** Commands read from the command inbox per tick (issue #282). */
@@ -268,13 +305,14 @@ const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
 const INBOX_BATCH = 100;
 const DAY_MS = 86_400_000;
 
-/** PRs live on GitHub: status on a PR goes to the adapter of this type, whatever the item's source. */
-const PR_SOURCE_TYPE: SourceType = "github_issue";
+/** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
+function forgeCursorName(forge: Forge): string {
+  return `forge:${forge.ref_type}`;
+}
 
 /**
- * The sources a controller runs (design 2026-11-01): at least one, no two of one type, and when there are
- * several, one of type github_issue, the only source of PR merge, close and unmergeable events. Errors name
- * `plugins.source`, the config key that lists them.
+ * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
+ * so no source type is required (issue #273). Errors name `plugins.source`, the config key that lists them.
  */
 function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly SourceAdapter[] {
   if (d.source !== undefined && d.sources !== undefined) throw new Error("Controller takes `source` or `sources`, not both");
@@ -286,12 +324,6 @@ function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly S
       throw new Error(`plugins.source lists two sources of type "${s.type}"; each source type can be listed once`);
     }
     seen.add(s.type);
-  }
-  if (sources.length > 1 && !seen.has(PR_SOURCE_TYPE)) {
-    throw new Error(
-      `plugins.source lists ${sources.length} sources but none of type "${PR_SOURCE_TYPE}": PR merge, close and ` +
-        "unmergeable events come only from it, so factory PRs would never close their items",
-    );
   }
   return sources;
 }
@@ -318,22 +350,33 @@ export class Controller {
   /** The configured sources, in config order. Fixed at construction; the same on every replica. */
   private readonly sources: readonly SourceAdapter[];
   private readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
+  /** Where PRs live, or null when config selects no forge. Fixed at construction. */
+  private readonly forge: Forge | null;
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   private readonly live: LiveSettings;
   /** The local merge check; its only in-process state is a fetch throttle no other replica needs. */
   private readonly merges: MergeChecker | null;
   /**
-   * When this process last read an item's dependency links, and an outside dependency's state, from the forge
-   * (ms). A cache only, like the GitHub ETag cache: another replica or a new process without it reads the stored
-   * edges and, at most once per refresh interval, the forge (design §5, 2026-11-07).
+   * The forge's answers for dependencies the store does not track, by source id, each reused for
+   * DEPENDENCY_STATE_TTL_MS (issue #254); `null` for a read that failed, so it is not retried before then. Per
+   * process, only a cache: a replica without it asks the forge once.
    */
-  private readonly edgesReadAt = new Map<string, number>();
-  private readonly stateReadAt = new Map<string, number>();
+  private readonly dependencyStates = new Map<string, { state: DependencyState | null; at: number }>();
+  /**
+   * When each item's last failed link read was, so a coordination pass does not read its stale links again before
+   * DEPENDENCY_STATE_TTL_MS (issue #254). Per process, only a throttle: a replica without it reads once.
+   */
+  private readonly linkFailures = new Map<WorkItemId, number>();
+  /** True until the start-up status catch-up ran in full; a low request budget defers it (issue #254). */
+  private catchUpPending = true;
+  /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
+  private improveDay: string | null = null;
 
   constructor(private readonly d: ControllerDeps) {
     this.merges = canMergeCheck(d.sandbox) ? new MergeChecker({ store: d.store, sandbox: d.sandbox, clock: d.clock }) : null;
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
+    this.forge = d.forge ?? null;
     this.live = d.settings ?? LiveSettings.fixed(d.config);
   }
 
@@ -348,10 +391,11 @@ export class Controller {
     const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
     // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
     const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
-    await this.guard("status catch-up", () => this.catchUpStatus());
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       await this.live.refresh();
+      // Optional reads: while a source's request budget is low the catch-up waits, then runs (issue #254).
+      if (this.catchUpPending) await this.guard("status catch-up", async () => void (await this.catchUpStatus()));
       const now = this.d.clock.now().getTime();
       const due = now - lastPoll >= this.cfg.poll_interval_ms;
       if (due) lastPoll = now;
@@ -369,6 +413,8 @@ export class Controller {
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
       await this.guard("model probe", () => this.probeStep());
+      // A store read until the day changes: the day's improve run is queued once (design §7).
+      await this.guard("improve", () => this.improveStep());
       // Last, so the messages this tick wrote go out in it.
       await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
@@ -415,29 +461,56 @@ export class Controller {
   }
 
   /**
-   * Each source's step runs on its own guard, so one source failing (a poll that throws, a bad cursor) never
-   * stops the others in the same tick. Poll sources run only when `pollDue`. Unfinished rejects are retried
-   * once per tick that polled.
+   * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
+   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`. The poll sources
+   * are read first and the forge after them, and the forge's events are handled first (issue #273): a merge that
+   * closed an issue happened before the close, so the forge's read already sees it and the merge is applied
+   * before the source's close. Unfinished rejects are retried once per tick that polled.
    */
   private async intake(pollDue: boolean): Promise<void> {
-    let polled = false;
+    const polled: Polled[] = [];
     for (const s of this.sources) {
       if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue) {
-        polled = true;
-        await this.guard(`intake:${s.type}`, () => this.tickPoll(s));
-      }
+      else if (pollDue) await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
     }
-    if (polled) await this.guard("source closes", () => this.tickSourceCloses());
+    const forge = this.forge;
+    if (pollDue && forge) await this.guard("forge", () => this.tickForge(forge));
+    for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
+    if (pollDue) await this.guard("github budget", () => this.recordGitHubBudget());
+    if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
+    await this.guard("source closes", () => this.tickSourceCloses());
     // Phases are GitHub sub-issues, so their holds and parents move once per poll, after its closes are applied.
-    if (polled) await this.guard("phases", () => this.tickPhases());
+    await this.guard("phases", () => this.tickPhases());
   }
 
-  /** One poll of one source, through its own cursor `intake:<type>`. */
-  private async tickPoll(source: PollSource): Promise<void> {
-    const name = `intake:${source.type}`;
+  /** One poll of one source, through its own cursor `intake:<type>`; applyPoll handles it. */
+  private async readPoll(source: PollSource): Promise<Polled> {
+    const cursor = await this.d.store.getCursor(`intake:${source.type}`);
+    return { source, cursor, result: await source.poll(cursor) };
+  }
+
+  private async applyPoll({ source, cursor, result }: Polled): Promise<void> {
+    for (const e of result.events) await this.guard(`event:${e.kind}`, () => this.handle(e));
+    await this.d.store.advanceCursor(`intake:${source.type}`, cursor, result.next_cursor);
+  }
+
+  /** This process's GitHub budget, stored for the status page; the stored value is replaced, never merged. */
+  private async recordGitHubBudget(): Promise<void> {
+    const status = this.d.github_budget?.();
+    if (!status) return;
+    const current = await this.d.store.getCursor(GITHUB_BUDGET_CURSOR);
+    await this.d.store.advanceCursor(GITHUB_BUDGET_CURSOR, current, JSON.stringify({ ...status, replica_id: this.d.replica_id ?? null }));
+  }
+
+  /**
+   * One poll of the forge, through its cursor `forge:<ref type>`. While that is empty, the forge's handover cursor
+   * (the position it was kept under before) is its first cursor, so an upgrade neither misses nor repeats a merge.
+   */
+  private async tickForge(forge: Forge): Promise<void> {
+    const name = forgeCursorName(forge);
     const cursor = await this.d.store.getCursor(name);
-    const { events, next_cursor } = await source.poll(cursor);
+    const first = cursor ?? (forge.handover_cursor ? await this.d.store.getCursor(forge.handover_cursor) : null);
+    const { events, next_cursor } = await forge.poll(first);
     for (const e of events) await this.guard(`event:${e.kind}`, () => this.handle(e));
     await this.d.store.advanceCursor(name, cursor, next_cursor);
   }
@@ -598,7 +671,9 @@ export class Controller {
    * Re-applies the status of every open item, so items from before status labels existed, and any label
    * write that failed or landed out of order, are corrected on start. Each call is idempotent and guarded.
    */
-  async catchUpStatus(): Promise<void> {
+  async catchUpStatus(): Promise<boolean> {
+    // An optional read: with the request budget low it waits for the reset (issue #254); run() asks again each tick.
+    if (this.lowBudget()) return false;
     const items = await this.d.store.listWorkItems(CATCH_UP_LIMIT);
     if (items.length >= CATCH_UP_LIMIT) {
       this.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
@@ -607,7 +682,17 @@ export class Controller {
     // One batched read of the stored label states: a target already showing its status costs no call at all.
     const stored = await this.d.store.listLabelStates(open.map((it) => it.source.id));
     const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
-    for (const it of open) await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
+    for (const it of open) {
+      if (this.lowBudget()) return false;
+      await this.showStatus(it, (pr) => shown.has(`${it.source.id} ${labelTarget(pr)} ${statusOf(it)}`));
+    }
+    this.catchUpPending = false;
+    return true;
+  }
+
+  /** True while any source's request budget is low (GitHub: `lowBudget`): optional reads wait (issue #254). */
+  private lowBudget(): boolean {
+    return this.sources.some((s) => s.lowBudget?.() === true);
   }
 
   async tickModelProbe(): Promise<void> {
@@ -617,23 +702,25 @@ export class Controller {
   }
 
   /**
-   * The stall pause's probe (design §5 Restarts): once its probe time has passed, one short prompt on the cheap
-   * model class through the LLM provider. An answer ends the pause (`model_answered`), so claims resume; no
-   * answer (an error, a refusal, a throw or no reply within stall_ms) moves the pause probe_interval_ms later.
-   * Both are store writes that only move times later, so two replicas probing at once end in the same state.
+   * The stall pause's probe (design §5 Restarts): once its probe time has passed, any live controller may probe
+   * it, and the store's conditional move of the probe time (`takeStallProbe`) lets one replica ask per due time.
+   * One short prompt on the cheap model class through the LLM provider: an answer ends the pause as
+   * `endClaimPause("model_stall")` does (`model_answered`), so claims resume; no answer (an error, a refusal, a
+   * throw or no reply within stall_ms) keeps it and moves the probe probe_interval_ms after the failed probe.
    * With no LLM provider configured nothing can be asked: the pause ends at its probe time, like a plain pause.
    */
   private async probeStep(): Promise<void> {
     const due = await this.d.store.getClaimPause(MODEL_STALL);
+    const interval = this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms;
     if (due === null || Date.parse(due) > this.d.clock.now().getTime()) return;
+    if (!(await this.d.store.takeStallProbe(due, iso(this.d.clock.now().getTime() + interval))).taken) return;
     const answered = this.d.llm ? await this.probe(this.d.llm) : true;
-    const now = this.d.clock.now().getTime();
     if (answered) {
-      await this.d.store.pauseClaims(iso(now), MODEL_ANSWERED);
+      await this.d.store.endClaimPause(MODEL_STALL);
       this.d.log.info(this.d.llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends", {});
       return;
     }
-    const next = await this.d.store.pauseClaims(iso(now + (this.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms)), MODEL_STALL);
+    const next = await this.d.store.pauseClaims(iso(this.d.clock.now().getTime() + interval), MODEL_STALL);
     this.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next.resume_at}`, { resume_at: next.resume_at });
   }
 
@@ -651,6 +738,25 @@ export class Controller {
     } catch {
       return false;
     }
+  }
+
+  /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
+  async tickImprove(): Promise<void> {
+    await this.live.refresh();
+    await this.improveStep();
+  }
+
+  /**
+   * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
+   * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
+   * process the store write once the day's run is there.
+   */
+  private async improveStep(): Promise<void> {
+    const day = utcDay(this.d.clock.now());
+    if (this.improveDay === day) return;
+    const { run, created } = await enqueueImprove(this.d, this.project(), "daily");
+    if (created) this.d.log.info("improve run queued", { run_id: run.id, day });
+    this.improveDay = day;
   }
 
   async tickReaper(): Promise<void> {
@@ -696,22 +802,22 @@ export class Controller {
 
   // Source events
 
-  /** One source event, then the outbox step, so its replies go out (issue #282). */
-  async handleEvent(e: SourceEvent): Promise<void> {
+  /** One source or forge event, then the outbox step, so its replies go out (issue #282). */
+  async handleEvent(e: SourceEvent | ForgeEvent): Promise<void> {
     await this.handle(e);
     await this.outboxStep();
   }
 
-  private async handle(e: SourceEvent): Promise<void> {
+  private async handle(e: SourceEvent | ForgeEvent): Promise<void> {
     switch (e.kind) {
       case "item_requested": {
         // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
         if (PHASE_MARKER.test(e.body)) return;
         const principal = await this.authorize(e.requester, "submit_work", e.source.id);
         if ("refuse" in principal) {
-          // On GitHub the intake label is the gate and a refusal stays silent. A chat source has no label: the
+          // A source whose intake label is the gate (GitHub) refuses silently. A chat source has no label: the
           // person who asked gets one reply in the thread, keyed on it, so they know why (issue #109).
-          if (e.source.type !== PR_SOURCE_TYPE) {
+          if (!this.byType.get(e.source.type)?.silent_intake_refusal) {
             await this.postWithoutItem(e.source, `This thread was not taken in as a work item: ${principal.refuse}.`, `<!-- factory:refused-intake:${e.source.id} -->`);
           }
           return;
@@ -731,11 +837,11 @@ export class Controller {
         if (created) {
           this.d.log.info("intake", { work_item_id: item.id });
           await this.setStatus(item.source, "triaging", null);
-        }
-        // Edges first, so a claim holds the implement run even before the next coordination tick. A poll delivers
-        // an issue again only when it changed, so this is where an edited `Depends on` line is read (design §5).
-        if (created || (item.stage !== "CLOSED" && item.pr_number === null)) {
-          await this.guard("dependencies", async () => void (await this.refreshEdges(item)));
+          // Edges first, so a claim holds the implement run even before the next coordination tick.
+          await this.guard("dependencies", async () => void (await this.refreshEdges(item, this.issueTime(e.updated_at))));
+        } else if (item.stage !== "CLOSED" && item.pr_number === null) {
+          // An edited issue (issue #254): its links are read again only when it changed since they were read.
+          await this.guard("dependencies", () => this.relinkIfChanged(item, e.updated_at));
         }
         await this.markSeen(e.source, null);
         // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
@@ -898,9 +1004,9 @@ export class Controller {
       this.d.log.warn("PR not adopted: its author does not resolve to a user", log);
       return;
     }
-    const forge = this.byType.get(PR_SOURCE_TYPE);
+    const forge = this.forge;
     if (e.labels.includes(SKIP_LABEL)) {
-      const adder = forge?.labelAddedBy ? await forge.labelAddedBy(e.pr_number, SKIP_LABEL) : null;
+      const adder = forge ? await forge.labelAddedBy(e.pr_number, SKIP_LABEL) : null;
       const who = adder ? await this.authorize(adder, "approve_spec", e.source.id) : null;
       if (who && !("refuse" in who)) {
         this.d.log.info("PR skipped: factory: skip label", { ...log, user_id: who.user_id });
@@ -908,7 +1014,7 @@ export class Controller {
       }
       this.d.log.warn("factory: skip label ignored: not added by a user with write permission; PR adopted", log);
     }
-    const files = forge?.prFiles ? await forge.prFiles(e.pr_number) : [];
+    const files = forge ? await forge.prFiles(e.pr_number) : [];
     const { item, created } = await this.d.store.createWorkItem(
       {
         source: e.source,
@@ -960,8 +1066,7 @@ export class Controller {
 
   /** The pushed head commit's author as a user: the forge does not name who pushed. Else system:pr-sync. */
   private async pusher(id: WorkItemId, sha: string): Promise<Actor> {
-    const forge = this.byType.get(PR_SOURCE_TYPE);
-    const author = forge?.commitAuthor ? await forge.commitAuthor(sha) : null;
+    const author = this.forge ? await this.forge.commitAuthor(sha) : null;
     const principal = author ? await this.d.auth.resolve(author) : null;
     if (principal) return { kind: "user", id: principal.user_id };
     this.d.log.warn("pusher did not resolve to a user; recorded as system:pr-sync", { work_item_id: id, head_sha: sha });
@@ -1135,10 +1240,24 @@ export class Controller {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.retryDependencies(it, actor, note, paths);
-      return this.decide(id, async (x) => withTag(await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths), tag));
+      return this.decide(id, async (x) =>
+        withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }
     this.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
+  }
+
+  /**
+   * A spec decision (approve, reject, revise) gets the standing-approval detail (design 05-standing-approvals):
+   * gate, tier, kind, outcome, whether the spec changed, and the deciding user's ID. Any other decision as it is.
+   */
+  private async withSpecDecision(it: WorkItem, d: Decision | Refusal): Promise<Decision | Refusal> {
+    if (!d || "refuse" in d) return d;
+    const outcome = SPEC_DECISIONS[d.reason];
+    if (!outcome) return d;
+    const kind = specKind(it, it.parent_id === null && (await this.specPhases(it)) !== null);
+    const gate = specDecisionDetail({ tier: it.tier, kind, outcome, spec_changed: specChanged(outcome, d.patch), actor: d.actor });
+    return { ...d, detail: { ...d.detail, ...gate } };
   }
 
   /**
@@ -1213,7 +1332,7 @@ export class Controller {
       const close_reason: CloseReason = e.state_reason === "completed" ? "completed" : "wont_do";
       await this.decide(item.id, (it) => {
         if (it.stage === "CLOSED") return null;
-        const closesPr = it.pr_number !== null && this.prAdapter(it.source)?.closePr !== undefined;
+        const closesPr = it.pr_number !== null && this.forge !== null;
         return {
           patch: {
             stage: "CLOSED",
@@ -1239,10 +1358,10 @@ export class Controller {
   private async finishPrClose(id: WorkItemId): Promise<void> {
     const it = await this.d.store.getWorkItem(id);
     if (!it || !prClosePending(it) || it.pr_number === null) return;
-    const adapter = this.prAdapter(it.source);
-    if (!adapter?.closePr) return;
+    const forge = this.forge;
+    if (!forge) return;
     try {
-      const r = await adapter.closePr({
+      const r = await forge.closePr({
         pr_number: it.pr_number,
         closed: it.source,
         marker: `<!-- factory:pr-closed:${it.id} -->`,
@@ -1261,11 +1380,6 @@ export class Controller {
     await this.decide(id, (cur) =>
       prClosePending(cur) ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "pr_closed_for_source" } : null,
     );
-  }
-
-  /** The adapter PRs go through: the GitHub one, else the item's own source (as setStatus does). */
-  private prAdapter(source: SourceRef): SourceAdapter | null {
-    return this.byType.get(PR_SOURCE_TYPE) ?? this.byType.get(source.type) ?? null;
   }
 
   /**
@@ -1709,7 +1823,13 @@ export class Controller {
       patch,
       actor,
       reason: SPLIT_APPROVED,
-      detail: { phases: phases.length, sub_issues: JSON.stringify(refs.map((r) => r.id)), ...(note ? { note } : {}), ...tag },
+      detail: {
+        phases: phases.length,
+        sub_issues: JSON.stringify(refs.map((r) => r.id)),
+        ...(note ? { note } : {}),
+        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor }),
+        ...tag,
+      },
     });
     return null;
   }
@@ -1958,11 +2078,6 @@ export class Controller {
     return this.cfg.project.key;
   }
 
-  /** The configured repo's `owner/name`, only to build PR source ids (`owner/name#N`, unchanged by project keys). */
-  private repoPath(): string {
-    return `${this.cfg.repo.owner}/${this.cfg.repo.name}`;
-  }
-
   /** The per-project gate settings of `project` (design 2026-11-01): the only way core reads them. */
   private settings(project: string): ProjectSettings {
     return settingValues(project, this.cfg.settings, this.d.learned);
@@ -1994,9 +2109,8 @@ export class Controller {
 
   /**
    * Once per poll: for each item with a queued implement run and each item held by a dependency, apply its stored
-   * dependency edges and their states (re-read from the forge only past the refresh intervals), then hold,
-   * release or block it; and post one
-   * comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
+   * dependency edges and their states (links re-read from the forge only when never read with a time, outside
+   * states at most once per DEPENDENCY_STATE_TTL_MS), then hold, release or block it; and post one comment per coordination-cost hold the claim recorded. All outside the claim lock: the claim reads only the
    * store. Safe on any replica and safe to repeat (conditional transitions, comments keyed by marker).
    */
   async tickCoordination(): Promise<void> {
@@ -2006,11 +2120,6 @@ export class Controller {
   }
 
   private async coordinationStep(): Promise<void> {
-    // Forget marks no pass has needed for two intervals; such an item is then treated as just read.
-    const now = this.d.clock.now().getTime();
-    for (const [marks, ttl] of [[this.edgesReadAt, EDGES_REFRESH_MS], [this.stateReadAt, DEPENDENCY_STATE_REFRESH_MS]] as const) {
-      for (const [k, at] of marks) if (now - at >= 2 * ttl) marks.delete(k);
-    }
     const queued = (await this.d.store.listRunsByStatus(["queued"], COORDINATION_BATCH * 4))
       .filter((r) => r.kind === "implement")
       .slice(0, COORDINATION_BATCH);
@@ -2025,8 +2134,8 @@ export class Controller {
   }
 
   /**
-   * Reads the item's edges (from its source when `network` and its last read is older than EDGES_REFRESH_MS, else
-   * the stored ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
+   * Reads the item's edges (from its source when `network` and they were never read with a time, else the stored
+   * ones), records each edge's state, and applies what they mean: hold on `blocked_on: dependency`,
    * release, or block on a human for a dependency closed unmerged or a cycle (queued runs cancelled, one comment).
    * Only an implementing item without a PR is changed. A forge that fails changes nothing: stored edges apply.
    */
@@ -2039,16 +2148,19 @@ export class Controller {
 
   /**
    * The item's dependency verdict after its edges and their states are read and stored: `stored` reads only the
-   * store; `due` also reads the forge past the refresh intervals; `now` reads the forge whatever the intervals
-   * (a human `/retry`, one read per edge).
+   * store; `due` also reads the forge for links never read with a time (none within DEPENDENCY_STATE_TTL_MS of a
+   * failed read) and for outside states past DEPENDENCY_STATE_TTL_MS, both skipped under a low request budget (issue #254); `now` reads the forge whatever
+   * the cache (a human `/retry`, one read per edge).
    */
   private async readDependencies(it: WorkItem, read: "stored" | "due" | "now"): Promise<DependencyVerdict> {
-    const edges = read === "now" || (read === "due" && this.readDue(this.edgesReadAt, it.id, EDGES_REFRESH_MS, false))
-      ? await this.refreshEdges(it)
+    const relink = read === "now"
+      || (read === "due" && !this.linkReadFailedRecently(it.id) && (await this.d.store.dependencyLinksReadAt(it.id)) === null && !this.lowBudget());
+    const edges = relink
+      ? await this.refreshEdges(it, iso(this.d.clock.now().getTime()))
       : await this.d.store.listDependencyEdges({ work_item_id: it.id });
     for (const e of edges) {
-      if (read === "now") this.stateReadAt.delete(e.depends_on);
-      const state = await this.dependencyStateOf(e.depends_on, read !== "stored");
+      if (read === "now") this.dependencyStates.delete(e.depends_on);
+      const state = await this.dependencyStateOf(it.source.type, e.depends_on, read !== "stored");
       if (state !== null && state !== e.state) await this.d.store.setDependencyState(it.id, e.depends_on, state);
     }
     const fresh = await this.d.store.listDependencyEdges({ work_item_id: it.id });
@@ -2087,56 +2199,85 @@ export class Controller {
   }
 
   /**
-   * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored and marked read;
-   * else (no such source, or the source failed: logged, retried after EDGES_REFRESH_MS) the stored ones.
+   * The item's edges from its source (`Depends on` lines, sub-issues, blocked-by links), stored with `read_at`, the
+   * issue's updated_at they were read at; else (no such source, or the source failed: logged, and the links
+   * marked stale so a coordination pass reads them again once DEPENDENCY_STATE_TTL_MS has passed) the stored ones.
    */
-  private async refreshEdges(it: WorkItem): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
+  private async refreshEdges(it: WorkItem, read_at: Timestamp): Promise<Awaited<ReturnType<FactoryStore["listDependencyEdges"]>>> {
     const adapter = this.byType.get(it.source.type);
     if (!adapter || !isDependencySource(adapter)) return this.d.store.listDependencyEdges({ work_item_id: it.id });
-    this.edgesReadAt.set(it.id, this.d.clock.now().getTime());
     let links: DependencyLink[];
     try {
       links = (await adapter.dependencyLinks(it.source)).filter((l) => l.depends_on !== it.source.id);
     } catch (err) {
       this.d.log.warn("dependency links not read: stored edges apply", { work_item_id: it.id, error: (err as Error).message });
+      this.linkFailures.set(it.id, this.d.clock.now().getTime());
+      await this.d.store.markDependencyLinksStale(it.id);
       return this.d.store.listDependencyEdges({ work_item_id: it.id });
     }
-    return this.d.store.replaceDependencyEdges(it.id, links);
+    this.linkFailures.delete(it.id);
+    return this.d.store.replaceDependencyEdges(it.id, links, read_at);
+  }
+
+  /** Whether the item's links failed to read less than DEPENDENCY_STATE_TTL_MS ago; older failures are dropped. */
+  private linkReadFailedRecently(id: WorkItemId): boolean {
+    const now = this.d.clock.now().getTime();
+    for (const [k, at] of this.linkFailures) if (now - at >= DEPENDENCY_STATE_TTL_MS) this.linkFailures.delete(k);
+    return this.linkFailures.has(id);
   }
 
   /**
-   * Whether `key`'s forge answer in `marks` is older than `ttl`; if so it is marked read now. A key with no mark
-   * is marked now and read only when `unseen` (edges: no, intake reads them; outside states: yes, only the forge
-   * knows them).
+   * One fresh read of an existing item's links when the issue's `updated_at` moved past the time they were read at
+   * (or they never were with a time, whatever the delivery's `updated_at`); nothing when it did not. A failed read marks them stale (refreshEdges), so
+   * a coordination pass DEPENDENCY_STATE_TTL_MS later reads them again instead of waiting for another edit.
    */
-  private readDue(marks: Map<string, number>, key: string, ttl: number, unseen: boolean): boolean {
-    const now = this.d.clock.now().getTime();
-    const at = marks.get(key);
-    if (at !== undefined && now - at < ttl) return false;
-    marks.set(key, now);
-    return at !== undefined || unseen;
+  private async relinkIfChanged(it: WorkItem, updated_at: string | undefined): Promise<void> {
+    const adapter = this.byType.get(it.source.type);
+    if (!adapter || !isDependencySource(adapter)) return;
+    const readAt = await this.d.store.dependencyLinksReadAt(it.id);
+    // NaN (no or a bad updated_at) is never newer: only links never read with a time are read then.
+    if (readAt !== null && !(Date.parse(updated_at ?? "") > Date.parse(readAt))) return;
+    await this.refreshEdges(it, this.issueTime(updated_at));
+  }
+
+  /** A source's `updated_at` as a store timestamp; the store clock when the source gave none. */
+  private issueTime(updated_at: string | undefined): Timestamp {
+    const ms = updated_at === undefined ? NaN : Date.parse(updated_at);
+    return iso(Number.isFinite(ms) ? ms : this.d.clock.now().getTime());
   }
 
   /**
    * What a dependency's state is now: a work item's from the store (see `itemMerged`), else, with `network`, the
-   * source's answer at most once per DEPENDENCY_STATE_REFRESH_MS. Null when unknown or not read now (no item, no
-   * network, read recently, no capability, or the source failed: logged).
+   * source's answer, reused for DEPENDENCY_STATE_TTL_MS. Null when unknown or not read now (no item, no network, no
+   * capability, a low request budget, or the source failed: logged). `type`: the source type of the item that
+   * waits, whose source read the link, so the dependency is in its id space.
    */
-  private async dependencyStateOf(dependsOn: string, network: boolean): Promise<DependencyState | null> {
-    const dep = await this.d.store.getWorkItemBySource(PR_SOURCE_TYPE, dependsOn);
+  private async dependencyStateOf(type: SourceType, dependsOn: string, network: boolean): Promise<DependencyState | null> {
+    const dep = await this.d.store.getWorkItemBySource(type, dependsOn);
     if (dep) {
       if (dep.stage !== "CLOSED") return "open";
       return (await this.itemMerged(dep)) ? "merged" : "closed_unmerged";
     }
-    const adapter = this.byType.get(PR_SOURCE_TYPE);
+    const adapter = this.byType.get(type);
     if (!network || !adapter || !isDependencySource(adapter)) return null;
-    if (!this.readDue(this.stateReadAt, dependsOn, DEPENDENCY_STATE_REFRESH_MS, true)) return null;
+    // At most one forge read per dependency per DEPENDENCY_STATE_TTL_MS, and none while the budget is low (issue #254).
+    const now = this.d.clock.now().getTime();
+    const cached = this.dependencyStates.get(dependsOn);
+    if (cached && now - cached.at < DEPENDENCY_STATE_TTL_MS) return cached.state;
+    if (this.lowBudget()) return null;
+    let state: DependencyState | null;
     try {
-      return await adapter.dependencyState(dependsOn);
+      state = await adapter.dependencyState(dependsOn);
     } catch (err) {
       this.d.log.warn("dependency state not read: stored state applies", { depends_on: dependsOn, error: (err as Error).message });
-      return null;
+      state = null;
     }
+    this.dependencyStates.set(dependsOn, { state, at: now });
+    // Keep the cache bounded: drop answers past their time.
+    if (this.dependencyStates.size > COORDINATION_BATCH * 8) {
+      for (const [k, v] of this.dependencyStates) if (now - v.at >= DEPENDENCY_STATE_TTL_MS) this.dependencyStates.delete(k);
+    }
+    return state;
   }
 
   /**
@@ -2243,18 +2384,22 @@ export class Controller {
 
   private async apply(run: Run): Promise<void> {
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
-    await this.decide(run.work_item_id, async (it) => {
+    // Every finished run adds its tokens to token_cost, an ignored one included (design §6 Measurement): `withSpent`
+    // adds them to each decision that does not set token_cost itself.
+    const decision = async (it: WorkItem): Promise<Decision> => {
+      // An improve run changes nothing else on its system item (design §7): its report is already stored.
+      if (run.kind === "improve") return ack(run.outcome?.status === "succeeded" ? "improve_done" : "improve_failed");
       // The run's full token count (design §6 Measurement); old succeeded rows keep the data.tokens they stored.
       const tokens = it.token_cost + runTokenCount(run);
-      if (!run.outcome || run.outcome.status !== "succeeded") return withSpent(await this.applyFailedRun(it, run), run, it);
+      if (!run.outcome || run.outcome.status !== "succeeded") return this.applyFailedRun(it, run);
       if (!this.expects(it, run.kind)) return ack("run_ignored");
       const data = run.outcome.data;
       // The agent asked for a human (decided 2026-11-07): a finished run with data, never retried on its own.
       if ((run.kind === "implement" || run.kind === "review" || run.kind === "resolve") && data.needs_human != null) {
         const ask = parseNeedsHuman(data.needs_human);
         if (ask.ok && ask.value) return this.needsHuman(it, run, ask.value, tokens);
-        if (run.kind === "resolve") return withSpent(await this.resolveFailed(it, run, "invalid_output"), run, it);
-        return withSpent(await this.retryOrBlock(it, run, "task", "invalid_output"), run, it);
+        if (run.kind === "resolve") return this.resolveFailed(it, run, "invalid_output");
+        return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
       switch (run.kind) {
@@ -2447,10 +2592,11 @@ export class Controller {
           }
         }
       }
-    });
+    };
+    await this.decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (applyRun does that). */
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
   private async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
@@ -2638,11 +2784,10 @@ export class Controller {
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
 
-  /** The PR's checks; a source without them counts as passed, a source error as pending (logged). */
+  /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
   private async readChecks(it: WorkItem): Promise<PrChecks> {
-    // PRs live on the PR source (the forge), whatever source the item came from.
-    const forge = this.byType.get(PR_SOURCE_TYPE);
-    if (!forge?.prChecks || it.pr_number === null) return { state: "passed" };
+    const forge = this.forge;
+    if (!forge || it.pr_number === null) return { state: "passed" };
     try {
       return await forge.prChecks(it.pr_number);
     } catch (err) {
@@ -2686,7 +2831,9 @@ export class Controller {
   /**
    * A failed triage, implement or review run (design §5 Restarts). Counts come from the run history of
    * this step (the first run and its automatic retries): a rate limit is never an attempt; infra failures
-   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. Under both
+   * count toward max_restart (and add one to restart_count); task failures toward max_attempts. `checks_env`
+   * spends neither: it is counted over the item's whole run history, and the one after CHECKS_ENV_LIMIT blocks
+   * the item on a human (`run_failed:<kind>:checks_env`) with no retry. Under both
    * limits, a new run is enqueued in the same transition with `not_before` = failure + backoff (rate limit:
    * its reset time). At a limit, the item blocks on a human with the last error posted. The retry key comes
    * from the failed run's key, and the ack fences the run, so applying it twice enqueues one retry.
@@ -2704,9 +2851,20 @@ export class Controller {
     const restart = cls === "infra" ? { restart_count: it.restart_count + 1 } : {};
     const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
 
+    if (cls === "checks_env") {
+      const env = (await this.d.store.listRuns(it.id)).filter(
+        (r) => failureClass(r.outcome) === "checks_env" && (r.id === run.id || r.acknowledged_at !== null),
+      ).length;
+      if (env > CHECKS_ENV_LIMIT) {
+        // The run_failed form, so `/retry` and the status page read it like any other failed run.
+        const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${CHECKS_ENV}` };
+        const url = await this.lastAttemptComment(it, run, code, CHECKS_ENV, env, footerAfter(it, patch));
+        return { patch: { ...patch, failure_comment_url: url }, actor: SYSTEM, reason: CHECKS_ENV, detail: { ...detail, checks_env_failures: env }, ack_run: run.id };
+      }
+    }
     const limit = task >= max_attempts ? "max_attempts" : infra >= max_restart ? "max_restart" : null;
-    // Neither a rate limit nor a stall is an attempt: they never reach a limit (design §5 Restarts).
-    if (cls !== "rate_limited" && cls !== "stalled" && limit) {
+    // Neither a rate limit, a stall nor a checks_env run is an attempt: they never reach a limit (design §5 Restarts).
+    if (cls !== "rate_limited" && cls !== "stalled" && cls !== "checks_env" && limit) {
       const patch = { ...restart, blocked_on: "human" as const, blocked_reason: limit };
       const url = await this.lastAttemptComment(it, run, code, limit, limit === "max_attempts" ? task : infra, footerAfter(it, patch));
       return {
@@ -2843,16 +3001,18 @@ export class Controller {
   }
 
   /**
-   * A comment on the item's PR (the forge holds PRs, whatever source the item came from); on the item's own
-   * source when it has no PR. GitHub serves PR comments through the issue API, so the PR is a source ref.
+   * A comment on the item's PR, through the forge whatever source the item came from (issue #273): a thread entry
+   * whose outbox row targets the forge's PR ref, so the outbox step posts it with `postPrComment`. With no PR, or
+   * no forge, it goes to the item's own source.
    */
   private async prComment(it: WorkItem, key: string, body: string): Promise<void> {
-    if (it.pr_number === null) {
+    if (it.pr_number === null || !this.forge) {
       await this.comment(it, key, body);
       return;
     }
-    const link = it.source.type === PR_SOURCE_TYPE ? it.source.link.replace(/\d+$/, String(it.pr_number)) : "";
-    await this.post(it, { type: PR_SOURCE_TYPE, id: `${this.repoPath()}#${it.pr_number}`, link }, body, `<!-- factory:${key} -->`);
+    const pr = this.forge.prRef(it.pr_number);
+    const marker = `<!-- factory:${key} -->`;
+    await this.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
   }
 
   /**
@@ -3129,7 +3289,9 @@ export class Controller {
     const out = run.outcome?.status === "failed" ? run.outcome : null;
     const what = limit === "max_attempts"
       ? `The ${run.kind} run failed ${n} times (limit \`max_attempts\` = ${this.settings(it.project).max_attempts}), so the factory stopped retrying it.`
-      : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
+      : limit === CHECKS_ENV
+        ? `The ${run.kind} run's checks failed on the base branch too ${n} times (the factory requeues at most ${CHECKS_ENV_LIMIT}), so it stopped retrying it. Fix or skip the failing tests on the base branch first.`
+        : `The ${run.kind} run hit ${n} infrastructure failures (limit \`max_restart\` = ${this.cfg.max_restart}), so the factory stopped restarting it.`;
     const tail = stripAnsi(out?.output_tail || out?.detail || "").trim();
     const first = firstErrorLine(tail);
     const tests = failingTests(tail);
@@ -3336,15 +3498,13 @@ export class Controller {
 
   /**
    * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
-   * itself is labelled through its own source; a PR through the GitHub adapter, where PRs live. With no
-   * GitHub adapter (one non-GitHub source alone), the PR call goes to the item's own source, as it always did.
+   * itself is labelled through its own source; a PR through the forge, where PRs live (issue #273). With no
+   * forge, the PR call goes to the item's own source.
    */
   private async setStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
     try {
-      const adapter = pr_number === null
-        ? this.adapterFor(source, "setStatus")
-        : (this.byType.get(PR_SOURCE_TYPE) ?? this.adapterFor(source, "setStatus"));
-      await adapter?.setStatus(source, status, pr_number);
+      if (pr_number !== null && this.forge) await this.forge.setPrStatus(source, status, pr_number);
+      else await this.adapterFor(source, "setStatus")?.setStatus(source, status, pr_number);
     } catch (err) {
       this.d.log.warn("set status failed", {
         source_id: source.id,
@@ -3380,20 +3540,31 @@ export class Controller {
 
   /**
    * The outbox (issue #282): each pending thread entry of a source type this process has an adapter for, claimed
-   * so one replica posts it, delivered through that adapter, then marked delivered. A failure is retried with
-   * backoff (retry_base_ms doubling up to retry_max_ms); it never touches the item's state. Entries of a source
-   * type with no adapter here stay pending for a process that has one.
+   * so one replica posts it, delivered through that adapter, then marked delivered; an entry whose target is one
+   * of the forge's PR refs goes through the forge (issue #273). A failure is retried with backoff (retry_base_ms
+   * doubling up to retry_max_ms); it never touches the item's state. Entries this process cannot deliver stay
+   * pending for a process that can.
    */
   private async outboxStep(): Promise<void> {
-    const types = [...this.byType.keys()];
-    for (const row of await this.d.store.listPendingDeliveries(types, OUTBOX_BATCH)) {
+    const types = new Set(this.byType.keys());
+    if (this.forge) types.add(this.forge.ref_type);
+    for (const row of await this.d.store.listPendingDeliveries([...types], OUTBOX_BATCH)) {
       await this.guard("outbox delivery", () => this.deliver(row));
     }
   }
 
-  private async deliver(row: ThreadDelivery): Promise<void> {
+  /** How `row` is posted here: through the forge for one of its PR refs, else the adapter of its source type. */
+  private poster(row: ThreadDelivery): ((body: string, marker: string) => Promise<{ url: string | null }>) | null {
+    const forge = this.forge;
+    const pr = forge?.prNumberOf(row.target) ?? null;
+    if (forge && pr !== null) return (body, marker) => forge.postPrComment(pr, body, marker);
     const adapter = this.byType.get(row.source_type);
-    if (!adapter) return;
+    return adapter ? (body, marker) => adapter.postComment(row.target, body, marker) : null;
+  }
+
+  private async deliver(row: ThreadDelivery): Promise<void> {
+    const post = this.poster(row);
+    if (!post) return;
     const token = await this.d.store.claimDelivery(row.seq, this.cfg.lease_ms);
     if (token === null) return;
     // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
@@ -3406,7 +3577,7 @@ export class Controller {
     }
     let url: string | null;
     try {
-      url = (await adapter.postComment(row.target, row.body, row.marker)).url;
+      url = (await post(row.body, row.marker)).url;
     } catch (err) {
       const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
       const delay = retryDelayMs(row.attempts + 1, this.cfg.retry_base_ms, this.cfg.retry_max_ms);
@@ -3439,7 +3610,11 @@ export class Controller {
     try {
       await fn();
     } catch (err) {
-      this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      // A GitHub call refused with no calls left is a wait for the reset, not a failure: the step runs again next
+      // poll, and every other step (local work) goes on.
+      const until = rateLimitWait(err);
+      if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
+      else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
     }
   }
 }
@@ -3676,6 +3851,7 @@ const FAILURES: Record<string, string> = {
   // The implement run's code (design §4, 2026-11-03): a task failure, retried up to max_attempts. Not the
   // CHECKS_FAILED blocked reason above, which is a failed PR check after review (design §5 CI gate).
   checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
+  checks_env: "a check before push failed, also after one fix step, and its failing test files fail on the base commit too (flaky or broken on the base); retried without spending an attempt or a restart",
   toolchain_missing: "a check before push could not start its tools (a module under node_modules or a tool binary is missing); an infrastructure failure, retried without spending an attempt",
   test_database_failed: "the run's test database for the checks could not be created",
   unresolved_conflicts: "conflicts were left unresolved",

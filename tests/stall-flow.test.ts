@@ -144,7 +144,7 @@ describe("stalled runs", () => {
     const t2 = f.clock.now().getTime();
     expect(await f.store.getClaimPause("model_stall")).toBe(iso(t2 + PROBE_MS));
     expect(await f.w1.tick()).toBe(false);
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(f.stalledAt)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(t2 + PROBE_MS)}`);
 
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
@@ -171,18 +171,75 @@ describe("stalled runs", () => {
     const again = f.clock.now().getTime();
     const p = await f.store.pauseClaims(iso(again + PROBE_MS), "model_stall");
     expect(p).toMatchObject({ started: true, resume_at: iso(again + PROBE_MS) });
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(again)}`);
+    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + PROBE_MS)}`);
     // A second stall during the same pause starts nothing and keeps the since time.
     f.clock.advance(1_000);
     expect(await f.store.pauseClaims(iso(again + 1_000 + PROBE_MS), "model_stall")).toMatchObject({ started: false });
-    expect(await modelStallLine(f.store)).toBe(`agents paused: model not answering since ${iso(again)}`);
+    expect(await modelStallLine(f.store)).toBe(
+      `agents paused: model not answering since ${iso(again)}, next probe at ${iso(again + 1_000 + PROBE_MS)}`,
+    );
+  });
+});
+
+describe("who probes a due stall pause", () => {
+  const controllerWith = (f: Awaited<ReturnType<typeof stalled>>, llm: ReturnType<typeof probeLLM>) =>
+    new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
+
+  it("a controller that did not set the pause ends it once the first one stopped ticking", async () => {
+    const f = await stalled([true]);
+    const first = controllerWith(f, probeLLM([]));
+    // The first controller ticks before the probe time, then stops (drained): it never ticks again.
+    await first.tickModelProbe();
+    f.clock.advance(PROBE_MS);
+    await f.prober.tickModelProbe();
+    expect(f.llm.requests).toHaveLength(1);
+    expect(await f.store.getClaimPause("model_stall")).toBeNull();
+    expect(await modelStallLine(f.store)).toBeNull();
+  });
+
+  it("two controllers that see the same due pause call the LLM once for that due time", async () => {
+    const f = await stalled();
+    const llm = probeLLM([false, false]);
+    const [a, b] = [controllerWith(f, llm), controllerWith(f, llm)];
+    f.clock.advance(PROBE_MS);
+    await Promise.all([a.tickModelProbe(), b.tickModelProbe()]);
+    expect(llm.requests).toHaveLength(1);
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.clock.now().getTime() + PROBE_MS));
+    // The next due time is probed once more, by either.
+    f.clock.advance(PROBE_MS);
+    await Promise.all([b.tickModelProbe(), a.tickModelProbe()]);
+    expect(llm.requests).toHaveLength(2);
+  });
+
+  it("an answered probe writes model_answered and claimRun takes the queued retry at once", async () => {
+    const f = await stalled([true]);
+    f.clock.advance(PROBE_MS);
+    await f.prober.tickModelProbe();
+    const rows = (await f.store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    expect(rows.find((r) => r.name === "model_answered")).toBeDefined();
+    // The stalled run's retry waits on no time of its own (not_before = the stall), so nothing holds it.
+    const [, retry] = await f.runs(f.a, "implement");
+    expect(retry!.not_before! <= f.clock.now().toISOString()).toBe(true);
+    expect((await f.store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))?.id).toBe(retry!.id);
+  });
+
+  it("with no LLM provider the pause ends at its probe time", async () => {
+    const f = await stalled();
+    f.clock.advance(PROBE_MS - 1);
+    await f.controller.tickModelProbe();
+    expect(await f.store.getClaimPause("model_stall")).toBe(iso(f.stalledAt + PROBE_MS));
+    f.clock.advance(1);
+    await f.controller.tickModelProbe();
+    expect(await f.store.getClaimPause("model_stall")).toBeNull();
+    await f.step();
+    expect((await f.runs(f.a, "implement")).map((r) => r.status)).toEqual(["failed", "succeeded"]);
   });
 });
 
 describe("the stall pause line", () => {
   it("factory status and the dashboard show it during a pause, and not without one", async () => {
     const f = await stalled();
-    const line = `agents paused: model not answering since ${iso(f.stalledAt)}`;
+    const line = `agents paused: model not answering since ${iso(f.stalledAt)}, next probe at ${iso(f.stalledAt + PROBE_MS)}`;
     // factory status
     expect(await modelStallLine(f.store)).toBe(line);
     // the dashboard's Health panel

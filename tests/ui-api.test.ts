@@ -1176,3 +1176,35 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(calls.filter((n) => !/^(get|list|count|schemaVersion)/.test(n))).toEqual([]);
   });
 });
+
+describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () => {
+  const stored = (clock: FakeClock, over: Record<string, unknown> = {}) => JSON.stringify({
+    limit: 5000, remaining: 0, reset_at: new Date(clock.now().getTime() + 600_000).toISOString(), budget_share: 0.5,
+    share_limit: 2500, counted: 1234, state: "waiting", as_of: clock.now().toISOString(), replica_id: "host:1", ...over,
+  });
+
+  it("the overview shows remaining calls, the reset time, this factory's count and, at 0, a wait with the reset as its reason", async () => {
+    const { d, store, clock } = await seeded();
+    expect((await json<{ github_budget: unknown }>(d, "/api/v1/overview")).github_budget).toBeNull();
+    const reset_at = new Date(clock.now().getTime() + 600_000).toISOString();
+    await store.advanceCursor("github:budget", null, stored(clock));
+    const o = await json<{ github_budget: Record<string, unknown>; system_actions: unknown[] }>(d, "/api/v1/overview");
+    expect(o.github_budget).toMatchObject({
+      limit: 5000, remaining: 0, reset_at, budget_share: 0.5, share_limit: 2500, counted: 1234, replica_id: "host:1",
+      state: "waiting", wait_reason: `waiting for the GitHub rate-limit reset at ${reset_at}`,
+    });
+    // A wait, not an error: nothing for the operator to do.
+    expect(JSON.stringify(o.system_actions)).not.toContain("rate-limit");
+    const html = (await get(d, "/classic")).body;
+    expect(sectionOf(html, "github-budget")).toContain(`waiting for the GitHub rate-limit reset at ${reset_at}`);
+    expect(sectionOf(html, "github-budget")).toContain("this factory counted 1234 of 2500");
+  });
+
+  it("once the stored reset has passed, the window is over: no wait and a count of 0", async () => {
+    const { d, store, clock } = await seeded();
+    await store.advanceCursor("github:budget", null, stored(clock));
+    clock.advance(600_000);
+    const o = await json<{ github_budget: Record<string, unknown> }>(d, "/api/v1/overview");
+    expect(o.github_budget).toMatchObject({ state: "ok", counted: 0, wait_reason: null });
+  });
+});

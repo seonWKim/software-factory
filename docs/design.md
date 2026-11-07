@@ -34,6 +34,7 @@ the `05-*` files.
 - [05-sources.md](design/05-sources.md): stream intake, several sources at once, and adopting PRs and pushes a person makes.
 - [05-interactive-sessions.md](design/05-interactive-sessions.md): a person's own LLM session on an item as an `interactive` run, its gates at finish and its release.
 - [05-status-labels.md](design/05-status-labels.md): the eight status labels and when the controller sets them.
+- [05-standing-approvals.md](design/05-standing-approvals.md): the detail every spec decision records, the run check per (gate, tier), and the rule and proposal tables.
 
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): the feedback rate, revert and fix-forward tracking, `factory stats`, and the reviewer's golden set.
