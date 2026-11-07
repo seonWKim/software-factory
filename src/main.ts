@@ -83,7 +83,8 @@ ${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")
                local work items (plugins.source includes "local"), acting as the CLI identity (cli_user, else
                local:<git user.email>, else local:<OS user>, else local:anonymous), authorized by the local auth
                plugin (auth.local, default "local"); no GitHub call
-  issue        create / comment / title / sub-issue through the factory's GitHub login (the bot with github_auth "app")
+  issue        create / comment / edit <number> --body-file <path> / title / sub-issue through the factory's
+               GitHub login (the bot with github_auth "app")
   golden add <pr> [--expect should_flag|should_pass] [--force]
                writes golden/cases/<pr>/ (diff.patch, spec.md, case.json) from a factory PR's record;
                egress-scanned first, nothing written on a finding; a clean merge needs --expect should_pass
