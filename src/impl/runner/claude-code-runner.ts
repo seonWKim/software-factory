@@ -119,8 +119,16 @@ const ENV_FILE_GLOBS: readonly string[] = [
 ];
 export const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) => ENV_FILE_GLOBS.map((g) => `${tool}(**/${g})`));
 
+/** The native tools whose writes are path-scoped: Claude Code's `Edit(...)` rules cover both Edit and Write. */
+const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set(["Edit", "Write"]);
+
 /**
- * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules). The paths come from
+ * G1 (subprocess scrub), G3 (OS sandbox denyRead), G4 (permission deny rules), and the write allow rules (design
+ * §5 Sandbox): native Write and Edit are allowed only under the run folder (`workdir`) and `writable_paths`, the
+ * roots `guardPolicy` gives the shared file tools, and under the runner's own temp folders (`tmp`, the run's
+ * TMPDIR); one `Edit(//<root>/**)` rule each (Claude Code's Edit rules cover Write too). `--allowedTools` does
+ * not name Write or Edit, and in `-p` mode a call no rule allows is refused, so a Write to any other path (the
+ * owner's live checkout included) never runs. No `workdir`: no run folder rule. The paths come from
  * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
  *
  * Network: `allowLocalBinding` lets sandboxed commands bind and connect on localhost only, so tests that start a
@@ -130,12 +138,15 @@ export const ENV_FILE_DENY: readonly string[] = ["Read", "Edit"].flatMap((tool) 
  */
 export function buildHarnessSettings(
   spec: Pick<AgentRunSpec, "deny_paths" | "writable_paths">,
-  workdir = "/",
+  workdir?: string,
+  tmp: readonly string[] = [],
 ): Record<string, unknown> {
-  const policy = guardPolicy({ workdir, deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, env_allowlist: {} });
+  const policy = guardPolicy({ workdir: workdir ?? "/", deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, env_allowlist: {} });
+  const writeRoots = [...(workdir === undefined ? [] : [policy.workdir]), ...policy.writable_paths, ...tmp];
   return {
     env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
     permissions: {
+      allow: writeRoots.map((r) => `Edit(${rulePath(r)}/**)`),
       deny: [
         ...policy.deny_paths.flatMap((p) => [`Read(${rulePath(p)})`, `Read(${rulePath(p)}/**)`]),
         ...ENV_FILE_DENY,
@@ -171,11 +182,18 @@ function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
   return s.resume ? ["--resume", s.id] : ["--session-id", s.id];
 }
 
-/** Builds the `claude -p` argument list. Exported for tests. */
-export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs): string[] {
+/**
+ * Builds the `claude -p` argument list. `tmp`: the run's temp folders, writable by Write and Edit. Exported for
+ * tests.
+ */
+export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude", bridge?: BridgeArgs, tmp: readonly string[] = []): string[] {
   // Exactly the spec's tools, in its order: the runner adds none. Granted broker tools come only through the bridge.
+  // Write and Edit are offered but allowed only by the settings' path-scoped rules, never as bare names.
   const tools = spec.tools.map((t) => t.name).join(",");
-  const allowed = [...spec.tools.map((t) => t.name), ...(bridge?.tools ?? []).map(harnessToolName)].join(",");
+  const allowed = [
+    ...spec.tools.map((t) => t.name).filter((n) => !PATH_SCOPED_TOOLS.has(n)),
+    ...(bridge?.tools ?? []).map(harnessToolName),
+  ].join(",");
   return [
     bin,
     "-p",
@@ -184,7 +202,7 @@ export function buildClaudeArgs(spec: AgentRunSpec, model: string, bin = "claude
     // the same object `--output-format json` prints.
     "--output-format", "stream-json",
     "--verbose",
-    "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir)),
+    "--settings", JSON.stringify(buildHarnessSettings(spec, spec.sandbox?.workdir, tmp)),
     "--setting-sources", "project",
     "--strict-mcp-config",
     // The run's only MCP server, when it has granted tools: the bridge to the worker side (tool-bridge.ts).
@@ -232,7 +250,9 @@ export class ClaudeCodeRunner implements AgentRunner {
 
   private async runWith(spec: AgentRunSpec, bridge?: RunningBridge): Promise<AgentRunResult> {
     const home = join(this.opts.homesDir, spec.run_id);
-    await mkdir(join(home, "tmp"), { recursive: true });
+    // The run's TMPDIR (buildAgentEnv): the one folder outside the run folder Write and Edit may also use.
+    const tmp = join(home, "tmp");
+    await mkdir(tmp, { recursive: true });
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
@@ -247,7 +267,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
       const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs), {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs, [tmp]), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,
