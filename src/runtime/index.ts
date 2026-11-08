@@ -3,3 +3,4 @@
 
 export { CODE_ROOT, SettingCatalog, loadSettingCatalog, renderSettingCatalog } from "./settings/catalog.js";
 export { monotonicProblems, resolveLevels, type LevelValue, type Resolved } from "./settings/monotonic.js";
+export { DEFAULT_GOLDEN_ROLE, RoleCatalog, goldenCasesByRole, loadRoles, rolesShortOfGolden } from "./run-roles/run-roles.js";

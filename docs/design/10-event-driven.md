@@ -41,6 +41,17 @@ force.
   every import twice. New component code that still calls legacy code is listed by
   `tests/architecture/dependency-direction.test.ts` as `component-imports-legacy`; those entries go as the
   legacy code goes.
+- **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
+  `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
+  prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
+  `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
+  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous, so
+  `ruleOfTwoRefusal` refuses them unless a person approved their input. No role approves what it proposes, and no
+  principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
+  means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
+  (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
+  ratchet). Not wired into the run path yet: the worker still picks prompts and tools itself (M6), and auto mode does
+  not call `ruleOfTwoRefusal` (owner decision pending).
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
