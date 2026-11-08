@@ -133,7 +133,7 @@ export interface LocalRoute {
 /**
  * An item's broker and sandbox (design 05-sources, Local items): a local item with no PR takes `local` when it is
  * set, never the forge. A local item that already has a PR (one opened before #427) keeps its PR path: its branch
- * and its PR live on the forge, so it takes the forge's broker and sandbox like a GitHub item.
+ * and its PR live on the forge, so it takes the forge's broker and sandbox like an item of a forge source.
  */
 export function routeFor(
   d: { broker: ToolBroker; sandbox: Sandbox; local?: LocalRoute },
