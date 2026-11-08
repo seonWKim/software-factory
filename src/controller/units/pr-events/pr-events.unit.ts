@@ -1,11 +1,13 @@
-// The forge's PR events: merged or closed, opened (adopt, record a pushed head), unmergeable (an update run).
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// The forge's PR events: merged or closed, opened (adopt, record a pushed head), unmergeable (an update run), and
+// a person's PR merge from the Merge button (an outbound `merge_pr` action). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
 import { SKIP_LABEL, floorTier, workItemIdFromBranch } from "../../../core/policy.js";
-import { type Actor, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
+import { prMergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { SYSTEM, updateKey, awaitingMerge } from "../support.js";
+import type { UnitOperations } from "../../router/unit.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -68,12 +70,80 @@ export class PrEventsUnit {
   }
 
   /**
+   * The PR merge (design §9, the Merge button): an app `merge` request on an item with a PR. Authorized by the local
+   * auth plugin for `approve_merge`, as the local merge is; refused before anything is stored for an item not
+   * waiting for a merge, with no forge selected or with no recorded head. Otherwise one `merge_pr` action, keyed by
+   * the request, asks outbound to merge the PR with a merge commit only at the head the review passed
+   * (`last_head_sha`), so a moved head is refused by the forge and nothing moves; its result comes back as
+   * `prMergeDelivered`. Returns the refusal (the caller posts it), or null when the merge is requested.
+   */
+  async requestPrMerge(id: WorkItemId, who: { user_id: UserId; passport?: Parameters<UnitOperations["auth"]["allowed"]>[4] }, key: string, detail: Record<string, unknown>): Promise<string | null> {
+    const item = await this.c.k.reader.getWorkItem(id);
+    if (!item) return "the work item was not found";
+    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id, true, who.passport);
+    if ("refuse" in principal) return principal.refuse;
+    const pr = prNumber(item);
+    if (!awaitingMerge(item) || pr === null) {
+      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
+      return `${item.id} is not waiting for a merge (${at}); Merge applies once its PR passed review (merge_pending)`;
+    }
+    const forge = this.c.k.forge;
+    if (!forge) return `no forge is selected (\`plugins.forge\`), so the factory cannot merge PR #${pr}`;
+    const head = item.last_head_sha;
+    if (head === null) return `no reviewed head is recorded for PR #${pr}`;
+    await this.c.k.commit({ writes: [{ kind: "intent", action: {
+      action: "merge_pr", target: forge.prRef(pr), work_item_id: item.id, key: `merge_pr:${item.id}:${key}`,
+      args: { pr, head_sha: head, change_ref: item.change_ref, by: principal.user_id, reply_key: key, detail: JSON.stringify(detail) },
+    } }] });
+    return null;
+  }
+
+  /**
+   * A delivered `merge_pr` action (from the outbox unit). A merge closes the item (completed, the forge's merge sha)
+   * with the person who pressed Merge as the approver of record (the forge's merger is the token account), posts
+   * one reply and releases the items waiting on it; a PR the forge had already merged closes it the same way. A
+   * refusal, or a merge outbound gave up on, is posted once under the request's refusal marker. Safe to run again:
+   * the close is conditional and the replies keyed.
+   */
+  async prMergeDelivered(row: ActionRow): Promise<void> {
+    const item = row.work_item_id ? await this.c.k.reader.getWorkItem(row.work_item_id as WorkItemId) : null;
+    if (!item) return;
+    const a = row.args;
+    const key = String(a.reply_key);
+    const pr = Number(a.pr);
+    const r = row.outcome === "sent" ? prMergeOutcome(row) : null;
+    if (r === null || !r.merged) {
+      const why = r === null ? `the forge could not be reached to merge PR #${pr}, so nothing moved; press Merge again` : r.refused;
+      this.c.k.d.log.info("app command refused", { work_item_id: item.id, command: "merge", reason: why.slice(0, 300) });
+      await this.c.unit("outbox").post(item, item.source, `\`merge\` was not applied: ${why}.`, `<!-- factory:refused:${key} -->`);
+      return;
+    }
+    const change_ref = String(a.change_ref);
+    const actor: Actor = { kind: "user", id: String(a.by) as UserId };
+    await this.mergeVerdict(item, { change_ref, merge_sha: r.sha }, actor);
+    await this.c.unit("transitions").decide(item.id, (it) => (it.stage === "CLOSED" || it.change_ref !== change_ref
+      ? null
+      : {
+          patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+          actor,
+          reason: "pr_merged",
+          detail: { ...(JSON.parse(String(a.detail)) as StateChangeDetail), head_sha: String(a.head_sha), ...(r.already ? { already_merged: true } : {}) },
+        }));
+    const closed = await this.c.k.reader.getWorkItem(item.id);
+    if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) return;
+    this.c.k.d.log.info("PR merged", { work_item_id: item.id, pr_number: pr, merge_sha: r.sha, user_id: actor.id });
+    const head = String(a.head_sha).slice(0, 12);
+    await this.c.unit("outbox").post(item, item.source, `Merged PR #${pr} at its reviewed head \`${head}\` as \`${r.sha.slice(0, 12)}\` (a merge commit). The item is closed.`, `<!-- factory:pr-merged:${key} -->`);
+    await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
+  }
+
+  /**
    * The implicit verdict of a merged factory PR (design §4): one `accept`, severity `none`, for the merged head,
    * when no person pushed to it. Stored before the merge closes the item, so a crash between the two leaves the
    * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
    * merger does not resolve to a user.
    */
-  async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "change_merged" }>, merger: Actor | null): Promise<void> {
+  async mergeVerdict(it: WorkItem, e: { change_ref: string; merge_sha: string }, merger: Actor | null): Promise<void> {
     if (it.origin !== "factory" || it.stage === "CLOSED" || it.change_ref !== e.change_ref) return;
     const id = it.id;
     const log = { work_item_id: id, pr_number: prNumber(e) };

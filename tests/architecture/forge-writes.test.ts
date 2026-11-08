@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { codeOnly, ratchet, read, sourceFiles } from "./lib.js";
 
 // RFC 0015 §11 M7: no forge or source write outside src/outbound/. A write is a call of a source adapter's or the
-// forge's write method (a comment, a reaction, a label, a close, a filed issue, a PR close, a base push), or a
+// forge's write method (a comment, a reaction, a label, a close, a filed issue, a PR close or merge, a base push), or a
 // broker call of a GitHub write tool (push, open PR, comment). The plugin implementations (src/impl/) define them,
 // and src/interfaces/ declares them. The controller's outbox unit only stores intents: its own operations
 // (`markSeen`, `setStatus` on `unit("outbox")` or `this`) are not writes.
 //
 // Ratchet: empty since M7's last write, the controller's sub-issue filing, moved to outbound (`file_sub_issue`).
 
-const WRITE_METHOD = /([\w$)\]"]+)\s*\.\s*(postComment|markSeen|setStatus|closeIssue|fileSubIssue|fileIssue|postPrComment|setPrStatus|closePr|pushBase|push)\s*\(/g;
+const WRITE_METHOD = /([\w$)\]"]+)\s*\.\s*(postComment|markSeen|setStatus|closeIssue|fileSubIssue|fileIssue|postPrComment|setPrStatus|closePr|mergePr|pushBase|push)\s*\(/g;
 const BROKER_WRITE = /\.call\(\s*\w+\s*,\s*"github\.(push_branch|open_pr|comment|close_pr|merge_pr)"/g;
 const EXEMPT = /^(?:outbound|impl|interfaces)\//;
 

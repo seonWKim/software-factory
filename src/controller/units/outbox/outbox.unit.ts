@@ -143,7 +143,7 @@ export class OutboxUnit {
   /**
    * DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field); a closed PR
    * clears its item's pending mark; a delivered PR goes on its item, which goes to review; a delivered update or
-   * resolve push queues the review its run waited for; a delivered merge goes to the merge queue (RFC 0015 M8), a
+   * resolve push queues the review its run waited for; a delivered merge goes to the merge queue (RFC 0015 M8), a delivered PR merge to the pr-events unit, a
    * delivered base push to the local merge, a filed split phase to the phases unit, which records the next. A PR or
    * push outbound gave up (refused for good) stops its item's wait for a person's (`delivery_failed`).
    */
@@ -155,6 +155,7 @@ export class OutboxUnit {
         if (a.work_item_id) await this.c.unit("run-results").deliveryGaveUp(a.work_item_id as WorkItemId, a);
         continue;
       }
+      if (a.action === "merge_pr") await this.c.unit("pr-events").prMergeDelivered(a);
       if (a.action === "close_pr" && a.work_item_id) await this.c.unit("closes").prClosed(a.work_item_id as WorkItemId);
       if (a.action === "push" && a.work_item_id && typeof a.args.run_id === "string") {
         await this.c.unit("run-results").pushDelivered(a.work_item_id as WorkItemId, a.args.run_id);

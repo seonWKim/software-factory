@@ -16,6 +16,7 @@ import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { CliIdentity } from "./core/local-cli.js";
+import { canMergeLocal } from "./core/local-merge.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -386,9 +387,7 @@ export async function loadConfig(
         "`factory settings set auto_merge_max_tier <n>` or the Settings page, with approve_merge), read only in auto mode",
     );
   }
-  if (!isTier(file.dials.spec_gate_min_tier)) {
-    throw new Error("tiers must be integers 1–5");
-  }
+  if (!isTier(file.dials.spec_gate_min_tier)) throw new Error("tiers must be integers 1–5");
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
   uiUserId(file.ui);
@@ -1084,9 +1083,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // The owner check for "Resume now" and the Merge button's approve_merge check: the configured auth plugin over the
   // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
   // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
-  const base = p.base;
-  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
-  const authPlugin = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const base = { ...p.base, github: NO_FORGE };
+  const grants = (await createGrants(GRANTS, loaded.grants, base)).filter((g) => !g.remote);
+  const authPlugin = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, store, grants });
   // Identity (M9): the page's commands carry the actor's edge passport, and every decision here is audited.
   const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
   const auth = new AuditedAuthProvider(authPlugin, identity.passports);
@@ -1097,9 +1096,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
+  // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
   const actor = who.actor;
   const commands: UiCommands = {
-    ...who, token,
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
     mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow,
     ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };
@@ -1195,9 +1195,7 @@ export function statsConfig(raw: FileConfig["stats"]): StatsConfig {
   const checked = {} as Record<VerdictSeverity, number>;
   for (const s of VERDICT_SEVERITIES) {
     const v = w[s];
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-      throw new Error(`stats.weights.${s} must be a number ≥ 0`);
-    }
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`stats.weights.${s} must be a number ≥ 0`);
     checked[s] = v;
   }
   const min_sample = raw?.min_sample === undefined ? STATS_MIN_SAMPLE_DEFAULT : raw.min_sample;

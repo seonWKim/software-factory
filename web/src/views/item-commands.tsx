@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { API, type CommandReply, type ItemCommand, type ItemDetail, type Session, postCommand, useApi } from "../api.js";
+import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
@@ -12,9 +12,8 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 // in its order, and one text box that is the note every send carries when it has text (the reason for reject,
 // the feedback for revise, tokens for budget, `accept|changes|reject <severity> <reason>` for verdict). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
-// next tick, and the item's `replies` say how that went. A local item waiting for its merge also gets a Merge
-// button when the item API's `can_merge` is true: it sends `merge` with no note (the local merge of `factory
-// merge`), and its refusal (a conflict, a failing check, no approve_merge) shows beside it.
+// next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
+// (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 
 /** Commands the server refuses without text. */
 const NEEDS_TEXT = ["reject", "revise"];
@@ -60,10 +59,12 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
-  // The page's own item query (same key and options), read here for its `can_merge`.
-  const canMerge = useApi<ItemDetail>(API.item(id)).data?.can_merge === true;
+  // The page's own item query (same key and options), read here for its `merge`.
+  const detail = useApi<ItemDetail>(API.item(id)).data?.item;
+  const merge = detail?.merge;
+  const showMerge = showsMerge(merge);
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
-  if (commands.length === 0 && !canMerge) {
+  if (commands.length === 0 && !showMerge) {
     return (
       <Section title="Commands">
         <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
@@ -77,17 +78,15 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const off = session.isError || session.data?.commands_enabled === false;
   const blank = note.trim() === "";
 
-  /** `merge` takes no note, and leaves the box as it is. */
   const send = async (command: string) => {
     if (!token) return;
-    const withNote = command !== "merge";
     setBusy(true);
     setConfirming(false);
     try {
-      const r = await postCommand(token, id, command, withNote ? note : "");
+      const r = await postCommand(token, id, command, note);
       setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
       if (r.ok) {
-        if (withNote) setNote("");
+        setNote("");
         await client.invalidateQueries({ queryKey: [API.item(id)] });
       }
     } catch (err) {
@@ -153,21 +152,57 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             </li>
           );
         })}
-        {canMerge && (
+        {showMerge && (
           <li data-command="merge" className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              className={textButton}
-              disabled={!enabled || busy}
-              title="Merge the item's local branch into the local base branch (factory merge), after the install and checks pass"
-              onClick={() => void send("merge")}
-            >
-              Merge
-            </Button>
-            <OutcomeText outcome={commandOutcome(replies, "merge", local.merge)} />
+            <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} />
           </li>
         )}
       </ul>
     </Section>
+  );
+}
+
+/**
+ * The Merge button (design §9), on the item page and in Needs you: sends `merge` with no note (a local item's local
+ * merge, as `factory merge`; any other item's PR merged on the forge at the head the review passed), then re-reads
+ * the item and the list, so the controller's reply shows. Disabled with the item API's reason beside it; else the
+ * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge).
+ */
+export function MergeButton({ id, source, merge, replies = [] }: { id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[] }) {
+  const client = useQueryClient();
+  const session = useApi<Session>(API.session, false);
+  const [busy, setBusy] = useState(false);
+  const [local, setLocal] = useState<LocalSend | undefined>(undefined);
+  const token = session.data?.csrf_token;
+  const on = !!token && session.data?.commands_enabled === true;
+  const send = async () => {
+    if (!token) return;
+    setBusy(true);
+    try {
+      const r = await postCommand(token, id, "merge", "");
+      setLocal(r.ok ? { seq: r.seq } : { error: r.error });
+      if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
+    } catch (err) {
+      setLocal({ error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local) : { tone: "status", text: merge.reason ?? "" };
+  return (
+    <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
+      <Button
+        variant="outline"
+        className={textButton}
+        disabled={!merge.enabled || !on || busy}
+        title={source === "local"
+          ? "Merge the item's local branch into the local base branch (factory merge), after the install and checks pass"
+          : "Merge the PR on the forge with a merge commit, at the head the review passed"}
+        onClick={() => void send()}
+      >
+        Merge
+      </Button>
+      <OutcomeText outcome={outcome} />
+    </span>
   );
 }

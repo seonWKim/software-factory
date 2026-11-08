@@ -12,15 +12,15 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
 
 /**
  * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post`, `close_pr` (a PR closed with
- * a comment, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
+ * a comment, through the forge), `merge_pr` (a PR merged at its reviewed head, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
  * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
  * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
  * delivered ref names the filed item) retry until delivered.
  */
-export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue";
+export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
-export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "push", "pr", "merge", "push_base", "file_sub_issue"];
+export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue"];
 
 /**
  * Where a run's push and PR go (RFC 0015 M7): the host whose factory repo holds the commit, and the branch, so

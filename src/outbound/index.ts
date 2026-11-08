@@ -8,7 +8,7 @@ export {
 } from "./intents.js";
 export { Outbound, type OutboundDeps } from "./outbound.js";
 export { buildTargets } from "./targets/targets.js";
-export type { Delivery, DeliveryTarget, TargetDeps } from "./targets/target.js";
+export { prMergeOutcome, type Delivery, type DeliveryTarget, type TargetDeps } from "./targets/target.js";
 export {
   basePushOutcome, localGit, mergeOutcome, type GitBasePushResult, type GitBasePushSpec, type GitMergeResult, type GitMergeSpec, type LocalGit,
 } from "./targets/local-git.js";

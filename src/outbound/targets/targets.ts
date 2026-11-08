@@ -42,11 +42,11 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       },
     },
     {
-      // A branch's PR opened or the open one updated (RFC 0015 M7), and a PR closed with one comment naming who
-      // closed its issue (`{closer}` in `body_by`), through the forge.
+      // A branch's PR opened or the open one updated (RFC 0015 M7), a PR closed with one comment naming who closed
+      // its issue (`{closer}` in `body_by`), and a PR merged at its reviewed head (a person's Merge), through the forge.
       name: "github-change",
       accepts: (d) =>
-        d.kind === "action" && ((d.row.action === "close_pr" && forge !== null) || (d.row.action === "pr" && forge?.openPr !== undefined)),
+        d.kind === "action" && (((d.row.action === "close_pr" || d.row.action === "merge_pr") && forge !== null) || (d.row.action === "pr" && forge?.openPr !== undefined)),
       async deliver(d) {
         if (d.kind !== "action" || !forge) throw new Error("github-change delivers PR actions only");
         const a = d.row.args;
@@ -56,6 +56,11 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
             branch: String(a.branch), base_ref: String(a.base_ref), title: String(a.title), body: String(a.body), ...(labels ? { labels } : {}),
           });
           return { url: pr.url, ref: String(pr.number) };
+        }
+        if (d.row.action === "merge_pr") {
+          // The forge refuses a head that moved; a PR already merged answers its merge sha (`already`).
+          const r = await forge.mergePr(Number(a.pr), String(a.head_sha), "merge");
+          return { url: null, ref: JSON.stringify(r) };
         }
         await forge.closePr({
           pr: Number(a.pr),

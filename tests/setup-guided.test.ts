@@ -63,12 +63,13 @@ describe("setup: the shared choices in factory.config.json", () => {
     const edited = JSON.parse(text);
     expect(edited.store).toEqual({ type: "sqlite" });
     expect(edited.auth).toBe("local");
-    expect(edited.permissions).toEqual({ grants: ["static"] });
+    // Only the remote grant goes; the checked-in static roles (the owner's approver grant) stay as written.
+    expect(edited.permissions).toEqual({ grants: ["static"], static: raw.permissions.static });
     expect(edited.plugins).toMatchObject({ source: ["local"], broker: "local", github_auth: "app", runner: "claude-code" });
     const { removed, added } = changedLines(CHECKED_IN, text);
     expect(removed.join("\n")).toMatch(/"store"/);
-    // The last member gains a comma before the appended "permissions".
-    expect(removed.filter((l) => !/"store"|"auth"|"broker"|"source"|"agent_git_identity"/.test(l))).toEqual([]);
+    // The checked-in "permissions" block (its static roles kept) is written back on one line.
+    expect(removed.filter((l) => !/"store"|"auth"|"broker"|"source"|"agent_git_identity"|"permissions"|"grants"|"static"/.test(l))).toEqual([]);
     expect(added.filter((l) => !/"store"|"auth"|"broker"|"source"|"permissions"|"agent_git_identity"/.test(l))).toEqual([]);
     const loaded = await load(text);
     expect(loaded.config.local_only).toBe(true);
@@ -77,7 +78,7 @@ describe("setup: the shared choices in factory.config.json", () => {
     const diff = configDiffLines(raw, changes);
     expect(diff).toContain('- "auth": "github"');
     expect(diff).toContain('+ "auth": "local"');
-    expect(diff).toContain('+ "permissions": { "grants": ["static"] }');
+    expect(diff).toContain('+ "permissions": { "grants": ["static"], "static": { "roles": { "github:69591622": { "*": ["approver"] } } } }');
   });
 
   it("turning GitHub and Slack back on from local only round-trips to a config that loads", async () => {

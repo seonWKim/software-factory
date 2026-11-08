@@ -14,7 +14,7 @@ import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { canMerge, itemCommands, itemReplies, readSession } from "./commands.js";
+import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -93,39 +93,32 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
-    let name: string;
-    try {
-      name = decodeURIComponent(t[1]!);
-    } catch {
-      return apiError(404, "No such table.");
-    }
-    return data(await dataTable(c.data(), name, url.searchParams));
+    const [name] = decoded(t.slice(1));
+    return name === undefined ? apiError(404, "No such table.") : data(await dataTable(c.data(), name, url.searchParams));
   }
   const tr = /^\/items\/([^/]+)\/runs\/([^/]+)\/transcript$/.exec(path);
   if (tr) {
-    let id: string;
-    let run: string;
-    try {
-      id = decodeURIComponent(tr[1]!);
-      run = decodeURIComponent(tr[2]!);
-    } catch {
-      return apiError(404, "No such run for this work item.");
-    }
+    const [id, run] = decoded(tr.slice(1));
+    if (id === undefined || run === undefined) return apiError(404, "No such run for this work item.");
     const r = await transcript(d, id as WorkItemId, run, url.searchParams);
     return { status: r.status, value: r.value };
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
-    let id: string;
-    try {
-      id = decodeURIComponent(m[1]!);
-    } catch {
-      return apiError(404, "No such work item.");
-    }
-    const body = await item(c, id as WorkItemId);
+    const [id] = decoded(m.slice(1));
+    const body = id === undefined ? null : await item(c, id as WorkItemId);
     return body === null ? apiError(404, "No such work item.") : ok(body);
   }
   return apiError(404, "Not found.");
+}
+
+/** A route's path segments, URL-decoded; none when one is malformed (a stray `%`). */
+function decoded(parts: readonly (string | undefined)[]): string[] {
+  try {
+    return parts.map((p) => decodeURIComponent(p!));
+  } catch {
+    return [];
+  }
 }
 
 /** GET /api/v1/pauses with, for a model stall, when it began (`since`): one more store read, no forge call. */
@@ -335,6 +328,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
+  const allowed = mergeAllowedOnce(c.d);
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -360,6 +354,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       dependents: r.dependents,
       conflicts: r.conflicts,
       merge_check,
+      merge: await mergeReadiness(c.d, it, merge_check, allowed),
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
@@ -406,6 +401,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       stored = [];
     }
   }
+  const merge_check = await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null);
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -452,7 +448,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
-      merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
+      merge_check,
+      merge: await mergeReadiness(c.d, it, merge_check, mergeAllowedOnce(c.d)),
       why: await c.whyOfItem(it),
     },
     timeline,
@@ -468,7 +465,6 @@ async function item(c: ApiCtx, id: WorkItemId) {
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
-    can_merge: await canMerge(c.d, it),
   };
 }
 

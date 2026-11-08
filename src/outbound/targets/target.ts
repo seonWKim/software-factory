@@ -3,7 +3,7 @@
 // write calls (tests/architecture/forge-writes.test.ts).
 
 import type { SourceRef } from "../../core/types.js";
-import type { Forge } from "../../interfaces/forge.js";
+import type { Forge, PrMergeResult } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import type { ActionRow } from "../intents.js";
 import type { LocalGit } from "./local-git.js";
@@ -56,6 +56,7 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
       return { url: ref.link, ref: ref.id };
     }
     case "close_pr":
+    case "merge_pr":
     case "push":
     case "pr":
       throw new Error(`a ${row.action} goes through the forge (github-change, github-push)`);
@@ -63,4 +64,9 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
     case "push_base":
       throw new Error(`a ${row.action} goes through the local target`);
   }
+}
+
+/** A delivered `merge_pr` action's result: the PR merged (its merge sha) or the forge's refusal. Null: not delivered. */
+export function prMergeOutcome(row: ActionRow): PrMergeResult | null {
+  return row.delivered_ref === null ? null : (JSON.parse(row.delivered_ref) as PrMergeResult);
 }

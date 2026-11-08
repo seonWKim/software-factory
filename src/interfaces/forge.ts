@@ -91,6 +91,15 @@ export interface ClosePrInput {
   body(closer: ExternalIdentity | null): string;
 }
 
+/** How `mergePr` merges: a merge commit (what the factory asks for, as the local merge does), a squash, or a rebase. */
+export type PrMergeMethod = "merge" | "squash" | "rebase";
+
+/**
+ * `merged`: the PR is merged, its merge commit `sha` (`already`: it was merged before this call, so nothing new was
+ * merged). `refused`: the forge refused the merge and nothing moved, with why in plain words (no forge text).
+ */
+export type PrMergeResult = { merged: true; sha: string; already: boolean } | { merged: false; refused: string };
+
 /** What `pushBase` needs: the factory repo, its base branch, the commit to push, and the remote base it read. */
 export interface BasePushInput {
   /** The factory repo's path: its `origin` is where the base goes. */
@@ -177,6 +186,13 @@ export interface Forge {
    * another. Throws on a forge failure; the caller retries.
    */
   closePr(input: ClosePrInput): Promise<"closed" | "not_open">;
+  /**
+   * Merges PR `pr` with `method`, only while its head is still `head_sha` (the head the review passed): the forge
+   * itself refuses a head that moved. A PR that is already merged answers its merge commit with `already`, so a
+   * retry after a merge the store did not record yet makes no second merge. Called only for a person's Merge
+   * (design §9), never automatically. Throws on a forge failure other than a refusal; nothing moved then either.
+   */
+  mergePr(pr: number, head_sha: string, method: PrMergeMethod): Promise<PrMergeResult>;
   /**
    * The base push (design 05-sources, Local items): moves the remote base branch to `input.sha`, only while it is
    * still at `input.expected_sha`, so a base that moved again is never overwritten. Never a hook. Throws on any

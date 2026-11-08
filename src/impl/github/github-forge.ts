@@ -2,7 +2,7 @@ import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
-import type { BasePushInput, BranchPushInput, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
+import type { BasePushInput, BranchPushInput, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
 import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
@@ -103,6 +103,13 @@ const CLOSED_PULL_PAGES = 5;
  * through `issues`, the GitHub source's store-backed post and label paths, so a PR comment or label is recorded
  * like an issue one (design §5, GitHub sync records). PR refs share the issues' id space (`owner/name#N`).
  */
+/** GitHub's merge refusals by status, in plain words: the merge endpoint's 405, 409 and 422. */
+const MERGE_REFUSALS: Record<number, string> = {
+  405: "GitHub refused the merge: the PR is not mergeable (a conflict, a required check, a required review or branch protection)",
+  409: "GitHub refused the merge: the PR head moved since the review passed",
+  422: "GitHub refused the merge request as invalid",
+};
+
 export class GitHubForge implements Forge {
   readonly ref_type = "github_issue" as const;
   /** Before issue #273 the GitHub source kept the PR position in its own cursor. */
@@ -345,6 +352,26 @@ export class GitHubForge implements Forge {
     await this.client.commentOnce(this.repo, input.pr, input.body(closer), input.marker);
     await this.client.request("PATCH", `${this.base}/pulls/${input.pr}`, { state: "closed" });
     return "closed";
+  }
+
+  /**
+   * One PUT to the PR's merge endpoint with `sha` the reviewed head, so GitHub itself refuses a head that moved. A
+   * refusal (405 not mergeable or blocked by a check or branch protection, 409 head moved, 422 invalid) reads the PR
+   * once: one already merged answers its merge commit (`already`), so a retry after a merge the store did not record
+   * makes no second merge; else the refusal in plain words, never GitHub's text. Any other failure throws.
+   */
+  async mergePr(pr: number, head_sha: string, method: PrMergeMethod): Promise<PrMergeResult> {
+    try {
+      const r = await this.client.request<{ sha?: unknown } | undefined>("PUT", `${this.base}/pulls/${pr}/merge`, { sha: head_sha, merge_method: method });
+      if (typeof r?.sha === "string" && r.sha !== "") return { merged: true, sha: r.sha, already: false };
+    } catch (err) {
+      const refused = err instanceof GitHubError && !(err instanceof GitHubRateLimitError) ? MERGE_REFUSALS[err.status] : undefined;
+      if (refused === undefined) throw err;
+      const pull = await this.client.request<{ merged?: unknown; merge_commit_sha?: unknown }>("GET", `${this.base}/pulls/${pr}`);
+      if (pull?.merged === true && typeof pull.merge_commit_sha === "string") return { merged: true, sha: pull.merge_commit_sha, already: true };
+      return { merged: false, refused };
+    }
+    throw new Error(`GitHub answered the merge of PR #${pr} with no merge sha`);
   }
 
   /**
