@@ -48,7 +48,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 0 | Foundations: shared kernel, architecture tests + ratchet, schema snapshot, migration safety kit | done | 6235fc9 |
 | 1 | Table renames to `<component>_` prefixes (backup → expand → backfill → verify → swap) | done | aa4d554; rehearsed on a copy of the live MySQL DB |
 | 2 | Components and discovery | done | 2279de4, 8e46469; re-planned: CLI + plugin discovery now, legacy code moves with its rewrite |
-| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
+| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; review fixes (seq order, leases, start position, key-only skip) on `refactor/rfc-0015-bus-fixes`; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
@@ -207,6 +207,13 @@ M4 (inbound on the bus):
   caused. Commands retry with backoff for about 16 hours before a dead letter, as the old loop held them.
 - `npm run migrate` creates the discovered topics' tables (`ensureDiscoveredTopicTables`), so an enterprise DB user
   needs no DDL at run time. Details: `docs/design/10-event-driven.md`, "Intake runs in inbound, on the bus".
+
+Bus review fixes (2026-11-09, findings 1, 5, 6, 7 of the RFC 0015 review):
+
+- Writers to one sequence commit in seq order through a lock row (`bus_topics`, `inbound_sequence_locks`), not a
+  reader high-water mark. A new consumer group starts at `latest` when the role subscribes it at start; a handler
+  opts into `earliest`. Leases are renewed before each handle. `insertOrSkip` catches duplicate keys on MySQL
+  instead of `INSERT IGNORE`. Details: `docs/design/10-event-driven.md`.
 
 M2 (components and discovery):
 
