@@ -49,8 +49,10 @@ const ANNOUNCE_BATCH = 200;
 
 /** Stores an action intent; the producer's next `announce` requests it. A keyed action already stored: nothing. */
 export async function recordAction(db: SqlDriver, a: NewAction, now: string): Promise<void> {
-  await db.run(
-    insertOrSkip(db.dialect.name, "outbound_actions (work_item_id, source_type, target, action, args, intent_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+  await insertOrSkip(
+    db,
+    db.dialect.name,
+    "outbound_actions (work_item_id, source_type, target, action, args, intent_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [a.work_item_id ?? null, a.target.type, JSON.stringify(a.target), a.action, JSON.stringify(a.args), a.key ?? null, now],
   );
 }
