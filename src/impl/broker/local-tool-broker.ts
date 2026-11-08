@@ -1,7 +1,8 @@
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import { branchAllowed, factoryCommit, holdsLease, scanBranch, trustedRunFolder } from "./trusted-git.js";
+import { grantedTools, leaseLost } from "./tool-broker-shared.js";
+import { branchAllowed, factoryCommit, scanBranch, trustedRunFolder } from "./trusted-git.js";
 
 /**
  * The local broker's only tool. Named like the GitHub broker's push so the worker calls one name (a neutral
@@ -46,7 +47,7 @@ export class LocalToolBroker implements ToolBroker {
   ) {}
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
-    return TOOLS.filter((t) => grants.includes(t.name));
+    return grantedTools(TOOLS, grants);
   }
 
   allTools(): readonly ToolDescriptor[] {
@@ -54,7 +55,8 @@ export class LocalToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    const lost = await leaseLost(this.deps.store, ctx);
+    if (lost) return lost;
     if (name === "github.push_branch") return this.commitBranch(args as PushArgs);
     return { ok: false, error_code: "unknown_tool", message: name };
   }

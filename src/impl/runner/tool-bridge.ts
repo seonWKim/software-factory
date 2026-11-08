@@ -3,14 +3,12 @@
 // through ToolGate: the grant list, the lease, the broker's own call (which attaches any credential and fences on
 // the lease token), then the egress scan of the result. Nothing here hands a credential to the agent side.
 
-import { mkdtemp, rm } from "node:fs/promises";
-import { type Server, type Socket, createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentRunSpec } from "../../interfaces/agent-runner.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
+import { type JsonLineHost, startJsonLineHost } from "./json-line-host.js";
 import { type HostReply, mcpToolName } from "./tool-bridge-mcp.js";
 
 /** What a runner needs to expose granted tools: the broker that serves them and the scanner for their results. */
@@ -85,66 +83,20 @@ export async function answerBridgeRequest(gate: ToolGate, req: unknown): Promise
 /** A request line longer than this is refused and the connection closed. */
 const MAX_REQUEST_BYTES = 1024 * 1024;
 
-export interface RunningBridge {
-  /** The socket path the bridge connects to. Not a credential: every request on it passes the gate. */
-  socket: string;
-  close(): Promise<void>;
-}
+/** The run's socket; `socket` is the path the bridge connects to. */
+export type RunningBridge = JsonLineHost;
 
 /**
- * Opens the run's socket: a Unix socket in a fresh private folder (mode 0700) under the OS temp folder, short
- * enough for the platform's socket path limit. One JSON line in, one JSON line out, per request.
+ * Opens the run's socket (`startJsonLineHost`). One JSON line in, one JSON line out, per request, on a connection
+ * that stays open.
  */
-export async function startBridgeHost(gate: ToolGate): Promise<RunningBridge> {
-  const dir = await mkdtemp(join(tmpdir(), "sf-tools-"));
-  const socket = join(dir, "s");
-  const conns = new Set<Socket>();
-  const server: Server = createServer((conn) => {
-    conns.add(conn);
-    conn.on("close", () => conns.delete(conn));
-    conn.on("error", () => conn.destroy());
-    conn.setEncoding("utf8");
-    let buf = "";
-    conn.on("data", (chunk: Buffer | string) => {
-      buf += String(chunk);
-      if (buf.length > MAX_REQUEST_BYTES) {
-        conn.destroy();
-        return;
-      }
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        let req: unknown;
-        try {
-          req = JSON.parse(line);
-        } catch {
-          req = null;
-        }
-        void answerBridgeRequest(gate, req).then(
-          (reply) => conn.writable && conn.write(`${JSON.stringify(reply)}\n`),
-          () => conn.writable && conn.write(`${JSON.stringify({ error: "request failed" })}\n`),
-        );
-      }
-    });
+export function startBridgeHost(gate: ToolGate): Promise<RunningBridge> {
+  return startJsonLineHost("sf-tools-", MAX_REQUEST_BYTES, (req, conn) => {
+    void answerBridgeRequest(gate, req).then(
+      (reply) => conn.writable && conn.write(`${JSON.stringify(reply)}\n`),
+      () => conn.writable && conn.write(`${JSON.stringify({ error: "request failed" })}\n`),
+    );
   });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(socket, () => resolve());
-    });
-  } catch (err) {
-    await rm(dir, { recursive: true, force: true });
-    throw err;
-  }
-  return {
-    socket,
-    close: async () => {
-      for (const c of conns) c.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
 }
 
 /** The MCP server name the bridge runs under; Claude Code names its tools `mcp__<server>__<tool>`. */

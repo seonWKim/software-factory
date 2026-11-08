@@ -6,7 +6,8 @@ import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "..
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
-import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
+import { grantedTools, leaseLost } from "../broker/tool-broker-shared.js";
+import { branchAllowed, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
 
 const TOOLS: readonly ToolDescriptor[] = [
   {
@@ -102,7 +103,7 @@ export class GitHubToolBroker implements ToolBroker {
   ) {}
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
-    return TOOLS.filter((t) => grants.includes(t.name));
+    return grantedTools(TOOLS, grants);
   }
 
   /** Push, PR and comment change the forge; only the preflight, which reads, is read-only. */
@@ -111,7 +112,8 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    const lost = await leaseLost(this.deps.store, ctx);
+    if (lost) return lost;
     switch (name) {
       case "github.push_branch":
         return this.push(args as PushArgs);
