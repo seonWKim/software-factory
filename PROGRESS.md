@@ -15,7 +15,7 @@ background agents) is paused until it lands.
 | 0 | Foundations: shared kernel, architecture tests + ratchet, schema snapshot, migration safety kit | done (6235fc9) |
 | 1 | Table renames to `<component>_` prefixes (backup → expand → backfill → verify → swap) | done; rehearsed on a copy of the live MySQL DB |
 | 2 | Components and discovery (`src/<component>/`, `index.ts`, no central wiring) | — |
-| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | — |
+| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core done on `refactor/rfc-0015-m3-bus` (bus contract green on SQLite and MySQL); components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | — |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | — |
@@ -32,6 +32,11 @@ src/
   shared/              NEW  envelope (ids-only payloads), defineHandler, defineTopic (+ partitions, backoff),
                             ticks/ (TickGenerator; time-based and manual plugins). Imports nothing outside itself.
   runtime/registry/    NEW  discovery of *.handler.ts and *.topic.ts; dispatch rules (a command has one handler)
+  bus/                 NEW  index.ts (EventBus, Inbox, Relay, RetryScheduler, deliver), scheduler/ (bus schedules on a
+                            TickGenerator), plugins/sql/ (SqlEventBus: outbox publish + relay, partition cursors with
+                            leases, competing rows, retries, dead letters, delayed messages, inbox dedupe;
+                            SqlRetryScheduler: release horizon, retention, replay; ddl.ts: per-topic tables from
+                            the topic descriptor), migrations/ (bus_topics, bus_scheduler)
   state/               NEW  SqlDriver interface (moved from impl/store/sql/driver.ts), schema snapshots, discovery,
                             migrate/: backup.ts (backup, verify a copy, restore; order-independent checksums),
                             migration.ts (defineMigration), runner.ts (timestamped migrations after the frozen
@@ -81,6 +86,14 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 - 2026-11-08: added `npm run migrate -- --rehearse` (D8) and wired the D1 backup folder
   (`<stateDir>/db/backups`) into MySQL `npm run migrate`, which had none.
 
+- 2026-11-08 (M3): the sql bus's per-topic tables are created by an ensure step from each discovered topic
+  descriptor (`ensureTopicTables`), not by a migration per topic, and recorded in `bus_topics`; a change of a
+  topic's partitions or consumption is refused there and needs a bus migration. The schema snapshot runs it.
+- 2026-11-08 (M3): the bus's time is a release horizon in `bus_scheduler`, moved by the retry scheduler's tick.
+  Retries, delayed messages and claim leases are due against it, so consumers never read a clock.
+- 2026-11-08 (M3): a delayed message on a partitioned topic is parked (retries row, attempt 0) and the cursor
+  moves past it, so a timer never holds up its partition; it is delivered when due, outside partition order.
+
 ## Live database
 
 Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; the rehearsal on a copy
@@ -89,3 +102,6 @@ Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; t
 ## Next
 
 M2: components and discovery (`src/<component>/` with `index.ts`, plugin registry into the runtime).
+M3 leftovers once M2 lands: each component's migration creates its outbox and inbox (`ensureComponentTables`);
+the runtime builds the sql bus as a plugin, ensures discovered topics at start and in `npm run migrate`, and runs
+the bus schedules; `requires` on competing topics (worker filtering) and dead-letter alerts on `system.alerts`.
