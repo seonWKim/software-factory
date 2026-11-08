@@ -644,7 +644,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const it = await f.submit();
     await f.step();
     expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     const unmergeable = async () => {
       f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
       await f.controller.tickIntake();
@@ -751,7 +751,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
     // By the time the resolve run merges, the branch's side only appends too.
     stages["docs/design.md"] = APPENDED;
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     const record = vi.spyOn(f.store, "recordConflicts");
     expect(await f.w1.tick()).toBe(true);
     await f.controller.tickRuns();
@@ -824,7 +824,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(await f.w1.tick()).toBe(true);
     await f.controller.tickRuns();
     expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
   }
   const resolveOnce = async (f: Awaited<ReturnType<typeof withPr>>) => {
     expect(await f.w1.tick()).toBe(true);

@@ -13,10 +13,10 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, GitForge, MemoryStorage,
   alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
@@ -1533,7 +1533,8 @@ describe("/resolve on a merge conflict", () => {
     runner.specs = [];
     const item = (await f.store.getWorkItem(id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42 });
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
+    f.broker.stores.length = 0;
     f.sandbox.gitCalls = [];
     f.sandbox.commands = [];
     f.sandbox.ancestorExit = 0; // after the resolve's merge commit, the base is in the branch
@@ -1629,9 +1630,12 @@ describe("/resolve on a merge conflict", () => {
 
     // Gates ran before the push, in order: install, then test (then the resolve step bundles its merge commit).
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"))).toEqual(["npm ci", "npm test"]);
-    // Push, the same PR's body rebuilt for the branch as it is now (issue #229), then the review comment.
+    // The run stores the merge; outbound pushes it, then refreshes the same PR's body for the branch as it is now
+    // (issue #229; RFC 0015 M7), and only then is the review queued.
+    expect(f.broker.stores.map((c) => (c.args as { branch: string }).branch)).toEqual([`factory/${f.item.id}`]);
     expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
-    expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });
+    expect(f.broker.calls.every((c) => c.ctx === undefined)).toBe(true);
+    expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}` });
     const refreshed = f.broker.calls[1]!.args as { branch: string; body: string };
     expect(refreshed.branch).toBe(`factory/${f.item.id}`);
     expect(refreshed.body).toContain("## Before you merge");
@@ -1645,8 +1649,8 @@ describe("/resolve on a merge conflict", () => {
     expect(reviews[1]!.idempotency_key).not.toBe(reviews[0]!.idempotency_key);
     expect(reviews[1]!.idempotency_key).toContain(resolveRun.id);
     const trail = (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
-    expect(trail.slice(-6)).toEqual([
-      "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "review_passed",
+    expect(trail.slice(-7)).toEqual([
+      "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "push_delivered", "review_passed",
     ]);
 
     f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
@@ -1918,7 +1922,7 @@ describe("/resolve on a merge conflict", () => {
     expect(names(f)).not.toContain("github.push_branch");
   });
 
-  it("an agent failure and a push failure also re-block on merge_conflict_pending, not run_failed", async () => {
+  it("an agent failure and a refused store also re-block on merge_conflict_pending, not run_failed", async () => {
     const f = await conflicted(77);
     f.runner.script.resolve = () => ({ status: "failed", error: "boom" });
     f.source.queue.push(resolveEvent(f, "7701"));
@@ -1929,7 +1933,7 @@ describe("/resolve on a merge conflict", () => {
     f.runner.script.resolve = () => ({ output: { summary: "s", next_steps: "n" } });
     const call = f.broker.call.bind(f.broker);
     f.broker.call = async (ctx, name, args) =>
-      name === "github.push_branch" ? { ok: false, error_code: "push_failed", message: "rejected" } : call(ctx, name, args);
+      name === STORE_BRANCH ? { ok: false, error_code: "push_failed", message: "rejected" } : call(ctx, name, args);
     f.source.queue.push(resolveEvent(f, "7702"));
     await f.step();
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_conflict_pending" });
@@ -1988,7 +1992,7 @@ describe("/resolve on a merge conflict", () => {
     const item = (await f.store.getWorkItem(f.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
     const trail = (await f.store.listStateChanges(f.id)).map((c) => c.reason);
-    expect(trail.slice(-4)).toEqual(["update_started", "auto_resolve_started", "resolved", "review_passed"]);
+    expect(trail.slice(-5)).toEqual(["update_started", "auto_resolve_started", "resolved", "push_delivered", "review_passed"]);
     const note = f.forge.comments.find((c) => c.marker === `<!-- factory:auto-resolved:${resolves[0]!.id} -->`)!;
     expect(note.pr_number).toBe(42);
     expect(note.body).toContain("resolved the merge conflict on PR #42 automatically");
@@ -2019,14 +2023,17 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
     git(repo, "commit", "--quiet", "-m", msg);
   };
 
-  /** Pushes to the local bare origin like the real broker's push_branch (never forced), with no credential. */
-  class LocalPushBroker extends FakeBroker {
+  /** Stores the run folder's HEAD on the factory repo's staging ref, like the real broker's `git.store_branch`. */
+  class LocalStoreBroker extends FakeBroker {
+    constructor(private readonly repo: string) {
+      super();
+    }
     override async call(ctx: ToolCallContext, name: string, args: unknown) {
-      if (name !== "github.push_branch") return super.call(ctx, name, args);
-      this.calls.push({ ctx, name, args });
+      if (name !== STORE_BRANCH) return super.call(ctx, name, args);
+      this.stores.push({ ctx, name, args });
       const a = args as { workdir: string; branch: string };
-      git(a.workdir, "push", "--quiet", "origin", `HEAD:refs/heads/${a.branch}`);
-      return { ok: true as const, content: {} };
+      git(a.workdir, "push", "--quiet", "--force", this.repo, `HEAD:refs/factory/outbound/${a.branch}`);
+      return { ok: true as const, content: { sha: git(a.workdir, "rev-parse", "HEAD"), forge: true } };
     }
   }
 
@@ -2077,7 +2084,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
       repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: opts.test_command ?? ["sh", "-c", "test -f src/gate.ts"] },
     };
     const source = new FakeSource();
-    const broker = new LocalPushBroker();
+    const broker = new LocalStoreBroker(repo);
     const runner = new FakeRunner({
       resolve: (spec) => {
         agent(spec.sandbox.workdir);
@@ -2086,7 +2093,8 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
       review: review("pass"),
     });
     const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
+    // Outbound pushes the stored merge to the bare origin (RFC 0015 M7).
+    const controller = new ControllerRole({ store, source, forge: new GitForge(source), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker,
       storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),

@@ -14,9 +14,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { BranchPushInput, ForgeEvent } from "../src/interfaces/forge.js";
+import type { ForgeEvent } from "../src/interfaces/forge.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, GitForge, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -70,15 +70,6 @@ class GitStoreBroker implements ToolBroker {
   constructor(private readonly repo: string) {}
   stores() {
     return this.calls.filter((c) => c.name === STORE_BRANCH);
-  }
-}
-
-/** Outbound's push as the GitHub forge makes it: the stored sha from the factory repo to its origin, never forced. */
-class GitForge extends FakeForge {
-  override async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
-    const r = await super.pushBranch(input);
-    git(input.repo, "push", "--quiet", "origin", `${input.sha}:refs/heads/${input.branch}`);
-    return r;
   }
 }
 

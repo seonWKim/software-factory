@@ -86,10 +86,10 @@ describe("wip branch on a failed last step", () => {
     expect((await f.store.listHandoffs(it0.id)).map((h) => h.commit_sha)).toEqual(["c1", "c2"]);
   });
 
-  it("if the wip push fails too, the run fails with its original code and the retry runs the agent again", async () => {
+  it("if the wip store fails too, the run fails with its original code and the retry runs the agent again", async () => {
     const { f } = await setup();
-    f.broker.responses[STORE_BRANCH] = [PUSH_FAILED];
-    f.broker.responses["github.push_branch"] = [{ ok: false, error_code: "push_failed", message: "wip rejected" }];
+    // The PR branch's store fails, then the wip branch's.
+    f.broker.responses[STORE_BRANCH] = [PUSH_FAILED, { ok: false, error_code: "push_failed", message: "wip rejected" }];
     const it0 = await f.submit();
     await f.step();
     const [failed] = await f.runs(it0, "implement");

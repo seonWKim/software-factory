@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
@@ -377,6 +378,20 @@ export class FakeForge implements Forge {
   async commitsBetween(from_sha: string, to_sha: string): Promise<number | null> {
     this.betweenCalls.push(`${from_sha}..${to_sha}`);
     return this.commitCounts[`${from_sha}..${to_sha}`] ?? null;
+  }
+}
+
+/**
+ * A FakeForge whose pushBranch also pushes for real, as the GitHub forge does (RFC 0015 M7): the stored sha from the
+ * factory repo to its origin (a local bare repo, no credential), never forced.
+ */
+export class GitForge extends FakeForge {
+  override async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
+    const r = await super.pushBranch(input);
+    execFileSync("git", ["push", "--quiet", "origin", `${input.sha}:refs/heads/${input.branch}`], {
+      cwd: input.repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    return r;
   }
 }
 

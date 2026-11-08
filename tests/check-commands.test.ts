@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { checkCommands, redact } from "../src/core/checks.js";
 import type { WorkItem } from "../src/core/types.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { config, pipeline, runComments } from "./helpers/fakes.js";
 import { issue, system } from "./helpers/store.js";
 
@@ -127,7 +128,8 @@ describe("update and resolve runs run the check list", () => {
     expect(gateCommands(f)).toEqual(["npm run typecheck", "npm test"]);
     const run = (await f.runs(item, "update"))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed" } });
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
+    // The run stores the merge; the push is outbound's (RFC 0015 M7).
+    expect([f.broker.stores.map((c) => c.name), f.broker.calls]).toEqual([[STORE_BRANCH], []]);
     expect((await runComments(f.store, item.id)).map((c) => c.body).join("\n")).toContain("`npm run typecheck`, `npm test` passed");
   });
 
@@ -163,6 +165,6 @@ describe("update and resolve runs run the check list", () => {
     expect(gateCommands(f)).toEqual(["npm ci", "npm run typecheck", "npm test"]);
     const run = (await f.runs(item, "resolve"))[0]!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed", detail: "`npm test` exited 1" });
-    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.push_branch");
+    expect(f.broker.stores).toEqual([]);
   });
 });
