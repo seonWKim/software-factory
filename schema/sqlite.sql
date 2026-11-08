@@ -124,6 +124,60 @@ CREATE TABLE bus_scheduler (
   released_until TEXT NOT NULL
 );
 
+CREATE TABLE bus_system_alerts (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_system_alerts_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_system_alerts_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_system_alerts_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
 CREATE TABLE bus_topics (
   name TEXT NOT NULL PRIMARY KEY,
   consumption TEXT NOT NULL,
@@ -1140,6 +1194,14 @@ CREATE INDEX bus_inbound_records_partition ON bus_inbound_records (`partition`, 
 CREATE INDEX bus_inbound_records_published ON bus_inbound_records (published_at);
 
 CREATE INDEX bus_inbound_records_retries_due ON bus_inbound_records_retries (next_attempt_at);
+
+CREATE INDEX bus_system_alerts_due ON bus_system_alerts (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_system_alerts_partition ON bus_system_alerts (`partition`, seq);
+
+CREATE INDEX bus_system_alerts_published ON bus_system_alerts (published_at);
+
+CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_attempt_at);
 
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 

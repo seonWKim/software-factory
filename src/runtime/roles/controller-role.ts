@@ -9,7 +9,7 @@
 
 import { join } from "node:path";
 import {
-  BUS_PERIODS, SqlEventBus, SqlRetryScheduler, scheduleBus, scheduleComponent,
+  BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
 import { CONTROLLER, type ControllerContext } from "../../controller/index.js";
 import { Controller, type ControllerDeps, type GitHubBudgetStatus } from "../../core/controller.js";
@@ -20,8 +20,8 @@ import { GITHUB_RATE_LIMIT } from "../../core/policy.js";
 import { LiveSettings } from "../../core/settings.js";
 import type { SourceType } from "../../core/types.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
-import { TimeBasedTickGenerator } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
-import { tickAt, type Tick } from "../../shared/ticks/tick-generator.js";
+import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
+import { tickAt, type Tick, type TickSource } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
 import { loadRegistry, type Registry } from "../registry/registry.js";
@@ -33,7 +33,12 @@ export interface ControllerRoleDeps extends ControllerDeps {
    * remaining calls, the reset and this process's count. Absent: nothing is stored.
    */
   github_budget?: () => GitHubBudgetStatus | null;
+  /** `plugins.bus` and `plugins.ticks`, built by compose through the plugin registry. Absent: `sql` and `time-based`. */
+  bus?: BusPlugin;
+  ticks?: TickSource;
 }
+
+type ComponentBus = EventBus & Inbox & Relay;
 
 /** The sync lease's owner with no replica_id (tests, a solo process): such roles in one process act as one replica. */
 const SYNC_OWNER = "controller";
@@ -82,9 +87,9 @@ function prepare(deps: ControllerRoleDeps): Prepared {
 
 interface Wiring {
   readonly inbound: Inbound;
-  readonly inboundBus: SqlEventBus;
-  readonly controllerBus: SqlEventBus;
-  readonly scheduler: SqlRetryScheduler;
+  readonly inboundBus: ComponentBus;
+  readonly controllerBus: ComponentBus;
+  readonly scheduler: RetryScheduler;
   readonly normalizers: ComponentConsumer<InboundContext>;
   readonly decisions: ComponentConsumer<ControllerContext>;
 }
@@ -103,15 +108,16 @@ export class ControllerRole extends Controller {
     const w = await this.wire();
     const onError = (schedule: string, err: unknown) =>
       this.role.log.error("loop step failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
-    const inbound = new TimeBasedTickGenerator(onError);
+    const ticks = this.role.ticks ?? new TimeBasedTicks();
+    const inbound = ticks.create(onError);
     inbound.schedule("intake", this.role.settings.config().tick_ms, (t) => w.inbound.tick(t));
     inbound.schedule("consume", BUS_PERIODS.consume, async () => void (await w.normalizers.consume()));
     inbound.schedule("records", BUS_PERIODS.prune, (t) => w.inbound.prune(t));
     scheduleComponent(inbound, w.inboundBus);
-    const controller = new TimeBasedTickGenerator(onError);
+    const controller = ticks.create(onError);
     controller.schedule("consume", BUS_PERIODS.consume, async () => void (await w.decisions.consume()));
     scheduleComponent(controller, w.controllerBus);
-    const bus = new TimeBasedTickGenerator(onError);
+    const bus = ticks.create(onError);
     scheduleBus(bus, w.scheduler);
     await Promise.all([super.run(signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
     // Shutting down: hand the sync lease over now instead of after lease_ms.
@@ -173,8 +179,9 @@ export class ControllerRole extends Controller {
     const topics = r.topics.map((t) => t.descriptor);
     await ensureDiscoveredTopicTables(dialect, db, CODE_ROOT);
     const consumerId = d.replica_id ?? SYNC_OWNER;
-    const inboundBus = new SqlEventBus({ db, dialect, component: INBOUND, topics, consumerId });
-    const controllerBus = new SqlEventBus({ db, dialect, component: CONTROLLER, topics, consumerId });
+    const bus = d.bus ?? new SqlBus();
+    const inboundBus = bus.component({ db, component: INBOUND, topics, consumerId });
+    const controllerBus = bus.component({ db, component: CONTROLLER, topics, consumerId });
     const owner = d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`;
     const inbound = new Inbound({
       db,
@@ -200,14 +207,20 @@ export class ControllerRole extends Controller {
       inbound,
       inboundBus,
       controllerBus,
-      scheduler: new SqlRetryScheduler(db, topics),
+      scheduler: bus.scheduler(db, topics),
       normalizers: new ComponentConsumer<InboundContext>({
         db, bus: inboundBus, registry: r, component: INBOUND, transactional: true,
         context: (tx, emit) => ({ tx: tx!, emit }),
       }),
       decisions: new ComponentConsumer<ControllerContext>({
         db, bus: controllerBus, registry: r, component: CONTROLLER, transactional: false,
-        context: (_tx, emit) => ({ db, emit, legacy: this }),
+        context: (_tx, emit) => ({
+          db, emit, legacy: this,
+          recordAlert: async (alert, dedupe_ms) => {
+            const scan = alert.detail === null ? null : await d.scanner.scan("ui", alert.detail);
+            await d.store.recordAlert({ ...alert, detail: scan?.clean ? alert.detail : null }, dedupe_ms);
+          },
+        }),
       }),
     };
   }

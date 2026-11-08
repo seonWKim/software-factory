@@ -1,6 +1,6 @@
 // The test TickGenerator: time moves only when a test calls tick(), with no sleeps and no fake timers.
 
-import { tickAt, type TickGenerator, type TickHandler } from "../../tick-generator.js";
+import { tickAt, type TickGenerator, type TickHandler, type TickSource } from "../../tick-generator.js";
 
 export class ManualTickGenerator implements TickGenerator {
   private readonly entries = new Map<string, { periodMs: number; onTick: TickHandler }>();
@@ -24,5 +24,19 @@ export class ManualTickGenerator implements TickGenerator {
 
   schedules(): string[] {
     return [...this.entries.keys()];
+  }
+}
+
+/**
+ * The `manual` TickGenerator plugin, for tests (docs/plugins/tick-generator.md): nothing ticks until a test calls
+ * `tick()` on one of the generators it made, which it keeps in `made`, in creation order.
+ */
+export class ManualTicks implements TickSource {
+  readonly made: ManualTickGenerator[] = [];
+
+  create(): ManualTickGenerator {
+    const g = new ManualTickGenerator();
+    this.made.push(g);
+    return g;
   }
 }

@@ -4,7 +4,8 @@
 
 import type { Envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
-import type { SqlExecutor } from "../state/index.js";
+import type { TopicDescriptor } from "../shared/topic.js";
+import type { SqlDriver, SqlExecutor } from "../state/index.js";
 
 /** The caller's open transaction: the outbox and inbox rows commit or roll back with its state change. */
 export type Tx = SqlExecutor;
@@ -57,8 +58,35 @@ export interface RetryScheduler {
   prune(tick: Tick): Promise<void>;
 }
 
+/** What one component's bus is built from. */
+export interface ComponentBusOptions {
+  /** The component's database: its outbox and inbox commit in this driver's transactions. */
+  readonly db: SqlDriver;
+  /** The component it publishes and dedupes for (`<component>_outbox`, `<component>_inbox`). */
+  readonly component: string;
+  /** Every topic it publishes to or consumes (from discovery). */
+  readonly topics: readonly TopicDescriptor[];
+  /** This process, recorded as the owner of what it claims. */
+  readonly consumerId: string;
+  /**
+   * What this consumer can do (`sandbox=docker`, `model=strong`): on a competing topic it claims only messages
+   * whose `requires` are all among these. Absent: it claims only messages that require nothing.
+   */
+  readonly capabilities?: readonly string[];
+}
+
+/**
+ * An EventBus plugin (`plugins.bus`, docs/plugins/event-bus.md), built by the runtime through the plugin
+ * registry: one bus per component in a process, and the retry scheduler the bus role ticks.
+ */
+export interface BusPlugin {
+  component(o: ComponentBusOptions): EventBus & Inbox & Relay;
+  scheduler(db: SqlDriver, topics: readonly TopicDescriptor[]): RetryScheduler;
+}
+
+export { default as SYSTEM_ALERTS, DEAD_LETTERED } from "./topics/system-alerts.topic.js";
 export { BUS_PERIODS, scheduleBus, scheduleComponent } from "./scheduler/scheduler.js";
 export { deliver, type DeliverOutcome } from "./deliver.js";
-export { SqlEventBus, type SqlBusOptions } from "./plugins/sql/sql-bus.js";
+export { SqlBus, SqlEventBus, type SqlBusOptions } from "./plugins/sql/sql-bus.js";
 export { SqlRetryScheduler } from "./plugins/sql/sql-scheduler.js";
 export { componentTablesSql, ensureComponentTables, ensureTopicTables, insertOrSkip, topicTables } from "./plugins/sql/ddl.js";

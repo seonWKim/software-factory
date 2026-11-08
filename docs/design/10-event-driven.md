@@ -63,6 +63,28 @@ force.
   dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
   at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
   MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
+- **The bus and the tick generator are plugins** (decision changed 2026-11-08, M3 leftovers; see History).
+  `plugins.bus` (EventBus, default `sql`, docs/plugins/event-bus.md) and `plugins.ticks` (TickGenerator, default
+  `time-based`, `manual` for tests, docs/plugins/tick-generator.md) are chosen in `factory.config.json`; compose
+  builds both through the plugin registry and hands them to the controller role, which builds each component's bus
+  (`BusPlugin.component`), the retry scheduler (`BusPlugin.scheduler`) and each component's generator
+  (`TickSource.create`) from them. A role built without them (tests) gets the defaults. The descriptors sit in
+  `src/impl/bus/` and `src/impl/ticks/` until `plugin-api.ts` is a component: a component file importing it would be
+  a new dependency-direction violation.
+- **Competing topics filter by `requires`** (since 2026-11-08, M3 leftovers). A competing topic's `requires(m)`
+  lists `key=value` requirements (e.g. `sandbox=docker`); the sql bus stores them sorted, as JSON, in the topic's
+  `requires` column (migration `20261109T0100-bus-competing-requires` adds it to competing topics created before).
+  A consumer's bus is built with `capabilities`, and it claims only a message whose requirements are all among them,
+  filtered in SQL so unclaimable rows never fill a batch; a message that requires nothing goes to any consumer. A
+  partitioned topic refuses `requires` (its owner must take every message in order). A requirement that is not
+  `key=value` fails at publish. Solo and enterprise: the same; a worker declares what its sandbox and models can do.
+- **Dead letters raise an alarm** (since 2026-11-08, M3 leftovers). The bus declares `system.alerts` (fan-out,
+  90 days, partitioned by alert pattern) and writes a `DeadLettered` notice there in the transaction that
+  dead-letters a message: topic, group, seq, message type, attempts, error code and the last error (at most 200
+  characters). A dead notice raises none. The controller's `dead-letter-alarm` handler stores it as a `dead_letter`
+  alert, one per dead letter (keyed by topic, group and seq; kept as long as the notice), its detail egress-scanned
+  (G5), so Needs you shows it for the alarm window with the topic and the cause. No CLI replays a dead letter yet
+  (`SqlRetryScheduler.replay` exists), and the router does not yet mark the actor `blocked_on: dead_letter` (M5).
 - **Intake runs in inbound, on the bus** (since 2026-11-08, RFC 0015 M4; strangler: the legacy controller still
   decides). `src/inbound/` polls the sources, then the forge (whose records are stored first, so a merge is
   handled before the issue close it caused), relays stream records and command rows, and prunes old records. Each
@@ -116,6 +138,8 @@ force.
 - **Messaging between parts** (decision changed 2026-11-08, RFC 0015 M3). Before: no bus; the controller tick
   polls sources and the store, and workers claim runs from the store (still how the factory runs until components
   are wired to the bus in M4 and later).
+- **Building the bus** (decision changed 2026-11-08, M3 leftovers). Before: the controller role constructed
+  `SqlEventBus`, `SqlRetryScheduler` and `TimeBasedTickGenerator` itself, with no config choice.
 - **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
   forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
   tick.

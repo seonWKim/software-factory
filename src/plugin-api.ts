@@ -26,6 +26,8 @@ import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
+import type { BusPlugin } from "./bus/index.js";
+import type { TickSource } from "./shared/ticks/tick-generator.js";
 
 /** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
 export interface Instances {
@@ -48,6 +50,10 @@ export interface Instances {
   test_database: TestDatabase;
   forge: Forge;
   network_probe: NetworkProbe;
+  /** Builds each component's EventBus and the retry scheduler (docs/plugins/event-bus.md). */
+  bus: BusPlugin;
+  /** Makes each component's TickGenerator (docs/plugins/tick-generator.md). */
+  ticks: TickSource;
 }
 
 export type PluginKind = keyof Instances;
@@ -100,6 +106,9 @@ export interface Contexts {
   forge: BaseContext & { github: GitHubApi };
   /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */
   network_probe: BaseContext;
+  /** The database comes later, per component, from the role that runs it. */
+  bus: BaseContext;
+  ticks: BaseContext;
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

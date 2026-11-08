@@ -48,6 +48,15 @@ const TYPES: Record<Dialect, Types> = {
   mysql: { id: "VARCHAR(191)", int: "BIGINT", time: "CHAR(24)", text: "TEXT", long: "MEDIUMTEXT", autoSeq: "BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY" },
 };
 
+/**
+ * A competing topic's `requires`: the message's requirements as a sorted JSON list of strings (`["sandbox=docker"]`).
+ * A VARCHAR on MySQL, which gives no TEXT column a literal default.
+ */
+export const REQUIRES_COLUMN: Record<Dialect, string> = {
+  sqlite: "requires TEXT NOT NULL DEFAULT '[]'",
+  mysql: "requires VARCHAR(1024) NOT NULL DEFAULT '[]'",
+};
+
 interface Index {
   name: string;
   columns: string;
@@ -92,7 +101,7 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
     `payload ${t.long} NOT NULL`,
     `published_at ${t.time} NOT NULL`,
     ...(competing
-      ? [`claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
+      ? [REQUIRES_COLUMN[dialect], `claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
       : []),
   ];
   const messageIndexes: Index[] = competing

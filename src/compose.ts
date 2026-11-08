@@ -800,6 +800,9 @@ export async function build(
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
   // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
   const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
+  // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
+  const bus = await createPlugin(registry, "bus", sel.bus, base);
+  const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
@@ -832,6 +835,8 @@ export async function build(
     scanner,
     llm,
     network_probe,
+    bus,
+    ticks,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     settings,

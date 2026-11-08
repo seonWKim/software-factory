@@ -1,7 +1,7 @@
 // The default TickGenerator: the system clock and each schedule's period. With the bus plugins' transport
 // code, this is the only place allowed to read the clock or set a timer (no-clock test).
 
-import { tickAt, type TickGenerator, type TickHandler } from "../../tick-generator.js";
+import { tickAt, type TickGenerator, type TickHandler, type TickSource } from "../../tick-generator.js";
 import { systemTimer } from "./timer.js";
 
 interface Entry {
@@ -33,5 +33,12 @@ export class TimeBasedTickGenerator implements TickGenerator {
       }
       await systemTimer.after(e.periodMs, signal);
     }
+  }
+}
+
+/** The `time-based` TickGenerator plugin, the default (docs/plugins/tick-generator.md). */
+export class TimeBasedTicks implements TickSource {
+  create(onError: (schedule: string, err: unknown) => void): TimeBasedTickGenerator {
+    return new TimeBasedTickGenerator(onError);
   }
 }

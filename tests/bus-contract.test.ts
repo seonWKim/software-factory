@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEAD_LETTERED,
+  SYSTEM_ALERTS,
   SqlEventBus,
   SqlRetryScheduler,
   deliver,
@@ -19,6 +21,7 @@ import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import requiresMigration from "../src/bus/migrations/20261109T0100-bus-competing-requires.migration.js";
 
 // The bus contract (RFC 0015 §5, §11 M3): every EventBus implementation passes it. It runs on SQLite always
 // and on MySQL when SF_TEST_MYSQL_URL is set. Time moves only through ManualTickGenerator ticks.
@@ -32,15 +35,17 @@ const EVENTS = defineTopic({
   retentionDays: 7,
   backoff: { baseMs: 1_000, maxMs: 4_000, maxAttempts: 3 },
 });
+const TOPIC_BASE = { owner: "test", messages: { WorkRequested: "command" }, retentionDays: 7 } as const;
 const WORK = defineTopic({
+  ...TOPIC_BASE,
   name: "test.work",
-  owner: "test",
-  messages: { WorkRequested: "command" },
   consumption: "competing",
-  retentionDays: 7,
   backoff: { baseMs: 1_000, maxMs: 4_000, maxAttempts: 3 },
+  // What a test message needs, from its payload: `needs` lists requirements separated by spaces.
+  requires: (m) => String(m.payload.needs ?? "").split(" ").filter((r) => r !== ""),
 });
-const TOPICS: readonly TopicDescriptor[] = [EVENTS, WORK];
+// system.alerts too: the bus writes a notice there for every dead letter.
+const TOPICS: readonly TopicDescriptor[] = [EVENTS, WORK, SYSTEM_ALERTS];
 const LEASE_MS = 30_000;
 
 interface Backend {
@@ -84,7 +89,8 @@ async function setup(backend: Backend) {
   const busTicks = new ManualTickGenerator();
   const scheduler = new SqlRetryScheduler(db, TOPICS);
   scheduleBus(busTicks, scheduler);
-  const newBus = (consumerId: string) => new SqlEventBus({ db, dialect: backend.name, component: "testc", topics: TOPICS, consumerId, leaseMs: LEASE_MS });
+  const newBus = (consumerId: string, capabilities: readonly string[] = []) =>
+    new SqlEventBus({ db, component: "testc", topics: TOPICS, consumerId, capabilities, leaseMs: LEASE_MS });
   const a = newBus("a");
   const b = newBus("b");
   const componentTicks = new ManualTickGenerator();
@@ -121,7 +127,7 @@ async function setup(backend: Backend) {
       await tx.run("INSERT INTO testc_effects (k) VALUES (?)", [`${consumer}:${m.idempotency_key}`]);
     });
   await advance(0);
-  return { db, a, b, scheduler, msg, publish, relay, advance, effects, handle, now, componentTicks, busTicks };
+  return { db, a, b, newBus, scheduler, msg, publish, relay, advance, effects, handle, now, componentTicks, busTicks };
 }
 
 describe.each(BACKENDS)("bus contract ($name)", (backend) => {
@@ -276,6 +282,33 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     expect(next?.message.id).toBe("m2");
   });
 
+  it("announces each dead letter on system.alerts in its transaction, and a dead notice announces nothing", async () => {
+    const s = await setup(backend);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    const [e] = await s.a.consume("g", EVENTS.name, 10);
+    // A stale claim's nack changes nothing, so it announces nothing either.
+    await s.a.nack({ ...e!, token: e!.token + 1 }, { retryable: false, code: "bad_input" });
+    expect(await s.a.consume("alarms", SYSTEM_ALERTS.name, 10)).toEqual([]);
+    await s.a.nack(e!, { retryable: false, code: "bad_input", detail: "no such item" });
+
+    const [notice] = await s.a.consume("alarms", SYSTEM_ALERTS.name, 10);
+    expect(notice?.message).toMatchObject({
+      type: DEAD_LETTERED,
+      subject: "x",
+      causation_id: e!.message.id,
+      correlation_id: "corr-x",
+      producer: "bus",
+      payload: { pattern: "dead_letter:test.events", topic: "test.events", group: "g", seq: e!.seq, message_type: "Happened", attempts: 1, error_code: "non_retryable", last_error: "bad_input: no such item" },
+    });
+    // Fan-out: the UI's group gets the same notice.
+    expect((await s.a.consume("ui", SYSTEM_ALERTS.name, 10)).map((c) => c.message.id)).toEqual([notice!.message.id]);
+
+    await s.a.nack(notice!, { retryable: false, code: "bad_input" });
+    expect(await s.a.consume("alarms", SYSTEM_ALERTS.name, 10)).toEqual([]);
+    expect((await s.db.all("SELECT seq FROM bus_system_alerts")).length).toBe(1);
+  });
+
   it("dead-letters a non-retryable or unhandled message at once, and a replay delivers it again with its key", async () => {
     const s = await setup(backend);
     await s.publish(s.msg("Happened", "x", { key: "kx" }), s.msg("WorkRequested", "w", { key: "kw" }));
@@ -367,6 +400,48 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await s.advance(EVENTS.retentionMs);
     await s.busTicks.tick("prune", s.now());
     expect(await s.db.all("SELECT seq FROM bus_test_events")).toEqual([]);
+  });
+
+  it("on a competing topic, a consumer claims only messages whose requires are all among its capabilities", async () => {
+    const s = await setup(backend);
+    const docker = s.newBus("docker", ["sandbox=docker"]);
+    const strong = s.newBus("strong", ["model=strong", "sandbox=docker"]);
+    const work = (needs: string) => s.msg("WorkRequested", "w", { key: needs || "none" });
+    await s.publish(
+      { ...work(""), payload: { needs: "" } },
+      { ...work("sandbox=docker"), payload: { needs: "sandbox=docker" } },
+      { ...work("model=strong sandbox=docker"), payload: { needs: "model=strong sandbox=docker" } },
+    );
+    await s.relay();
+    const needs = (cs: readonly Claimed[]) => cs.map((c) => String(c.message.payload.needs));
+    // `a` has no capability: only the message that requires nothing.
+    expect(needs(await s.a.consume("g", WORK.name, 10))).toEqual([""]);
+    expect(needs(await docker.consume("g", WORK.name, 10))).toEqual(["sandbox=docker"]);
+    expect(needs(await strong.consume("g", WORK.name, 10))).toEqual(["model=strong sandbox=docker"]);
+    expect(await s.db.all("SELECT requires FROM bus_test_work ORDER BY seq")).toEqual([
+      { requires: "[]" },
+      { requires: '["sandbox=docker"]' },
+      { requires: '["model=strong","sandbox=docker"]' },
+    ]);
+  });
+
+  it("the requires migration adds the column to a competing topic created before it, once", async () => {
+    const s = await setup(backend);
+    const mdb: MigrationDb = { dialect: backend.name, all: (q, p) => s.db.all(q, p), run: (q, p) => s.db.run(q, p) };
+    await s.db.run("ALTER TABLE bus_test_work DROP COLUMN requires");
+    await requiresMigration.up(mdb);
+    await requiresMigration.up(mdb);
+    await s.publish({ ...s.msg("WorkRequested", "w"), payload: { needs: "sandbox=docker" } });
+    await s.relay();
+    expect(await s.a.consume("g", WORK.name, 10)).toEqual([]);
+    expect(await s.newBus("d", ["sandbox=docker"]).consume("g", WORK.name, 10)).toHaveLength(1);
+  });
+
+  it("refuses a requirement or capability that is not key=value, and requires on a partitioned topic", async () => {
+    const s = await setup(backend);
+    await expect(s.publish({ ...s.msg("WorkRequested", "w"), payload: { needs: "Docker" } })).rejects.toThrow("is not key=value");
+    expect(() => s.newBus("x", ["docker"])).toThrow("is not key=value");
+    expect(() => defineTopic({ ...TOPIC_BASE, name: "test.bad", consumption: "partitioned", requires: () => [] })).toThrow("only a competing topic");
   });
 
   it("refuses a topic whose partitions changed after its tables were created", async () => {

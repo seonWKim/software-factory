@@ -30,6 +30,8 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
+import { SqlBus } from "../src/bus/index.js";
+import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -85,6 +87,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   // Optional with no default plugin (issue #172); github-issues among the sources implies github (issue #273).
   forge: { github: GitHubForge },
   network_probe: { http: HttpNetworkProbe },
+  bus: { sql: SqlBus },
+  ticks: { "time-based": TimeBasedTicks },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -185,6 +189,8 @@ describe("plugin registry: defaults", () => {
       github_auth: "token",
       test_database: "none",
       network_probe: "http",
+      bus: "sql",
+      ticks: "time-based",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -252,7 +258,10 @@ describe("plugin registry: every discovered plugin", () => {
         const text = readFileSync(file, "utf8");
         expect(text).toMatch(/export default definePlugin\(/);
         const local = [...text.matchAll(/(?:from\s+|import\()"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
-        expect(local.filter((p) => p.startsWith(pluginHome(file))).length, "imports its implementation from its own folder").toBeGreaterThan(0);
+        // A component's plugin keeps its descriptor in src/impl until plugin-api.ts is a component (M11): a component
+        // file importing it would break dependency-direction. Its implementation is then in the component's plugins/.
+        const home = (p: string) => p.startsWith(pluginHome(file)) || /[\\/](bus|shared[\\/]ticks)[\\/]plugins[\\/]/.test(p);
+        expect(local.filter(home).length, "imports its implementation from its own folder").toBeGreaterThan(0);
       });
 
       it("builds an object from a full context without running anything", async () => {
@@ -889,7 +898,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 18 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(18);
+  it("covers 20 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(20);
   });
 });
