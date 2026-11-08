@@ -261,8 +261,24 @@ export class Worker {
       // One class for every agent step of the run, the merge-conflict steps of an implement run included.
       const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
-      const signal = lease.signal;
-      const step: RunCall["step"] = (id, fn) => engine.step(ref, id, fn).catch((err: unknown) => { throw stepFailure(err); });
+      // A step's timeout or the run's deadline aborts the run's signal too, so the step's work (the agent, checks)
+      // stops; and a failed step settles only once its work has, so the run's folder never goes under a running agent.
+      const stepStop = new AbortController();
+      const signal = AbortSignal.any([lease.signal, stepStop.signal]);
+      const step: RunCall["step"] = (id, fn) => {
+        let work: Promise<unknown> = Promise.resolve();
+        return engine
+          .step(ref, id, (s) => {
+            s.signal.addEventListener("abort", () => stepStop.abort(s.signal.reason), { once: true });
+            const p = fn(s);
+            work = p;
+            return p;
+          })
+          .catch(async (err: unknown) => {
+            await work.catch(() => undefined);
+            throw stepFailure(err);
+          });
+      };
       const data = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
       // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the
       // full count, where readers from before usage existed look for it.
