@@ -36,7 +36,7 @@ describe("dashboard: paused runs", () => {
     clock.advance(10 * LEASE);
 
     const deps = {
-      store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "",
+      store, scanner: cleanScanner, clock, lease_ms: LEASE,
       health: new HealthMonitor(async () => [], clock),
     };
     const parsed = parseFilters(new URLSearchParams());

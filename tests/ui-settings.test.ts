@@ -53,7 +53,6 @@ async function setup(opts: { store?: FactoryStore; label?: boolean; resolveProje
     scanner,
     clock,
     lease_ms: 300_000,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
     settings,
   };
@@ -202,7 +201,7 @@ describe("POST /api/v1/settings", () => {
     // buildUiParts takes the actor main.ts builds as the CLI identity (issue #318): cli_user, git user.email, the OS
     // login, or anonymous; an ID, never a display name (tests/local-cli.test.ts covers the order).
     const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
-    expect(main).toContain("buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user })");
+    expect(main).toContain("buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) })");
   });
 
   it("refuses heartbeat_ms × 2 ≥ lease_ms with the CLI's message and stores nothing", async () => {

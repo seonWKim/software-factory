@@ -1,7 +1,6 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
-import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
@@ -32,20 +31,12 @@ export interface UiDeps {
   clock: Clock;
   /** Running runs whose last heartbeat is older than this are highlighted. */
   lease_ms: number;
-  /**
-   * The forge's URL for PR `n` of the project labelled `label` ("github.com/owner/name", the stored label;
-   * design 2026-11-01). Never given a project key.
-   */
-  prUrl(label: string, n: number): string;
   /** The Health panel and /api/health: doctor's checks, rate-limited and egress-scanned. */
   health: HealthMonitor;
   /** The supervisor's state (null: no status file); absent: the banner is not shown. */
   factoryStatus?: () => Promise<FactoryStatus | null>;
-  /**
-   * Which plugins are in use, for the app's columns. Absent: both null. PRs are read only through the
-   * github-issues adapter today, so `prs` follows `issues`.
-   */
-  plugins?: { issues: "github" | null; prs: "github" | null };
+  /** Which plugins are in use, for the app's Issue column. Absent: null. */
+  plugins?: { issues: "github" | null };
   /** The built app served under /app/; absent: web/dist in this checkout. */
   appDir?: string;
   /**
@@ -60,7 +51,7 @@ export interface UiDeps {
    */
   storage?: SharedStorage;
   /**
-   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): ui.user_id
+   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): the actor
    * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
    */
   commands?: UiCommands;
@@ -118,17 +109,9 @@ class Ctx {
     return p;
   }
 
-  /** The forge URL of the item's PR, or null when it has none or its project has no stored label yet. */
-  async prUrl(item: WorkItem): Promise<string | null> {
-    if (item.pr_number === null) return null;
-    const label = await this.label(item.project);
-    return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, item.pr_number);
-  }
-
-  async prLink(item: WorkItem): Promise<string> {
-    if (item.pr_number === null) return "";
-    const url = await this.prUrl(item);
-    return url === null ? esc(`PR #${item.pr_number}`) : link(url, `PR #${item.pr_number}`);
+  /** The item's stored PR link (change_url); the change_ref as text when no link is stored; empty with no PR. */
+  prLink(item: WorkItem): string {
+    return item.change_ref === null ? "" : link(item.change_url, `PR #${item.change_ref}`);
   }
 
   ago(ts: string | null): string {
@@ -275,7 +258,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     const it = r.item;
     let next = "";
     if (NEEDS_YOU.includes(r.level)) {
-      const need = await needOf({ store: c.d.store, prUrl: (i) => c.prUrl(i), text: async (v, o) => (await c.w.plain(v, o)).text }, it);
+      const need = await needOf({ store: c.d.store, text: async (v, o) => (await c.w.plain(v, o)).text }, it);
       next = `${esc(need.reason)} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
     }
     next = [next, await alarmNotes(c, r.alarms)].filter((x) => x !== "").join(" · ");
@@ -289,7 +272,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
         esc(it.stage),
         it.tier === null ? "" : esc(it.tier),
         next,
-        await c.prLink(it),
+        c.prLink(it),
         c.ago(r.input.since),
         conflictsCell(r.conflicts),
       ],
@@ -498,7 +481,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     ["loops / restarts", `${esc(item.loop_count)} / ${esc(item.restart_count)}`],
     ["tokens", esc(item.token_cost)],
     ["merge conflicts", esc(`${conflicts.automatic} resolved automatically, ${conflicts.person} needed a person`)],
-    ["PR", await c.prLink(item)],
+    ["PR", c.prLink(item)],
     ["created / updated", `${esc(item.created_at)} / ${esc(item.updated_at)}`],
   ];
   const title = item.title ? await c.w.text(item.title) : esc(item.source.id);

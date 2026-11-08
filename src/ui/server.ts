@@ -28,7 +28,7 @@ export type { UiDeps } from "./pages.js";
 export type { PauseDeps } from "./pause-api.js";
 export type { ApiDeps } from "./api.js";
 
-const BIND = "127.0.0.1";
+export const BIND = "127.0.0.1";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const ALLOW = "GET, HEAD";
 

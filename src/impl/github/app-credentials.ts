@@ -1,12 +1,14 @@
 import { createSign } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Clock } from "../../interfaces/clock.js";
-import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
+import type { GitHubAccess, GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { type Secret, type SecretStore, secretName } from "../../interfaces/secret-store.js";
+import type { Contexts } from "../../plugin-api.js";
 import { OpaqueSecret } from "../secrets/env-file-secret-store.js";
-import { GitHubError, type RepoRef } from "./github-client.js";
+import { GITHUB_APP_ID } from "./app.plugin.js";
+import { GitHubClient, GitHubError, type RepoRef, clientOptions } from "./github-client.js";
 
-export const GITHUB_APP_ID = secretName("GITHUB_APP_ID");
 /** The name the minted token carries; it is never read from or written to the secret file. */
 const INSTALLATION_TOKEN = secretName("GITHUB_APP_INSTALLATION_TOKEN");
 /** GitHub's installation tokens last an hour; mint a new one this long before the current one expires. */
@@ -97,4 +99,13 @@ export class AppCredentials implements GitHubCredentials {
     }
     return (await res.json()) as T;
   }
+}
+
+/**
+ * The app plugin's build: the App's installation token, and the process's one client over it. Nothing is read
+ * here: the key file and GITHUB_APP_ID are read only when the first call mints a token.
+ */
+export function appAccess(c: Contexts["github_auth"]): GitHubAccess {
+  const credentials = new AppCredentials({ secrets: c.secrets, keyFile: join(dirname(c.loaded.secretsFile), "github-app.pem"), repo: c.repo, clock: c.clock });
+  return { credentials, api: new GitHubClient(credentials, undefined, clientOptions(c.loaded.file.github, c.clock)) };
 }

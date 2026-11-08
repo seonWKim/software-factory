@@ -3567,6 +3567,24 @@ export class Controller {
       if (!review) continue;
       await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
     }
+    // Items stalled before failed checks on an unchanged head looped (PR #399): in REVIEW, unblocked, with no run.
+    const unblocked = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "none", limit: CHECKS_BATCH });
+    for (const w of unblocked) {
+      if (!(await this.stalled(w))) continue;
+      const review = await this.latestReview(w.id);
+      if (!review || !(await this.lastVerdictPassed(w.id, review.id))) continue;
+      await this.guard("checks", () => this.decide(w.id, async (it) => {
+        if (!(await this.stalled(it))) return null;
+        const checks = await this.readChecks(it);
+        return checks.state === "failed" ? this.checksFailed(it, review, checks.failed, {}, {}) : null;
+      }).then(() => undefined));
+    }
+  }
+
+  /** In REVIEW with no block and no blocked reason, and no run queued, running or not yet applied: nothing will look at it again. */
+  private async stalled(it: WorkItem): Promise<boolean> {
+    if (it.stage !== "REVIEW" || it.blocked_on !== "none" || it.blocked_reason !== null) return false;
+    return !(await this.d.store.listRuns(it.id)).some((r) => r.status === "queued" || r.status === "running" || r.acknowledged_at === null);
   }
 
   /**

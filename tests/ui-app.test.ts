@@ -50,7 +50,6 @@ async function deps(appDir: string): Promise<UiDeps> {
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: 60_000,
-    prUrl: (p, n) => `https://github.com/${p}/pull/${n}`,
     health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], clock),
     appDir,
   };
@@ -217,8 +216,8 @@ describe("ui app: merge check labels", () => {
     ({ state, conflicts, head_sha: state === "checking" ? null : "a".repeat(40), base_sha: state === "checking" ? null : BASE, checked_at: state === "checking" ? null : AT });
   const row = (id: string, merge_check: MergeCheckView | null): ItemRow => ({
     id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
-    stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, pr_number: 1,
-    pr_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge_check,
+    stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: "1",
+    change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge_check,
   });
 
   it("the row shows Mergeable, Conflicts: N files with the names on hover, or Checking… next to its state", () => {
@@ -248,7 +247,7 @@ describe("ui app: merge check labels", () => {
       as_of: AT,
       item: {
         id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
-        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: 1, pr_url: null,
+        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: "1", change_url: null,
         version: 1, created_at: AT, updated_at: AT, merge_check: check("conflicts", ["src/a.ts", "docs/b.md"]),
       },
       timeline: [],
@@ -276,7 +275,7 @@ describe("ui app: item commands markup", () => {
       as_of: AT,
       item: {
         id: "wi_1", source: { type: "local", id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "READY", close_reason: null,
-        blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null,
+        blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
         version: 1, created_at: AT, updated_at: AT, merge_check: null,
       },
       timeline: [],
@@ -286,7 +285,7 @@ describe("ui app: item commands markup", () => {
     };
     const client = new QueryClient();
     client.setQueryData([API.item("wi_1")], detail);
-    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
     const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
     expect(buttons).toEqual(names.map((n) => [n, n]));
@@ -307,7 +306,7 @@ describe("ui app: the Merge button", () => {
       as_of: AT,
       item: {
         id: "wi_1", source: { type: source, id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
-        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null,
+        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
         version: 1, created_at: AT, updated_at: AT, merge_check: null,
       },
       timeline: [],

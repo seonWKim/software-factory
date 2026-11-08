@@ -17,7 +17,7 @@ const entry = (seq: number, at: string, author: string, body: string, kind = aut
 
 const ITEM = {
   id: "wi_1", source: SRC, title: "Thread item", stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2,
-  loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [],
+  loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [],
   version: 3, created_at: AT, updated_at: AT,
 };
 
@@ -35,7 +35,7 @@ let afterPost: (() => void) | null;
 
 const ROW = {
   id: "wi_1", source: SRC, title: "Thread item", level: "needs_human", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
-  blocked_reason: "agent_needs_human", close_reason: null, run_status: null, pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 3,
+  blocked_reason: "agent_needs_human", close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 3,
   dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", command: "/retry", anchor: "msg-7" },
 };
 
@@ -53,7 +53,7 @@ beforeEach(() => {
     const bodies: Record<string, unknown> = {
       "/api/v1/items/wi_1": detail,
       "/api/v1/items": { as_of: AT, total: 1, items: [ROW], facets: { state: {}, allStates: 1 } },
-      "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true },
+      "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
       "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, system_actions: [], running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
     };
     const body = bodies[path];

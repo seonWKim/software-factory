@@ -11,6 +11,7 @@ import { runProcess } from "../src/impl/process/run-process.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import type { Selection } from "../src/plugin-api.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
+import { fakeGitHubAccess } from "./helpers/fakes.js";
 
 // Startup with no GitHub plugin selected (design 05-sources, Local startup): no GitHub credential is read, no
 // repository lookup is made, the broker is the local one, and nothing fetches origin.
@@ -41,7 +42,7 @@ function recordingRegistry() {
   const seen = { credentials: 0, tokens: 0, githubBroker: 0, localBroker: 0 };
   let registry: Registry = withPlugin(REGISTRY, "github_auth", "recording", () => {
     seen.credentials++;
-    return { token: async () => (seen.tokens++, null) };
+    return fakeGitHubAccess({ token: async () => (seen.tokens++, null) });
   });
   registry = withPlugin(registry, "broker", "github", () => {
     seen.githubBroker++;
