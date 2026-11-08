@@ -6,7 +6,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { parseImplement, parseReview, type ReviewOutput } from "../src/core/outputs.js";
 import type { Run, WorkerId, WorkItem } from "../src/core/types.js";
-import { Worker, reviewComment } from "../src/core/worker.js";
+import { Worker, reviewComment } from "../src/worker/index.js";
 import { type GoldenRunDeps, runCases } from "../src/golden.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";

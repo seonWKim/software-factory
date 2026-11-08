@@ -1,5 +1,5 @@
 import { buildStatsStore } from "../../../compose.js";
-import { parseWorkersArgs, runWorkersCommand } from "../../../core/worker-pool.js";
+import { parseWorkersArgs, runWorkersCommand } from "../../../worker/index.js";
 import { defineCommand } from "../../command.js";
 
 export default defineCommand({

@@ -16,7 +16,7 @@ import type {
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
-import { Worker } from "../../src/core/worker.js";
+import { Worker } from "../../src/worker/index.js";
 import type { Run, WorkItem, WorkItemId, WorkerId } from "../../src/core/types.js";
 import type { IssueLookup, SessionFile, SessionFiles, SessionIssue } from "../../src/core/session.js";
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";

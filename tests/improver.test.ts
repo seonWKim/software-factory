@@ -3,7 +3,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, systemSource, utcDay,
 } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { Run, RunId, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

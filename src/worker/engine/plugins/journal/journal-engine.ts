@@ -20,7 +20,9 @@ import {
   RUN_DEADLINE,
   RunDeadlineError,
   StepTimeoutError,
+  type EngineOptions,
   type ExecutionEngine,
+  type ExecutionEngines,
   type RunRef,
   type RunResult,
   type RunTimeouts,
@@ -29,20 +31,23 @@ import {
   type TickPeriods,
 } from "../../index.js";
 
-export interface JournalEngineOptions {
+export interface JournalEngineOptions extends EngineOptions {
   readonly db: SqlDriver;
-  /** This worker's id, stored as `lease_owner`. */
-  readonly workerId: string;
-  /** The revision this process runs, stored on every run it claims or takes over. */
-  readonly codeVersion: string;
-  /** The run kinds this worker executes, with their named timeouts. */
-  readonly kinds: Readonly<Record<string, RunTimeouts>>;
   /** Whether this code may resume a run journaled by `version`. Default: only its own version. */
   readonly resumes?: (version: string) => boolean;
   /** Most runs held at once; claims and takeovers beyond it are refused. Default: no limit. */
   readonly slots?: number;
   /** Called with each run the reaper took over; the worker resumes it from the journal. */
   readonly onTakeover?: (run: RunRef) => void;
+}
+
+/** The `journal` plugin's product: a JournalEngine per worker loop, all over one database. */
+export class JournalEngines implements ExecutionEngines {
+  constructor(private readonly db: SqlDriver) {}
+
+  create(o: EngineOptions): ExecutionEngine {
+    return new JournalEngine({ db: this.db, ...o });
+  }
 }
 
 interface InFlight {
@@ -105,6 +110,31 @@ export class JournalEngine implements ExecutionEngine {
     return ref && this.hold(ref.ref, ref.deadline);
   }
 
+  async adopt(run: RunRef, tick: Tick): Promise<boolean> {
+    const now = this.observe(tick);
+    const timeouts = this.opts.kinds[run.kind];
+    if (!timeouts) return false;
+    const { forUpdate } = this.opts.db.dialect;
+    const deadline = await this.opts.db.transaction(async (tx): Promise<string | null> => {
+      const [row] = await tx.all(`SELECT status, lease_token, created_at, code_version, deadline_at FROM worker_runs WHERE id = ?${forUpdate}`, [run.id]);
+      if (!row || row.status !== "running" || Number(row.lease_token) !== run.lease_token) return null;
+      if (!(await this.mayResume(tx, run.id, row.code_version))) return null;
+      const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
+      const n = await tx.run(
+        "UPDATE worker_runs SET code_version = ?, deadline_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
+        [this.opts.codeVersion, deadline, iso(now), run.id, run.lease_token],
+      );
+      return n === 1 ? deadline : null;
+    });
+    if (deadline === null) return false;
+    this.hold(run, deadline);
+    return true;
+  }
+
+  release(run: RunRef): void {
+    if (this.held.get(run.id)?.ref.lease_token === run.lease_token) this.held.delete(run.id);
+  }
+
   async step<T>(run: RunRef, stepId: StepId, fn: (ctx: StepContext) => Promise<T>): Promise<T> {
     const held = this.holding(run);
     if (held.inFlight) throw new Error(`run ${run.id}: step ${stepId} started while ${held.inFlight.stepId} is running`);
@@ -163,7 +193,7 @@ export class JournalEngine implements ExecutionEngine {
     for (const held of [...this.held.values()]) {
       const renewed = await this.opts.db.run(
         "UPDATE worker_runs SET lease_expires_at = ?, updated_at = ? WHERE id = ? AND status = 'running' AND lease_token = ?",
-        [iso(now + held.timeouts.heartbeat_ms), iso(now), held.ref.id, held.ref.lease_token],
+        [iso(now + (this.opts.leaseMs?.(held.ref) ?? held.timeouts.heartbeat_ms)), iso(now), held.ref.id, held.ref.lease_token],
       );
       if (renewed !== 1) {
         this.lose(held.ref.id);
@@ -303,6 +333,7 @@ export class JournalEngine implements ExecutionEngine {
     const held = this.held.get(runId);
     this.held.delete(runId);
     held?.inFlight?.controller.abort(reason);
+    if (held) this.opts.onLost?.(held.ref, reason);
     return reason;
   }
 
