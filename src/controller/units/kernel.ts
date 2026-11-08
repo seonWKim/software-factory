@@ -6,6 +6,7 @@ import { type SourceRef, type SourceType, type WorkItem } from "../../core/types
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
+import type { NewAction } from "../../outbound/index.js";
 import type { SqlDriver } from "../../state/index.js";
 
 /**
@@ -74,6 +75,12 @@ export type ItemWrite =
 
 export type ItemCommitted = Awaited<ReturnType<Store["openBudgetCheckpoint"]>> | Awaited<ReturnType<Store["transition"]>>;
 
+/** How the units hand writes to outbound (RFC 0015 M7): the role binds them to the store's driver and its bus. */
+export interface Deliveries {
+  record(a: NewAction, now: string): Promise<void>;
+  announce(now: string): Promise<number>;
+}
+
 /**
  * What every unit shares (RFC 0015 M5): the legacy deps, the configured sources and forge, the live settings, and the
  * step guard. Built once per controller role; holds no decision.
@@ -89,7 +96,7 @@ export class Kernel {
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   readonly live: LiveSettings;
 
-  constructor(readonly d: ControllerDeps) {
+  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
@@ -143,6 +150,16 @@ export class Kernel {
         }),
     );
     for (const id of ids) log.warn("lease expired", { run_id: id });
+  }
+
+  /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
+  async recordAction(a: NewAction): Promise<void> {
+    await this.deliveries.record(a, this.d.clock.now().toISOString());
+  }
+
+  /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */
+  announce(): Promise<number> {
+    return this.deliveries.announce(this.d.clock.now().toISOString());
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */

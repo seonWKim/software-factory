@@ -23,6 +23,9 @@ import { LiveSettings } from "../../core/settings.js";
 import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
+import {
+  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, policyFor, recordAction,
+} from "../../outbound/index.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
@@ -103,6 +106,9 @@ interface Wiring {
   readonly scheduler: RetryScheduler;
   readonly normalizers: ComponentConsumer<InboundContext>;
   readonly decisions: ComponentConsumer<ControllerContext>;
+  readonly outboundBus: ComponentBus;
+  readonly outbound: Outbound;
+  readonly aggregator: ComponentConsumer<OutboundContext>;
 }
 
 /** The local merge's `who`: the CLI's local identity or the app request's factory user ID. */
@@ -119,7 +125,26 @@ export class ControllerRole implements Decisions {
 
   constructor(deps: ControllerRoleDeps) {
     this.role = prepare(deps);
-    this.kernel = new Kernel(this.role);
+    const db = () => driverOf(this.role.store);
+    this.kernel = new Kernel(this.role, {
+      record: (a, now) => recordAction(db(), a, now),
+      // The intents go out on the controller's bus; wired before its transaction opens.
+      announce: async (now) => announce(db(), (await this.wire()).controllerBus, this.role.settings.config().project.key, now, CONTROLLER),
+    });
+  }
+
+  /** Outbound delivered these intents: the outbox unit records them on their items. */
+  async deliveryCompleted(intent_ids: readonly string[]): Promise<void> {
+    await (await this.router()).unit("outbox").delivered(intent_ids);
+  }
+
+  /**
+   * The outbox step, then outbound at once (tests and the manual ticks): the intents announced, batched, sent, and
+   * their results recorded, as outbound's ticks do over time.
+   */
+  private async outboxStep(): Promise<void> {
+    await (await this.router()).unit("outbox").outboxStep();
+    await this.drain(this.tick("outbound-flush"));
   }
 
   /**
@@ -142,12 +167,18 @@ export class ControllerRole implements Decisions {
     scheduleComponent(controller, w.controllerBus);
     const bus = ticks.create(onError);
     scheduleBus(bus, w.scheduler);
+    const outbound = ticks.create(onError);
+    outbound.schedule("consume", BUS_PERIODS.consume, async () => void (await w.aggregator.consume()));
+    outbound.schedule("outbound-flush", OUTBOUND_FLUSH_MS, async (t) => void (await w.outbound.flush(t)));
+    scheduleComponent(outbound, w.outboundBus);
     // The units' steps tick on the injected clock, so tests move them by hand.
     const units = ticks.create(onError, this.role.clock);
     this.decide(units, r);
     // The label, never the key: log lines and comments name a project by its readable path.
     this.role.log.info("controller started", { project: this.kernel.cfg.project.label });
-    await Promise.all([units.run(signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
+    await Promise.all([
+      units.run(signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal), outbound.run(signal),
+    ]);
     // Shutting down: hand the sync lease over now instead of after lease_ms.
     await this.role.sync?.release();
   }
@@ -178,7 +209,7 @@ export class ControllerRole implements Decisions {
     const r = await this.router();
     await this.kernel.guard("sync", () => r.unit("sync").syncStep());
     await r.unit("closes").afterPoll();
-    await r.unit("outbox").outboxStep();
+    await this.outboxStep();
   }
 
   /** One command step: the command rows after the cursor, through the bus to the units, then their mirrors. */
@@ -190,7 +221,7 @@ export class ControllerRole implements Decisions {
     await this.drain(t);
     const r = await this.router();
     await r.step("cli mirror", t);
-    await r.unit("outbox").outboxStep();
+    await this.outboxStep();
   }
 
   /** Removes inbound records past inbox_retention_days, as inbound's `records` tick does. */
@@ -252,14 +283,16 @@ export class ControllerRole implements Decisions {
 
   /** The start-up status catch-up (issue #254); false while the request budget defers it. */
   async catchUpStatus(): Promise<boolean> {
-    return (await this.router()).unit("outbox").catchUpStatus();
+    const done = await (await this.router()).unit("outbox").catchUpStatus();
+    await this.outboxStep();
+    return done;
   }
 
   /** A finished run's outcome, then the outbox. */
   async applyRun(run: Run): Promise<void> {
     const r = await this.router();
     await r.unit("run-results").apply(run);
-    await r.unit("outbox").outboxStep();
+    await this.outboxStep();
   }
 
   /** The local merge (design 05-sources, Local items); returns the refusal, or null when the item merged. */
@@ -271,7 +304,7 @@ export class ControllerRole implements Decisions {
   async handleEvent(e: ControllerEvent): Promise<void> {
     const r = await this.router();
     await r.dispatch(e);
-    await r.unit("outbox").outboxStep();
+    await this.outboxStep();
   }
 
   /**
@@ -306,7 +339,7 @@ export class ControllerRole implements Decisions {
     await this.kernel.live.refresh();
     const r = await this.router();
     await fn(r);
-    await r.unit("outbox").outboxStep();
+    await this.outboxStep();
   }
 
   private tick(schedule: string): Tick {
@@ -337,6 +370,9 @@ export class ControllerRole implements Decisions {
       moved += await w.inboundBus.relay(t);
       moved += await w.decisions.consume();
       moved += await w.controllerBus.relay(t);
+      moved += await w.aggregator.consume();
+      moved += await w.outbound.flush(t);
+      moved += await w.outboundBus.relay(t);
       if (moved === 0) return;
     }
   }
@@ -356,6 +392,26 @@ export class ControllerRole implements Decisions {
     const bus = d.bus ?? new SqlBus();
     const inboundBus = bus.component({ db, component: INBOUND, topics, consumerId });
     const controllerBus = bus.component({ db, component: CONTROLLER, topics, consumerId });
+    const outboundBus = bus.component({ db, component: OUTBOUND, topics, consumerId });
+    const sync = (await this.router()).unit("sync");
+    // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
+    const canSend = (type: string) => type !== SYNCED || !sync.syncedElsewhere();
+    const outbound = new Outbound({
+      db,
+      bus: outboundBus,
+      store: d.store,
+      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge }),
+      scanner: d.scanner,
+      log: d.log,
+      config: () => {
+        const c = d.settings.config();
+        return { lease_ms: c.lease_ms, retry_base_ms: c.retry_base_ms, retry_max_ms: c.retry_max_ms, project_key: c.project.key };
+      },
+      canSend,
+      kinds: () => [...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend),
+      fenceFor: (type) => sync.fenceFor(type),
+      fenceRefused: (fence) => sync.fenceRefused(fence),
+    });
     const owner = d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`;
     const inbound = new Inbound({
       db,
@@ -394,6 +450,19 @@ export class ControllerRole implements Decisions {
           recordAlert: async (alert, dedupe_ms) => {
             const scan = alert.detail === null ? null : await d.scanner.scan("ui", alert.detail);
             await d.store.recordAlert({ ...alert, detail: scan?.clean ? alert.detail : null }, dedupe_ms);
+          },
+        }),
+      }),
+      outboundBus,
+      outbound,
+      aggregator: new ComponentConsumer<OutboundContext>({
+        db, bus: outboundBus, registry: r, component: OUTBOUND, transactional: true,
+        context: (tx, emit) => ({
+          tx: tx!, emit,
+          policy: (destination) => policyFor(d.settings.config().outbound_batching, destination),
+          budget: (destination) => {
+            const b = destination.startsWith(`${SYNCED}:`) ? d.github_budget?.() : null;
+            return b ? { remaining: b.remaining, limit: b.limit } : null;
           },
         }),
       }),

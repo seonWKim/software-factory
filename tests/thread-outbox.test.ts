@@ -31,7 +31,7 @@ class StrictSource extends FakeSource {
     super();
   }
   override async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
-    const fromOutbox = /OutboxUnit\.deliver\b/.test(new Error().stack ?? "");
+    const fromOutbox = /Outbound\.deliver\b/.test(new Error().stack ?? "");
     if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     const item = await this.store.getWorkItemBySource(source.type, source.id);
     const inThread = item ? (await this.store.listItemMessages(item.id)).some((m) => m.marker === marker && m.body === body) : false;

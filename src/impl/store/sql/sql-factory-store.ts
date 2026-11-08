@@ -2197,27 +2197,31 @@ export class SqlFactoryStore implements FactoryStore {
     return this.claimQueued(QUEUES.outbox, seq, lease_ms, fence);
   }
 
+  async getDelivery(seq: number): Promise<ThreadDelivery | null> {
+    const [row] = await this.db.all(`${DELIVERY_SELECT} WHERE o.seq = ?`, [seq]);
+    return row ? rowToDelivery(row) : null;
+  }
+
   async finishDelivery(seq: number, token: number, url: string | null): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      const n = await tx.run(
-        `UPDATE outbound_intents SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
-         WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
-        [now, url, seq, token],
-      );
-      if (n === 0) return false;
-      const [row] = await tx.all("SELECT work_item_id, link_field FROM outbound_intents WHERE seq = ?", [seq]);
-      const field = row!.link_field as string | null;
-      if (url !== null && (field === "spec_comment_url" || field === "failure_comment_url")) {
-        // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
-        await tx.run(
-          `UPDATE controller_work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
-             SELECT 1 FROM outbound_intents n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
-          [url, row!.work_item_id as string, row!.work_item_id as string, field, seq],
-        );
-      }
-      return true;
-    });
+    const n = await this.db.run(
+      `UPDATE outbound_intents SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
+       WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
+      [this.now(), url, seq, token],
+    );
+    return n > 0;
+  }
+
+  async linkDelivery(seq: number): Promise<void> {
+    const [row] = await this.db.all("SELECT work_item_id, link_field, url FROM outbound_intents WHERE seq = ? AND delivered_at IS NOT NULL", [seq]);
+    const field = row?.link_field as string | null | undefined;
+    const url = row?.url as string | null | undefined;
+    if (!row || !url || (field !== "spec_comment_url" && field !== "failure_comment_url")) return;
+    // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
+    await this.db.run(
+      `UPDATE controller_work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
+         SELECT 1 FROM outbound_intents n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
+      [url, row.work_item_id as string, row.work_item_id as string, field, seq],
+    );
   }
 
   async failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {

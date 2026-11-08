@@ -960,12 +960,19 @@ export interface FactoryStore {
    * Returns the claim token, or null when the row is delivered, claimed by another, or the fence is stale.
    */
   claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null>;
+  /** Outbox row `seq` with its thread entry, or null. Read-only. */
+  getDelivery(seq: number): Promise<ThreadDelivery | null>;
   /**
-   * Marks row `seq` delivered with the comment's `url`, under claim `token`. When the row names a link field and
-   * no newer row of the item names the same field, the item's field is set to `url` (no version change, no
-   * state change). Returns false, changing nothing, when the token is no longer the row's live claim.
+   * Marks row `seq` delivered with the comment's `url`, under claim `token` (outbound). Returns false, changing
+   * nothing, when the token is no longer the row's live claim.
    */
   finishDelivery(seq: number, token: number, url: string | null): Promise<boolean>;
+  /**
+   * Records a delivered row on its item (the controller, on DeliveryCompleted): when the row names a link field
+   * and no newer row of the item names the same field, the item's field is set to the row's URL (no version
+   * change, no state change). An undelivered row, or one with no URL, changes nothing.
+   */
+  linkDelivery(seq: number): Promise<void>;
   /**
    * Records a failed delivery of row `seq` under claim `token`: one more attempt, the error, the claim released
    * and the next try `retry_in_ms` from now. Returns false, changing nothing, when the token is not the claim.

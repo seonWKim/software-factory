@@ -105,7 +105,11 @@ for (const backend of BACKENDS) {
       await entry(store, id, "spec", { link: "spec_comment_url" });
       const [oldRow, newRow, specRow] = await store.listDeliveries(id);
       const version = (await store.getWorkItem(id))!.version;
-      const deliver = async (seq: number, url: string) => store.finishDelivery(seq, (await store.claimDelivery(seq, 1000))!, url);
+      // Outbound marks the row delivered; the controller records it on the item (DeliveryCompleted).
+      const deliver = async (seq: number, url: string) => {
+        await store.finishDelivery(seq, (await store.claimDelivery(seq, 1000))!, url);
+        await store.linkDelivery(seq);
+      };
       await deliver(newRow!.seq, "u-new");
       await deliver(oldRow!.seq, "u-old");
       await deliver(specRow!.seq, "u-spec");

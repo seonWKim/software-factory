@@ -26,6 +26,8 @@ export interface Decisions {
   consumeEvent(e: InboundEvent): Promise<void>;
   /** One command row. Throws when it should be tried again; the commands after it in its stream wait. */
   consumeCommand(c: CliCommand): Promise<void>;
+  /** Outbound delivered these intents (DeliveryCompleted): what the controller keeps of them is recorded. */
+  deliveryCompleted(intent_ids: readonly string[]): Promise<void>;
 }
 
 /**

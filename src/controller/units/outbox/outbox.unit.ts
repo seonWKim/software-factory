@@ -1,24 +1,23 @@
-// The thread outbox (until M7 moves it to outbound): replies, marks, status labels, and their delivery.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// What the controller asks outbound to write (RFC 0015 M7): thread entries, status labels, 👀 reactions, issue closes
+// and posts on sources with no work item are stored as intents, and the outbox step announces them as
+// DeliveryRequested; outbound batches and delivers them, and DeliveryCompleted comes back to `delivered`.
+// Moved out of the legacy controller (RFC 0015 M5); its store reads are still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
-import { retryDelayMs } from "../../../core/policy.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { isCliCommandKey } from "../../../core/local-cli.js";
 import { type WorkStatus, statusOf } from "../../../core/status-label.js";
 import { type SourceRef, type WorkItem } from "../../../core/types.js";
-import type { ThreadDelivery, ThreadLinkField } from "../../../interfaces/factory-store.js";
+import type { ThreadLinkField } from "../../../interfaces/factory-store.js";
 import { labelTarget } from "../../../interfaces/factory-store.js";
-import { GITHUB_SOURCE_TYPE } from "../support.js";
+import { THREAD_INTENT, type NewAction } from "../../../outbound/index.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
 const CATCH_UP_LIMIT = 1000;
-/** Outbox rows delivered per tick at most (issue #282). */
-const OUTBOX_BATCH = 50;
 
-/** The thread outbox (until M7 moves it to outbound): replies, marks, status labels, and their delivery. */
+/** What the controller asks outbound to write: thread entries, status labels, 👀 reactions, closes, posts. */
 export class OutboxUnit {
   constructor(private readonly c: Ctx) {}
 
@@ -51,15 +50,20 @@ export class OutboxUnit {
 
   /**
    * A reply on a source that is no work item (a `/link` on a plain issue, a refused chat intake) has no thread to
-   * hold it: the only posts that skip the outbox and go to the source directly.
+   * hold it: the only posts with no thread entry, an action intent of their own.
    */
   async postWithoutItem(source: SourceRef, body: string, marker: string): Promise<void> {
-    await this.c.k.adapterFor(source, "postComment")?.postComment(source, body, marker);
+    await this.request({ action: "post", target: source, args: { body, marker } });
+  }
+
+  /** Closes the item's source issue (a reject, a finished split) through outbound, which retries it until it lands. */
+  async close(it: WorkItem, reason: string | null = null): Promise<void> {
+    await this.request({ action: "close", target: it.source, work_item_id: it.id, args: { reason } });
   }
 
   /**
    * A comment on the item's PR, through the forge whatever source the item came from (issue #273): a thread entry
-   * whose outbox row targets the forge's PR ref, so the outbox step posts it with `postPrComment`. With no PR, or
+   * whose outbox row targets the forge's PR ref, so outbound posts it with `postPrComment`. With no PR, or
    * no forge, it goes to the item's own source.
    */
   async prComment(it: WorkItem, key: string, body: string): Promise<void> {
@@ -73,19 +77,11 @@ export class OutboxUnit {
     await this.c.k.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
   }
 
-  /** 👀 on the event. Best effort: a failure is a warning and never blocks the transition or the loop. */
+  /** 👀 on the event, through outbound. Best effort there: a failure is a warning and never blocks anything. */
   async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
     // A CLI command has no comment on the source to react to: its mirror is the mirror step's.
     if (commentId !== null && isCliCommandKey(commentId)) return;
-    try {
-      await this.c.k.adapterFor(source, "markSeen")?.markSeen(source, commentId);
-    } catch (err) {
-      this.c.k.d.log.warn("mark seen failed", {
-        source_id: source.id,
-        comment_id: commentId,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-      });
-    }
+    await this.request({ action: "seen", target: source, args: { comment_id: commentId } });
   }
 
   /**
@@ -100,29 +96,23 @@ export class OutboxUnit {
   }
 
   /**
-   * Best effort, like markSeen: a failure is a warning and never changes a transition's outcome. The item
-   * itself is labelled through its own source; a PR through the forge, where PRs live (issue #273). With no
-   * forge (converted with prNumber), the PR call goes to the item's own source with its change_ref.
+   * Best effort in outbound, like markSeen. The item itself is labelled through its own source; a PR through the
+   * forge, where PRs live (issue #273). With no forge, the PR call goes to the item's own source with its change_ref.
    */
   async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
-    try {
-      const pr = change_ref === null ? null : prNumber({ change_ref });
-      if (pr !== null && this.c.k.forge) await this.c.k.forge.setPrStatus(source, status, pr);
-      else await this.c.k.adapterFor(source, "setStatus")?.setStatus(source, status, change_ref);
-    } catch (err) {
-      this.c.k.d.log.warn("set status failed", {
-        source_id: source.id,
-        status,
-        pr_number: change_ref === null ? null : prNumber({ change_ref }),
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-      });
+    const pr = change_ref === null ? null : prNumber({ change_ref });
+    const forge = this.c.k.forge;
+    if (pr !== null && forge) {
+      await this.request({ action: "status", target: forge.prRef(pr), args: { status, change_ref, pr, item_source: JSON.stringify(source) } });
+      return;
     }
+    await this.request({ action: "status", target: source, args: { status, change_ref } });
   }
 
   /**
-   * Writes one message to the item's thread, once per key (issue #282); the outbox step delivers it. Returns the
+   * Writes one message to the item's thread, once per key (issue #282); outbound delivers it. Returns the
    * delivered comment's URL when an earlier write of the same key was already delivered, else null: `link` names
-   * the item field the outbox fills with the URL once it delivers.
+   * the item field the controller fills with the URL once outbound delivered it.
    */
   async comment(it: WorkItem, key: string, body: string, link: ThreadLinkField | null = null): Promise<string | null> {
     return this.post(it, it.source, body, `<!-- factory:${key} -->`, link);
@@ -143,63 +133,28 @@ export class OutboxUnit {
   }
 
   /**
-   * The outbox (issue #282): each pending thread entry of a source type this process has an adapter for, claimed
-   * so one replica posts it, delivered through that adapter, then marked delivered; an entry whose target is one
-   * of the forge's PR refs goes through the forge (issue #273). A failure is retried with backoff (retry_base_ms
-   * doubling up to retry_max_ms); it never touches the item's state. Entries this process cannot deliver stay
-   * pending for a process that can.
+   * The outbox step (issue #282, RFC 0015 M7): every intent not announced yet becomes a DeliveryRequested, one per
+   * destination, in one transaction with marking it requested. Outbound delivers it: claimed so one replica writes
+   * it, retried with backoff, never touching the item's state. Then the base pushes (until outbound's `local`
+   * handler takes them, M7's second half).
    */
   async outboxStep(): Promise<void> {
     await this.c.k.guard("sync", () => this.c.unit("sync").syncStep());
-    const types = new Set(this.c.k.byType.keys());
-    if (this.c.k.forge) types.add(this.c.k.forge.ref_type);
-    // The synced type's rows are the sync holder's to deliver (design 05-coordination), whatever the budget.
-    if (this.c.unit("sync").syncedElsewhere()) types.delete(GITHUB_SOURCE_TYPE);
-    for (const row of await this.c.k.d.store.listPendingDeliveries([...types], OUTBOX_BATCH)) {
-      await this.c.k.guard("outbox delivery", () => this.deliver(row));
-    }
+    await this.c.k.announce();
     await this.c.k.guard("base pushes", () => this.c.unit("local-merge").basePushStep());
   }
 
-  /** How `row` is posted here: through the forge for one of its PR refs, else the adapter of its source type. */
-  poster(row: ThreadDelivery): ((body: string, marker: string) => Promise<{ url: string | null }>) | null {
-    const forge = this.c.k.forge;
-    const pr = forge?.prNumberOf(row.target) ?? null;
-    if (forge && pr !== null) return (body, marker) => forge.postPrComment(pr, body, marker);
-    const adapter = this.c.k.byType.get(row.source_type);
-    return adapter ? (body, marker) => adapter.postComment(row.target, body, marker) : null;
+  /** DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field). */
+  async delivered(intent_ids: readonly string[]): Promise<void> {
+    for (const id of intent_ids) {
+      if (id.startsWith(THREAD_INTENT)) await this.c.k.d.store.linkDelivery(Number(id.slice(THREAD_INTENT.length)));
+    }
   }
 
-  async deliver(row: ThreadDelivery): Promise<void> {
-    const post = this.poster(row);
-    if (!post) return;
-    // Fenced: a replica whose sync lease was taken over claims nothing, so no comment goes out twice.
-    if (row.source_type === GITHUB_SOURCE_TYPE && this.c.unit("sync").syncedElsewhere()) return;
-    const fence = this.c.unit("sync").fenceFor(row.source_type);
-    const token = await this.c.k.d.store.claimDelivery(row.seq, this.c.k.cfg.lease_ms, ...(fence ? [fence] : []));
-    if (token === null) {
-      if (fence) await this.c.unit("sync").fenceRefused(fence);
-      return;
-    }
-    // A marker the store has a posted record of is delivered with its URL and no call; a changed body is not
-    // edited, only logged.
-    const stored = await this.c.k.d.store.getPostedComment(row.target.id, row.marker, row.body);
-    if (stored?.comment_id) {
-      if (!stored.same_body) this.c.k.d.log.warn("comment already posted with another body; not edited", { source_id: row.target.id, marker: row.marker });
-      await this.c.k.d.store.finishDelivery(row.seq, token, stored.url);
-      return;
-    }
-    let url: string | null;
-    try {
-      url = (await post(row.body, row.marker)).url;
-    } catch (err) {
-      const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
-      const delay = retryDelayMs(row.attempts + 1, this.c.k.cfg.retry_base_ms, this.c.k.cfg.retry_max_ms);
-      this.c.k.d.log.warn("outbox delivery failed; retried later", { work_item_id: row.work_item_id, outbox_seq: row.seq, attempts: row.attempts + 1, retry_in_ms: delay, error });
-      await this.c.k.d.store.failDelivery(row.seq, token, error, delay);
-      return;
-    }
-    await this.c.k.d.store.finishDelivery(row.seq, token, url);
+  /** Stores one action intent; the outbox step announces it. A local item's surface is the store: nothing to write. */
+  private async request(a: NewAction): Promise<void> {
+    if (a.target.type === LOCAL_SOURCE) return;
+    await this.c.k.recordAction(a);
   }
 }
 

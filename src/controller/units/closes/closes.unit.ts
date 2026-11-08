@@ -137,8 +137,7 @@ export class ClosesUnit {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || !closePending(it)) return;
     // No adapter for the item's source: it stays pending (its state is kept) until one is configured.
-    const source = this.c.k.adapterFor(it.source, "closeIssue");
-    if (!source) return;
+    if (!this.c.k.adapterFor(it.source, "closeIssue")) return;
     const budget = (await this.c.k.d.store.listStateChanges(id)).filter((c) => c.reason === "spec_rejected" || c.reason === "budget_rejected").at(-1)
       ?.reason === "budget_rejected";
     const reason = budget ? "" : (it.spec_feedback?.trim() ?? "");
@@ -148,7 +147,7 @@ export class ClosesUnit {
         ? ["Closed because the spec was rejected. The factory closed this issue as not planned. The reason given:", "", quote(reason)].join("\n")
         : "Closed because the spec was rejected (no reason given). The factory closed this issue as not planned.";
     await this.c.unit("outbox").comment(it, `rejected:${it.id}`, body);
-    await source.closeIssue(it.source);
+    await this.c.unit("outbox").close(it);
     await this.c.unit("transitions").decide(id, (cur) =>
       closePending(cur)
         ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "source_closed" }

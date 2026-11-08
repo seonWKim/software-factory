@@ -61,6 +61,7 @@ import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-sec
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
 } from "./plugins.js";
+import { batchingPolicies } from "./outbound/index.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -140,6 +141,8 @@ export interface FileConfig {
   run_timeout_ms: number;
   /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
   inbox_retention_days?: number;
+  /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
+  outbound?: { batching?: unknown };
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
@@ -438,6 +441,7 @@ export async function loadConfig(
     ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
+    outbound_batching: batchingPolicies(file.outbound?.batching),
     workers,
     max_workers,
     deny_paths: [

@@ -263,11 +263,10 @@ export class PhasesUnit {
     if (!ids) return;
     const phases = await this.recordedPhases(id);
     if (phases.length < ids.length || !phases.every(completed)) return;
-    const adapter = this.c.k.adapterFor(it.source, "closeIssue");
-    if (!adapter) return;
+    if (!this.c.k.adapterFor(it.source, "closeIssue")) return;
     await this.c.unit("outbox").comment(it, `split-done:${it.id}`,
       `Closed because all ${ids.length} phases of this split were closed as completed.`);
-    await adapter.closeIssue(it.source, "completed");
+    await this.c.unit("outbox").close(it, "completed");
     await this.c.unit("transitions").decide(id, (cur) =>
       splitOpen(cur)
         ? {

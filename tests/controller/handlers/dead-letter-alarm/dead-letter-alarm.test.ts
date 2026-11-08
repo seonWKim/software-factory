@@ -25,7 +25,7 @@ async function harness() {
   const bus = new SqlBus();
   const inbound = bus.component({ db: store.db, component: INBOUND, topics, consumerId: "t" });
   const controllerBus = bus.component({ db: store.db, component: CONTROLLER, topics, consumerId: "t" });
-  const decisions: Decisions = { consumeEvent: async () => {}, consumeCommand: async () => {} };
+  const decisions: Decisions = { consumeEvent: async () => {}, consumeCommand: async () => {}, deliveryCompleted: async () => {} };
   const flagged: string[] = [];
   const alarms = new ComponentConsumer<ControllerContext>({
     db: store.db,
