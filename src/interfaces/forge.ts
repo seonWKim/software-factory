@@ -59,8 +59,6 @@ export type ForgeEvent =
       comments: PrLineComment[];
     };
 
-export type ForgeEventKind = ForgeEvent["kind"];
-
 /** One line comment of a PR review: the file, the line in the PR's version of it, and the text. */
 export interface PrLineComment {
   path: string;

@@ -11,7 +11,6 @@ import { RESUMABLE_PAUSES, type ResumablePause, endPause, isResumablePause } fro
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
 
-export const PAUSES_PATH = "/api/v1/pauses";
 export const RESUME_PATH = "/api/v1/pauses/resume";
 
 /** What the resume route needs beside the store. Built once per UI process (compose.ts buildUiParts). */

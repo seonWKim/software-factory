@@ -71,8 +71,6 @@ export interface LearnedSettingsSource {
 export type EffectiveSetting<K extends ProjectSettingKey> = { value: ProjectSettings[K]; layer: SettingLayer };
 export type EffectiveSettings = { [K in ProjectSettingKey]: EffectiveSetting<K> };
 
-export const NO_SETTINGS: SettingsLayers = Object.freeze({ defaults: {}, projects: {} });
-
 /** The global value of each key: `defaults`, else the built-in default. What a project must not loosen. */
 export function globalSettings(layers: SettingsLayers): EffectiveSettings {
   const out = {} as Record<ProjectSettingKey, EffectiveSetting<ProjectSettingKey>>;
