@@ -5,7 +5,7 @@ import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand } from "../../../interfaces/factory-store.js";
 import { QUOTABLE_COMMAND } from "../support.js";
-import type { ControllerReader } from "../kernel.js";
+import { type ControllerReader, threadEntry } from "../kernel.js";
 import type { ControllerDecision } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -52,11 +52,7 @@ export class MirrorUnit {
     const writes: ControllerDecision["writes"][number][] = [];
     for (const p of pending) {
       if (!p.item || p.mirror === "delivered") writes.push({ kind: "cli_mirrored", key: p.c.key });
-      else if (p.body !== null) {
-        const { item } = p;
-        const delivery = { source_type: item.source.type, target: item.source, link_field: null };
-        writes.push({ kind: "thread_entry", entry: { work_item_id: item.id, marker: p.marker, body: p.body, delivery } });
-      }
+      else if (p.body !== null) writes.push({ kind: "thread_entry", entry: threadEntry(p.item, p.item.source, p.body, p.marker) });
     }
     return { writes };
   }

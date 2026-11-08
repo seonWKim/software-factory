@@ -37,6 +37,5 @@
   "reaches-io|controller/units/standing/standing.unit.ts|store",
   "reaches-io|controller/units/sync/sync.unit.ts|sources",
   "reaches-io|controller/units/sync/sync.unit.ts|store",
-  "reaches-io|controller/units/transitions/transitions.unit.ts|store",
   "reaches-io|controller/units/verdicts/verdicts.unit.ts|store"
 ]
