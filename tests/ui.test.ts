@@ -417,7 +417,8 @@ describe("ui: Needs you (?state=needs)", () => {
     const merge = by["Merge item"]![next]!;
     expect(merge).toContain("ready to merge");
     expect(merge).toContain(`href="https://github.com/o/r/pull/42"`);
-    expect(merge).toContain("merge the PR");
+    // The Merge button merges it (design §9): no "merge the PR" text to type.
+    expect(merge).not.toContain("merge the PR");
 
     const failed = by["Failed item"]![next]!;
     expect(failed).toContain("failed: diff_too_large");
@@ -443,7 +444,7 @@ describe("ui: Needs you (?state=needs)", () => {
       const r = by[t]![next]!;
       expect(r).toContain(`href="https://github.com/o/r/issues/${n}"`);
       expect(r).not.toContain("/pull/");
-      for (const cmd of ["/retry", "/approve", "merge the PR"]) expect(r).not.toContain(cmd);
+      for (const cmd of ["/retry", "/approve", "factory merge"]) expect(r).not.toContain(cmd);
     }
 
     const oldSpec = by["Old spec"]![next]!;

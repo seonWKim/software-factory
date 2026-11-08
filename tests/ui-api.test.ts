@@ -921,40 +921,67 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
   });
 });
 
-describe("ui api: can_merge on GET /api/v1/items/:id (the Merge button)", () => {
+describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Merge button)", () => {
   const TOKEN = newCsrfToken();
   const ACTOR = "local:me" as UserId;
   const MERGE_PENDING = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" } as const;
+  type Merge = { enabled: boolean; reason: string | null };
 
   async function localItem(store: FactoryStore, n: number) {
     return (await store.createWorkItem({ ...issue(n), source: { type: "local", id: `local-${n}`, link: `local:local-${n}` } }, system)).item;
   }
-  const canMerge = async (d: UiDeps, id: WorkItemId) => (await json<{ can_merge: boolean }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).can_merge;
+  /** The item's `merge` on its page and on its list row: always the same. */
+  const mergeOf = async (d: UiDeps, id: WorkItemId): Promise<Merge> => {
+    const page = (await json<{ item: { merge: Merge } }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).item.merge;
+    const row = (await json<{ items: { id: string; merge: Merge }[] }>(d, "/api/v1/items?closed=1")).items.find((i) => i.id === id);
+    if (row) expect(row.merge, id).toEqual(page);
+    return page;
+  };
+  const enabled = { enabled: true, reason: null };
+  const off = (reason: string) => ({ enabled: false, reason });
 
-  it("true only for a local item at merge_pending with no change_ref, for a user allowed approve_merge", async () => {
+  it("enabled for a GitHub PR or a local item waiting for its merge, for a user allowed approve_merge", async () => {
+    const { d, store, items } = await seeded();
+    const asked = vi.fn(async () => true);
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: asked };
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    const local = await patch(store, await localItem(store, 40), MERGE_PENDING);
+
+    expect(await mergeOf(d, items.merge.id)).toEqual(enabled);
+    expect(await mergeOf(d, local.id)).toEqual(enabled);
+    // A list asks the grants once, however many rows it has.
+    asked.mockClear();
+    await json(d, "/api/v1/items?closed=1");
+    expect(asked).toHaveBeenCalledTimes(1);
+  });
+
+  it("disabled with a reason: not waiting, merge check running, conflicts, no forge, no sandbox, commands off, not allowed", async () => {
     const { d, store, items } = await seeded();
     let allowed = true;
-    const asked = vi.fn(async () => allowed);
-    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: asked };
-    const ready = await patch(store, await localItem(store, 40), MERGE_PENDING);
-    const withPr = await patch(store, await localItem(store, 41), { ...MERGE_PENDING, change_ref: "7" });
-    const spec = await patch(store, await localItem(store, 42), { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
-    const closed = await patch(store, await localItem(store, 43), { stage: "CLOSED", close_reason: "completed" });
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: async () => allowed };
+    const local = await patch(store, await localItem(store, 40), MERGE_PENDING);
 
-    expect(await canMerge(d, ready.id)).toBe(true);
-    for (const it of [withPr, spec, closed]) expect(await canMerge(d, it.id), it.id).toBe(false);
-    // A GitHub item never shows it, at any state, merge_pending included.
-    for (const it of Object.values(items)) expect(await canMerge(d, it.id), it.id).toBe(false);
-    expect(asked).toHaveBeenCalledTimes(1);
+    for (const it of [items.approve, items.done, items.running]) expect(await mergeOf(d, it.id), it.id).toEqual(off("not waiting for a merge"));
+    // No stored merge check result for the PR's head yet.
+    expect(await mergeOf(d, items.merge.id)).toEqual(off("merge check running"));
+    await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: false, conflicts: ["a.ts", "b.ts"], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+    expect(await mergeOf(d, items.merge.id)).toEqual(off("2 conflicting files"));
+    // A local item has no merge check: its own merge refuses a conflict.
+    expect(await mergeOf(d, local.id)).toEqual(enabled);
+
+    d.commands = { ...d.commands, forge: false, localMerge: false };
+    expect(await mergeOf(d, items.merge.id)).toEqual(off("no forge selected"));
+    expect(await mergeOf(d, local.id)).toEqual(off("no sandbox that can merge"));
+    d.commands = { ...d.commands, forge: true, localMerge: true };
 
     allowed = false;
-    expect(await canMerge(d, ready.id)).toBe(false);
-    d.commands = { actor: null, source: null, token: TOKEN, mergeAllowed: async () => true };
-    expect(await canMerge(d, ready.id)).toBe(false);
+    expect(await mergeOf(d, local.id)).toEqual(off("not allowed to merge (approve_merge)"));
     d.commands = { actor: ACTOR, source: "config", token: TOKEN };
-    expect(await canMerge(d, ready.id)).toBe(false);
+    expect(await mergeOf(d, local.id)).toEqual(off("not allowed to merge (approve_merge)"));
+    d.commands = { actor: null, source: null, token: TOKEN, mergeAllowed: async () => true };
+    expect(await mergeOf(d, local.id)).toEqual(off("commands are off"));
     const { commands: _, ...unwired } = d;
-    expect(await canMerge(unwired, ready.id)).toBe(false);
+    expect(await mergeOf(unwired, local.id)).toEqual(off("commands are off"));
   });
 });
 

@@ -14,7 +14,7 @@ import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { canMerge, itemCommands, itemReplies, readSession } from "./commands.js";
+import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSession } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -333,6 +333,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
+  const allowed = mergeAllowedOnce(c.d);
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -358,6 +359,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       dependents: r.dependents,
       conflicts: r.conflicts,
       merge_check,
+      merge: await mergeReadiness(c.d, it, merge_check, allowed),
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
@@ -404,6 +406,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       stored = [];
     }
   }
+  const merge_check = await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null);
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -450,7 +453,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       created_at: it.created_at,
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
-      merge_check: await mergeCheckRow(c, it, readyToMerge(it) ? await s.getMergeCheck(id) : null),
+      merge_check,
+      merge: await mergeReadiness(c.d, it, merge_check, mergeAllowedOnce(c.d)),
       why: await c.whyOfItem(it),
     },
     timeline,
@@ -466,7 +470,6 @@ async function item(c: ApiCtx, id: WorkItemId) {
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: itemCommands(it, runs),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
-    can_merge: await canMerge(c.d, it),
   };
 }
 

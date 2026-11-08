@@ -2,6 +2,7 @@
 // One function for the classic page (pages.ts) and the items API (api.ts), so both give the same reason for the
 // same item. Store reads only, no forge call: the PR link is the item's stored change_url.
 
+import { LOCAL_SOURCE } from "../core/local-merge.js";
 import type { Run, WorkItem } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
@@ -48,7 +49,13 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
     return { reason: "spec ready", ...stored(it.spec_comment_url, "spec comment"), command: "/approve or /reject <reason>" };
   }
   if (reason === "merge_pending") {
-    return { reason: check ? mergeText(check) : "ready to merge", ...stored(it.change_url, `PR #${it.change_ref}`), command: "merge the PR" };
+    // The Merge button merges it (design §9); a local item also merges with `factory merge <id>`.
+    const local = it.source.type === LOCAL_SOURCE;
+    return {
+      reason: check ? mergeText(check) : "ready to merge",
+      ...(local ? issue : stored(it.change_url, `PR #${it.change_ref}`)),
+      command: local ? `factory merge ${it.id}` : null,
+    };
   }
   const failed = reason.match(/^run_failed:[a-z]+:(.+)$/)?.[1] ?? (reason === "max_attempts" || reason === "max_restart" || reason === "repeated_failure" ? await latestErrorCode(c.store, it) : null);
   if (failed !== null) {
