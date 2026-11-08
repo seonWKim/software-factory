@@ -72,6 +72,8 @@ async function patch(store: FactoryStore, item: WorkItem, p: Parameters<FactoryS
 async function seeded() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
+  // Stored before the PR is set, as build() does at startup: the store writes change_url from it.
+  await saveProjectLabel(store, PROJECT);
 
   const waiting = await setTitle(store, 1, "Spec for <script>alert(1)</script> the gate");
   await patch(store, waiting, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
@@ -101,9 +103,8 @@ async function seeded() {
   clock.advance(LEASE + 5_000);
 
   const scanner = new PatternEgressScanner(async () => []);
-  await saveProjectLabel(store, PROJECT); // as build() does at startup
   const ui = await startUi(
-    { store, scanner, clock, lease_ms: LEASE, prUrl: (label, n) => `https://${label}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
+    { store, scanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock) },
     0,
   );
   servers.push(ui);
@@ -331,7 +332,7 @@ function rows(body: string): string[][] {
 async function startOn(store: FactoryStore, clock: FakeClock, factoryStatus?: () => Promise<FactoryStatus | null>) {
   await saveProjectLabel(store, PROJECT); // as build() does at startup
   const ui = await startUi(
-    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (label, n) => `https://${label}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock), ...(factoryStatus ? { factoryStatus } : {}) },
+    { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock), ...(factoryStatus ? { factoryStatus } : {}) },
     0,
   );
   servers.push(ui);
@@ -342,6 +343,7 @@ async function startOn(store: FactoryStore, clock: FakeClock, factoryStatus?: ()
 async function seededNeeds() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
+  await saveProjectLabel(store, PROJECT); // before the PR is set: the store writes change_url from it
   const mk = async (n: number, title: string, p: Parameters<FactoryStore["transition"]>[0]["patch"]) =>
     patch(store, await setTitle(store, n, title), p);
   const fail = async (item: WorkItem, key: string, error_code: string) => {
@@ -739,7 +741,7 @@ describe("ui: split phases wait, never stuck", () => {
     clock.advance(76 * 60_000);
     await saveProjectLabel(store, PROJECT);
     const ui = await startUi(
-      { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`, health: new HealthMonitor(async () => HEALTHY, clock) },
+      { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock) },
       0,
     );
     servers.push(ui);
@@ -763,7 +765,7 @@ describe("ui: a split's sub-tasks on the item page (design 04)", () => {
       system,
     )).item;
     const one = (await store.createWorkItem({ ...issue(2), source: local("local-p-phase-1"), title: "Phase 1/2: A", parent: { id: parent.id, phase: 1 } }, system)).item;
-    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock) };
     const subs = section((await renderItem(deps, parent.id))!, "subtasks");
     const href = (id: WorkItemId) => `<a href="/items/${encodeURIComponent(id)}">`;
     expect(subs).toContain(`${href(one.id)}Phase 1/2: A</a>`);
@@ -784,7 +786,7 @@ describe("ui: interactive sessions (design §5, 2026-11-01)", () => {
     if (!r.ok) throw new Error(r.reason);
     await store.updateSession(r.run.id, 1, { tokens: 777 });
     // The page functions themselves, without a server.
-    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock) };
     const parsed = parseFilters(new URLSearchParams());
     if (!parsed.ok) throw new Error(parsed.error);
     const running = section(await renderIndex(deps, parsed.filters), "running");
@@ -825,7 +827,7 @@ describe("ui: item commands over the real socket (issue #227)", () => {
     try {
       const ui = await startUi(
         {
-          store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`,
+          store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE,
           health: new HealthMonitor(async () => HEALTHY, clock), commands: { actor: "github:7" as UserId, source: "config", token },
         },
         0,
@@ -878,7 +880,7 @@ describe("classic page: open alarms (design 09-status-page)", () => {
     if (!cur.ok) throw new Error(cur.reason);
     const other = await setTitle(store, 2, "Other item");
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:x", error_code: "checks_failed", count: 4, detail: "npm test exited #" }, ALERT_DEDUPE_MS);
-    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => HEALTHY, clock) };
+    const deps = { store, scanner: cleanScanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => HEALTHY, clock) };
     const parsed = parseFilters(new URLSearchParams());
     if (!parsed.ok) throw new Error(parsed.error);
     const rowOf = (page: string, id: WorkItemId) => {

@@ -61,8 +61,9 @@ function unflooredReaders(files: readonly SourceFile[], floors: readonly Floor[]
 const FILES = srcFiles(SRC);
 
 describe("credential readers sit under a tier-4 floor (docs/design/03-risk.md)", () => {
-  it("the two GitHub credential files have their own tier-4 file floor", () => {
-    for (const file of ["src/impl/github/app-credentials.ts", "src/impl/github/token-credentials.ts"]) {
+  it("the two GitHub credential files and their descriptors (which name the secrets) have their own tier-4 file floor", () => {
+    const files = ["src/impl/github/app-credentials.ts", "src/impl/github/token-credentials.ts", "src/impl/github/app.plugin.ts", "src/impl/github/token.plugin.ts"];
+    for (const file of files) {
       expect(FLOORS).toContainEqual({ prefix: file, tier: CREDENTIAL_TIER });
     }
   });

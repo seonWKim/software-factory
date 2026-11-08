@@ -5,7 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
-import { checkStatus, createLabels, ensureSecretFile, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
+import { createLabels } from "../src/impl/github/github-issue-source.js";
+import { checkStatus, ensureSecretFile, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 describe("setup: secret file writes", () => {

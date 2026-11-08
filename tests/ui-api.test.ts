@@ -109,7 +109,6 @@ async function seeded(opts: { store?: (s: FactoryStore) => FactoryStore } = {}) 
     scanner,
     clock,
     lease_ms: LEASE,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health,
   };
   return { d, store, clock, items: { approve, merge, secretive, done, running, running2, running3, queued, queued2 }, claimed, claimed2, healthRuns: () => healthRuns };
@@ -234,7 +233,7 @@ describe("ui api: items", () => {
       await patch(store, it, { stage: "CLOSED", close_reason: "completed", tier: n % 2 === 0 ? 2 : 3 });
     }
     await make(store, 1, "Open work");
-    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock: new FakeClock(), lease_ms: LEASE, prUrl: () => "", health: new HealthMonitor(async () => [], new FakeClock()) };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock: new FakeClock(), lease_ms: LEASE, health: new HealthMonitor(async () => [], new FakeClock()) };
     const all = await json<{ items: { id: string }[]; facets: { allStates: number; state: Record<string, number>; stage: Record<string, number> } }>(d, "/api/v1/items");
     expect(all.items).toHaveLength(1);
     expect(all.facets.state.closed).toBe(148);
@@ -263,7 +262,7 @@ describe("ui api: items", () => {
   it("item detail has the facts, the timeline and the runs, and never a fencing token", async () => {
     const { d, items } = await seeded();
     const body = await json<{
-      item: { id: string; title: string; stage: string; close_reason: string; token_cost: number; pr_number: number | null; conflicts: unknown };
+      item: { id: string; title: string; stage: string; close_reason: string; token_cost: number; change_ref: string | null; conflicts: unknown };
       timeline: { version: number; reason: string; actor: { kind: string; id: string }; changes: Record<string, { from: string; to: string }> }[];
       runs: { kind: string; status: string; attempt: number; tokens: number | null; error: { code: string; detail: string } | null }[];
     }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`);
@@ -334,7 +333,7 @@ describe("ui api: items", () => {
       await store.completeRun(r.id, r.lease!.token, outcome);
     }
     const d: UiDeps = {
-      store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: () => "",
+      store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE,
       health: new HealthMonitor(async () => [], clock),
     };
     const body = await json<{ runs: { attempts: { started_at: string; finished_at: string; status: string; failure_class: string | null; tokens: number }[] }[] }>(
@@ -634,41 +633,47 @@ describe("ui api: withholding and read-only", () => {
 });
 
 describe("ui api: plugins, issue and PR links (issue #240)", () => {
-  type Row = { id: string; issue: { number: number; url: string } | null; pr_number: number | null; pr_url: string | null };
+  type Row = { id: string; issue: { number: number; url: string } | null; change_ref: string | null; change_url: string | null };
 
-  it("overview reports the plugins in use; absent deps mean none", async () => {
+  it("overview reports the plugins in use (issues only); absent deps mean none", async () => {
     const { d } = await seeded();
-    expect((await json<{ plugins: unknown }>(d, "/api/v1/overview")).plugins).toEqual({ issues: null, prs: null });
-    const gh = { ...d, plugins: { issues: "github", prs: "github" } } as UiDeps;
-    expect((await json<{ plugins: unknown }>(gh, "/api/v1/overview")).plugins).toEqual({ issues: "github", prs: "github" });
+    expect((await json<{ plugins: unknown }>(d, "/api/v1/overview")).plugins).toEqual({ issues: null });
+    const gh = { ...d, plugins: { issues: "github" } } as UiDeps;
+    expect((await json<{ plugins: unknown }>(gh, "/api/v1/overview")).plugins).toEqual({ issues: "github" });
   });
 
-  it("items carry the issue, null for an adopted PR, and a PR URL built from the stored label", async () => {
+  it("items carry the issue, null for an adopted PR, and the PR link the store keeps as change_url", async () => {
     const { d, store, items } = await seeded();
-    const { project } = items.merge;
-    await saveProjectLabel(store, { key: project, label: "github.com/o/r" });
+    await saveProjectLabel(store, { key: items.merge.project, label: "github.com/o/r" });
     const adopted = (await store.createWorkItem(
       { ...issue(90), source: { type: "github_issue", id: "o/r#90", link: "https://github.com/o/r/pull/90" } }, system,
     )).item;
     await patch(store, adopted, { change_ref: "90" });
+    const stored = (await store.getWorkItem(adopted.id))!.change_url;
+    expect(stored).toBe("https://github.com/o/r/pull/90");
     const list = (await json<{ items: Row[] }>(d, "/api/v1/items")).items;
     const merge = list.find((i) => i.id === items.merge.id)!;
     expect(merge.issue).toEqual({ number: 2, url: "https://github.com/o/r/issues/2" });
-    expect(merge.pr_url).toBe("https://github.com/o/r/pull/42");
-    expect(merge.pr_url).not.toContain("github:");
     const pr = list.find((i) => i.id === adopted.id)!;
     expect(pr.issue).toBeNull();
-    expect(pr.pr_url).toBe("https://github.com/o/r/pull/90");
-    // The item page gets the same corrected URL.
-    const one = await json<{ item: Row }>(d, `/api/v1/items/${items.merge.id}`);
-    expect(one.item.pr_url).toBe("https://github.com/o/r/pull/42");
+    expect(pr).toMatchObject({ change_ref: "90", change_url: stored });
+    expect(Object.keys(pr)).not.toContain("pr_number");
+    expect(Object.keys(pr)).not.toContain("pr_url");
+    // The item page returns the same stored link.
+    const one = await json<{ item: Row }>(d, `/api/v1/items/${adopted.id}`);
+    expect(one.item).toMatchObject({ change_ref: "90", change_url: stored });
+    expect(Object.keys(one.item)).not.toContain("pr_url");
   });
 
-  it("a project with no stored label has a PR number and no URL", async () => {
-    const { d, items } = await seeded();
-    const row = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
-    expect(row.pr_number).toBe(42);
-    expect(row.pr_url).toBeNull();
+  it("a change_ref with no stored change_url has no link, even once a label is stored later (no link is built)", async () => {
+    const { d, store, items } = await seeded();
+    const before = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
+    expect(before).toMatchObject({ change_ref: "42", change_url: null });
+    await saveProjectLabel(store, { key: items.merge.project, label: "github.com/o/r" });
+    const after = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.merge.id)!;
+    expect(after).toMatchObject({ change_ref: "42", change_url: null });
+    const none = (await json<{ items: Row[] }>(d, "/api/v1/items")).items.find((i) => i.id === items.running.id)!;
+    expect(none).toMatchObject({ change_ref: null, change_url: null });
   });
 });
 
@@ -963,7 +968,7 @@ describe("ui api: local merge check (issue #248)", () => {
 });
 
 describe("ui api: unreviewed merges", () => {
-  type Merge = { project: string; pr_number: number; pr_url: string | null; merge_sha: string; merged_by: string; recorded_at: string };
+  type Merge = { project: string; change_ref: string; change_url: string | null; merge_sha: string; merged_by: string; recorded_at: string };
   const list = async (d: UiDeps, q = "") => (await json<{ merges: Merge[] }>(d, `/api/v1/unreviewed-merges${q}`)).merges;
   const rec = (store: FactoryStore, n: number, merger: string | null = null, sha = `${n}`.repeat(40)) =>
     store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: String(n), merge_sha: sha, merger_id: merger as UserId | null });
@@ -974,10 +979,10 @@ describe("ui api: unreviewed merges", () => {
     await rec(store, 1, "github:7");
     clock.advance(1000);
     await rec(store, 2, null);
-    const gh = { ...d, plugins: { issues: "github", prs: "github" } } as UiDeps;
+    const gh = { ...d, plugins: { issues: "github" } } as UiDeps;
     const rows = await list(gh);
-    expect(rows.map((r) => r.pr_number)).toEqual([2, 1]);
-    expect(rows[1]).toMatchObject({ project: "github.com/o/r", merge_sha: "1111111", merged_by: "github:7", pr_url: "https://github.com/o/r/pull/1" });
+    expect(rows.map((r) => r.change_ref)).toEqual(["2", "1"]);
+    expect(rows[1]).toMatchObject({ project: "github.com/o/r", merge_sha: "1111111", merged_by: "github:7", change_url: null });
     expect(rows[0]!.merged_by).toBe("unknown");
     expect(typeof rows[0]!.recorded_at).toBe("string");
     expect(JSON.stringify(rows)).not.toContain(PROJECT_KEY);
@@ -992,13 +997,15 @@ describe("ui api: unreviewed merges", () => {
     for (const bad of ["0", "-1", "x"]) expect((await get(d, `/api/v1/unreviewed-merges?limit=${bad}`)).status).toBe(400);
   });
 
-  it("no PR link without the GitHub plugin or without a stored label", async () => {
+  it("no PR link: the store keeps none for an unreviewed merge, so the ref is text, with or without plugin and label", async () => {
     const { d, store } = await seeded();
     await rec(store, 1);
-    expect((await list({ ...d, plugins: { issues: "github", prs: "github" } } as UiDeps))[0]!.pr_url).toBeNull();
     await saveProjectLabel(store, { key: PROJECT_KEY, label: "github.com/o/r" });
-    expect((await list(d))[0]!.pr_url).toBeNull();
-    expect((await list({ ...d, plugins: { issues: null, prs: null } } as UiDeps))[0]!.pr_url).toBeNull();
+    for (const deps of [d, { ...d, plugins: { issues: "github" } } as UiDeps, { ...d, plugins: { issues: null } } as UiDeps]) {
+      const [row] = await list(deps);
+      expect(row).toMatchObject({ change_ref: "1", change_url: null });
+      expect(Object.keys(row!)).not.toContain("pr_number");
+    }
   });
 
   it("strings from the store go through the Withholder", async () => {
@@ -1253,7 +1260,7 @@ describe("ui api: GitHub budget (design §5 Sources, GitHub call budget)", () =>
 
 describe("ui api: items for the tree (issue #295)", () => {
   type Row = {
-    id: string; parent_id: string | null; phase: number | null; title: string | null; pr_url: string | null;
+    id: string; parent_id: string | null; phase: number | null; title: string | null; change_url: string | null;
     run: { kind: string; status: string; attempt: number; worker_id: string | null; started_at: string | null; position: number | null } | null;
     claim: { decision: string; holder: string | null; holder_id: string | null; approved: boolean; cost: number; threshold: number } | null;
   };
@@ -1338,7 +1345,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     await patch(store, hit, { blocked_on: "human", blocked_reason: "run_failed:implement:checks_failed" });
     const other = await make(store, 2, "Other item");
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:x", error_code: "checks_failed", count: 4, detail: "npm test exited #" }, ALERT_DEDUPE_MS);
-    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`, health: new HealthMonitor(async () => [], clock) };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock) };
     return { d, store, clock, hit, other };
   }
   const overview = (d: UiDeps) => json<{ needs_you: number; system_actions: Action[] }>(d, "/api/v1/overview");

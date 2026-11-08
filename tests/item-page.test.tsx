@@ -14,7 +14,7 @@ const AT = "2026-11-07T00:00:00.000Z";
 const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
 const base = (id: string, n: number, title: string, extra: object = {}) => ({
   id, source: src(n), title, stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0,
-  restart_count: 0, token_cost: 0, pr_number: null, pr_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3,
+  restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3,
   created_at: AT, updated_at: AT, ...extra,
 });
 
@@ -28,8 +28,8 @@ const DETAILS: Record<string, unknown> = {
     as_of: AT,
     item: base("wi_parent", 10, "Split parent", {
       spec_comment_url: "https://github.com/o/r/issues/10#issuecomment-5",
-      pr_number: 12,
-      pr_url: "https://github.com/o/r/pull/12",
+      change_ref: "12",
+      change_url: "https://github.com/o/r/pull/12",
       phases: [
         { id: "wi_p1", phase: 1, title: "First phase", stage: "RUNNING", source: src(11) },
         { id: "wi_p2", phase: 2, title: null, stage: "NEW", source: src(13) },
@@ -52,7 +52,7 @@ const DETAILS: Record<string, unknown> = {
   },
   "/api/v1/items/wi_p1": {
     as_of: AT,
-    item: base("wi_p1", 11, "First phase", { parent_id: "wi_parent", phase: 1, spec_comment_url: "[withheld: github_token]", pr_number: 14, pr_url: "javascript:alert(1)" }),
+    item: base("wi_p1", 11, "First phase", { parent_id: "wi_parent", phase: 1, spec_comment_url: "[withheld: github_token]", change_ref: "14", change_url: "javascript:alert(1)" }),
     timeline: [],
     runs: [],
   },

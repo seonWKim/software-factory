@@ -275,7 +275,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
 
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId, source: "config" | "environment" = "config"): UiDeps {
     return {
-      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, prUrl: (l, n) => `https://${l}/pull/${n}`,
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
       health: new HealthMonitor(async () => [], h.clock), commands: { actor, source, token: TOKEN },
     };
   }
@@ -356,7 +356,7 @@ describe("the page's commands actor (uiCommandsActor, design 09)", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const d: UiDeps = {
-      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, prUrl: (l, n) => `https://${l}/pull/${n}`,
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
       health: new HealthMonitor(async () => [], h.clock), commands: { ...off, token: TOKEN },
     };
     const r = await respond(d, {

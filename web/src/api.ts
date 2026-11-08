@@ -44,8 +44,8 @@ export interface Overview {
   last_24h: { succeeded: number; failed: number; tokens: number };
   /** PRs recorded as merged with no work item in the last 7 days. */
   unreviewed_merges_7d?: number;
-  /** Which plugins are in use: the tables show Issue and PR columns only for "github". */
-  plugins?: { issues: "github" | null; prs: "github" | null };
+  /** Which plugins are in use: the tables show the Issue column only for "github". */
+  plugins?: { issues: "github" | null };
   /** Absent when the server has no status function. */
   factory?: FactoryState | null;
 }
@@ -105,8 +105,9 @@ export interface ItemRow {
   blocked_reason: string | null;
   close_reason: string | null;
   run_status: string | null;
-  pr_number: number | null;
-  pr_url: string | null;
+  /** The PR as the store keeps it: its ref (the number as text) and its link; null with no PR or no stored link. */
+  change_ref: string | null;
+  change_url: string | null;
   /** The source issue; null for an adopted PR. */
   issue?: { number: number; url: string } | null;
   since: string;
@@ -187,8 +188,8 @@ export interface ItemDetail {
     loop_count: number;
     restart_count: number;
     token_cost: number;
-    pr_number: number | null;
-    pr_url: string | null;
+    change_ref: string | null;
+    change_url: string | null;
     /** The posted spec comment; null before triage posts it. */
     spec_comment_url?: string | null;
     /** A phase of a split spec: its parent's id and its place in merge order; both null on any other item. */
@@ -333,7 +334,7 @@ export interface Health {
 /** `/api/v1/unreviewed-merges`: PRs that merged with no work item, newest first. */
 export interface UnreviewedMerges {
   as_of: string;
-  merges: { project: string | null; pr_number: number; pr_url: string | null; merge_sha: string | null; merged_by: string | null; recorded_at: string }[];
+  merges: { project: string | null; change_ref: string; change_url: string | null; merge_sha: string | null; merged_by: string | null; recorded_at: string }[];
 }
 
 /** One settable key on the Settings page. Values are JSON text, as `factory settings set` takes them. */

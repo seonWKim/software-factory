@@ -17,7 +17,7 @@ const entry = (seq: number, at: string, author: string, body: string, kind = aut
 
 const ITEM = {
   id: "wi_1", source: SRC, title: "Thread item", stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2,
-  loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [],
+  loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [],
   version: 3, created_at: AT, updated_at: AT,
 };
 
@@ -35,7 +35,7 @@ let afterPost: (() => void) | null;
 
 const ROW = {
   id: "wi_1", source: SRC, title: "Thread item", level: "needs_human", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
-  blocked_reason: "agent_needs_human", close_reason: null, run_status: null, pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 3,
+  blocked_reason: "agent_needs_human", close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 3,
   dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", command: "/retry", anchor: "msg-7" },
 };
 
