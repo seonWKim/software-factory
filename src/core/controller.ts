@@ -874,7 +874,7 @@ export class Controller {
    * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
    * the merge check runs on the merge commit first, so a failing check or a conflict moves nothing. One try per item
    * version: a refusal is posted once under a key of the version, and the item stays in merge_pending for a person.
-   * A GitHub item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
+   * A sync source's item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
    */
   private async autoMergeStep(): Promise<void> {
     const r = this.live.resolved();

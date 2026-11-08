@@ -408,8 +408,9 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   const scoped = lists
     ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
     : { scope: scope as string };
-  // Optional: a triage output without `decisions` means none (the schema does not require it).
-  const decision_items = parseDecisions(v.decisions ?? []);
+  // Optional: a triage output without `decisions` means none (the schema does not require it). A stored, already
+  // parsed answer (the worker keeps parseTriage's value) carries them as `decision_items`, its `decisions` the lines.
+  const decision_items = parseDecisions(v.decision_items ?? v.decisions ?? []);
   if (!decision_items) return { ok: false, error: "decisions: must be a list of { text, default, owner_only }" };
   const decisions = decision_items.map(decisionLine);
   const applied_defaults = v.applied_defaults ?? [];

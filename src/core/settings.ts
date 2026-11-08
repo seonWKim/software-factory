@@ -329,7 +329,7 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
   alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
   "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
-  mode: "manual: a person approves every spec and merge. auto: the factory approves and merges what it may.",
+  mode: "Manual waits for a person at every spec and merge; auto approves and merges what it may itself.",
   auto_merge_max_tier: "In auto mode, the highest tier (0 to 3) a reviewed local change merges at by itself; 0 is none.",
 };
 
