@@ -41,6 +41,15 @@ force.
   every import twice. New component code that still calls legacy code is listed by
   `tests/architecture/dependency-direction.test.ts` as `component-imports-legacy`; those entries go as the
   legacy code goes.
+- **Runs execute as journaled steps** (since 2026-11-08, RFC 0015 M6, engine only; the legacy worker does not use it
+  yet). `ExecutionEngine` (`src/worker/engine/`), default `journal`: each step's result is stored in
+  `worker_run_steps` and returned instead of running the step again, so a resumed run skips finished steps;
+  results are JSON, and a step can save a partial result (the agent's session id) for the attempt that resumes
+  it. Writes are fenced by `worker_runs.lease_token`. On the worker's `heartbeat` tick the engine renews its
+  leases and aborts steps past `start_to_close` or runs past `deadline_at` (created + `schedule_to_close`); on
+  the `reaper` tick it fails runs past their deadline and takes over runs whose lease (`heartbeat` timeout)
+  expired. A run journaled by another `code_version` is taken over only by code that declares it can resume
+  it; otherwise it waits for a worker on that revision or fails at its deadline.
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 

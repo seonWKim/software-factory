@@ -18,7 +18,7 @@ background agents) is paused until it lands.
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core in progress (background agent, branch refactor/rfc-0015-m3-bus) |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork: actor state tables + state-machines test (8dc1414) |
-| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core in progress (background agent, branch refactor/rfc-0015-m6-engine) |
+| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core merged: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | — |
 | 8 | Merge queue | — |
 | 9 | Identity and passports | core merged: passport service, tables, `tests/passport.test.ts`; not wired yet (ToolBroker check, edge adapters, service passports) |
@@ -47,6 +47,10 @@ src/
                             check, revoke, audit; its clock is the `revocations` tick), keys.ts (keyring over a
                             secret provider), store.ts. plugins/local/ (local identity, OwnerGrant).
                             migrations/20261108T2000-identity-passports: identity_passports, _revocations, authz_audit
+  worker/engine/       NEW  ExecutionEngine (index.ts) and the journal engine (plugins/journal/): named steps journaled
+                            in worker_run_steps (a stored result wins), lease fencing by token, heartbeat and reaper
+                            ticks, named timeouts, code_version pinning. Not wired into the legacy worker yet
+  worker/migrations/   NEW  20261108T1730-worker-run-journal: worker_run_steps, worker_runs.code_version/deadline_at
   core/                LEGACY  controller.ts (4,959 lines), worker.ts (3,098), policy, coordination, ...
   impl/                LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/          LEGACY  FactoryStore (136 methods) and the other plugin interfaces
@@ -93,6 +97,9 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
   the dependency-direction ratchet takes the newly visible `component-imports-legacy` entries with that move.
 - 2026-11-08: M3 bus core, M6 engine core and M9 passport core run as background agents in their own worktrees
   (new folders only), while the main session does the moves that touch every file.
+- 2026-11-08 (M6 engine): `ExecutionEngine` grew `claim`, `complete`, `attach`, `heartbeat` and `reap` beside the
+  RFC's `step`, so a Temporal or Restate engine can own leases too. The journal is keyed by (run, step) as in the
+  target schema; `attempt` is the attempt that last ran the step. Engine time is the latest tick's (no clock).
 - 2026-11-08: added `npm run migrate -- --rehearse` (D8) and wired the D1 backup folder
   (`<stateDir>/db/backups`) into MySQL `npm run migrate`, which had none.
 

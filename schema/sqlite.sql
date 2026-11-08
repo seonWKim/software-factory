@@ -891,6 +891,18 @@ CREATE TABLE worker_run_attempts (
     PRIMARY KEY (run_id, attempt)
   );
 
+CREATE TABLE worker_run_steps (
+    run_id       TEXT NOT NULL REFERENCES worker_runs(id),
+    step_id      TEXT NOT NULL,
+    attempt      INTEGER NOT NULL,
+    status       TEXT NOT NULL,
+    result_ref   TEXT,
+    error_code   TEXT,
+    started_at   TEXT NOT NULL,
+    finished_at  TEXT,
+    PRIMARY KEY (run_id, step_id)
+  );
+
 CREATE TABLE worker_runs (
     id                TEXT PRIMARY KEY,
     work_item_id      TEXT NOT NULL REFERENCES controller_work_items(id),
@@ -905,7 +917,7 @@ CREATE TABLE worker_runs (
     acknowledged_at   TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL
-  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER);
+  , started_at TEXT, finished_at TEXT, not_before TEXT, input TEXT, paused_at TEXT, paused_by TEXT, session_id TEXT, pause_state TEXT, actor_id TEXT, transcript_url TEXT, session_tokens INTEGER, code_version TEXT, deadline_at TEXT);
 
 CREATE INDEX alerts_created ON "legacy_alerts" (created_at);
 
@@ -1030,5 +1042,7 @@ CREATE INDEX worker_processes_reported ON worker_processes (reported_at);
 CREATE INDEX worker_runs_claim ON worker_runs (status, kind, created_at);
 
 CREATE INDEX worker_runs_finished ON worker_runs (finished_at);
+
+CREATE INDEX worker_runs_lease ON worker_runs (status, lease_expires_at);
 
 CREATE INDEX worker_runs_work_item ON worker_runs (work_item_id);
