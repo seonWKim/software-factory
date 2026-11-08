@@ -294,4 +294,12 @@ describe.each(BACKENDS)("factory mode and auto_merge_max_tier: $name", ({ make }
     expect((await run(d, "set", "workers", "2")).ok).toBe(true);
     expect(asked).toBe(3);
   });
+
+  it("a no_role refusal says how to give the role: the check reads local grants only, not GitHub access", async () => {
+    const { store } = await make();
+    const d: SettingsDeps = { ...deps(store, "github:1"), mayApproveMerge: async () => "no_role" };
+    const r = await run(d, "set", "mode", "auto");
+    expect(r.lines[0]).toContain("no_role. This check reads local grants only");
+    expect(r.lines[0]).toContain("permissions.static.roles");
+  });
 });

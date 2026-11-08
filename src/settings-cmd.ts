@@ -140,6 +140,10 @@ async function aligned(deps: SettingsDeps, rows: readonly SettingOverride[], ref
   return { base, label };
 }
 
+/** This check asks local grants only (no forge call), so GitHub write access alone gives no role here. */
+const NO_LOCAL_ROLE =
+  ". This check reads local grants only, not GitHub access: give the user approver in permissions.static.roles (docs/plugins/grant-source.md)";
+
 function fmt(v: unknown): string {
   return JSON.stringify(v) ?? String(v);
 }
@@ -150,7 +154,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   const key = a.key as SettableKey;
   if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
-    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}`);
+    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
   }
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
