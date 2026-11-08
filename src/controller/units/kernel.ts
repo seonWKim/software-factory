@@ -32,11 +32,18 @@ type LogFields = NonNullable<Parameters<ControllerDeps["log"]["warn"]>[1]>;
 
 /** The store reads a pure unit's `load` may use (RFC 0015 §6.2). Each a plain read: none writes or locks. */
 const READS = [
-  "getWorkItem", "listWorkItems", "listLabelStates", "listUnmirroredCliCommands", "listDeliveries", "listRuns", "listBudgetCheckpoints", "getTierHistory",
+  "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
+  "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
+  "getMergeCheck", "getAppCommandRequest",
 ] as const;
 
-/** What a pure unit's `load` reads through: store reads and the egress scan (a check, no write). */
-export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan">;
+/**
+ * What a unit's `load` reads through: store reads, the egress scan (a check, no write), and the forge's PR check
+ * reads (remote reads, no write; null when config selects no forge).
+ */
+export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan"> & {
+  readonly forge: Pick<Forge, "prChecks" | "prCheckResults"> | null;
+};
 
 /**
  * One write a pure unit decided, committed by the router through `Kernel.commit`, in decision order. Each is one
@@ -117,7 +124,12 @@ export class Kernel {
     // Bound one by one, so a unit holding the reader cannot reach the store's writes through it.
     // Looked up at call time: a startup check may build the kernel over a store stub that has none of them.
     const reads = Object.fromEntries(READS.map((m) => [m, (...a: unknown[]) => (store[m] as (...a: unknown[]) => unknown).apply(store, a)]));
-    this.reader = { ...(reads as Pick<Store, (typeof READS)[number]>), scan: (channel, content) => d.scanner.scan(channel, content) };
+    const forge = this.forge;
+    this.reader = {
+      ...(reads as Pick<Store, (typeof READS)[number]>),
+      scan: (channel, content) => d.scanner.scan(channel, content),
+      forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
+    };
   }
 
   /** A pure unit's decision, written in order (the router's commit). */
