@@ -394,6 +394,12 @@ Worker review fixes (2026-11-09, findings 3–7):
   folder holding a gate path touches it).
 - M10 auto mode and the Rule of Two: auto mode approves specs without a person but does not call
   `ruleOfTwoRefusal` yet (implement and resolve hold all three facts). Wiring it is a gate change.
+- M7 sub-issue filing through outbound: phase N+1's text names phase N's ref, so it would be filed only after
+  phase N's delivery, and a partial failure of `/approve` on a split spec becomes outbound's retry instead of a
+  refusal. That changes what `/approve` reports; until you choose, the phases unit still files inline (the last
+  `forge-writes` entry).
+- Contract migrations: `npm run migrate -- --contract` drops the `legacy_*` tables and `outbound_base_pushes`
+  (14 days after their migrations, archiving rows first). Written, not applied.
 
 ## Next
 
@@ -426,7 +432,7 @@ Worker review fixes (2026-11-09, findings 3–7):
 6. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
 7. M8 leftovers (the outbound `local` merge delivery and the base push are done): the `github-change` merge
-   delivery, batches with bisect and partitions; a migration dropping `outbound_base_pushes` (M11 contract); a `paused` state with the command that needs it; cancelling a removed entry's queued check run.
+   delivery, batches with bisect and partitions; a `paused` state with the command that needs it; cancelling a removed entry's queued check run.
 
 ## After the refactor: acceptance runs (owner request, 2026-11-08)
 

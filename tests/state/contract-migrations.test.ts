@@ -9,7 +9,7 @@ import { newStore } from "../helpers/store.js";
 // CONTRACT_MIN_DAYS after the breaking migration it follows; until then the down path (D9) stays open. Opening a
 // database (which applies every other pending migration) never runs one.
 
-const CONTRACTS = ["20261109T0900-state-drop-legacy-tables", "20261109T0901-inbound-drop-legacy-commands"];
+const CONTRACTS = ["20261109T0900-state-drop-legacy-tables", "20261109T0901-inbound-drop-legacy-commands", "20261109T1215-outbound-drop-base-pushes"];
 
 async function db(): Promise<MigrationDb> {
   const { store } = await newStore();
@@ -33,6 +33,7 @@ describe("contract migrations", () => {
     expect(lines).toEqual([
       expect.stringMatching(/^skipping 20261109T0900-state-drop-legacy-tables: 20261108T1300-state-prefix-tables was applied 1[23] days ago/),
       expect.stringMatching(/^skipping 20261109T0901-inbound-drop-legacy-commands: 20261108T2200-inbound-merge-commands was applied/),
+      expect.stringMatching(/^skipping 20261109T1215-outbound-drop-base-pushes: 20261109T1200-outbound-carry-base-pushes was applied/),
     ]);
     expect(await tableExists(d, "legacy_work_items")).toBe(true);
 
@@ -42,7 +43,7 @@ describe("contract migrations", () => {
     const backups = mkdtempSync(join(tmpdir(), "sf-contract-"));
     expect(await applyMigrations(d, { backupDir: backups, now: () => later, contract: true })).toEqual(CONTRACTS);
     expect(readdirSync(backups).some((f) => f.endsWith(CONTRACTS[0]!))).toBe(true);
-    for (const t of ["legacy_work_items", "legacy_cli_commands", "legacy_inbound_commands", "legacy_inbound_app_requests"]) {
+    for (const t of ["legacy_work_items", "legacy_cli_commands", "legacy_inbound_commands", "legacy_inbound_app_requests", "outbound_base_pushes"]) {
       expect(await tableExists(d, t)).toBe(false);
     }
     expect(await tableExists(d, "controller_work_items")).toBe(true);

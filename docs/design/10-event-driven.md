@@ -427,7 +427,7 @@ force.
     the remote sha it read; a failure is a retried delivery; a remote base that conflicts is delivered as a conflict
     and posts one message on the closed item. The status page reads it through `FactoryStore.getBasePush` (the newest
     `push_base` action, its batch's failed tries). The `outbound_base_pushes` table and the outbox step's base push
-    step are gone from the code; the table stays until a contract migration drops it (M11). A row still pending
+    step are gone from the code; the table stays until the contract migration `20261109T1215-outbound-drop-base-pushes` drops it (`migrate --contract`). A row still pending
     there at the upgrade becomes the `push_base` action the merge would have stored, under its key, to the `local`
     host's destination (`20261109T1200-outbound-carry-base-pushes`); the old step ran in a solo factory.
   - Solo default: no replica id; the destination's host is `local` and the one process flushes every `git`
