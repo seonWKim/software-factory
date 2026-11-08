@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
+import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
@@ -157,9 +157,14 @@ export class NoOpSandbox implements Sandbox {
   async updateBase(spec: Pick<SandboxSpec, "repo" | "base_ref">): Promise<string> {
     const ref = `refs/heads/${spec.base_ref}`;
     if (this.opts.local) return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`])).stdout.trim();
-    return this.serialized(spec.repo, async () => {
-      await this.fetchWithRetry(spec.repo, ["fetch", "--quiet", "--no-tags", "origin", `+${ref}:refs/remotes/origin/${spec.base_ref}`]);
-      return (await this.git(spec.repo, ["rev-parse", "--verify", "--end-of-options", `origin/${spec.base_ref}^{commit}`])).stdout.trim();
+    return this.fetchRemoteBase(spec.repo, spec.base_ref);
+  }
+
+  /** Fetches only origin's `base` into `refs/remotes/origin/<base>` and returns its commit. */
+  private fetchRemoteBase(repo: string, base: string): Promise<string> {
+    return this.serialized(repo, async () => {
+      await this.fetchWithRetry(repo, ["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${base}:refs/remotes/origin/${base}`]);
+      return (await this.git(repo, ["rev-parse", "--verify", "--end-of-options", `refs/remotes/origin/${base}^{commit}`])).stdout.trim();
     });
   }
 
@@ -191,12 +196,11 @@ export class NoOpSandbox implements Sandbox {
   }
 
   /**
-   * The local merge (design 05-sources, Local startup): `branch` into the local `base_ref` of the factory repo,
-   * never in the owner's checkout. merge-tree writes the merged tree and commit-tree the merge commit, both only
-   * objects; `checks` then run on that commit in a temporary detached worktree (hooks off), removed afterwards;
-   * a failing one moves nothing. Only then `refs/heads/<base_ref>` moves conditionally on the base that was merged
-   * (another merge in between is refused, nothing lost). No push, no hook: the owner's checkout keeps its HEAD and
-   * status. A base branch checked out in any worktree is refused: moving it would change that checkout's status.
+   * The local merge (design 05-sources, Local items): `branch` into the local `base_ref` of the factory repo. merge-tree
+   * writes the merged tree and commit-tree the merge commit, both only objects; `checks` then run on that commit in a
+   * temporary detached worktree (hooks off), removed afterwards; a failing one moves nothing. Only then the base moves,
+   * conditionally on the base that was merged (another merge in between is refused, nothing lost), through
+   * `moveBase`, which keeps any checkout of the base consistent. No push here, no hook.
    */
   async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
     for (const b of [spec.base_ref, spec.branch]) {
@@ -206,27 +210,87 @@ export class NoOpSandbox implements Sandbox {
     if (base === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.base_ref}\`` };
     const head = await this.localCommit(spec.repo, spec.branch);
     if (head === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.branch}\`` };
-    const contained = await this.git(spec.repo, ["merge-base", "--is-ancestor", head, base], false);
-    if (contained.exit_code === 0) return { merged: true, sha: base, already: true };
-    const worktrees = (await this.git(spec.repo, ["worktree", "list", "--porcelain"])).stdout.split("\n\n");
-    const holder = worktrees.find((w) => w.split("\n").includes(`branch refs/heads/${spec.base_ref}`));
-    if (holder) {
-      const path = holder.split("\n")[0]!.replace(/^worktree /, "");
-      return {
-        merged: false,
-        refused: `\`${spec.base_ref}\` is checked out in ${path}, and moving it would change that checkout; switch it to another branch (\`git switch --detach\`) and run the merge again`,
-      };
-    }
+    if (await this.isAncestor(spec.repo, head, base)) return { merged: true, sha: base, already: true, not_updated: [] };
     const tree = await this.mergeTree(spec.repo, base, head);
     if (tree.conflicts.length > 0) return { merged: false, conflicts: tree.conflicts };
-    const who = spec.identity;
-    const identity = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
-    const sha = (await this.git(spec.repo, ["commit-tree", tree.tree, "-p", base, "-p", head, "-m", spec.message], true, identity)).stdout.trim();
+    const sha = await this.commitMerge(spec.repo, tree.tree, [base, head], spec.message, spec.identity);
     const failed = await this.checkMerge(spec, sha);
     if (failed) return { merged: false, refused: failed };
-    const moved = await this.git(spec.repo, ["update-ref", "-m", spec.message.split("\n")[0]!, `refs/heads/${spec.base_ref}`, sha, base], false);
-    if (moved.exit_code !== 0) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
-    return { merged: true, sha, already: false };
+    const moved = await this.moveBase(spec.repo, spec.base_ref, base, sha, spec.message);
+    if (!moved) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
+    return { merged: true, sha, already: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * Before a base push (design 05-sources, Local items): fetches only origin's base. The remote containing
+   * `merge_sha` leaves nothing to push; a remote base that is an ancestor of the local one is pushed as it is; one
+   * that moved past it is merged into the local base first (objects only, then `moveBase`), or, when it does not
+   * merge cleanly, nothing moves and the conflicting paths are returned. No check runs on that merge: both sides
+   * were checked where they were made. Throws on a failed fetch or a base that moved under it.
+   */
+  async syncBase(spec: BaseSyncSpec): Promise<BaseSyncResult> {
+    if (!SAFE_BRANCH.test(spec.base_ref) || spec.base_ref.includes("..")) throw new Error(`refusing to push branch ${JSON.stringify(spec.base_ref)}`);
+    if (!/^[0-9a-f]{40,64}$/.test(spec.merge_sha)) throw new Error(`not a commit sha: ${JSON.stringify(spec.merge_sha)}`);
+    const remote = await this.fetchRemoteBase(spec.repo, spec.base_ref);
+    const local = await this.localCommit(spec.repo, spec.base_ref);
+    if (local === null) throw new Error(`the factory repo has no local branch \`${spec.base_ref}\``);
+    if (await this.isAncestor(spec.repo, spec.merge_sha, remote)) return { synced: true, local, remote, contains: true, not_updated: [] };
+    if (await this.isAncestor(spec.repo, remote, local)) return { synced: true, local, remote, contains: false, not_updated: [] };
+    const tree = await this.mergeTree(spec.repo, local, remote);
+    if (tree.conflicts.length > 0) return { synced: false, conflicts: tree.conflicts };
+    const sha = await this.commitMerge(spec.repo, tree.tree, [local, remote], spec.message, spec.identity);
+    const moved = await this.moveBase(spec.repo, spec.base_ref, local, sha, spec.message);
+    if (!moved) throw new Error(`\`${spec.base_ref}\` moved while the remote base was merged into it`);
+    return { synced: true, local: sha, remote, contains: false, not_updated: moved.not_updated };
+  }
+
+  /**
+   * Moves `refs/heads/<base>` from `old` to `sha`, conditionally: null, changing nothing, when it moved meanwhile.
+   * Each checkout of the base (a worktree whose HEAD names it, such as the owner's) stays consistent: a clean one is
+   * fast-forwarded (its index and files, with `read-tree -m -u`, hooks off); one with uncommitted changes keeps its
+   * HEAD commit, index and files, its HEAD detached at `old`, and is returned in `not_updated`.
+   */
+  private async moveBase(repo: string, base: string, old: string, sha: string, message: string): Promise<{ not_updated: string[] } | null> {
+    const clean: string[] = [];
+    const dirty: string[] = [];
+    for (const path of await this.checkoutsOf(repo, base)) {
+      const status = await this.git(path, ["status", "--porcelain", "--untracked-files=no"]);
+      (status.stdout.trim() === "" ? clean : dirty).push(path);
+    }
+    for (const path of dirty) await this.git(path, ["update-ref", "--no-deref", "HEAD", old]);
+    const moved = await this.git(repo, ["update-ref", "-m", message.split("\n")[0]!, `refs/heads/${base}`, sha, old], false);
+    if (moved.exit_code !== 0) {
+      for (const path of dirty) await this.git(path, ["symbolic-ref", "HEAD", `refs/heads/${base}`], false);
+      return null;
+    }
+    const hooks = await this.emptyHooks();
+    for (const path of clean) {
+      const ff = await this.git(path, ["-c", `core.hooksPath=${hooks}`, "read-tree", "-m", "-u", old, sha], false);
+      if (ff.exit_code === 0) continue;
+      // An untracked file in the way, or a change made meanwhile: leave it as it was, like a dirty one.
+      await this.git(path, ["update-ref", "--no-deref", "HEAD", old], false);
+      dirty.push(path);
+    }
+    return { not_updated: dirty };
+  }
+
+  /** The worktrees of the factory repo whose HEAD names `refs/heads/<base>`, by path. */
+  private async checkoutsOf(repo: string, base: string): Promise<string[]> {
+    const worktrees = (await this.git(repo, ["worktree", "list", "--porcelain"])).stdout.split("\n\n");
+    return worktrees
+      .filter((w) => w.split("\n").includes(`branch refs/heads/${base}`))
+      .map((w) => w.split("\n")[0]!.replace(/^worktree /, ""));
+  }
+
+  /** A merge commit of `tree` with `parents`, by the factory's git identity: only an object, no ref moves. */
+  private async commitMerge(repo: string, tree: string, parents: readonly string[], message: string, who: { name: string; email: string }): Promise<string> {
+    const identity = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
+    const args = ["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-m", message];
+    return (await this.git(repo, args, true, identity)).stdout.trim();
+  }
+
+  private async isAncestor(repo: string, ancestor: string, of: string): Promise<boolean> {
+    return (await this.git(repo, ["merge-base", "--is-ancestor", ancestor, of], false)).exit_code === 0;
   }
 
   /**

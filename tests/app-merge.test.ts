@@ -30,7 +30,7 @@ class LocalRoles implements AuthProvider {
 /** A sandbox that can merge locally: each mergeLocal is recorded and answers `result`. */
 class MergingSandbox extends FakeSandbox {
   merges: LocalMergeSpec[] = [];
-  result: LocalMergeResult = { merged: true, sha: "localmerge1", already: false };
+  result: LocalMergeResult = { merged: true, sha: "localmerge1", already: false, not_updated: [] };
   async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
     this.merges.push(spec);
     return this.result;
