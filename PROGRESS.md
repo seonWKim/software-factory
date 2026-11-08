@@ -47,7 +47,9 @@ minutes; past that the main session takes over from their WIP commit.
 | 01:33–01:57 | Outbound `local` merge delivery (b84434e…9e58717): the merge queue's landing and the base push are keyed outbound actions made by the `local` target; the queue stays `merging` until DeliveryCompleted; units write intents through the kernel's `intent` commit (`Kernel.recordAction` gone); 4 ratchet entries removed | agent | merged 01:59 (6a4963b), SQLite green (3749); main added the carry-over of base pushes pending at upgrade (8764289) |
 | 01:33–01:37 | Worker finding 2 (fdaf3a6): an interrupted agent step starts a new session instead of resuming in a fresh folder; the partial-session resume removed | main | SQLite green (3747); the test fails without the fix |
 | 02:05–02:14 | Review of outbound, the controller's delivery side, and the migrations since 00:00 (read-only agent): 8 findings (3 high: batch joined mid-flush loses a delivery, carried base pushes go to a host no controller flushes, a failing base push blocks all merges) | agent | fixes running from 02:15 (outbound-fixes) |
-| next | Merge outbound-fixes; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md; full SQLite + MySQL + rehearsal | main | |
+| 02:15–02:18 | Docs naming the deleted broker tools fixed (585cf33); contract migration dropping `outbound_base_pushes` (a56afe0); owner items: sub-issue filing through outbound, contract drops | main | SQLite green (3753), contract tests green on MySQL |
+| 02:18– | ARCHITECTURE.md brought in line with the components, bus topics and outbound (docs agent) | agent | running |
+| next | Merge outbound-fixes and the ARCHITECTURE.md rewrite; M11 cleanup: file budget back to 600, ratchets; full SQLite + MySQL + rehearsal | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
