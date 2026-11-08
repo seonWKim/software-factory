@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { DEFAULT_MODEL_TABLE } from "../src/core/model-choice.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
@@ -36,7 +36,7 @@ async function harness(opts: { triage?: Fn; implement?: Fn; review?: Fn; config?
   });
   const log = recordingLog();
   const settings = new LiveSettings({ config, base: baseFromConfig(config, { table: DEFAULT_MODEL_TABLE, names: NAMES }), source: store, log });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
   const w1 = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,

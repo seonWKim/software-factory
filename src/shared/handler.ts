@@ -9,7 +9,11 @@ export interface HandlerContext {
   emit(draft: Draft): void;
 }
 
-export interface HandlerDescriptor<M extends Envelope = Envelope> {
+/**
+ * A handler's context is its component's: the component's consumer builds it, e.g. with the open transaction its
+ * inbox row commits in (`C` extends this base).
+ */
+export interface HandlerDescriptor<M extends Envelope = Envelope, C extends HandlerContext = HandlerContext> {
   readonly kind: "handler";
   /** Unique across the factory; also the inbox consumer name. */
   readonly name: string;
@@ -17,12 +21,14 @@ export interface HandlerDescriptor<M extends Envelope = Envelope> {
   readonly accepts: readonly M["type"][];
   /** Cheap filter run before `handle`. false skips the message with no side effects. */
   readonly canHandle?: (m: M) => boolean;
-  handle(m: M, ctx: HandlerContext): Promise<void>;
+  handle(m: M, ctx: C): Promise<void>;
 }
 
 export const HANDLER_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-export function defineHandler<M extends Envelope>(h: Omit<HandlerDescriptor<M>, "kind">): HandlerDescriptor<M> {
+export function defineHandler<M extends Envelope, C extends HandlerContext = HandlerContext>(
+  h: Omit<HandlerDescriptor<M, C>, "kind">,
+): HandlerDescriptor<M, C> {
   if (!HANDLER_NAME.test(h.name)) throw new Error(`handler name "${h.name}" must be kebab-case`);
   if (h.accepts.length === 0) throw new Error(`handler "${h.name}" accepts no message type`);
   return { kind: "handler", ...h };

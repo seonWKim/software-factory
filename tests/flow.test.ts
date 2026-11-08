@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/core/worker.js";
 import type { Run, UserId, WorkerId } from "../src/core/types.js";
@@ -34,7 +34,7 @@ async function factory(
   const broker = new FakeBroker();
   const storage = new MemoryStorage();
   const scanner = new PatternEgressScanner(async () => knownSecrets);
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: opts.workerConfig ?? config, prompts, log: silent,
     scanner,
@@ -2103,7 +2103,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
       review: review("pass"),
     });
     const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker,
       storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
@@ -2779,7 +2779,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
       triage: () => ({ output: triageSpec }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
     });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log,
       scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),

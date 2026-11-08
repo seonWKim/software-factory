@@ -10,6 +10,7 @@ import { SqliteDriver } from "../../../impl/store/sqlite/sqlite-driver.js";
 import { DRAIN_MARGIN_MS } from "../../../impl/updater/git-worktree.js";
 import { secretName } from "../../../interfaces/secret-store.js";
 import { withDrain } from "../../../migrate-drain.js";
+import { ensureDiscoveredTopicTables } from "../../../runtime/index.js";
 import type { SqlExecutor } from "../../../state/index.js";
 import { defineCommand } from "../../command.js";
 
@@ -56,6 +57,7 @@ export default defineCommand({
         const driver = new SqliteDriver(file);
         try {
           await driver.migrate();
+          await ensureDiscoveredTopicTables("sqlite", driver);
           return await runProjectKeyStep(driver, resolveRepo, mode, print);
         } finally {
           await driver.close();
@@ -79,6 +81,7 @@ export default defineCommand({
           print("project keys: listed once the pending schema steps have run (npm run migrate, then --dry-run again)");
           return 0;
         }
+        if (mode === "apply") await ensureDiscoveredTopicTables("mysql", driver);
         return await runProjectKeyStep(driver, resolveRepo, mode, print);
       } finally {
         await driver.close();

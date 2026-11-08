@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { parseImplement, parseReview, type ReviewOutput } from "../src/core/outputs.js";
 import type { Run, WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker, reviewComment } from "../src/core/worker.js";
@@ -48,7 +48,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
     review: () => ({ output: reviews.shift() ?? pass() }),
   });
   const scanner = new PatternEgressScanner(async () => [SECRET]);
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent,
     scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),

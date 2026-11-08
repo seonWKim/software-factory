@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { Sessions } from "../src/core/session.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
@@ -63,7 +63,7 @@ async function factory(opts: { sync?: boolean } = {}) {
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const auth = new GitHubAuthProvider(store, grants);
   const local_auth = new LocalAuthProvider(store, grants);
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: opts.sync === false ? [local] : [gh, local], forge, auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
@@ -153,7 +153,7 @@ async function gitFactory(o: { github: boolean }) {
   // The GitHub broker: a recording fake whose calls are the GitHub calls. With GitHub selected, the selected sandbox fetches origin.
   const ghBroker = new FakeBroker();
   const sandbox = o.github ? new NoOpSandbox(wt) : localRoute.sandbox;
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, local_auth, clock, config: cfg,
     log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
@@ -341,7 +341,7 @@ describe("factory session on a local item, with the GitHub broker selected", () 
       store, sandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent, files: new MemorySessionFiles(),
       issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1", ...(o.local ? { local: { broker: localBroker, sandbox } } : {}),
     });
-    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem({ ...issue(1), source: { type: "local", id: "local:1", link: "" } }, system);
     const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { stage: "RUNNING", allowed_paths: ["src/a/"], tier: 2, done_criteria: ["x"] } });
     expect(r.ok).toBe(true);

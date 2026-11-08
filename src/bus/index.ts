@@ -61,4 +61,4 @@ export { BUS_PERIODS, scheduleBus, scheduleComponent } from "./scheduler/schedul
 export { deliver, type DeliverOutcome } from "./deliver.js";
 export { SqlEventBus, type SqlBusOptions } from "./plugins/sql/sql-bus.js";
 export { SqlRetryScheduler } from "./plugins/sql/sql-scheduler.js";
-export { componentTablesSql, ensureComponentTables, ensureTopicTables, topicTables } from "./plugins/sql/ddl.js";
+export { componentTablesSql, ensureComponentTables, ensureTopicTables, insertOrSkip, topicTables } from "./plugins/sql/ddl.js";

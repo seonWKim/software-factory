@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Budgets } from "../src/core/budget.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/core/worker.js";
 import type { UserId, WorkItem, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -54,7 +54,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const controllerFor = (c: FactoryConfig) =>
-    new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
+    new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
   const controller = controllerFor(config);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem } from "../src/core/types.js";
 import { parseVerdict } from "../src/core/verdict.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
@@ -77,7 +77,7 @@ async function setup() {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const auth = new SpyAuth();
-  const controller = new Controller({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
   return { store, source, auth, controller };
 }
 type F = Awaited<ReturnType<typeof setup>>;

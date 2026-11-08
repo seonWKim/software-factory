@@ -15,7 +15,7 @@ import type {
 } from "../../src/interfaces/source-adapter.js";
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
-import { Controller } from "../../src/core/controller.js";
+import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import { Worker } from "../../src/core/worker.js";
 import type { Run, WorkItem, WorkItemId, WorkerId } from "../../src/core/types.js";
 import type { IssueLookup, SessionFile, SessionFiles, SessionIssue } from "../../src/core/session.js";
@@ -801,7 +801,7 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner, repeated_failure_rule: false,
     ...(opts.network_probe ? { network_probe: opts.network_probe } : {}),
   });

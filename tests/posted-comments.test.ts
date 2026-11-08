@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
@@ -65,7 +65,7 @@ describe("controller: a repeat post with a different body", () => {
   it("does not edit the comment and logs a warning", async () => {
     const { store, clock, github, source } = await setup();
     const log = recordingLog();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
     const { item } = await store.createWorkItem(
       { source: issueRef(7), requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system,
     );

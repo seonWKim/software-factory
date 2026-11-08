@@ -292,10 +292,10 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0023 on MySQL", () => {
 
     await new MysqlMigrations(c).apply(() => undefined);
     expect((await new MysqlMigrations(c).status()).pending).toEqual([]);
-    // RFC 0015 M1 copies the table to its new name.
+    // RFC 0015 M1 copies the table to its new name; M4 merges it into inbound_commands and keeps it as legacy_.
     const [cols] = await c.query(
       "SELECT column_name AS name, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
-      ["inbound_app_requests"],
+      ["legacy_inbound_app_requests"],
     );
     expect((cols as { name: string; nullable: string }[]).slice(6)).toEqual([
       { name: "handled_at", nullable: "YES" },

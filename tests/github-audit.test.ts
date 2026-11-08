@@ -4,7 +4,7 @@
 // changes. No audit table of its own.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
@@ -52,7 +52,7 @@ async function factory() {
   const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
   // The shipped GitHub auth plugin; only the factory user ANA has a role.
   const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [ANA]: { "*": ["approver"] } }, deny: {} })]);
-  const controller = new Controller({ store, sources: [source], auth, clock, config, log: recordingLog(), scanner: cleanScanner, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, sources: [source], auth, clock, config, log: recordingLog(), scanner: cleanScanner, repeated_failure_rule: false });
   const runner = new FakeRunner({ triage: () => ({ output: triageSpec }) });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config,

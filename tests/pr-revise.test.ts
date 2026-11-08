@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
 import type { SourceRef, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -314,7 +314,7 @@ describe("feedback on an adopted PR", () => {
     const source = new FakeSource();
     const forge = new FakeForge(source);
     forge.prFileMap[50] = ["src/x.ts"];
-    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
     forge.queue.push({
       kind: "change_open", source: prRef(50), change_ref: "50", head_branch: "feature/x", head_sha: "h1",

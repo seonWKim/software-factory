@@ -726,11 +726,6 @@ export interface FactoryStore {
   /** Rows of `source_type` with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]>;
   /**
-   * Deletes rows of `source_type` that are both at or below `through_seq` and received more than
-   * `older_than_ms` ago (store clock). Returns how many went.
-   */
-  pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number>;
-  /**
    * Takes `source_type`'s listener lease for `owner` if nobody holds it or the holder's lease expired;
    * the token goes up by one on every take. Otherwise reports the current holder.
    */
@@ -755,12 +750,6 @@ export interface FactoryStore {
   releaseSyncLease(name: string, token: number): Promise<void>;
   /** The lease row, expired or not; null when it was never taken. Read-only. */
   getSyncLease(name: string): Promise<SyncLease | null>;
-  /**
-   * advanceCursor fenced by a sync lease: sets cursor `cursor` to `next` only if it still equals `expected` and
-   * `fence.token` is still the token of lease `fence.name`, in one transaction. False changes nothing.
-   */
-  advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean>;
-
   // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
   // one row per (project, plugin), shared by every replica.
 
@@ -1013,8 +1002,8 @@ export interface FactoryStore {
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
    */
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
-  /** The request with `seq`, or null. Read-only. */
-  getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /** The request with `seq` (a number) or idempotency key (a string), or null. Read-only. */
+  getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null>;
   /**
    * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
    * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
@@ -1178,15 +1167,15 @@ export interface NewCliCommand {
   command: string;
   /** The command's arguments, stored as JSON. */
   args: Record<string, unknown>;
-  /**
-   * The command is to be mirrored once to its item's sync source (a CLI command on a sync source's item), best effort:
-   * listed by `listUnmirroredCliCommands` until `markCliCommandMirrored`. Absent or false: nothing to mirror.
-   */
+  /** Mirrored once to its item's sync source, best effort: listed by `listUnmirroredCliCommands` until marked. */
   mirror?: boolean;
 }
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
+  /** Its id (CommandReceived carries it) and origin (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
+  id: string;
+  origin: string;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
 }

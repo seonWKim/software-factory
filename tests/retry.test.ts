@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/core/worker.js";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -44,7 +44,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => []);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),

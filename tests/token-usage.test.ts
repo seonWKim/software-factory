@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Read } from "../src/core/tools/index.js";
 import type { RunId, RunKind, RunOutcome, RunUsage, WorkItemId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
@@ -195,7 +195,7 @@ async function factory(opts: {
     implement: opts.implement ?? (() => ({ output: done, usage: usage(100, 0.5) })),
     review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" }, usage: usage(1) }),
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: opts.broker ?? new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -299,7 +299,7 @@ describe("controller: a succeeded run the item no longer expects still adds its 
     it(`${kind}: ignored on a closed item, its full count is added to token_cost in the ack transition`, async () => {
       const clock = new FakeClock();
       const { store } = await newStore(clock);
-      const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: baseConfig, log: silent, scanner: cleanScanner });
+      const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: baseConfig, log: silent, scanner: cleanScanner });
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind, idempotency_key: `ignored:${kind}` } });
       const run = (await store.claimRun({ worker_id: w1, kinds: [kind], lease_ms: 60_000 }))!;
       expect(run.kind).toBe(kind);
@@ -369,7 +369,7 @@ describe("worker: a run with several agent calls stores the sum", () => {
       review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" }, usage: usage(1) }),
     });
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker: new FakeBroker(),
       storage: new MemoryStorage(), clock, config: cfg, prompts: { ...prompts, resolve: "S" }, log: silent, scanner: cleanScanner,

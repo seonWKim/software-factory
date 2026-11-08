@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { GATE_PATHS, MAX_DRAFT_CALLS, enqueueImprove, isGatePath, runImprove, systemSource } from "../src/core/improver.js";
 import { Worker } from "../src/core/worker.js";
 import type { ImproveReport, Run, RunId, WorkerId } from "../src/core/types.js";
@@ -207,7 +207,7 @@ describe("improve: drafts", () => {
     const source = record("source", new FakeSource());
     const slack = record("slack", new FakeSlackPollSource());
     const forge = record("forge", new FakeForge());
-    const c = new Controller({ store: w.store, sources: [source, slack], forge, auth: new FakeAuth(), clock: w.clock, config, log: silent, scanner: cleanScanner });
+    const c = new ControllerRole({ store: w.store, sources: [source, slack], forge, auth: new FakeAuth(), clock: w.clock, config, log: silent, scanner: cleanScanner });
     calls.length = 0;
     await worker(w, new CountingLLM()).tick();
     await c.tickRuns();

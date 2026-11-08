@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { PHASE_HOLD, PHASES_OPEN, phaseMarker } from "../src/core/split.js";
 import type { CloseReason, RunOutcome, SourceRef, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
@@ -41,7 +41,7 @@ async function setup() {
   const { store } = await newStore(clock);
   const local = new FlakyLocal(store);
   const auth = new LocalAuthProvider(store);
-  const controller = new Controller({ store, sources: [local], auth, local_auth: auth, clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, sources: [local], auth, local_auth: auth, clock, config, log: silent, scanner: cleanScanner });
   let n = 0;
   const cli = (a: CliAction) => {
     const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };

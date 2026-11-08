@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, REVIEW_SCHEMA, parseImplement, parseReview } from "../src/core/outputs.js";
 import { blockingRunKind, failureLine, repeatsLastFailure } from "../src/core/policy.js";
 import { type Run, type WorkerId, type WorkItem, outcomeTokens } from "../src/core/types.js";
@@ -27,7 +27,7 @@ async function factory(runner: FakeRunner, opts: { repeated?: boolean } = {}) {
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const scanner = new PatternEgressScanner(async () => []);
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
   });
   const worker = new Worker({

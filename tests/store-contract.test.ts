@@ -1597,8 +1597,12 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
     const BASELINE_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
     const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
+    // RFC 0015 M4 (D7): inbound_app_requests merged into inbound_commands; both old tables are kept as legacy_*.
+    const merged = ["inbound_app_requests"];
     const DOMAIN_TABLES = [
-      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t)),
+      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t)),
+      "legacy_inbound_app_requests",
+      "legacy_inbound_commands",
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
       // Tables of timestamped component migrations (RFC 0015 §6.3).
@@ -1610,6 +1614,11 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",
+      // Outbox and inbox of the components on the bus (RFC 0015 M4).
+      "controller_inbox",
+      "controller_outbox",
+      "inbound_inbox",
+      "inbound_outbox",
       "runtime_hook_decisions",
     ];
 
@@ -1763,32 +1772,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listInboxAfter(slack, 0, 10)).toEqual([]);
       expect((await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: b.lease.token })).ok).toBe(true);
     });
-
-    it("prune deletes only rows both older than the retention and at or below the cursor", async () => {
-      const { store, clock } = await make();
-      const token = await leased(store);
-      const append = async (k: string) => {
-        const r = await store.appendInbox({ source_type: slack, dedupe_key: k, event: ev(1), lease_token: token });
-        if (!r.ok) throw new Error(r.reason);
-        return r.row.seq;
-      };
-      const oldA = await append("old-a");
-      const oldB = await append("old-b");
-      clock.advance(10_000);
-      const fresh = await append("fresh");
-      clock.advance(5_000);
-      // Retention 8s: old-a and old-b are older, fresh is not. Cursor at old-a: old-b is still ahead of it.
-      expect(await store.pruneInbox(slack, oldA, 8_000)).toBe(1);
-      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["old-b", "fresh"]);
-      // Cursor past everything: fresh stays because it is newer than the retention.
-      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
-      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["fresh"]);
-      expect(oldB).toBeGreaterThan(oldA);
-      // Sequence numbers keep growing after the newest rows are deleted.
-      clock.advance(10_000);
-      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
-      expect(await append("next")).toBeGreaterThan(fresh);
-    });
   });
 
   describe("listener lease", () => {
@@ -1878,8 +1861,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.renewSyncLease(NAME, a.lease.token, LEASE)).toMatchObject({ ok: false, reason: "lease_lost", holder: { owner: "replica-b" } });
       await store.releaseSyncLease(NAME, a.lease.token);
       expect((await store.acquireSyncLease(NAME, "replica-c", LEASE)).ok).toBe(false);
-      expect(await store.advanceSyncCursor({ name: NAME, token: a.lease.token }, "intake:github_issue", null, "c1")).toBe(false);
-      expect(await store.getCursor("intake:github_issue")).toBeNull();
     });
 
     it("release lets another owner take it at once", async () => {
@@ -1888,18 +1869,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       if (!a.ok) throw new Error(a.reason);
       await store.releaseSyncLease(NAME, a.lease.token);
       expect(await store.acquireSyncLease(NAME, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
-    });
-
-    it("a fenced cursor write lands once: the same write again, or from a cursor value already passed, writes nothing", async () => {
-      const { store } = await make();
-      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
-      if (!a.ok) throw new Error(a.reason);
-      const fence = { name: NAME, token: a.lease.token };
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(true);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(false);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(true);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(false);
-      expect(await store.getCursor("intake:github_issue")).toBe("c2");
     });
 
     it("a delivery claim fenced with a stale token claims nothing; the current token claims it once", async () => {

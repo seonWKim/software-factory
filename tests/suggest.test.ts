@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { type CommandState, commandFooter } from "../src/core/commands.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { SUGGEST_MIN_CONFIDENCE, suggestCommand, suggestRequest } from "../src/core/suggest.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
@@ -126,7 +126,7 @@ describe("controller: plain comments", () => {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const llm = new ScriptedLLM(replies);
-    const controller = new Controller({
+    const controller = new ControllerRole({
       store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner,
       ...(opts.llm === false ? {} : { llm }),
     });

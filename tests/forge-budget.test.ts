@@ -4,7 +4,7 @@
 // delivery and the sync lease never wait on it.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { syncLeaseName } from "../src/core/lease.js";
 import type { Timestamp } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -55,7 +55,7 @@ async function setup() {
     const c = client(who);
     const source = new GitHubIssueSource(c, REPO, "factory", "factory/", "main", "sf: ", store);
     const log = recordingLog();
-    const ctl = new Controller({
+    const ctl = new ControllerRole({
       store, sources: [source], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, replica_id: who,
       refresh_forge_budget: () => c.refreshSharedBudget(), github_budget: () => c.status(),
     });

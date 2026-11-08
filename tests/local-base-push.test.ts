@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
@@ -82,7 +82,7 @@ async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeCl
 
 function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge) {
   const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
-  return new Controller({
+  return new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: sandbox as unknown as Sandbox, repeated_failure_rule: false, ...(forge ? { forge } : {}),
   });

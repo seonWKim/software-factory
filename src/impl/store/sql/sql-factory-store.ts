@@ -1621,14 +1621,6 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToInbox);
   }
 
-  async pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number> {
-    return this.db.transaction((tx) =>
-      tx.run("DELETE FROM inbound_raw_records WHERE source_type = ? AND seq <= ? AND received_at < ?", [
-        source_type, through_seq, this.after(-older_than_ms),
-      ]),
-    );
-  }
-
   async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
     return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
       const expires_at = this.after(lease_ms);
@@ -1699,15 +1691,6 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
-  }
-
-  async advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      if (!(await this.fenceHeld(tx, fence))) return false;
-      return expected === null
-        ? this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [cursor, next])
-        : (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, cursor, expected])) === 1;
-    });
   }
 
   // Forge budget (design 05-sources, call budget)
@@ -2314,8 +2297,8 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, command: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO inbound_commands (command_key, actor, command, args, created_at, mirror) VALUES (?, ?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0],
       );
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
     });
@@ -2349,36 +2332,28 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectAppCommandRequest(tx, input.key);
       if (existing) return { created: false, request: existing };
-      const now = this.now();
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO inbound_app_requests (request_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), now],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at) VALUES (?, 'app', ?, ?, ?, ?, ?)",
+        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
       );
-      const request = (await this.selectAppCommandRequest(tx, input.key))!;
-      // The controller reads every command from the inbox (issue #282): the request goes there too, by its seq.
-      if (created) {
-        await this.insertOnce(
-          tx,
-          "INSERT INTO inbound_commands (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-          [`app:${request.seq}`, input.actor, input.command, JSON.stringify({ app_request: request.seq }), now],
-        );
-      }
-      return { created, request };
+      return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
     });
   }
 
   async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
-    const n = await this.db.run("UPDATE inbound_app_requests SET handled_at = ?, refusal = ? WHERE seq = ? AND handled_at IS NULL", [
+    const n = await this.db.run(`UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE ${APP_REQUEST_SEQ} AND handled_at IS NULL`, [
       this.now(),
       refusal,
+      seq,
       seq,
     ]);
     return n > 0;
   }
 
-  async getAppCommandRequest(seq: number): Promise<AppCommandRequest | null> {
-    const [row] = await this.db.all("SELECT * FROM inbound_app_requests WHERE seq = ?", [seq]);
+  async getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null> {
+    if (typeof ref === "string") return this.selectAppCommandRequest(this.db, ref);
+    const [row] = await this.db.all(`SELECT * FROM inbound_commands WHERE ${APP_REQUEST_SEQ}`, [ref, ref]);
     return row ? rowToAppCommandRequest(row) : null;
   }
 
@@ -2387,7 +2362,7 @@ export class SqlFactoryStore implements FactoryStore {
     // (its wildcards escaped with `!`), and the exact check below drops any row whose id only looked alike.
     const needle = `${JSON.stringify("work_item_id")}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`);
     const rows = await this.db.all(
-      `SELECT * FROM inbound_app_requests WHERE args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
+      `SELECT * FROM inbound_commands WHERE origin = 'app' AND args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
       [`%${needle}%`],
     );
     return rows.map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id).reverse();
@@ -2475,7 +2450,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectAppCommandRequest(q: SqlExecutor, key: string): Promise<AppCommandRequest | null> {
-    const [row] = await q.all("SELECT * FROM inbound_app_requests WHERE request_key = ?", [key]);
+    const [row] = await q.all("SELECT * FROM inbound_commands WHERE command_key = ? AND origin = 'app'", [key]);
     return row ? rowToAppCommandRequest(row) : null;
   }
 
@@ -2798,9 +2773,17 @@ function rowToDelivery(row: Row): ThreadDelivery {
   };
 }
 
+/** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
+const APP_REQUEST_SEQ = "origin = 'app' AND ((legacy_table = 'app_command_requests' AND legacy_seq = ?) OR (legacy_table IS NULL AND seq = ?))";
+/** A command's id from its key, so a repeated append computes the same one; its origin from the key's prefix. */
+const commandId = (key: string) => `cmd_${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+const commandOrigin = (key: string) => (key.startsWith("github:") ? "github" : key.startsWith("app:") ? "app" : "cli");
+
 function rowToCliCommand(row: Row): CliCommand {
   return {
     seq: Number(row.seq),
+    id: row.id as string,
+    origin: row.origin as string,
     key: row.command_key as string,
     actor: row.actor as string,
     command: row.command as string,
@@ -2812,8 +2795,8 @@ function rowToCliCommand(row: Row): CliCommand {
 
 function rowToAppCommandRequest(row: Row): AppCommandRequest {
   return {
-    seq: Number(row.seq),
-    key: row.request_key as string,
+    seq: row.legacy_table === "app_command_requests" ? Number(row.legacy_seq) : Number(row.seq),
+    key: row.command_key as string,
     actor: row.actor as UserId,
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,

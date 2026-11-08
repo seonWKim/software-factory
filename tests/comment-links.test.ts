@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -21,7 +21,7 @@ async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
   const intake = async (n = 7): Promise<WorkItem> => {
     source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();

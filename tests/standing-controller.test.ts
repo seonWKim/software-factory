@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import type { Tier, WorkItem, WorkerId } from "../src/core/types.js";
@@ -23,7 +23,7 @@ async function factory() {
   const source = new FakeSource();
   const forge = new FakeForge(source);
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, forge, auth: new FakeAuth(), clock, config: cfg, settings, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   let n = 0;

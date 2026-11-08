@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
@@ -75,7 +75,7 @@ async function localFactory() {
   const grants = [new StaticGrant({ roles: {}, deny: {} }), new GitHubPermissionGrant(github, { owner: "o", name: "r" })];
   const auth = new LocalAuthProvider(store, grants);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({

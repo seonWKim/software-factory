@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -74,7 +74,7 @@ async function factory(
   const forge = new FakeForge(source);
   const log = recordingLog();
   const workerLog = recordingLog();
-  const makeController = () => new Controller({ store, source, forge, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
+  const makeController = () => new ControllerRole({ store, source, forge, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
   const controller = makeController();
   const broker = makeBroker(store, clock);
   const worker = new Worker({

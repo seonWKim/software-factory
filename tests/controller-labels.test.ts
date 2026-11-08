@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -11,7 +11,7 @@ async function setup(log: Logger = silent) {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const forge = new FakeForge(source);
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   return { clock, store, source, forge, controller };
 }
 

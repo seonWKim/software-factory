@@ -56,6 +56,11 @@ export interface Cause {
   readonly occurred_at: string;
 }
 
+/** The cause of what a handler emits for `m`: the same trace, project, passport and time. */
+export function causeOf(m: Envelope): Cause {
+  return { id: m.id, correlation_id: m.correlation_id, project_id: m.project_id, passport_id: m.passport_id, occurred_at: m.occurred_at };
+}
+
 export function newMessageId(): string {
   return randomUUID();
 }

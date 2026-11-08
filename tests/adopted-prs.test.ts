@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import { SKIP_LABEL } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
@@ -58,7 +58,7 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
     review: () => ({ output: { verdict: "pass", tier: 1, findings: [], summary: "fine" } }),
     ...script,
   });
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
     scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
@@ -387,7 +387,7 @@ describe("the first start on a repository with history (design §5, Merges)", ()
     const ctx = { clock, history_since: null, log };
     const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
     const forge = new GitHubForge(repo, { owner: "o", name: "r" }, "factory/", "main", source, ctx);
-    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
     const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
     return { clock, store, repo, controller, unreviewed };
   }

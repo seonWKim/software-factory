@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ROLE_ACTIONS, authorize } from "../src/core/authorize.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Actor, UserId, WorkItem } from "../src/core/types.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { newLinkCode } from "../src/impl/auth/link-code.js";
@@ -55,7 +55,7 @@ async function setup(opts: { perms?: Record<string, string>; static?: unknown; o
   const auth = new GitHubAuthProvider(store, grants);
   const source = new FakeSource();
   const log = recordingLog();
-  const controller = new Controller({ store, source, auth, clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth, clock, config, log, scanner: cleanScanner });
   return { clock, store, github, source, log, auth, controller };
 }
 type F = Awaited<ReturnType<typeof setup>>;
@@ -193,7 +193,7 @@ describe("one shared authorize check", () => {
     const grant = new Recording();
     const auth = new GitHubAuthProvider(store, [grant]);
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth, clock, config, log: recordingLog(), scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth, clock, config, log: recordingLog(), scanner: cleanScanner });
     const code = newLinkCode();
     await store.createLinkCode("github:1" as UserId, code);
     await store.redeemLinkCode(code, { provider: "slack", subject: "U1" });
