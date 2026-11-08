@@ -12,3 +12,6 @@ web/dist/
 .vite-cache/
 /dist.*
 /web/dist.*
+
+# Browser screenshots from the local ui-reviewer agent (.claude/agents/ui-reviewer.md)
+.playwright-mcp/
