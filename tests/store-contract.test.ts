@@ -896,16 +896,16 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await sorted()).toEqual(before);
     });
 
-    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+    it("claimProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
       const { store, clock } = await make();
       const due = later(clock, 1_000);
       await store.pauseClaims(due, "model_stall");
       clock.advance(1_000);
       const next = later(clock, 60_000);
-      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.claimProbe("model_stall", due, next)).toBe(true);
       expect(await store.getClaimPause("model_stall")).toBe(next);
       // The same due time again, also with another next time: already taken, nothing moves.
-      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", due, later(clock, 90_000))).toBe(false);
       expect(await store.getClaimPause("model_stall")).toBe(next);
     });
 
@@ -917,14 +917,14 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
     });
 
-    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+    it("claimProbe takes no model_stall probe once the pause ended, so it never starts the pause again", async () => {
       const { store, clock } = await make();
-      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", later(clock, 0), later(clock, 60_000))).toBe(false);
       const due = later(clock, 1_000);
       await store.pauseClaims(due, "model_stall");
       clock.advance(1_000);
       await store.endClaimPause("model_stall");
-      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", due, later(clock, 60_000))).toBe(false);
       expect(await store.getClaimPause("model_stall")).toBeNull();
     });
 
