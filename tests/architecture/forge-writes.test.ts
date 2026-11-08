@@ -7,8 +7,7 @@ import { codeOnly, ratchet, read, sourceFiles } from "./lib.js";
 // and src/interfaces/ declares them. The controller's outbox unit only stores intents: its own operations
 // (`markSeen`, `setStatus` on `unit("outbox")` or `this`) are not writes.
 //
-// Ratchet: the worker's pushes and PR opens, the CLI session's push and PR and the controller's sub-issue filing are
-// listed until M7's second half moves them to outbound (the PR close and the base push moved).
+// Ratchet: empty since M7's last write, the controller's sub-issue filing, moved to outbound (`file_sub_issue`).
 
 const WRITE_METHOD = /([\w$)\]"]+)\s*\.\s*(postComment|markSeen|setStatus|closeIssue|fileSubIssue|fileIssue|postPrComment|setPrStatus|closePr|pushBase|push)\s*\(/g;
 const BROKER_WRITE = /\.call\(\s*\w+\s*,\s*"github\.(push_branch|open_pr|comment|close_pr|merge_pr)"/g;

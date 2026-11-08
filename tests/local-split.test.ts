@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
-import { PHASE_HOLD, PHASES_OPEN, phaseMarker } from "../src/core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker } from "../src/core/split.js";
 import type { CloseReason, RunOutcome, SourceRef, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -76,7 +76,7 @@ async function setup() {
   };
   const get = async (id: WorkItemId) => (await store.getWorkItem(id))!;
   const messages = async (id: WorkItemId) => (await store.listItemMessages(id)).map((m) => m.body);
-  return { store, local, controller, parent, approve, close, get, messages };
+  return { clock, store, local, controller, parent, approve, close, get, messages };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -113,17 +113,19 @@ describe("split spec on a local task", () => {
     expect((await f.store.listRuns(p.id)).filter((r) => r.kind === "implement")).toEqual([]);
   });
 
-  it("approve again after a partial failure files no duplicates: the same sub-task IDs come back", async () => {
+  it("a failed filing is outbound's retry, through the local target: the next phases wait, then each is filed once", async () => {
     const f = await setup();
     const p = await f.parent();
     f.local.failPhase = 2;
     await f.approve(p.id);
     const first = await f.store.listPhases(p.id);
     expect(first.map((x) => x.phase)).toEqual([1]);
-    expect(await f.get(p.id)).toMatchObject({ blocked_on: "human", blocked_reason: "spec_pending" });
-    expect((await f.messages(p.id)).some((b) => b.includes("stopped after 1 of 3"))).toBe(true);
+    // Not refused: the approval stands and the filing waits for outbound's retry.
+    expect(await f.get(p.id)).toMatchObject({ blocked_on: "upstream", blocked_reason: SPLIT_FILING });
+    expect((await f.messages(p.id)).some((b) => b.includes("is filing the 3 phases of this split"))).toBe(true);
 
-    await f.approve(p.id);
+    f.clock.advance(config.retry_max_ms);
+    await f.controller.tickOutbox();
     const again = await f.store.listPhases(p.id);
     expect(again.map((x) => x.phase)).toEqual([1, 2, 3]);
     expect(again[0]!.id).toBe(first[0]!.id);

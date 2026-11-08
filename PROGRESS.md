@@ -12,7 +12,7 @@ outbound; runtime wiring) each listed findings in the overnight timeline; all ar
 the owner (below).
 Verification with no agents running: SQLite suite green (3774), MySQL suite green (every test passes; at 4 workers
 the loaded machine times some out, at 2 workers all pass), schema snapshots match, rehearsal lost no row.
-What is not done: units are not all pure (`unit-purity` 24), sub-issue filing still writes inline (owner choice), and
+What is not done: units are not all pure (`unit-purity` 24), and
 legacy code remains behind `component-imports-legacy` (298) until it is rewritten. The live database is not migrated
 and the contract drops are not applied: the owner runs `npm run migrate` (and later `--contract`) after review.
 
@@ -72,7 +72,7 @@ Not done without the owner: applying the `legacy_*` drop (from 2026-11-23), the 
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (update steps left, with M7) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash tests resume mid-implement and mid-resolve on SQLite and MySQL. Leftovers (branch `refactor/rfc-0015-m6-leftovers`): the runner's waits on a TickGenerator, one takeover path (the controller's reaper; the engine's `reap` deleted), the resolve step with a bundle, `SF_CODE_VERSION` as `code_version`. Left: update steps (its effects are the forge writes M7 moves) |
-| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half, worker comments, every run and session push and PR, outbound's passport done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone; keyed actions (`intent_key`) and the PR close through `github-change`. Implement push and PR (branch `refactor/rfc-0015-m7-push`): the run's last step `git.store_branch` writes HEAD to a factory-repo ref and records keyed `push`/`pr` intents to `git:<host>:<branch>`; `github-push` (`Forge.pushBranch`, reconciling) and `github-change` (`Forge.openPr`) deliver them; the item waits `blocked_on: outbound`/`pr_pending` until the PR delivery puts `change_ref` on it and queues the review; push/PR failures are delivery retries holding the destination (no claim pause); flow test `tests/outbound/run-push.test.ts`; the run passport names the wip branch. Rest (branch `refactor/rfc-0015-m7-rest`): update, resolve and wip pushes, the PR body refresh and the session's push and PR take the same path (update/resolve wait `push_pending` until the push is delivered, then the review); the broker's `github.push_branch` and `github.open_pr` are gone; outbound delivers under `service:outbound` (`use_tool` per target, audited, a denial retries; `tests/outbound/passport.test.ts`). Left: base push (`local` target), sub-issue filing |
+| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone; keyed actions (`intent_key`) and the PR close through `github-change`. Implement push and PR (branch `refactor/rfc-0015-m7-push`): the run's last step `git.store_branch` writes HEAD to a factory-repo ref and records keyed `push`/`pr` intents to `git:<host>:<branch>`; `github-push` (`Forge.pushBranch`, reconciling) and `github-change` (`Forge.openPr`) deliver them; the item waits `blocked_on: outbound`/`pr_pending` until the PR delivery puts `change_ref` on it and queues the review; push/PR failures are delivery retries holding the destination (no claim pause); flow test `tests/outbound/run-push.test.ts`; the run passport names the wip branch. Rest (branch `refactor/rfc-0015-m7-rest`): update, resolve and wip pushes, the PR body refresh and the session's push and PR take the same path (update/resolve wait `push_pending` until the push is delivered, then the review); the broker's `github.push_branch` and `github.open_pr` are gone; outbound delivers under `service:outbound` (`use_tool` per target, audited, a denial retries; `tests/outbound/passport.test.ts`). Sub-issue filing (branch `refactor/rfc-0015-sub-issues`, owner approved 2026-11-09): `/approve` on a split spec claims the filing and replies that it is queued; the phases unit records one keyed `file_sub_issue` action per phase (`file_sub_issue:<parent>:<phase>:<comment>`), phase N+1 on phase N's `DeliveryCompleted` (`advanceSplit`, also on the phase tick); targets `github-issue`, `local`, `source`; a failure is outbound's retry, one refused for good stops the parent at `delivery_failed` with the alarm and `/approve` again files the rest; the `forge-writes` ratchet is empty. The base push is the `local` target's (M8) |
 | 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Review fixes: crash-safe landing (lease take-over, finally, `land` repeatable), missing check runs queued again, results and timers conditional on the run, the checked branch head pinned, automatic entries re-authorized at the landing, `run_key` index, hashed queue id; `paused` dropped. Landing through outbound (branch `refactor/rfc-0015-local-merge`): a keyed `merge` action to `git:<host>:<base>` written in the unit's commit, made by outbound's `local` target (`LocalGit`, `TargetDeps.git`); the queue stays `merging` until DeliveryCompleted, which closes the item; a takeover finds the keyed request and applies a delivered one; the base push is a keyed `push_base` action in the same destination (the `outbound_base_pushes` step is gone, the table waits for M11); flow tests: a crash in the delivery lands once, a failed delivery retries, a refused one removes the entry, the item closes only after the merge. Left: `github-change` merge, batches with bisect, partitions; cancelling a removed entry's queued check run |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; outbound's service passport (branch `refactor/rfc-0015-m7-rest`); left: SecretStore key for enterprise |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done, run path wired | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two` (checked at every run start since 2026-11-09), hooks + audit table. Branch `refactor/rfc-0015-m6-leftovers`: roles drive every agent step's prompt and tools; `before_run` hooks at run start, enabled by the PR-only `hooks` setting. Left: `before_merge` (merge queue) and `before_delivery` (outbound) |
@@ -195,8 +195,8 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 |---|---|---|
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | table-ownership-sql | 0 | empty list |
-| forge-writes | 1 | `controller/units/phases/phases.unit.ts` `fileSubIssue` (sub-issue filing through outbound waits on the owner) |
-| file-budget | 15 files, 15,845 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1180), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
+| forge-writes | 0 | empty list (sub-issue filing moved to outbound, 2026-11-09) |
+| file-budget | 15 files, 15,838 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1175), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
 | unit-purity | 24 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
@@ -413,6 +413,25 @@ good"):
 - Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md now says to stop a hand-started `factory
   controller` or `factory worker` first. No code.
 
+M7 sub-issue filing (2026-11-09, owner approved):
+
+- A split's phases are filed by outbound as keyed `file_sub_issue` actions to the parent's source, one at a time:
+  phase N+1's body names phase N's ref, so it is recorded on phase N's `DeliveryCompleted`. `/approve` replies that
+  the filing is queued (it no longer waits for the filing or reports a partial failure); the split comment listing
+  the phases comes when all are filed.
+- The key names the approving comment (`file_sub_issue:<parent>:<phase>:<comment>`), so a phase is recorded once per
+  approval and `/approve` after a give-up files the rest under new keys; never twice, as the source reconciles by
+  marker (GitHub: the parent's sub-issues, then the newest labelled issues) and taken-in phases are reused.
+- A filing refused for good stops the parent at `blocked_on: human`, `blocked_reason: delivery_failed` (the PR and
+  push give-up's reason, moved to the units' support file) with outbound's dead-letter alarm. A failure with no
+  status retries until it goes through, holding the parent's destination.
+- `advanceSplit` works from the store only and the phase tick runs it for a parent at `split_filing`, so a crash
+  after the claim or a lost `DeliveryCompleted` resumes; the 10-minute stale-claim takeover by `/approve` is gone.
+- The filed title and body are egress-scanned (G5) like a PR's: a flagged one is filed as the withheld notice under
+  its marker. The inline filing scanned nothing.
+- Local first: the `local` target files through `LocalSource.fileSubIssue` (a derived ref, no network call), so a
+  local split takes the same path with no external plugin.
+
 Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
 
 - SQLite breaking migrations wait for `npm run migrate`: the supervisor's check reports them, so a self-update
@@ -435,10 +454,6 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
 - `factory settings set` can loosen a setting the catalog marks tighten-only (e.g. `phases_auto_approve true`, a
   higher `max_diff_lines`) with no permission check; the tighten-only check runs only in tests. Keep (an owner's
   CLI is trusted) or require `approve_merge` for a loosening set, as for `mode`?
-- M7 sub-issue filing through outbound: phase N+1's text names phase N's ref, so it would be filed only after
-  phase N's delivery, and a partial failure of `/approve` on a split spec becomes outbound's retry instead of a
-  refusal. That changes what `/approve` reports; until you choose, the phases unit still files inline (the last
-  `forge-writes` entry).
 - Contract migrations: `npm run migrate -- --contract` drops the `legacy_*` tables and `outbound_base_pushes`
   (14 days after their migrations, archiving rows first). Live database migrated 2026-11-09 06:06, so the drops
   can run from 2026-11-23.
@@ -460,23 +475,18 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
 3. M10 wiring follows its call sites: hooks at delivery (`before_delivery`, M7; startup refuses an enabled one
    until then, so drop it from `UNCALLED_HOOK_POINTS` when outbound calls it); the run start (`before_run`),
    the merge queue's landing (`before_merge`), the `hooks` setting and roles driving prompts and tools are done.
-4. M7 worker half, rest (design in 10-event-driven.md, "An implement run's push and PR"; every run's and the
-   session's push and PR are done; the base push is the `local` target's, M8): sub-issue filing as a keyed `file_sub_issue`
-   action (the phases unit files phase N+1 on phase N's `DeliveryCompleted`, since its body names the ref before
-   it; a partial failure becomes a retry instead of a refused `/approve`). The `forge-writes` ratchet lists what
-   is left.
-5. M9 follow-up:
+4. M9 follow-up:
    - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;
    - sessions (`factory session`) store their branch through an unguarded broker: give them a passport;
    - a `paths` caveat once a git proxy at the sandbox edge sees the files;
    - the web app shows `actor.name` and `merged_by_name` (the server pages already do);
    - an OIDC or GitHub provider implementing `AuthProvider.displayName`;
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
-6. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
+5. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
-7. M8 leftovers (the outbound `local` merge delivery and the base push are done): the `github-change` merge
+6. M8 leftovers (the outbound `local` merge delivery and the base push are done): the `github-change` merge
    delivery, batches with bisect and partitions; a `paused` state with the command that needs it; cancelling a removed entry's queued check run.
-8. Outbound review follow-ups: an `alarmCommand` hint for outbound's given-up deliveries (group `outbound`), which
+7. Outbound review follow-ups: an `alarmCommand` hint for outbound's given-up deliveries (group `outbound`), which
    now points at the bus's dead-letter table; a batch whose intents no process can ever send (a `push_base` after
    the forge was switched off) still waits at its destination's head.
 

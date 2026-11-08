@@ -15,7 +15,7 @@ import { type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkIt
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
-import { AUTO, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
+import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -80,11 +80,6 @@ function suggestedSplit(detail: string, paths: readonly string[], limits: { max_
 export const PR_PENDING = "pr_pending";
 /** An update or resolve run's push waits for outbound (RFC 0015 M7) before the review of its head is queued. */
 export const PUSH_PENDING = "push_pending";
-/**
- * The PR or push a run waited for was given up by outbound (the forge refused it for good, RFC 0015 §7): the item
- * waits for a person (`blocked_on: human`), with the action and its last error in the transition's detail.
- */
-export const DELIVERY_FAILED = "delivery_failed";
 
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};

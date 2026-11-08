@@ -1,5 +1,5 @@
-// The delivery targets outbound runs (RFC 0015 §7): github-change, github-comment, github-labels, slack-thread, local,
-// and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
+// The delivery targets outbound runs (RFC 0015 §7): github-push, github-change, github-issue, github-comment,
+// github-labels, slack-thread, local, and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
 // waits for a process that has the adapter.
 
 import type { SourceRef } from "../../core/types.js";
@@ -13,6 +13,11 @@ const LOCAL = "local";
 
 function typeOf(d: Delivery): string {
   return d.kind === "comment" ? d.source_type : d.row.source_type;
+}
+
+/** A split's phase filed under its parent (RFC 0015 M7). */
+function filing(d: Delivery): boolean {
+  return d.kind === "action" && d.row.action === "file_sub_issue";
 }
 
 /** A PR's status label goes through the forge, where PRs live (issue #273), labelled for the item's source. */
@@ -62,6 +67,15 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       },
     },
     {
+      // A split's phase filed as a sub-issue of its parent; the source looks for its marker first (RFC 0015 M7).
+      name: "github-issue",
+      accepts: (d) => filing(d) && typeOf(d) === GITHUB && adapter(GITHUB)?.fileSubIssue !== undefined,
+      deliver: (d) => {
+        if (d.kind !== "action") throw new Error("github-issue delivers filings only");
+        return act(adapter(GITHUB)!, d.row);
+      },
+    },
+    {
       name: "github-comment",
       accepts: (d) =>
         (d.kind === "comment" && prOf(d.target) !== null) ||
@@ -92,11 +106,17 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       deliver: (d) => (d.kind === "comment" ? adapter(SLACK)!.postComment(d.target, d.body, d.marker) : act(adapter(SLACK)!, d.row)),
     },
     {
-      // A local item's surface is the store itself: nothing to write. A merge queue landing and its base push are
-      // the factory repo's (RFC 0015 M8), through the git the runtime gave this process.
+      // A local item's surface is the store itself: nothing to write, but a split's phase is filed through the local
+      // source, which derives its ref (no network call). A merge queue landing and its base push are the factory
+      // repo's (RFC 0015 M8), through the git the runtime gave this process.
       name: "local",
-      accepts: (d) => typeOf(d) === LOCAL || (d.kind === "action" && gitAccepts(t.git ?? null, d.row)),
-      deliver: async (d) => (d.kind === "action" && gitAccepts(t.git ?? null, d.row) ? deliverGit(t.git!, d.row) : { url: null }),
+      accepts: (d) =>
+        (typeOf(d) === LOCAL && (!filing(d) || adapter(LOCAL) !== null)) || (d.kind === "action" && gitAccepts(t.git ?? null, d.row)),
+      async deliver(d) {
+        if (d.kind === "action" && gitAccepts(t.git ?? null, d.row)) return deliverGit(t.git!, d.row);
+        if (d.kind === "action" && filing(d)) return act(adapter(LOCAL)!, d.row);
+        return { url: null };
+      },
     },
     {
       name: "source",

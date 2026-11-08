@@ -9,13 +9,12 @@ import { commandEvent, commandIdentity, syncedCommand } from "../../../core/comm
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { SPLIT_FILING_STALE_MS } from "../../../core/split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitOpen, footerAfter } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -54,9 +53,12 @@ function reviewFeedback(e: PrReviewEvent): string {
   if (lines.length) parts.push(["Line comments:", ...lines].join("\n"));
   return parts.join("\n\n");
 }
-/** A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. */
+/**
+ * A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. A split
+ * whose phase filing outbound gave up waits too: `/approve` again files the rest under new keys, none twice.
+ */
 function awaitingSpec(it: WorkItem): boolean {
-  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
+  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
@@ -557,16 +559,12 @@ export class CommandsUnit {
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return this.c.unit("transitions").ruleOfTwoCommand(e, it, actor, note, paths);
     if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
-    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
-      // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
+    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it) || splitFilingFailed(it))) {
+      // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
+      // the pass that claimed the filing answers it.
       if ((await this.c.unit("phases").splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
-      if (splitFiling(it) && paths.length > 0) return { refuse: SPLIT_PATHS };
-      if (splitFiling(it)) {
-        const stale = this.c.k.d.clock.now().getTime() - Date.parse(it.updated_at) >= SPLIT_FILING_STALE_MS;
-        const phases = stale ? await this.c.unit("phases").specPhases(it) : null;
-        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
-        return { refuse: "an earlier `/approve` is filing this split's phases; if it stopped, reply `/approve` again in 10 minutes" };
-      }
+      // Outbound files them and retries a failure; a stopped process leaves nothing for a person to take over.
+      if (splitFiling(it)) return { refuse: "an earlier `/approve` queued this split's phases for filing; this issue lists them once all are filed" };
     }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {

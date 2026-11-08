@@ -273,8 +273,8 @@ force.
   URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
-  ratchets the writes still outside outbound (the resolve, update and wip pushes, the PR body refresh, the session's
-  push and PR, sub-issue filing).
+  finds any forge or source write outside outbound; its ratchet list is empty since sub-issue filing moved
+  (2026-11-09), so a new one fails it.
   - Deliveries refused for good are given up (decision changed 2026-11-09, outbound review finding 6; see History).
     A target error with an HTTP 4xx status that is no rate limit (429, or a 403 with a wait), no timeout (408) and
     no credential refusal (401, which a new token fixes) is refused for good (`refusedForGood`): a deleted, moved or
@@ -339,9 +339,21 @@ force.
     the store step itself still keeps the commits on the run's wip branch: `git.store_branch` of the wip branch,
     then a keyed `push` intent when the broker says `forge: true` (the run passport names that branch,
     `wip_branch`); a failed wip store is logged, as a failed wip push was. Which process flushes a push: see "Git
-    destinations" below. Not built
-    yet: sub-issue filing (a keyed `file_sub_issue` action whose delivered ref the phases unit records; the phases
-    unit still calls `fileSubIssue` inline). The base push is the `local` target's (the merge queue, M8).
+    destinations" below. The base push is the `local` target's (the merge queue, M8).
+  - Sub-issue filing (decision changed 2026-11-09, M7; see History and 04-split-specs.md, "Phases are filed through
+    outbound"). `/approve` on a split spec claims the filing and replies that it is queued; the phases unit records
+    one keyed `file_sub_issue` action per phase (`file_sub_issue:<parent>:<phase>:<approving comment id>`, target
+    the parent's source; title, body, marker, phase), one at a time: phase N+1's body names phase N's ref, so the
+    phases unit (`advanceSplit`) records it on phase N's `DeliveryCompleted`, after taking phase N in as a work item
+    from the action's `delivered_ref` and `delivered_url`. Targets: `github-issue` (`fileSubIssue` of the GitHub
+    source, which reconciles by marker: the parent's sub-issues, then the newest labelled issues, so a retry after a
+    lost response files no second issue), the `local` target (`LocalSource.fileSubIssue`, a ref derived from the
+    marker, no network call), `source` for another adapter. The title and body are egress-scanned (a flagged one is
+    filed as the withheld notice under its marker). A failure is the batch's retry with backoff, no longer a refused
+    `/approve`; one refused for good is given up (above) and the parent waits `blocked_on: human`,
+    `blocked_reason: delivery_failed`, with the dead-letter alarm; `/approve` again claims anew and files the rest
+    under new keys. `advanceSplit` reads only the store, and the phase tick runs it for a parent still at
+    `split_filing`, so a lost step or `DeliveryCompleted` resumes. Solo and enterprise: the same.
   - Update and resolve pushes, the PR body refresh, and the session's push and PR (decision changed 2026-11-09, M7
     rest; see History). They take the implement path: `git.store_branch`, then the keyed `push` intent and, for a
     PR text, the `pr` intent (`runPushIntents`, `src/core/worker-deps.ts`; the update and resolve runs' `pr` intent
@@ -515,6 +527,10 @@ force.
 - **Rule of Two at run start** (decision changed 2026-11-09, owner decision). Before: `ruleOfTwoRefusal` existed but
   no run start called it, so an implement or resolve run started once its item was approved, by a person or by auto
   mode, and in auto mode they ran with all three facts and no person.
+- **Sub-issue filing through outbound** (decision changed 2026-11-09, M7). Before: the phases unit called
+  `fileSubIssue` inline, every phase in one `/approve` pass (the last `forge-writes` ratchet entry); a failure
+  refused the approval and put the spec back at the gate, and a claim left by a stopped process could be taken over
+  by `/approve` after 10 minutes.
 - **Outbound review fixes** (decisions changed 2026-11-09). Before: a join updated the open batch with no state
   check and no claim-token move, so an intent joined between a flush's read and its claim ended in a sent batch
   unsent (finding 1); git destinations named `os.hostname()` (from the replica id, `local` with none), and a
