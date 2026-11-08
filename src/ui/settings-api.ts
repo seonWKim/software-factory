@@ -15,7 +15,7 @@ import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettableKey,
   type GlobalSettableKey, type SettableValues, type SettingsBase, type SettingSource,
-  effectiveSetting, isProjectSettableKey, resolveSettings,
+  effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
@@ -42,6 +42,8 @@ export interface UiSettings {
   resolveProject(): Promise<ProjectRef | null>;
   /** Random, per process; held only in memory. GET returns it, POST must send it in x-csrf-token. */
   csrfToken: string;
+  /** The `approve_merge` check for `mode` and `auto_merge_max_tier` (SettingsDeps.mayApproveMerge). Absent: no check. */
+  mayApproveMerge?: () => Promise<string | null>;
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
@@ -96,9 +98,9 @@ export async function effectiveGlobal<K extends GlobalSettableKey>(d: UiDeps, ke
   return { value: e.value, source: e.source };
 }
 
-type Kind = "number" | "boolean" | "models" | "model_by";
+type Kind = "number" | "boolean" | "models" | "model_by" | "mode";
 const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" ? "model_by" : "number";
+  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" ? "model_by" : k === "mode" ? "mode" : "number";
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {
@@ -121,7 +123,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
   const keys = [];
   for (const k of SETTABLE_KEYS) {
     const e = effectiveSetting(r, k);
-    const file = isProjectSettableKey(k) ? s.base.layers.defaults[k] : s.base.file[k];
+    const file = isGateSettableKey(k) ? s.base.layers.defaults[k] : isProjectSettableKey(k) ? undefined : s.base.file[k];
     const projects = [];
     if (isProjectSettableKey(k)) {
       for (const [p, own] of Object.entries(r.projects)) {
@@ -229,6 +231,7 @@ export async function writeSettings(d: UiDeps, s: UiSettings, body: unknown): Pr
     base: s.base,
     repo: s.repo,
     actor: s.actor,
+    ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
     resolveProject: async () => {
       let ref: ProjectRef | null;
       try {

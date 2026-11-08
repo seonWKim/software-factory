@@ -3,7 +3,7 @@ import { stallConfig } from "../src/compose.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { type SettingsDeps, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
+import { type SettingsDeps, parseModeArgs, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { PROJECT } from "./helpers/fakes.js";
 import { BACKENDS, PROJECT_KEY } from "./helpers/store.js";
 
@@ -232,5 +232,66 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
       `${new Date(clock.now().getTime() - 1000).toISOString()}  local:owner  tick_ms  (no override) → 500`,
     ]);
     expect((await run(d, "history", "--limit", "1")).lines).toHaveLength(1);
+  });
+});
+
+describe("factory mode", () => {
+  it("is settings set mode, with --project; anything else is an error", () => {
+    expect(parseModeArgs(["auto"])).toEqual({ action: "set", key: "mode", value: '"auto"' });
+    expect(parseModeArgs(["manual", "--project", "o/r"])).toEqual({ action: "set", key: "mode", value: '"manual"', project: "o/r" });
+    for (const bad of [[], ["on"], ["auto", "x"], ["auto", "--limit", "2"], ["auto", "--project"]]) {
+      expect(parseModeArgs(bad)).toEqual({ error: expect.any(String) });
+    }
+  });
+});
+
+describe.each(BACKENDS)("factory mode and auto_merge_max_tier: $name", ({ make }) => {
+  it("a flip writes one audit row with the actor and the time; the default is manual", async () => {
+    const { store, clock } = await make();
+    const d = deps(store);
+    expect((await run(d, "list")).lines.find((l) => l.startsWith("mode "))).toContain('default   "manual"');
+    const a = parseModeArgs(["auto"]);
+    if ("error" in a) throw new Error(a.error);
+    expect(await runSettings(d, a)).toMatchObject({ ok: true, lines: ['mode = "auto" (override; was "manual", default)', expect.any(String)] });
+    expect(await store.listSettingChanges(10)).toEqual([
+      { seq: expect.any(Number), key: "mode", project: "", old_value: null, new_value: '"auto"', actor: "local:owner", at: clock.now().toISOString() },
+    ]);
+  });
+
+  it("takes a project mode, and refuses a value other than auto or manual", async () => {
+    const { store } = await make();
+    await saveProjectLabel(store, PROJECT);
+    const d = deps(store);
+    expect((await run(d, "set", "mode", "auto", "--project", "o/r")).ok).toBe(true);
+    expect(await store.listSettingOverrides()).toEqual([expect.objectContaining({ key: "mode", project: PROJECT_KEY, value: '"auto"' })]);
+    const bad = await run(d, "set", "mode", "on");
+    expect(bad).toEqual({ ok: false, lines: ['refused: mode must be "manual" or "auto"'] });
+  });
+
+  it("auto_merge_max_tier takes 0 to 3 and refuses anything higher", async () => {
+    const { store } = await make();
+    const d = deps(store);
+    expect((await run(d, "set", "auto_merge_max_tier", "3")).ok).toBe(true);
+    for (const v of ["4", "-1", "1.5", '"2"']) {
+      const r = await run(d, "set", "auto_merge_max_tier", v);
+      expect(r.ok, v).toBe(false);
+      expect(r.lines[0], v).toContain("from 0 to 3");
+    }
+    expect(await store.listSettingChanges(10)).toHaveLength(1);
+  });
+
+  it("a set or reset of mode or auto_merge_max_tier without approve_merge is refused and writes no row; other keys are not asked", async () => {
+    const { store } = await make();
+    let asked = 0;
+    const d: SettingsDeps = { ...deps(store, "local:dev"), mayApproveMerge: async () => (asked++, "the requester role cannot approve_merge") };
+    for (const args of [["set", "mode", "auto"], ["set", "auto_merge_max_tier", "2"], ["reset", "mode"]]) {
+      const r = await run(d, ...args);
+      expect(r.ok).toBe(false);
+      expect(r.lines[0]).toContain("only with approve_merge on the project: the requester role cannot approve_merge");
+    }
+    expect(asked).toBe(3);
+    expect(await store.listSettingChanges(10)).toEqual([]);
+    expect((await run(d, "set", "workers", "2")).ok).toBe(true);
+    expect(asked).toBe(3);
   });
 });
