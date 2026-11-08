@@ -77,11 +77,11 @@ describe("an implement run's push and PR leave through outbound", () => {
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
   });
 
-  it("a host's push waits for that host's outbound: another host's replica leaves it", async () => {
+  it("a host's push waits for that host's outbound: another host's replica on a shared store leaves it", async () => {
     const f = await pipeline();
     const other = new ControllerRole({
       store: f.store, source: f.source, forge: f.forge, auth: new FakeAuth(), clock: f.clock, config: f.config, log: silent,
-      scanner: cleanScanner, replica_id: "otherhost:1",
+      scanner: cleanScanner, replica_id: "otherhost:1", git_host: { id: "otherhost", flush_all: false },
     });
     const it0 = await f.submit();
     await f.w1.tick();
@@ -90,7 +90,7 @@ describe("an implement run's push and PR leave through outbound", () => {
     await other.tickRuns();
     expect(await f.item(it0)).toMatchObject({ blocked_on: "outbound", blocked_reason: "pr_pending" });
     expect(f.forge.pushes).toEqual([]);
-    // The worker's host (w1) flushes it; with no replica id this process stands for every host (solo).
+    // A controller that flushes every host's (solo; here one with no git host) sends it.
     await f.controller.tickOutbox();
     expect(f.forge.pushes).toHaveLength(1);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });

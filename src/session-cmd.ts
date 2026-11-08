@@ -2,9 +2,9 @@
 // <state_dir>/sessions/; the person's GitHub login maps to their account, then to a user ID as for a commenter.
 
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { hostname } from "node:os";
 import { join } from "node:path";
 import type { SessionParts } from "./compose.js";
+import { hostId } from "./runtime/host-id.js";
 import type { FactoryConfig } from "./core/config.js";
 import { type IssueLookup, type SessionFile, type SessionFiles, type SessionResult, Sessions } from "./core/session.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
@@ -139,7 +139,8 @@ export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal
   const sessions = new Sessions({
     store: p.store, sandbox: p.sandbox, broker: p.broker, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config,
     log: new ConsoleLogger(p.clock, "session"), files: new FileSessionFiles(join(stateDir, "sessions")), issues: githubIssues(p.github, { owner, name }),
-    toolEnv: baseEnv(), owner: `session:${hostname()}:${process.pid}`,
+    // The host part is this machine's stable host id: a finished session's push and PR go to `git:<host id>:<branch>`.
+    toolEnv: baseEnv(), owner: `session:${hostId(stateDir)}:${process.pid}`,
   });
   return { sessions, config: p.config, github: p.github, readSpec: (path) => readFile(path, "utf8"), print: (l) => console.log(l), stop };
 }

@@ -30,6 +30,18 @@ export function gitTarget(host: string, branch: string): SourceRef {
   return { type: GIT_TARGET, id: `${host}:${branch}`, link: "" };
 }
 
+/** The host of git writes recorded with no host id (tests, one process, the base pushes carried at upgrade). */
+export const LOCAL_GIT_HOST = "local";
+
+/**
+ * A base push's own destination (`git:<host>:<base>:push`, no branch name has a `:`): never in one order with the
+ * merges on that base, so a remote that is down or refuses the push holds no local landing. Its key keeps it at
+ * most once, and each push syncs the remote base first, so base pushes need no order with the merges.
+ */
+export function basePushTarget(host: string, base: string): SourceRef {
+  return gitTarget(host, `${base}:push`);
+}
+
 export interface NewAction {
   readonly action: ActionKind;
   /** Where the write lands: an issue, a thread, or the forge's PR ref. */

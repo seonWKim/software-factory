@@ -81,6 +81,12 @@ export interface ControllerDeps {
   /** This replica's id, recorded where this replica acts (the sync lease is the role's, src/runtime/roles). */
   replica_id?: string;
   /**
+   * This machine's git host (design 10-event-driven, Git destinations): `id` (the state dir's `host-id`) names the
+   * factory repo writes this controller records (`git:<id>:…`); `flush_all`: it flushes every host's git destinations
+   * (a SQLite store: one machine), else only its own id's. Absent (tests, one process): id `local`, every host's.
+   */
+  git_host?: { readonly id: string; readonly flush_all: boolean };
+  /**
    * Suggests a command for a plain-language comment (design §4). Absent: plain comments get no reply. The
    * controller's state decisions never use it.
    */
