@@ -209,6 +209,9 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
     "src/core/merge-check.ts", "src/core/standing.ts", "src/runtime/hooks/",
     // The G1 toolchain check and the PassportToolBroker around every broker; G5 and the passport before a delivery.
     "src/compose.ts", "src/outbound/outbound.ts",
+    // The architecture ratchets and their known-violations lists (owner decision 2026-11-09): a folder that holds
+    // them (`tests/`) touches the gate list too, so a spec allowing all of `tests/` always needs the owner.
+    "tests/architecture/",
   ],
   prompts: ["prompts/", "golden/"],
   permissions: [

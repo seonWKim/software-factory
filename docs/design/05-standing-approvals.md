@@ -35,7 +35,7 @@
   - **Protected paths.** A rule never approves a spec whose allowed paths touch, by the floor touch rule (under the
     prefix, or covering it): gates (`src/controller/` since RFC 0015 M5, before it `src/core/controller.ts`; `policy.ts`, `diff-gate.ts`, `pre-push.ts`, `checks.ts`,
     `merge-check.ts`, `standing.ts`; since 2026-11-09 also `src/compose.ts` and `src/outbound/outbound.ts`, which wire
-    G1, the run passport check and G5), prompts (`prompts/`), permissions (`src/core/authorize.ts`, `src/impl/auth/`,
+    G1, the run passport check and G5, and the architecture ratchets `tests/architecture/`, design 03-risk), prompts (`prompts/`), permissions (`src/core/authorize.ts`, `src/impl/auth/`,
     `src/impl/grant/`, `.claude/`, `src/identity/` since 2026-11-09), tools (`src/core/tools/`, `src/impl/broker/`, the
     default broker `src/impl/github/github-tool-broker.ts` and `broker.plugin.ts` since 2026-11-09), guard settings
     (`factory.config.json`, `src/core/config.ts`, `src/core/settings.ts`, `src/config-keys.ts`, `src/plugins.ts`,

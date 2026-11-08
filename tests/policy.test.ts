@@ -171,7 +171,9 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(gatePathTouched(["src/core/tools/"])).toBe("src/core/tools/");
     expect(gatePathTouched(["src/"])).toBe("src/");
     expect(gatePathTouched(["./prompts/triage.md"])).toBe("./prompts/triage.md");
-    expect(gatePathTouched(["docs/", "src/core/worker.ts", "tests/policy.test.ts"])).toBeNull();
+    expect(gatePathTouched(["tests/architecture/known-violations/unit-purity.json"])).toBe("tests/architecture/known-violations/unit-purity.json");
+    expect(gatePathTouched(["tests/"])).toBe("tests/");
+    expect(gatePathTouched(["docs/", "src/core/worker.ts", "tests/policy.test.ts", "tests/helpers/"])).toBeNull();
   });
 
   it("a triage decision keeps its default and flag; a plain or unflagged one is owner-only, and a stored answer parses the same", () => {
