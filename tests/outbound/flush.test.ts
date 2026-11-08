@@ -17,7 +17,7 @@ const status = { action: "status", args: { status: "implementing", change_ref: n
 
 async function batch(db: Db, n: number, target: SourceRef, a: { action: "status" | "post"; args: Record<string, string | null> } = status): Promise<void> {
   await recordAction(db, { ...a, target }, at);
-  const [{ seq }] = (await db.all("SELECT MAX(seq) AS seq FROM outbound_actions")) as { seq: number }[];
+  const { seq } = ((await db.all("SELECT MAX(seq) AS seq FROM outbound_actions")) as { seq: number }[])[0]!;
   const id = `b${n}`;
   await db.run(
     "INSERT INTO outbound_batches (id, destination, idempotency_key, state, intent_count, opened_at, flush_at) VALUES (?, ?, ?, 'open', 1, ?, ?)",
