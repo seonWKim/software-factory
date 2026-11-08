@@ -38,11 +38,13 @@ const READS = [
 ] as const;
 
 /**
- * What a unit's `load` reads through: store reads, the egress scan (a check, no write), and the forge's PR check
- * reads (remote reads, no write; null when config selects no forge).
+ * What a unit's `load` reads through: store reads, the egress scan (a check, no write), the forge's PR check reads
+ * (remote reads, no write; null when config selects no forge) and the command suggester.
  */
 export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan"> & {
   readonly forge: Pick<Forge, "prChecks" | "prCheckResults"> | null;
+  /** The provider that suggests a command for a plain comment (a query, no state change); null when none is configured. */
+  readonly llm: NonNullable<ControllerDeps["llm"]> | null;
 };
 
 /**
@@ -84,15 +86,21 @@ export function deliveredUrl(deliveries: readonly { marker: string; url: string 
   return deliveries.find((d) => d.marker === marker)?.url ?? null;
 }
 
-/**
- * An item decision's one conditional write at the version it was decided on: a transition, or a budget checkpoint
- * in its place (the block and the checkpoint row in one transaction).
- */
-export type ItemWrite =
-  | { kind: "transition"; input: Parameters<Store["transition"]>[0] }
-  | { kind: "budget_checkpoint"; input: Parameters<Store["openBudgetCheckpoint"]>[0] };
+/** The store's conditional item writes, by the kind of an `ItemWrite`. */
+interface ItemWrites {
+  transition: Store["transition"];
+  /** A budget checkpoint in a transition's place: the block and the checkpoint row in one transaction. */
+  budget_checkpoint: Store["openBudgetCheckpoint"];
+  /** A person's answer to a budget checkpoint (`/approve`, `/reject`). */
+  budget_answer: Store["answerBudgetCheckpoint"];
+  /** A person's approval of an implement run held by coordination cost. */
+  claim_approval: Store["approveClaimHold"];
+}
 
-export type ItemCommitted = Awaited<ReturnType<Store["openBudgetCheckpoint"]>> | Awaited<ReturnType<Store["transition"]>>;
+/** An item decision's one conditional write, at the version it was decided on. */
+export type ItemWrite = { [K in keyof ItemWrites]: { kind: K; input: Parameters<ItemWrites[K]>[0] } }[keyof ItemWrites];
+
+export type ItemCommitted<W extends ItemWrite> = Awaited<ReturnType<ItemWrites[W["kind"]]>>;
 
 /** How the units hand writes to outbound (RFC 0015 M7): the role binds them to the store's driver and its bus. */
 export interface Deliveries {
@@ -129,6 +137,7 @@ export class Kernel {
       ...(reads as Pick<Store, (typeof READS)[number]>),
       scan: (channel, content) => d.scanner.scan(channel, content),
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
+      llm: d.llm ?? null,
     };
   }
 
@@ -148,9 +157,21 @@ export class Kernel {
    * An item decision (RFC 0015 §7): the writes before it (each keyed, so a re-decide after a version conflict adds
    * nothing), then its conditional write. A version conflict comes back for the caller to decide again.
    */
-  async commitItem(before: readonly ControllerWrite[], w: ItemWrite): Promise<ItemCommitted> {
+  async commitItem<W extends ItemWrite>(before: readonly ControllerWrite[], w: W): Promise<ItemCommitted<W>> {
     await this.commit({ writes: before });
-    return w.kind === "transition" ? this.d.store.transition(w.input) : this.d.store.openBudgetCheckpoint(w.input);
+    const store = this.d.store;
+    const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold }[w.kind];
+    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, w.input);
+  }
+
+  /** `/link <code>`: the code's one conditional redeem (used once, counted on a failure), committed here. */
+  redeemLinkCode(...a: Parameters<Store["redeemLinkCode"]>): ReturnType<Store["redeemLinkCode"]> {
+    return this.d.store.redeemLinkCode(...a);
+  }
+
+  /** Whether this process runs an adapter of `type` (a synced source's own command is applied only there). */
+  hasAdapter(type: SourceType): boolean {
+    return this.byType.has(type);
   }
 
   /**
