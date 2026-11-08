@@ -17,7 +17,7 @@ import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDes
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
-import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
+import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
 import SYSTEM_ALERTS, { DEAD_LETTERED } from "../../topics/system-alerts.topic.js";
@@ -113,6 +113,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
       const rows = await tx.all(
         `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}${this.db.dialect.forUpdate}`,
       );
+      await this.lockTopics(tx, rows.map((r) => String(r.topic)));
       for (const r of rows) {
         await this.insertMessage(tx, this.topic(String(r.topic)), JSON.parse(String(r.envelope)) as Envelope, tick.now);
         await tx.run(`UPDATE ${this.outbox} SET published_at = ? WHERE seq = ?`, [tick.now, Number(r.seq)]);
@@ -121,7 +122,24 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     });
   }
 
-  /** Writes one message to its topic's table; a message id already there is skipped. */
+  /**
+   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables: inserts
+   * into one topic then commit in seq order. MySQL assigns AUTO_INCREMENT at insert, not at commit, so without it a
+   * cursor (`seq > last_seq`) could pass a lower seq whose transaction commits later and skip it for good. One
+   * statement in key order, so two writers never take two topics in opposite orders. SQLite has one writer.
+   */
+  private async lockTopics(tx: SqlExecutor, names: readonly string[]): Promise<void> {
+    const forUpdate = this.db.dialect.forUpdate;
+    const unique = [...new Set(names)];
+    if (forUpdate === "" || unique.length === 0) return;
+    const locked = await tx.all(
+      `SELECT name FROM ${TOPICS_TABLE} WHERE name IN (${unique.map(() => "?").join(", ")}) ORDER BY name${forUpdate}`,
+      unique,
+    );
+    if (locked.length !== unique.length) throw new Error(`${TOPICS_TABLE} lists not every topic of ${unique.join(", ")}: its tables were not created`);
+  }
+
+  /** Writes one message to its topic's table (the caller holds its lock); a message id already there is skipped. */
   private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
     const key = topic.partitionKey(m);
     const values: SqlValue[] = [
@@ -200,7 +218,10 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
           [c.group, c.seq, c.message.subject, c.attempt, code, lastError, horizon],
         );
         // The notice commits with the dead letter. A notice that is dead-lettered itself raises none (no loop).
-        if (topic.name !== SYSTEM_ALERTS.name) await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
+        if (topic.name !== SYSTEM_ALERTS.name) {
+          await this.lockTopics(tx, [SYSTEM_ALERTS.name]);
+          await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
+        }
         return;
       }
       const due = addMs(horizon, retryDelayMs(topic.backoff, c.attempt, `${c.group}:${c.seq}:${c.attempt}`));

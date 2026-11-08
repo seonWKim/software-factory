@@ -21,6 +21,8 @@ import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { tickAt } from "../src/shared/ticks/tick-generator.js";
+import { pauseFirstTransaction } from "./helpers/paused-driver.js";
 import requiresMigration from "../src/bus/migrations/20261109T0100-bus-competing-requires.migration.js";
 
 // The bus contract (RFC 0015 §5, §11 M3): every EventBus implementation passes it. It runs on SQLite always
@@ -460,6 +462,39 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await expect(s.publish({ ...s.msg("WorkRequested", "w"), payload: { needs: "Docker" } })).rejects.toThrow("is not key=value");
     expect(() => s.newBus("x", ["docker"])).toThrow("is not key=value");
     expect(() => defineTopic({ ...TOPIC_BASE, name: "test.bad", consumption: "partitioned", requires: () => [] })).toThrow("only a competing topic");
+  });
+
+  // MySQL assigns AUTO_INCREMENT at insert, not at commit; SQLite has one writer, so its seqs always commit in order.
+  it.runIf(backend.name === "mysql")("delivers a seq whose transaction commits after a higher one's (writers to a topic commit in seq order)", async () => {
+    const s = await setup(backend);
+    const mdb: MigrationDb = { dialect: backend.name, all: (q, p) => s.db.all(q, p), run: (q, p) => s.db.run(q, p) };
+    await ensureComponentTables(mdb, "testd");
+    // Two components relay to one partition: the first stops after its insert, before its commit.
+    const paused = pauseFirstTransaction(s.db, /^UPDATE testc_outbox SET published_at/);
+    const slow = new SqlEventBus({ db: paused.driver, component: "testc", topics: TOPICS, consumerId: "slow" });
+    const fast = new SqlEventBus({ db: s.db, component: "testd", topics: TOPICS, consumerId: "fast" });
+    await s.publish(s.msg("Happened", "x"));
+    await s.db.transaction((tx) => fast.publish(tx, [s.msg("Happened", "x")]));
+    const tick = tickAt("relay", 1, Date.parse(s.now()));
+    const first = slow.relay(tick);
+    await paused.reached;
+    // Unserialized, this insert takes the next seq and commits while the first is still open.
+    const second = fast.relay(tick);
+    await new Promise((r) => setTimeout(r, 300));
+    const got: string[] = [];
+    const drain = async () => {
+      for (let i = 0; i < 3; i++) {
+        for (const c of await s.a.consume("g", EVENTS.name, 10)) {
+          got.push(c.message.id);
+          await s.a.ack(c);
+        }
+      }
+    };
+    await drain();
+    paused.release();
+    await Promise.all([first, second]);
+    await drain();
+    expect(got).toEqual(["m1", "m2"]);
   });
 
   it("refuses a topic whose partitions changed after its tables were created", async () => {

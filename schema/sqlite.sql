@@ -651,6 +651,8 @@ CREATE TABLE inbound_raw_records (
     UNIQUE (source_type, dedupe_key)
   );
 
+CREATE TABLE inbound_sequence_locks (name TEXT NOT NULL PRIMARY KEY);
+
 CREATE TABLE inbound_sync_leases (
     name        TEXT PRIMARY KEY,
     owner       TEXT NOT NULL,
