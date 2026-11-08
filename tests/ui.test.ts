@@ -854,12 +854,11 @@ describe("ui: item commands over the real socket (issue #227)", () => {
     expect(logged.join("\n")).not.toContain(token);
   });
 
-  it("the server binds a fixed 127.0.0.1 and main.ts never prints the token", () => {
+  it("the server binds a fixed 127.0.0.1 and the ui command never prints the token", () => {
     const server = readFileSync(join(import.meta.dirname, "../src/ui/server.ts"), "utf8");
     expect(server).toContain('const BIND = "127.0.0.1";');
     expect(server).toContain("server.listen(port, BIND,");
-    const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
-    const ui = main.slice(main.indexOf('case "ui": {'), main.indexOf('case "migrate": {'));
+    const ui = readFileSync(join(import.meta.dirname, "../src/cli/handlers/ui/ui.command.ts"), "utf8");
     expect(ui).toContain("commands: parts.commands");
     expect(ui).not.toMatch(/console\.\w+\([^)]*(token|parts\.commands)/);
   });

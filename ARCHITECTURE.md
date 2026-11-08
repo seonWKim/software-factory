@@ -74,7 +74,7 @@ graph LR
 - **Controller** (`src/core/controller.ts`): deterministic, one tick of steps: commands, intake and sync (GitHub steps only on the `inbound_sync_leases` holder), outbox, runs, coordination, checks, merge check, phases, alarms, improve, reaper, model and network probes. Never runs an agent.
 - **Worker pool** (`src/core/worker-pool.ts`, `worker.ts`): claims runs, builds a sandbox, runs the agent, runs the pre-push checks, pushes through the broker, writes the outcome. Picks the route per item (`routeFor`): local items take the local broker and sandbox. Never decides a transition.
 - **UI server** (`src/ui/`): reads the store; its writes are app command requests (applied by the controller like any command), settings (through the same `runSettings` as the CLI), pause resumes and standing rules, each audited.
-- **CLI** (`src/main.ts`, `src/core/local-cli.ts`): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows for any item, local or GitHub; the controller applies them like comments.
+- **CLI** (`src/main.ts` finds each command in `src/cli/handlers/<command>/<command>.command.ts`; `src/core/local-cli.ts`): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows for any item, local or GitHub; the controller applies them like comments.
 
 ## 2. Components and interfaces
 

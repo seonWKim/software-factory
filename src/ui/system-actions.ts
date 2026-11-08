@@ -184,3 +184,22 @@ async function deadlocks(store: FactoryStore, active: readonly Run[]): Promise<{
   }
   return out;
 }
+
+/** How often a `factory ui` started by hand checks that the factory has not moved past its revision. */
+const UI_REVISION_CHECK_MS = 30_000;
+
+/**
+ * Rereads `older` (a local read of the supervisor's status file) every 30 s; `signal` aborts with the first
+ * refusal text, which `text()` then returns.
+ */
+export function watchRevision(older: () => Promise<string | null>): { signal: AbortSignal; text(): string | null; stop(): void } {
+  const stale = new AbortController();
+  let text: string | null = null;
+  const watch = setInterval(() => {
+    void older().then((t) => {
+      if (t !== null && text === null) { text = t; stale.abort(); }
+    });
+  }, UI_REVISION_CHECK_MS);
+  watch.unref();
+  return { signal: stale.signal, text: () => text, stop: () => clearInterval(watch) };
+}
