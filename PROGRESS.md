@@ -247,8 +247,13 @@ M6 (worker port):
 - Claims stay in the store's `claimRun` (its coordination, claim pauses and branch-writer lock); the engine grew
   `adopt` (hold a run another claim path leased under its token) and `release`. The journal engine also takes
   `leaseMs` (the live `lease_ms` at each renewal) and `onLost`.
-- The engine's reaper tick is not attached in the worker: the controller's reaper requeues expired runs, and the
-  next claim resumes them from the journal. Attaching both would race two takeover paths.
+- One takeover path, the controller's reaper (M6 leftovers): it requeues expired runs (backoff, `max_attempts`,
+  closed items, interactive sessions, attempt records) and the next claim resumes them from the journal. The
+  engine's own `reap`/`attach`/`onTakeover` are deleted; a run past its deadline is aborted by its worker's
+  heartbeat or refused at its next step, and the worker fails it `schedule_to_close`.
+- The runner's waits are schedules on its TickGenerator over the injected clock (`claim`, `heartbeat`,
+  `pause-watch`, `diff-watch`). `Tick.due` (one period after the previous tick ended) carries the host-sleep check;
+  a schedule's period may be a function read before each wait, so live `tick_ms`/`heartbeat_ms` still apply.
 - Implement's `run-agent` result carries a G5-scanned git bundle of its commits (the pause's bundle code), so a
   takeover on another host restores them. The bundle is written with `base64 -i`, not `sh -c`, so no shell runs
   outside the checks.

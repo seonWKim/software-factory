@@ -65,13 +65,18 @@ force.
     own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
     `start_to_close` (infra); a run past its deadline fails `schedule_to_close`.
-  - Takeover is still the controller's reaper: it requeues a run whose lease expired, and the next claim resumes it
-    from the journal. The engine's own `reaper` tick (takeover in place, deadline failing) is not attached in the
-    worker until the controller's reaper unit (M5) stops requeueing expired runs; two takeover paths would race.
-  - Time: the engine moves only on ticks the runner gives it (the claim and each heartbeat). The runner's waits
-    (idle claim loop, heartbeat interval, pause watch, the implement diff watch, the host-sleep check) still sleep
-    on the injected Clock, which reaches the worker through the legacy `WorkerDeps` (`src/core/worker-deps.ts`, so
-    `src/worker/` imports no clock); they move onto a TickGenerator in a later step.
+  - **One takeover path: the controller's reaper** (decision changed 2026-11-08, M6 leftovers; see History). The
+    `reaper` unit requeues a run whose lease expired (with the retry backoff, `max_attempts`, a closed item's run
+    cancelled, an interactive session failed `session_lost`, the attempt record closed), and the next claim resumes
+    it from the journal. The engine has no reaper and no takeover of its own (`reap`, `attach` and `onTakeover` are
+    gone): an engine taking runs over in place would race the reaper for the same run and skip every one of those
+    rules. A run past its `schedule_to_close` deadline is aborted by its worker's heartbeat, or refused at its next
+    step after a claim, and the worker fails it `schedule_to_close`.
+  - Time: the engine moves only on ticks the runner gives it (the claim and each heartbeat). Every wait of the
+    runner is a schedule on its TickGenerator (`plugins.ticks`, over the injected Clock, so FakeClock tests move
+    them): `claim` (the idle loop, live `tick_ms`), and per run `heartbeat` (live `heartbeat_ms`), `pause-watch` and
+    the implement agent step's `diff-watch`. A schedule's first tick is its start (the watches skip it); a later
+    tick's `due` against its `now` is the host-sleep check (05-coordination, Host sleep).
   - Pushes, PR writes and review comments stay in the worker as journaled steps until outbound takes them (M7).
 - **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
   and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
@@ -272,6 +277,9 @@ force.
 - **Runs and the worker** (decision changed 2026-11-08, RFC 0015 M6). Before: the engine existed only in its
   contract test; runs went through `src/core/worker.ts` (one class, every kind a method, a dispatch by kind), which
   renewed its lease through the store's heartbeat and kept no journal, so a run whose worker died started over.
+- **Takeover and the worker's waits** (decision changed 2026-11-08, M6 leftovers). Before: the engine had its own
+  `reaper` tick (take a run over in place, fail runs past their deadline), not attached in the worker, beside the
+  controller's reaper that requeued; and the runner's waits slept on the injected Clock in `while` loops.
 - **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
   transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
   inline), outside any batch, and outbox delivery never waited on the forge budget.

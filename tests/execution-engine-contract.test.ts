@@ -4,7 +4,7 @@ import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
+import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../src/state/index.js";
 import {
   LeaseLostError,
@@ -18,8 +18,9 @@ import { JournalEngine, type JournalEngineOptions } from "../src/worker/engine/p
 import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";
 
 // RFC 0015 §9 `execution-engine` contract: an engine never recomputes a stored step, resumes after a crash at
-// any step, and never misses a timeout. Lease takeover by a second engine never runs a finished step twice.
-// Runs on SQLite always, on MySQL when SF_TEST_MYSQL_URL is set. Time comes only from ManualTickGenerator.
+// any step, and never misses a timeout. A run the controller's reaper requeued (the one takeover path) and a second
+// engine claimed never runs a finished step twice. Runs on SQLite always, on MySQL when SF_TEST_MYSQL_URL is set.
+// The engine's time comes only from the ticks a test hands it.
 
 const T0 = Date.parse("2026-01-01T00:00:00.000Z"); // the store's FakeClock start: every run's created_at
 const S = 1000;
@@ -34,7 +35,7 @@ const KINDS: Record<string, RunTimeouts> = {
 interface Backend {
   name: string;
   /** Two drivers on one database, as two worker processes would hold. */
-  open(): Promise<{ db: [SqlDriver, SqlDriver]; store: SqlFactoryStore }>;
+  open(): Promise<{ db: [SqlDriver, SqlDriver]; store: SqlFactoryStore; clock: FakeClock }>;
 }
 
 const BACKENDS: Backend[] = [
@@ -42,9 +43,10 @@ const BACKENDS: Backend[] = [
     name: "sqlite",
     async open() {
       const driver = new SqliteDriver(":memory:");
-      const store = new SqlFactoryStore(driver, new FakeClock());
+      const clock = new FakeClock();
+      const store = new SqlFactoryStore(driver, clock);
       await store.migrate();
-      return { db: [driver, driver], store };
+      return { db: [driver, driver], store, clock };
     },
   },
   ...(MYSQL_URL
@@ -60,7 +62,8 @@ const BACKENDS: Backend[] = [
               await a.close();
               await b.close();
             });
-            return { db: [a, b] as [SqlDriver, SqlDriver], store: new SqlFactoryStore(a, new FakeClock()) };
+            const clock = new FakeClock();
+            return { db: [a, b] as [SqlDriver, SqlDriver], store: new SqlFactoryStore(a, clock), clock };
           },
         },
       ]
@@ -71,19 +74,27 @@ class Crash extends Error {}
 
 interface Worker {
   engine: ExecutionEngine;
-  ticks: ManualTickGenerator;
-  takeovers: RunRef[];
   /** Step bodies this worker executed, in order. */
   calls: string[];
-  tick(schedule: "heartbeat" | "reaper", ms: number): Promise<void>;
+  /** The worker's heartbeat tick at `ms`. */
+  tick(ms: number): Promise<void>;
 }
 
 function worker(db: SqlDriver, workerId: string, opts: Partial<JournalEngineOptions> = {}): Worker {
-  const takeovers: RunRef[] = [];
-  const engine = new JournalEngine({ db, workerId, codeVersion: "v1", kinds: KINDS, onTakeover: (r) => takeovers.push(r), ...opts });
-  const ticks = new ManualTickGenerator();
-  engine.attach(ticks);
-  return { engine, ticks, takeovers, calls: [], tick: (schedule, ms) => ticks.tick(schedule, ms) };
+  const engine = new JournalEngine({ db, workerId, codeVersion: "v1", kinds: KINDS, ...opts });
+  return { engine, calls: [], tick: (ms) => engine.heartbeat(tickAt("heartbeat", 10 * S, ms)) };
+}
+
+/** The controller's reaper at `ms` (the store's `expireLeases`, as its `expire_leases` write runs it): the ids it requeued. */
+async function reap(b: { store: SqlFactoryStore; clock: FakeClock }, ms: number): Promise<string[]> {
+  b.clock.set(new Date(ms));
+  return b.store.expireLeases(3);
+}
+
+/** A second worker's claim of a requeued run, at `ms`. */
+async function claimAt(w: Worker, id: string, ms: number): Promise<RunRef | null> {
+  await w.tick(ms);
+  return w.engine.claim(id);
 }
 
 let seq = 0;
@@ -164,7 +175,7 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     const { db, store } = await backend.open();
     const a = worker(db[0], "worker-a");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0 + S);
+    await a.tick(T0 + S);
     const run = (await a.engine.claim(id))!;
     expect(run).toMatchObject({ id, kind: "implement", attempt: 1 });
 
@@ -202,8 +213,8 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     const b = worker(db[1], "worker-b");
     const id = await newRun(store);
     await expect(a.engine.claim(id)).rejects.toThrow(/no tick yet/);
-    await a.tick("heartbeat", T0 + S);
-    await b.tick("heartbeat", T0 + S);
+    await a.tick(T0 + S);
+    await b.tick(T0 + S);
     const claims = await Promise.all([a.engine.claim(id), b.engine.claim(id)]);
     expect(claims.filter((c) => c !== null)).toHaveLength(1);
     const [w, run] = claims[0] ? [a, claims[0]] : [b, claims[1]!];
@@ -211,13 +222,15 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     await expect(w.engine.step(run, "prepare-branch", async () => 2)).rejects.toThrow(/used twice/);
   });
 
-  // A crash after step k: the worker is gone (no more heartbeats), another takes the run over from the journal.
+  // A crash after step k: the worker is gone (no more heartbeats), the reaper requeues the run, another worker
+  // claims it and resumes from the journal.
   it.each([-1, 0, 1, 2, 3])("a crash after step %i resumes at the next step with the journaled outputs", async (k) => {
-    const { db, store } = await backend.open();
+    const opened = await backend.open();
+    const { db, store } = opened;
     const a = worker(db[0], "worker-a");
     const b = worker(db[1], "worker-b");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0 + S);
+    await a.tick(T0 + S);
     const first = (await a.engine.claim(id))!;
     const before = k < 0 ? [] : await pipeline(a, first, k).catch((e: unknown) => {
       if (!(e instanceof Crash)) throw e;
@@ -226,12 +239,12 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(before).toEqual([]); // the pipeline crashed, nothing returned
     expect(a.calls).toEqual(STEPS.slice(0, k + 1));
 
-    await b.tick("reaper", T0 + S + 29 * S);
-    expect(b.takeovers).toEqual([]); // the lease (30s) has not expired yet
-    await b.tick("reaper", T0 + S + 30 * S);
-    expect(b.takeovers).toEqual([{ id, kind: "implement", attempt: 2, lease_token: first.lease_token + 1 }]);
+    expect(await reap(opened, T0 + S + 29 * S)).toEqual([]); // the lease (30s) has not expired yet
+    expect(await reap(opened, T0 + S + 30 * S)).toEqual([id]);
+    const resumed = await claimAt(b, id, T0 + S + 30 * S);
+    expect(resumed).toEqual({ id, kind: "implement", attempt: 2, lease_token: first.lease_token + 1 });
 
-    const outs = await pipeline(b, b.takeovers[0]!);
+    const outs = await pipeline(b, resumed!);
     expect(b.calls).toEqual(STEPS.slice(k + 1));
     expect(outs.map((o) => o.attempt)).toEqual(STEPS.map((_, i) => (i <= k ? 1 : 2)));
     outs.forEach((o, i) => expect(o.input).toEqual(i === 0 ? null : outs[i - 1]));
@@ -239,12 +252,13 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(await runRow(db[0], id)).toMatchObject({ status: "succeeded", attempt: 2, lease_owner: null });
   });
 
-  it("a takeover during a running step: the old worker's late result is dropped, the journal keeps the new one", async () => {
-    const { db, store } = await backend.open();
+  it("a requeue during a running step: the old worker's late result is dropped, the journal keeps the new one", async () => {
+    const opened = await backend.open();
+    const { db, store } = opened;
     const a = worker(db[0], "worker-a");
     const b = worker(db[1], "worker-b");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0);
+    await a.tick(T0);
     const run = (await a.engine.claim(id))!;
     await a.engine.step(run, "prepare-branch", async () => "branch");
     const started = deferred();
@@ -257,13 +271,12 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     );
     await started.promise;
 
-    // While A heartbeats, nobody takes the run.
-    await a.tick("heartbeat", T0 + 20 * S);
-    await b.tick("reaper", T0 + 40 * S);
-    expect(b.takeovers).toEqual([]);
-    // A stops (host asleep); B takes over after the lease runs out and finishes the run.
-    await b.tick("reaper", T0 + 50 * S);
-    const resumed = b.takeovers[0]!;
+    // While A heartbeats, the reaper leaves the run.
+    await a.tick(T0 + 20 * S);
+    expect(await reap(opened, T0 + 40 * S)).toEqual([]);
+    // A stops (host asleep); the reaper requeues the run after the lease runs out, and B claims and finishes it.
+    expect(await reap(opened, T0 + 50 * S)).toEqual([id]);
+    const resumed = (await claimAt(b, id, T0 + 50 * S))!;
     expect(await b.engine.step(resumed, "prepare-branch", async () => "recomputed")).toBe("branch");
     expect(await b.engine.step(resumed, "run-agent", async () => "by-b")).toBe("by-b");
 
@@ -276,18 +289,31 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(await b.engine.complete(resumed, { status: "succeeded" })).toBe(true);
   });
 
-  it("the old worker's heartbeat finds its lease taken and aborts its running step", async () => {
+  it("takes no run over itself: another worker's ticks leave an expired lease to the controller's reaper", async () => {
     const { db, store } = await backend.open();
     const a = worker(db[0], "worker-a");
     const b = worker(db[1], "worker-b");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0);
+    await a.tick(T0);
+    const run = (await a.engine.claim(id))!;
+    await b.tick(T0 + 10 * MIN);
+    expect(await b.engine.claim(id)).toBeNull();
+    expect(await runRow(db[0], id)).toMatchObject({ status: "running", lease_owner: "worker-a", lease_token: run.lease_token });
+  });
+
+  it("the old worker's heartbeat finds its run requeued and claimed again, and aborts its running step", async () => {
+    const opened = await backend.open();
+    const { db, store } = opened;
+    const a = worker(db[0], "worker-a");
+    const b = worker(db[1], "worker-b");
+    const id = await newRun(store);
+    await a.tick(T0);
     const run = (await a.engine.claim(id))!;
     const hung = hang(a, run, "run-agent");
     const signal = await hung.started;
-    await b.tick("reaper", T0 + 30 * S);
-    expect(b.takeovers).toHaveLength(1);
-    await a.tick("heartbeat", T0 + 31 * S);
+    expect(await reap(opened, T0 + 30 * S)).toEqual([id]);
+    expect(await claimAt(b, id, T0 + 30 * S)).not.toBeNull();
+    await a.tick(T0 + 31 * S);
     expect(await hung.result).toBeInstanceOf(LeaseLostError);
     expect(signal.aborted).toBe(true);
     expect(await runRow(db[0], id)).toMatchObject({ status: "running", lease_owner: "worker-b" });
@@ -297,14 +323,14 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     const { db, store } = await backend.open();
     const a = worker(db[0], "worker-a");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0);
+    await a.tick(T0);
     const run = (await a.engine.claim(id))!;
     const hung = hang(a, run, "prepare-branch");
     const signal = await hung.started;
-    await a.tick("heartbeat", T0 + 59 * S);
+    await a.tick(T0 + 59 * S);
     await settle();
     expect(hung.state.settled).toBe(false);
-    await a.tick("heartbeat", T0 + 60 * S);
+    await a.tick(T0 + 60 * S);
     expect(await hung.result).toBeInstanceOf(StepTimeoutError);
     expect(signal.aborted).toBe(true);
     expect((await stepRows(db[0], id))[0]).toMatchObject({ step_id: "prepare-branch", status: "failed", error_code: "start_to_close" });
@@ -312,39 +338,39 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     // run-agent has 10 minutes.
     const agent = hang(a, run, "run-agent");
     await agent.started;
-    await a.tick("heartbeat", T0 + 60 * S + 9 * MIN);
+    await a.tick(T0 + 60 * S + 9 * MIN);
     await settle();
     expect(agent.state.settled).toBe(false);
-    await a.tick("heartbeat", T0 + 60 * S + 10 * MIN);
+    await a.tick(T0 + 60 * S + 10 * MIN);
     expect(await agent.result).toBeInstanceOf(StepTimeoutError);
   });
 
-  it("a run past its schedule_to_close deadline is aborted and failed by the reaper", async () => {
+  it("a run past its schedule_to_close deadline is aborted on the heartbeat, and no step runs after it", async () => {
     const { db, store } = await backend.open();
     const a = worker(db[0], "worker-a");
     const id = await newRun(store, "review"); // schedule_to_close 5 minutes, start_to_close 10
-    await a.tick("heartbeat", T0);
+    await a.tick(T0);
     const run = (await a.engine.claim(id))!;
     const hung = hang(a, run, "run-agent");
     await hung.started;
-    await a.tick("heartbeat", T0 + 5 * MIN - S);
+    await a.tick(T0 + 5 * MIN - S);
     await settle();
     expect(hung.state.settled).toBe(false);
-    await a.tick("heartbeat", T0 + 5 * MIN);
+    await a.tick(T0 + 5 * MIN);
     expect(await hung.result).toBeInstanceOf(RunDeadlineError);
     await expect(a.engine.step(run, "store-artifacts", async () => 1)).rejects.toBeInstanceOf(RunDeadlineError);
-    await a.tick("reaper", T0 + 5 * MIN);
-    const row = await runRow(db[0], id);
-    expect(row.status).toBe("failed");
-    expect(JSON.parse(String(row.outcome))).toMatchObject({ error_code: "schedule_to_close" });
+    // The worker fails the run with the step's code (the runner's stepFailure).
+    expect(await a.engine.complete(run, { status: "failed", error_code: "schedule_to_close" })).toBe(true);
+    expect(JSON.parse(String((await runRow(db[0], id)).outcome))).toMatchObject({ status: "failed", error_code: "schedule_to_close" });
   });
 
   it("a resumed step sees what the interrupted attempt saved as partial (the agent's session id)", async () => {
-    const { db, store } = await backend.open();
+    const opened = await backend.open();
+    const { db, store } = opened;
     const a = worker(db[0], "worker-a");
     const b = worker(db[1], "worker-b");
     const id = await newRun(store);
-    await a.tick("heartbeat", T0);
+    await a.tick(T0);
     const run = (await a.engine.claim(id))!;
     const saved = deferred();
     void a.engine
@@ -356,32 +382,32 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
       })
       .catch(() => {});
     await saved.promise;
-    await b.tick("reaper", T0 + 30 * S);
-    const seen = await b.engine.step(b.takeovers[0]!, "run-agent", async (ctx) => ctx.partial);
+    await reap(opened, T0 + 30 * S);
+    const seen = await b.engine.step((await claimAt(b, id, T0 + 30 * S))!, "run-agent", async (ctx) => ctx.partial);
     expect(seen).toEqual({ session: "s-1" });
   });
 
   it("a run journaled by other code is resumed only by a worker that can resume that code version", async () => {
-    const { db, store } = await backend.open();
+    const opened = await backend.open();
+    const { db, store } = opened;
     const old = worker(db[0], "worker-old", { codeVersion: "v1" });
     const id = await newRun(store);
-    await old.tick("heartbeat", T0);
+    await old.tick(T0);
     const run = (await old.engine.claim(id))!;
     await old.engine.step(run, "prepare-branch", async () => "branch");
 
+    expect(await reap(opened, T0 + 30 * S)).toEqual([id]);
     const next = worker(db[1], "worker-new", { codeVersion: "v2" });
-    await next.tick("reaper", T0 + 30 * S);
-    expect(next.takeovers).toEqual([]);
-    expect(await runRow(db[0], id)).toMatchObject({ lease_owner: "worker-old", code_version: "v1" });
+    expect(await claimAt(next, id, T0 + 30 * S)).toBeNull();
+    expect(await runRow(db[0], id)).toMatchObject({ status: "queued", code_version: "v1" });
 
     const compatible = worker(db[1], "worker-compatible", { codeVersion: "v3", resumes: (v) => v === "v1" });
-    await compatible.tick("reaper", T0 + 30 * S);
-    expect(compatible.takeovers).toHaveLength(1);
+    expect(await claimAt(compatible, id, T0 + 30 * S)).not.toBeNull();
     expect(await runRow(db[0], id)).toMatchObject({ lease_owner: "worker-compatible", code_version: "v3" });
 
     // A run with no journal yet adopts the claiming worker's code.
     const fresh = await newRun(store);
-    await next.tick("heartbeat", T0 + 30 * S);
+    await next.tick(T0 + 30 * S);
     expect(await next.engine.claim(fresh)).not.toBeNull();
     expect(await runRow(db[0], fresh)).toMatchObject({ code_version: "v2" });
   });
