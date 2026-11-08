@@ -12,7 +12,7 @@
 
 import type { TopicDescriptor } from "../../../shared/topic.js";
 import { topicTable } from "../../../shared/topic.js";
-import type { Dialect, MigrationDb } from "../../../state/index.js";
+import type { Dialect, MigrationDb, SqlExecutor, SqlValue } from "../../../state/index.js";
 
 export interface TopicTables {
   readonly messages: string;
@@ -166,12 +166,25 @@ export function busTablesSql(dialect: Dialect): string[] {
   ];
 }
 
+/** MySQL's duplicate-key error number (ER_DUP_ENTRY). */
+const MYSQL_DUPLICATE_KEY = 1062;
+
 /**
- * `INSERT INTO <rest>` that skips a row whose unique key exists (0 rows affected). `rest` is `table (cols) VALUES (...)`.
- * SQLite's ON CONFLICT DO NOTHING skips only key conflicts, unlike INSERT OR IGNORE.
+ * `INSERT INTO <rest>` (`table (cols) VALUES (...)`) that skips a row whose unique key exists; true when it
+ * inserted. It skips key conflicts only, as SQLite's ON CONFLICT DO NOTHING does. On MySQL that is a plain INSERT
+ * whose duplicate-key error is caught: INSERT IGNORE would also turn strict-mode errors into warnings (a value cut
+ * to its column's length), and the row count of ON DUPLICATE KEY UPDATE cannot tell an insert from a skip under
+ * the driver's FOUND_ROWS flag.
  */
-export function insertOrSkip(dialect: Dialect, rest: string): string {
-  return dialect === "mysql" ? `INSERT IGNORE INTO ${rest}` : `INSERT INTO ${rest} ON CONFLICT DO NOTHING`;
+export async function insertOrSkip(q: SqlExecutor, dialect: Dialect, rest: string, params: readonly SqlValue[] = []): Promise<boolean> {
+  if (dialect === "sqlite") return (await q.run(`INSERT INTO ${rest} ON CONFLICT DO NOTHING`, params)) === 1;
+  try {
+    await q.run(`INSERT INTO ${rest}`, params);
+    return true;
+  } catch (err) {
+    if ((err as { errno?: unknown } | null)?.errno === MYSQL_DUPLICATE_KEY) return false;
+    throw err;
+  }
 }
 
 /** Creates every missing topic table and refuses a topic whose partitions or consumption changed. */
@@ -187,7 +200,7 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
     }
     for (const sql of topicTablesSql(topic, db.dialect)) await db.run(sql);
     if (!row) {
-      await db.run(insertOrSkip(db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`), [
+      await insertOrSkip(db, db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
         topic.name,
         topic.consumption,
         topic.partitions,

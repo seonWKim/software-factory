@@ -1621,6 +1621,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "controller_outbox",
       "inbound_inbox",
       "inbound_outbox",
+      "inbound_sequence_locks", // src/inbound/migrations/20261109T1015-inbound-sequence-locks
       // Outbound's delivery tables (RFC 0015 M7).
       "outbound_actions",
       "outbound_batch_intents",

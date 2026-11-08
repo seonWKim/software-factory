@@ -106,6 +106,41 @@ force.
   dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
   at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
   MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
+- **Seq cursors never pass an uncommitted seq** (since 2026-11-09, RFC 0015 review; decision changed: writers to
+  one sequence now commit in seq order, see History). MySQL assigns AUTO_INCREMENT at insert, not at commit, so a
+  reader's `seq > cursor` could pass a lower seq whose transaction commits later and skip it for good. Every insert
+  into a sequence a cursor reads takes that sequence's lock row FOR UPDATE first, in the inserting transaction:
+  the topic's `bus_topics` row for a topic table (the relay locks all its batch's topics in one statement, in key
+  order, so two relays never deadlock; a dead-letter notice locks `system.alerts`), the `commands` row of
+  `inbound_sequence_locks` for `inbound_commands` (CLI, UI and comment commands, migration
+  `20261109T1015-inbound-sequence-locks`), and the listener's lease row per source type for a stream source's
+  `inbound_raw_records` (already so). Readers stay plain reads. Chosen over a high-water mark (the lowest seq still
+  in flight, or a settle delay), which needs either a vendor-specific query of open transactions or a delay on every
+  message; the lock costs one indexed read per writing transaction and serializes only writers to the same
+  sequence. Solo: SQLite has one writer, so the lock is skipped there. Enterprise: MySQL replicas and components
+  write one topic one transaction at a time.
+- **Leases are renewed right before handling** (since 2026-11-09, RFC 0015 review). `consume` leases up to one
+  message per partition (or `max` competing rows) at once, and the consumer handles them in order, so a later one's
+  lease could run out while earlier ones are handled and a second replica would take it too. `EventBus.renew(c)`
+  extends the lease from the horizon only while it is still that claim's and has not run out; the component
+  consumer calls it before each `handle` and skips a message whose renew is refused (the new holder handles it).
+- **A consumer group starts at an explicit position** (since 2026-11-09, RFC 0015 review; decision changed: a new
+  group no longer starts at seq 0, see History). `EventBus.subscribe(group, topic, from)` registers a group on a
+  partitioned or fan-out topic: `latest` (the default) starts each partition after its highest seq at that call,
+  `earliest` before the first message the topic still holds; a group that has cursors keeps them, whatever is
+  asked. A handler opts in with `startFrom: "earliest"` on its descriptor (none does today). "Latest" is taken when
+  the group subscribes, not at its first consume: the controller role subscribes every handler when it wires its
+  components, before any of them relays, so a message published after the process starts (a startup command, a
+  first poll) is delivered, and a handler added later skips only what was published before its first start.
+  `consume` refuses a group that never subscribed. Competing topics are one queue for every group: nothing to
+  register. Solo and enterprise: the same; on a fresh store every topic is empty, so latest equals earliest.
+- **Inserts skip key conflicts only** (since 2026-11-09, RFC 0015 review; decision changed: no `INSERT IGNORE`, see
+  History). `insertOrSkip` is `ON CONFLICT DO NOTHING` on SQLite and a plain INSERT whose duplicate-key error is
+  caught on MySQL, so a value too long for its column fails instead of being cut. Not `ON DUPLICATE KEY UPDATE pk =
+  pk`: under the driver's `FOUND_ROWS` flag its row count is 1 for a skip too, and the inbox needs to tell a
+  duplicate from a new key. `envelopeProblems` refuses an id, type, subject, project, idempotency key, causation,
+  correlation, passport or producer longer than 191 characters, and the bus a partition key longer than that, at
+  publish (never in the relay, which would stall the outbox).
 - **The bus and the tick generator are plugins** (decision changed 2026-11-08, M3 leftovers; see History).
   `plugins.bus` (EventBus, default `sql`, docs/plugins/event-bus.md) and `plugins.ticks` (TickGenerator, default
   `time-based`, `manual` for tests, docs/plugins/tick-generator.md) are chosen in `factory.config.json`; compose
@@ -377,6 +412,12 @@ force.
 - **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
   transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
   inline), outside any batch, and outbox delivery never waited on the forge budget.
+- **Seq cursors** (decision changed 2026-11-09, RFC 0015 review finding 1). Before: inserts into a topic table or
+  `inbound_commands` took no lock, so on MySQL a cursor could pass a seq that committed later and lose it.
+- **Start of a new consumer group** (decision changed 2026-11-09, review finding 6). Before: `consume` created a
+  group's cursors at seq 0 on first use, so a new or renamed handler replayed the topic's whole retention.
+- **Skipping duplicate rows** (decision changed 2026-11-09, review finding 7). Before: `INSERT IGNORE` on MySQL,
+  which also hid values cut to their column.
 - **Contract migrations** (decision changed 2026-11-09, RFC 0015 M11). Before: the runner applied every pending
   migration, a contract one too, on open (SQLite) and on `npm run migrate` (MySQL); none was written yet.
 - **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,

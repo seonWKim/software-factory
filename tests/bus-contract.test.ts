@@ -21,6 +21,8 @@ import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { tickAt } from "../src/shared/ticks/tick-generator.js";
+import { pauseFirstTransaction } from "./helpers/paused-driver.js";
 import requiresMigration from "../src/bus/migrations/20261109T0100-bus-competing-requires.migration.js";
 
 // The bus contract (RFC 0015 §5, §11 M3): every EventBus implementation passes it. It runs on SQLite always
@@ -126,6 +128,10 @@ async function setup(backend: Backend) {
     deliver(db, bus, a, consumer, c, async (tx, m) => {
       await tx.run("INSERT INTO testc_effects (k) VALUES (?)", [`${consumer}:${m.idempotency_key}`]);
     });
+  // As a consumer does when it starts: the topics are empty, so "latest" starts at the first message.
+  for (const group of ["g", "g1", "g2", "alarms", "ui"]) {
+    for (const topic of [EVENTS, SYSTEM_ALERTS]) await a.subscribe(group, topic.name, "latest");
+  }
   await advance(0);
   return { db, a, b, newBus, scheduler, msg, publish, relay, advance, effects, handle, now, componentTicks, busTicks };
 }
@@ -154,6 +160,24 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await expect(s.publish(s.msg("Unknown", "x"))).rejects.toThrow("no topic declares it");
     await expect(s.publish(s.msg("Happened", "x", { ttl: 1_000 }))).rejects.toThrow("below test.events's maximum redelivery");
     await expect(s.publish({ ...s.msg("Happened", "x"), payload: { body: "x".repeat(201) } })).rejects.toThrow("store it and send its id");
+  });
+
+  it("skips only a key conflict: a value too long for its column fails instead of being cut", async () => {
+    const s = await setup(backend);
+    const m = s.msg("Happened", "x");
+    expect(await s.db.transaction((tx) => s.a.claim(tx, "h", m))).toBe("new");
+    expect(await s.db.transaction((tx) => s.a.claim(tx, "h", m))).toBe("duplicate");
+    // Two consumers whose names share their first 191 characters: INSERT IGNORE cut both to one inbox key on MySQL.
+    const prefix = "c".repeat(191);
+    const first = s.db.transaction((tx) => s.a.claim(tx, `${prefix}a`, m));
+    if (backend.name === "mysql") await expect(first).rejects.toThrow(/too long/i);
+    else {
+      expect(await first).toBe("new");
+      expect(await s.db.transaction((tx) => s.a.claim(tx, `${prefix}b`, m))).toBe("new");
+    }
+    const keyed = defineTopic({ ...TOPIC_BASE, name: "test.keyed", messages: { Keyed: "event" }, consumption: "partitioned", partitionKey: (x) => `${x.subject}:${"p".repeat(191)}` });
+    const bus = new SqlEventBus({ db: s.db, component: "testc", topics: [keyed], consumerId: "k" });
+    await expect(s.db.transaction((tx) => bus.publish(tx, [s.msg("Keyed", "x")]))).rejects.toThrow("partition key is longer than 191");
   });
 
   it("at-least-once delivery plus inbox dedupe is effectively once", async () => {
@@ -196,6 +220,57 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await s.a.ack(c!);
     await s.advance(LEASE_MS);
     expect(await s.a.consume("g", EVENTS.name, 10)).toEqual([]);
+  });
+
+  it("renew keeps a batch's later message from another consumer while the earlier ones are handled, and refuses once it ran out", async () => {
+    const s = await setup(backend);
+    await s.publish(...Array.from({ length: 8 }, (_, i) => s.msg("Happened", `s${i}`)));
+    await s.publish(s.msg("WorkRequested", "w1"), s.msg("WorkRequested", "w2"));
+    await s.relay();
+    for (const topic of [EVENTS.name, WORK.name]) {
+      // One consume leases a whole batch; the consumer handles it in order.
+      const [handled, later] = await s.a.consume("g", topic, 2);
+      // Handling the first took most of the lease; the second is renewed right before its turn.
+      await s.advance(LEASE_MS - 1);
+      expect(await s.a.renew(later!)).toBe(true);
+      await s.advance(LEASE_MS - 1);
+      // The first one's lease ran out (its consumer crashed): only it goes to another consumer.
+      const taken = (await s.b.consume("g", topic, 10)).map((c) => c.message.id);
+      expect(taken).toContain(handled!.message.id);
+      expect(taken).not.toContain(later!.message.id);
+      // Taken over, and run out: renew refuses both, so neither is handled by a stale consumer.
+      expect(await s.a.renew(handled!)).toBe(false);
+      await s.advance(LEASE_MS);
+      expect(await s.a.renew(later!)).toBe(false);
+    }
+  });
+
+  it("a new group starts after what the topic holds unless it opts for earliest; an existing group keeps its cursor", async () => {
+    const s = await setup(backend);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    const drain = async (group: string) => {
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        for (const c of await s.a.consume(group, EVENTS.name, 10)) {
+          ids.push(c.message.id);
+          await s.a.ack(c);
+        }
+      }
+      return ids;
+    };
+    await expect(s.a.consume("new", EVENTS.name, 10)).rejects.toThrow("consumer group new is not subscribed to test.events");
+    await s.a.subscribe("new", EVENTS.name, "latest");
+    await s.a.subscribe("replay", EVENTS.name, "earliest");
+    expect(await drain("new")).toEqual([]);
+    expect(await drain("replay")).toEqual(["m1"]);
+    expect(await drain("g")).toEqual(["m1"]);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    // Subscribing again on the next start moves no cursor, whatever the position asked for.
+    await s.a.subscribe("g", EVENTS.name, "latest");
+    await s.b.subscribe("replay", EVENTS.name, "earliest");
+    for (const group of ["new", "replay", "g"]) expect(await drain(group)).toEqual(["m2"]);
   });
 
   it("keeps per-partition order: one message of a partition at a time, in publish order", async () => {
@@ -442,6 +517,39 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await expect(s.publish({ ...s.msg("WorkRequested", "w"), payload: { needs: "Docker" } })).rejects.toThrow("is not key=value");
     expect(() => s.newBus("x", ["docker"])).toThrow("is not key=value");
     expect(() => defineTopic({ ...TOPIC_BASE, name: "test.bad", consumption: "partitioned", requires: () => [] })).toThrow("only a competing topic");
+  });
+
+  // MySQL assigns AUTO_INCREMENT at insert, not at commit; SQLite has one writer, so its seqs always commit in order.
+  it.runIf(backend.name === "mysql")("delivers a seq whose transaction commits after a higher one's (writers to a topic commit in seq order)", async () => {
+    const s = await setup(backend);
+    const mdb: MigrationDb = { dialect: backend.name, all: (q, p) => s.db.all(q, p), run: (q, p) => s.db.run(q, p) };
+    await ensureComponentTables(mdb, "testd");
+    // Two components relay to one partition: the first stops after its insert, before its commit.
+    const paused = pauseFirstTransaction(s.db, /^UPDATE testc_outbox SET published_at/);
+    const slow = new SqlEventBus({ db: paused.driver, component: "testc", topics: TOPICS, consumerId: "slow" });
+    const fast = new SqlEventBus({ db: s.db, component: "testd", topics: TOPICS, consumerId: "fast" });
+    await s.publish(s.msg("Happened", "x"));
+    await s.db.transaction((tx) => fast.publish(tx, [s.msg("Happened", "x")]));
+    const tick = tickAt("relay", 1, Date.parse(s.now()));
+    const first = slow.relay(tick);
+    await paused.reached;
+    // Unserialized, this insert takes the next seq and commits while the first is still open.
+    const second = fast.relay(tick);
+    await new Promise((r) => setTimeout(r, 300));
+    const got: string[] = [];
+    const drain = async () => {
+      for (let i = 0; i < 3; i++) {
+        for (const c of await s.a.consume("g", EVENTS.name, 10)) {
+          got.push(c.message.id);
+          await s.a.ack(c);
+        }
+      }
+    };
+    await drain();
+    paused.release();
+    await Promise.all([first, second]);
+    await drain();
+    expect(got).toEqual(["m1", "m2"]);
   });
 
   it("refuses a topic whose partitions changed after its tables were created", async () => {

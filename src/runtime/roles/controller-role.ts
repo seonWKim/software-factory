@@ -471,7 +471,7 @@ export class ControllerRole implements Decisions {
         new Listener({ store: d.store, source, clock: d.clock, config: leaseTimings(d.settings), log: d.log, owner }).run(signal),
       log: d.log,
     });
-    return {
+    const w: Wiring = {
       inbound,
       inboundBus,
       controllerBus,
@@ -504,5 +504,8 @@ export class ControllerRole implements Decisions {
         }),
       }),
     };
+    // Before anything relays: a handler new to a topic starts after what the topic holds now (design 10).
+    for (const c of [w.normalizers, w.decisions, w.aggregator]) await c.subscribe();
+    return w;
   }
 }

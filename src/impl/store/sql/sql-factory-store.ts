@@ -2299,6 +2299,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectCliCommand(tx, input.key);
       if (existing) return { created: false, command: existing };
+      await this.lockCommandSequence(tx);
       const created = await this.insertOnce(
         tx,
         "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2336,6 +2337,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectAppCommandRequest(tx, input.key);
       if (existing) return { created: false, request: existing };
+      await this.lockCommandSequence(tx);
       const created = await this.insertOnce(
         tx,
         "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)",
@@ -2494,6 +2496,16 @@ export class SqlFactoryStore implements FactoryStore {
           expires_at: row.expires_at as Timestamp,
         }
       : null;
+  }
+
+  /**
+   * Takes the `commands` lock row until the transaction ends, so inserts into `inbound_commands` commit in seq
+   * order: MySQL assigns AUTO_INCREMENT at insert, and inbound's cursor (`seq > cursor`) would skip a lower seq
+   * that commits after a higher one (design 10-event-driven, sequence locks).
+   */
+  private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
+    const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'${this.db.dialect.forUpdate}`);
+    if (!row) throw new Error("inbound_sequence_locks has no commands row: run npm run migrate");
   }
 
   /** False if a unique key says the row is already there. */

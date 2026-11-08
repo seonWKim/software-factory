@@ -1,6 +1,6 @@
 # EventBus
 
-What it does: carries the factory's messages between components (RFC 0015 §5, design [10-event-driven.md](../design/10-event-driven.md)). A component publishes into its own outbox in its own transaction; the relay moves the outbox onto the topics; each consumer group claims, acks or nacks; failures retry with the topic's backoff and end as dead letters, each one announced on `system.alerts`. The retry scheduler moves the bus's time (the release horizon) on its `retry` tick.
+What it does: carries the factory's messages between components (RFC 0015 §5, design [10-event-driven.md](../design/10-event-driven.md)). A component publishes into its own outbox in its own transaction; the relay moves the outbox onto the topics; each consumer group subscribes when it starts (a new group at the latest message unless its handler asks for `earliest`), then claims, renews its lease right before handling, acks or nacks; failures retry with the topic's backoff and end as dead letters, each one announced on `system.alerts`. The retry scheduler moves the bus's time (the release horizon) on its `retry` tick.
 
 Interface (`src/bus/index.ts`): a plugin is a `BusPlugin`. `component({ db, component, topics, consumerId, capabilities })` builds one component's `EventBus & Inbox & Relay`; `scheduler(db, topics)` builds the `RetryScheduler` the bus role ticks. The runtime builds the plugin through the registry (`src/compose.ts`) and hands it to the roles.
 

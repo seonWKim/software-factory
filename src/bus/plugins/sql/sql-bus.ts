@@ -12,12 +12,13 @@
 //   waits alone.
 // - Every time comparison is against the scheduler's release horizon (bus_scheduler), never a clock.
 
-import { MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
+import { MAX_KEY_LENGTH, MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
 import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
+import type { StartPosition } from "../../../shared/handler.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
-import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
+import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
 import SYSTEM_ALERTS, { DEAD_LETTERED } from "../../topics/system-alerts.topic.js";
@@ -58,8 +59,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly capabilities: readonly string[];
   private readonly byName = new Map<string, TopicDescriptor>();
   private readonly byType = new Map<string, TopicDescriptor>();
-  /** Groups whose cursor rows exist; only saves a write, the rows themselves are the state. */
-  private readonly cursorsReady = new Set<string>();
+  /** Groups whose cursor rows exist; only saves a read, the rows themselves are the state. */
+  private readonly subscribed = new Set<string>();
 
   constructor(o: SqlBusOptions) {
     if (!/^[a-z]+$/.test(o.component)) throw new Error(`component name "${o.component}" must be lowercase letters`);
@@ -93,6 +94,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
       if (m.idempotency_key_ttl_ms !== null && m.idempotency_key_ttl_ms < floor) {
         problems.push(`idempotency_key_ttl_ms ${m.idempotency_key_ttl_ms} is below ${topic.name}'s maximum redelivery (${floor} ms)`);
       }
+      if (topic.partitionKey(m).length > MAX_KEY_LENGTH) problems.push(`its partition key is longer than ${MAX_KEY_LENGTH} chars`);
       if (problems.length > 0) throw new Error(`cannot publish ${m.type} ${m.id}: ${problems.join("; ")}`);
       // Checked here, so a bad requirement fails its producer and never the relay.
       requirementsOf(topic, m);
@@ -112,6 +114,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
       const rows = await tx.all(
         `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}${this.db.dialect.forUpdate}`,
       );
+      await this.lockTopics(tx, rows.map((r) => String(r.topic)));
       for (const r of rows) {
         await this.insertMessage(tx, this.topic(String(r.topic)), JSON.parse(String(r.envelope)) as Envelope, tick.now);
         await tx.run(`UPDATE ${this.outbox} SET published_at = ? WHERE seq = ?`, [tick.now, Number(r.seq)]);
@@ -120,7 +123,24 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     });
   }
 
-  /** Writes one message to its topic's table; a message id already there is skipped. */
+  /**
+   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables: inserts
+   * into one topic then commit in seq order. MySQL assigns AUTO_INCREMENT at insert, not at commit, so without it a
+   * cursor (`seq > last_seq`) could pass a lower seq whose transaction commits later and skip it for good. One
+   * statement in key order, so two writers never take two topics in opposite orders. SQLite has one writer.
+   */
+  private async lockTopics(tx: SqlExecutor, names: readonly string[]): Promise<void> {
+    const forUpdate = this.db.dialect.forUpdate;
+    const unique = [...new Set(names)];
+    if (forUpdate === "" || unique.length === 0) return;
+    const locked = await tx.all(
+      `SELECT name FROM ${TOPICS_TABLE} WHERE name IN (${unique.map(() => "?").join(", ")}) ORDER BY name${forUpdate}`,
+      unique,
+    );
+    if (locked.length !== unique.length) throw new Error(`${TOPICS_TABLE} lists not every topic of ${unique.join(", ")}: its tables were not created`);
+  }
+
+  /** Writes one message to its topic's table (the caller holds its lock); a message id already there is skipped. */
   private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
     const key = topic.partitionKey(m);
     const values: SqlValue[] = [
@@ -145,17 +165,19 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const competing = topic.consumption === "competing";
     if (competing) values.push(JSON.stringify(requirementsOf(topic, m)));
     const columns = competing ? `${MESSAGE_COLUMNS}, requires` : MESSAGE_COLUMNS;
-    await tx.run(insertOrSkip(this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`), values);
+    await insertOrSkip(tx, this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`, values);
   }
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
   async claim(tx: Tx, consumer: string, m: Envelope): Promise<"new" | "duplicate"> {
     const expires = m.idempotency_key_ttl_ms === null ? null : addMs(m.occurred_at, m.idempotency_key_ttl_ms);
-    const n = await tx.run(
-      insertOrSkip(this.dialect, `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`),
+    const inserted = await insertOrSkip(
+      tx,
+      this.dialect,
+      `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
       [consumer, m.idempotency_key, m.id, await readHorizon(tx), expires],
     );
-    return n === 1 ? "new" : "duplicate";
+    return inserted ? "new" : "duplicate";
   }
 
   /** Removes inbox rows past their key's TTL and old published outbox rows (the component's `prune` tick). */
@@ -164,10 +186,48 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     await this.db.run(`DELETE FROM ${this.outbox} WHERE published_at IS NOT NULL AND published_at < ?`, [addMs(tick.now, -this.outboxRetentionMs)]);
   }
 
+  async subscribe(group: string, topicName: string, from: StartPosition): Promise<void> {
+    const topic = this.topic(topicName);
+    if (topic.consumption === "competing") return;
+    const t = topicTables(topic.name);
+    await this.db.transaction(async (tx) => {
+      // Every seq up to a partition's committed MAX has committed: inserts into a topic commit in seq order.
+      const heads = from === "earliest" ? [] : await tx.all(`SELECT ${P} AS p, MAX(seq) AS seq FROM ${t.messages} GROUP BY ${P}`);
+      const head = new Map(heads.map((r) => [Number(r.p), Number(r.seq)]));
+      for (let p = 0; p < topic.partitions; p++) {
+        await insertOrSkip(tx, this.dialect, `${t.cursors} (consumer_group, ${P}, last_seq) VALUES (?, ?, ?)`, [group, p, head.get(p) ?? 0]);
+      }
+    });
+    this.subscribed.add(`${topic.name}\0${group}`);
+  }
+
   async consume(group: string, topicName: string, max: number): Promise<Claimed[]> {
     const topic = this.topic(topicName);
     const horizon = await readHorizon(this.db);
     return topic.consumption === "competing" ? this.consumeRows(group, topic, max, horizon) : this.consumePartitions(group, topic, max, horizon);
+  }
+
+  async renew(c: Claimed): Promise<boolean> {
+    const t = topicTables(c.topic);
+    const horizon = await readHorizon(this.db);
+    const until = addMs(horizon, this.leaseMs);
+    // Still ours and not yet run out: another consumer may claim it once `lease_until <= horizon`.
+    const n =
+      this.topic(c.topic).consumption === "competing"
+        ? await this.db.run(`UPDATE ${t.messages} SET claim_until = ? WHERE seq = ? AND claim_token = ? AND acked_at IS NULL AND claim_until > ?`, [
+            until,
+            c.seq,
+            c.token,
+            horizon,
+          ])
+        : await this.db.run(`UPDATE ${t.cursors} SET lease_until = ? WHERE consumer_group = ? AND ${P} = ? AND lease_token = ? AND lease_until > ?`, [
+            until,
+            c.group,
+            c.partition,
+            c.token,
+            horizon,
+          ]);
+    return n === 1;
   }
 
   async ack(c: Claimed): Promise<void> {
@@ -197,7 +257,10 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
           [c.group, c.seq, c.message.subject, c.attempt, code, lastError, horizon],
         );
         // The notice commits with the dead letter. A notice that is dead-lettered itself raises none (no loop).
-        if (topic.name !== SYSTEM_ALERTS.name) await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
+        if (topic.name !== SYSTEM_ALERTS.name) {
+          await this.lockTopics(tx, [SYSTEM_ALERTS.name]);
+          await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
+        }
         return;
       }
       const due = addMs(horizon, retryDelayMs(topic.backoff, c.attempt, `${c.group}:${c.seq}:${c.attempt}`));
@@ -267,7 +330,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   private async consumePartitions(group: string, topic: TopicDescriptor, max: number, horizon: string): Promise<Claimed[]> {
     const t = topicTables(topic.name);
-    await this.ensureCursors(group, topic, t);
+    await this.assertSubscribed(group, topic, t);
     const candidates = await this.db.all(
       `SELECT c.${P} AS p, c.lease_token AS token FROM ${t.cursors} c WHERE c.consumer_group = ? AND (c.lease_until IS NULL OR c.lease_until <= ?) ` +
         `AND (EXISTS (SELECT 1 FROM ${t.messages} m WHERE m.${P} = c.${P} AND m.seq > c.last_seq) ` +
@@ -336,13 +399,13 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     return null;
   }
 
-  private async ensureCursors(group: string, topic: TopicDescriptor, t: TopicTables): Promise<void> {
+  /** A group with no cursors was never subscribed: consuming would pick a start position by accident. */
+  private async assertSubscribed(group: string, topic: TopicDescriptor, t: TopicTables): Promise<void> {
     const key = `${topic.name}\0${group}`;
-    if (this.cursorsReady.has(key)) return;
-    for (let p = 0; p < topic.partitions; p++) {
-      await this.db.run(insertOrSkip(this.dialect, `${t.cursors} (consumer_group, ${P}) VALUES (?, ?)`), [group, p]);
-    }
-    this.cursorsReady.add(key);
+    if (this.subscribed.has(key)) return;
+    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM ${t.cursors} WHERE consumer_group = ?`, [group]);
+    if (Number(row!.n) !== topic.partitions) throw new Error(`consumer group ${group} is not subscribed to ${topic.name}: subscribe it when it starts`);
+    this.subscribed.add(key);
   }
 }
 
