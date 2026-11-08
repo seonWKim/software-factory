@@ -32,9 +32,9 @@ export interface UiCommands {
    * (a page with no auth wired) means false: Merge is disabled.
    */
   mergeAllowed?: () => Promise<boolean>;
-  /** Whether a forge is selected (`plugins.forge`), for a PR's Merge. Absent: not known here; the controller still checks. */
+  /** Whether a forge is selected (`plugins.forge`), for a PR's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   forge?: boolean;
-  /** Whether the controller's sandbox can merge locally, for a local item's Merge. Absent: not known here; the controller still checks. */
+  /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   localMerge?: boolean;
 }
 

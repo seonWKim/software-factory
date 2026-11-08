@@ -16,6 +16,7 @@ import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
 import type { CliIdentity } from "./core/local-cli.js";
+import { canMergeLocal } from "./core/local-merge.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -991,9 +992,14 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
+  // The Merge button's readiness facts, from config only (design §9): whether a forge is selected for a PR's merge,
+  // and whether the selected sandbox, the one the controller's local merge runs through, can merge locally. The
+  // sandbox is built only to ask that; the UI process never runs anything in it.
   const commands: UiCommands = {
     ...who, token,
     mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
+    forge: loaded.plugins.forge !== undefined,
+    localMerge: canMergeLocal(await p.sandbox()),
   };
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
