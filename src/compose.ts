@@ -170,7 +170,7 @@ export interface FileConfig {
    */
   projects?: unknown;
   /**
-   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["github.preflight"]}.
+   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["forge.preflight"]}.
    * Absent: no grants. Checked at startup against the broker's tools (toolGrantsConfig, src/core/config.ts): only
    * read-only tools the broker lists, only run kinds.
    */
@@ -622,11 +622,6 @@ async function githubParts(loaded: Loaded, p: Plugins, secrets: SecretStore, clo
 }
 
 /**
- * Shares GitHub's rate limit through the store from now on (design 05-sources, call budget): every process that
- * calls GitHub reads the last response any replica got, at most once per tick, and writes its own. With no GitHub
- * plugin selected there is no client, and no budget row is written.
- */
-/**
  * Startup refuses an old github.* tool name in `tool_grants` (the forge rename, phase 1), one line per name, each
  * naming the forge.* tool to grant instead. Runs before toolGrantsConfig, which checks the rest.
  */
@@ -640,6 +635,11 @@ function refuseAliasGrants(raw: unknown): void {
   if (problems.length > 0) throw new Error(problems.join("\n"));
 }
 
+/**
+ * Shares GitHub's rate limit through the store from now on (design 05-sources, call budget): every process that
+ * calls GitHub reads the last response any replica got, at most once per tick, and writes its own. With no GitHub
+ * plugin selected there is no client, and no budget row is written.
+ */
 function shareGitHubBudget(loaded: Loaded, github: GitHubClient, store: FactoryStore, config: FactoryConfig): void {
   if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
 }
