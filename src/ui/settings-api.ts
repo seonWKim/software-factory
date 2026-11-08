@@ -43,7 +43,7 @@ export interface UiSettings {
   resolveProject(): Promise<ProjectRef | null>;
   /** Random, per process; held only in memory. GET returns it, POST must send it in x-csrf-token. */
   csrfToken: string;
-  /** The `approve_merge` check for `mode` and `auto_merge_max_tier` (SettingsDeps.mayApproveMerge). Absent: no check. */
+  /** The `approve_merge` check for `mode`, `auto_merge_max_tier` and a loosening change (SettingsDeps.mayApproveMerge). Absent: no check. */
   mayApproveMerge?: () => Promise<string | null>;
 }
 

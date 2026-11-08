@@ -294,4 +294,28 @@ describe.each(BACKENDS)("factory mode and auto_merge_max_tier: $name", ({ make }
     expect((await run(d, "set", "workers", "2")).ok).toBe(true);
     expect(asked).toBe(3);
   });
+
+  it("a set or reset that loosens a tighten-only key needs approve_merge; tightening does not", async () => {
+    const { store } = await make();
+    let refusal: string | null = "the requester role cannot approve_merge";
+    let asked = 0;
+    const d: SettingsDeps = { ...deps(store, "local:dev"), mayApproveMerge: async () => (asked++, refusal) };
+    // Tightening: max_loops 3 (file) → 2, phases_auto_approve stays false. Not asked.
+    expect((await run(d, "set", "max_loops", "2")).ok).toBe(true);
+    expect((await run(d, "set", "phases_auto_approve", "false")).ok).toBe(true);
+    expect(asked).toBe(0);
+    // Loosening without the grant: refused, nothing written.
+    for (const args of [["set", "max_loops", "5"], ["reset", "max_loops"], ["set", "phases_auto_approve", "true"], ["set", "max_attempts", "4"]]) {
+      const r = await run(d, ...args);
+      expect(r.ok).toBe(false);
+      expect(r.lines[0]).toMatch(/^refused: loosening \S+ from .* needs approve_merge on the project: the requester role cannot approve_merge$/);
+    }
+    expect(asked).toBe(4);
+    expect(await store.listSettingChanges(10)).toHaveLength(2);
+    // With the grant: allowed.
+    refusal = null;
+    expect((await run(d, "set", "phases_auto_approve", "true")).ok).toBe(true);
+    expect((await run(d, "reset", "max_loops")).ok).toBe(true);
+    expect(await store.listSettingChanges(10)).toHaveLength(4);
+  });
 });
