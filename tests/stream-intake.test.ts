@@ -126,6 +126,32 @@ describe("stream intake: listener", () => {
     expect(await stateChangeCount(store, 1)).toBe(1);
   });
 
+  it("an event whose handling hits a store error is retried, not dropped", async () => {
+    const { store, clock } = await newStore();
+    const source = new FakeStreamSource();
+    source.push(slackEvent(1), "ev-1");
+    startListener(store, clock, source, "replica-a");
+    await waitFor(() => source.acks.length === 1, "ack");
+
+    let failing = true;
+    const flaky = patched(store, {
+      createWorkItem: async (...args) => {
+        if (failing) throw new Error("deadlock");
+        return store.createWorkItem(...args);
+      },
+    });
+    const c = controller(flaky, clock, source, "replica-a");
+    await c.tickIntake();
+    expect(await stateChangeCount(store, 1)).toBe(0);
+
+    failing = false;
+    for (let i = 0; i < 10 && (await stateChangeCount(store, 1)) === 0; i++) {
+      clock.advance(60_000);
+      await c.tickIntake();
+    }
+    expect(await stateChangeCount(store, 1)).toBe(1);
+  });
+
   it("a failed inbox write is not acked; the listener reconnects with backoff and logs once", async () => {
     const { store, clock } = await newStore();
     let failing = true;

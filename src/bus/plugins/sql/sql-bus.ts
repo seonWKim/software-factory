@@ -19,7 +19,8 @@ import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
 import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
-import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
+import { addMs } from "../../../shared/time.js";
+import { MESSAGE_COLUMNS, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
 import SYSTEM_ALERTS, { DEAD_LETTERED } from "../../topics/system-alerts.topic.js";
 

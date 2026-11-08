@@ -10,8 +10,8 @@ import { commandIdentity } from "../src/identity/runtime/start.js";
 import { AuditedAuthProvider, PluginIdentityProvider } from "../src/impl/auth/audited-auth.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
-import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { FakeAuth, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { PROJECT_KEY, issue, newStore } from "./helpers/store.js";
 
 // RFC 0015 §8 "Edge" (M9): a CLI or UI command row carries its actor's passport; a comment command a poll stored
 // gets one from its provider's mapping when inbound relays it, and CommandReceived carries it as passport_id.
@@ -100,6 +100,26 @@ describe("edge passports", () => {
       expect(await store.db.all("SELECT passport_id, principal, decision, reason FROM authz_audit ORDER BY seq")).toEqual([
         { passport_id: passport, principal: "local:ada", decision: "allow", reason: "allowed" },
         { passport_id: passport, principal: "local:ada", decision: "deny", reason: "revoked" },
+      ]);
+    } finally {
+      await identity.stop();
+    }
+  });
+
+  it("a comment command is decided under the passport inbound minted at the relay, audited under it", async () => {
+    // The row a poll stored has no passport; only CommandReceived carries the one minted at the relay.
+    const { store, clock, identity } = await setup();
+    try {
+      const plugin: AuthProvider = { resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }), authorize: async () => ({ allow: true }) };
+      const auth = new AuditedAuthProvider(plugin, identity.passports);
+      const controller = new ControllerRole({ store, source: new FakeSource(), auth, clock, config, log: silent, scanner: cleanScanner, identity });
+      await store.createWorkItem(issue(7), { kind: "system", id: "system:test" });
+      await store.appendCliCommand({ key: "github:555", actor: "github:42", command: "approve", args: { source: issueRef(7) } });
+      await controller.tickCommands();
+      const [sent] = await store.db.all(`SELECT passport_id FROM ${topicTables("controller.commands").messages}`);
+      expect(sent!.passport_id).toEqual(expect.any(String));
+      expect(await store.db.all("SELECT passport_id, principal FROM authz_audit ORDER BY seq")).toEqual([
+        { passport_id: sent!.passport_id, principal: "github:42" },
       ]);
     } finally {
       await identity.stop();

@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { TickGenerator } from "../../shared/ticks/tick-generator.js";
+import { addMs } from "../../shared/time.js";
 import type { SqlExecutor } from "../../state/index.js";
 import { SERVICE_PREFIX, ServiceAuthProvider, ServiceGrant, serviceRestrictions, type ServiceName } from "../plugins/service/service-identity.js";
 import { ProfileStore, checkDisplayName } from "../profiles/profiles.js";
@@ -134,7 +135,7 @@ export class PassportService implements Authorization, PassportChecker {
       kind: "person",
       key_id: key.id,
       issued_at: now,
-      expires_at: plusMs(now, ttl),
+      expires_at: addMs(now, ttl),
       restrictions: opts.restrictions ?? {},
     });
     const token = mintToken(key, root);
@@ -151,7 +152,7 @@ export class PassportService implements Authorization, PassportChecker {
     const now = this.now();
     const ttl = Math.min(SERVICE_TTL_MS, this.maxTtlMs);
     const held = this.services.get(name);
-    if (held && plusMs(now, ttl / 2) < held.passport.expires_at && !this.revoked.has(held.passport.id)) return held;
+    if (held && addMs(now, ttl / 2) < held.passport.expires_at && !this.revoked.has(held.passport.id)) return held;
     const issued = await this.authenticate({ provider: "service", subject: name }, "service", { ttl_ms: ttl, restrictions: serviceRestrictions(name) });
     this.services.set(name, issued);
     return issued;
@@ -294,8 +295,4 @@ export class PassportService implements Authorization, PassportChecker {
     }
     return "no_role";
   }
-}
-
-function plusMs(iso: string, ms: number): string {
-  return new Date(Date.parse(iso) + ms).toISOString();
 }
