@@ -45,6 +45,12 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
   readonly forge: Pick<Forge, "prChecks" | "prCheckResults"> | null;
   /** The provider that suggests a command for a plain comment (a query, no state change); null when none is configured. */
   readonly llm: NonNullable<ControllerDeps["llm"]> | null;
+  /**
+   * The permission checks (RFC 0015 §8): a person's command by the auth plugin of its origin (`local`: the CLI and the
+   * local UI) under its passport, and the controller's automatic steps under its service passport (null: no
+   * Identity, allowed). A check: it changes no controller state; Identity audits each decision.
+   */
+  readonly auth: { readonly forge: ControllerDeps["auth"]; readonly local: ControllerDeps["auth"] | null; readonly service: ControllerDeps["service_auth"] | null };
 };
 
 /**
@@ -138,6 +144,7 @@ export class Kernel {
       scan: (channel, content) => d.scanner.scan(channel, content),
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
       llm: d.llm ?? null,
+      auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
     };
   }
 
