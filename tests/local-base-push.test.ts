@@ -20,7 +20,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { BasePushInput, Forge } from "../src/interfaces/forge.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { cleanScanner, config, silent } from "./helpers/fakes.js";
-import { newStore, system } from "./helpers/store.js";
+import { newStore, system, w1 } from "./helpers/store.js";
 
 // The base push (design 05-sources, Local items): a local merge with a forge selected queues one base push in the
 // same transition that closes the item; the outbox step fetches the remote base, merges it when it moved, and
@@ -40,6 +40,9 @@ class FakeMergeSandbox {
   async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
     this.merges.push(spec);
     return { merged: true, sha: SHA("a"), already: false, not_updated: [] };
+  }
+  async localConflicts(): Promise<string[]> {
+    return [];
   }
   async syncBase(spec: BaseSyncSpec): Promise<BaseSyncResult> {
     this.syncs.push(spec);
@@ -88,10 +91,24 @@ function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbo
   });
 }
 
+/**
+ * `factory merge` through the merge queue (RFC 0015 M8): the change enters, its merge-check run is completed green
+ * as a worker would, and the run's result lands it.
+ */
+async function merge(f: Awaited<ReturnType<typeof setup>>): Promise<void> {
+  expect(await f.controller.mergeLocal(f.id, WHO, "k")).toBeNull();
+  const run = await f.store.claimRun({ worker_id: w1, kinds: ["merge-check"], lease_ms: 60_000 });
+  expect(run?.kind).toBe("merge-check");
+  await f.store.completeRun(run!.id, run!.lease!.token, { status: "succeeded", summary: "s", data: { result: "green", base_sha: SHA("0") } });
+  // Applied alone, with no outbox step after it, so a queued base push is still pending.
+  const done = (await f.store.listRuns(f.id)).find((r) => r.id === run!.id)!;
+  await (await f.controller.unit("run-results")).apply(done);
+}
+
 describe("base push: queued by the local merge, made by the outbox step", () => {
   it("solo, no forge: the merge moves the local base and queues no push; nothing remote is called", async () => {
     const f = await setup();
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     await f.controller.tickOutbox();
     expect(f.sandbox.merges).toHaveLength(1);
     expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: SHA("a") });
@@ -105,7 +122,7 @@ describe("base push: queued by the local merge, made by the outbox step", () => 
     const g = fakeForge();
     g.state.fail = "network unreachable";
     const f = await setup({ forge: g.forge });
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     // Merged and closed, the push only queued: no fetch, no push yet.
     const closed = (await f.store.getWorkItem(f.id))!;
     expect(closed).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: SHA("a") });
@@ -124,7 +141,7 @@ describe("base push: queued by the local merge, made by the outbox step", () => 
     const g = fakeForge();
     g.state.fail = "API rate limit exceeded";
     const f = await setup({ forge: g.forge });
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     const closed = (await f.store.getWorkItem(f.id))!;
     await f.controller.tickOutbox();
     expect(g.pushes).toHaveLength(1);
@@ -156,7 +173,7 @@ describe("base push: queued by the local merge, made by the outbox step", () => 
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
     f.sandbox.sync = () => ({ synced: true, local: SHA("a"), remote: SHA("c"), contains: true, not_updated: [] });
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     await f.controller.tickOutbox();
     expect(g.pushes).toEqual([]);
     expect(await f.store.getBasePush(f.id)).toMatchObject({ outcome: "pushed", pushed_sha: SHA("c") });
@@ -166,7 +183,7 @@ describe("base push: queued by the local merge, made by the outbox step", () => 
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
     f.sandbox.sync = () => ({ synced: false, conflicts: ["a.txt", "src/c.txt"] });
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     const closed = (await f.store.getWorkItem(f.id))!;
     await f.controller.tickOutbox();
     f.clock.advance(cfg.retry_max_ms);
@@ -185,7 +202,7 @@ describe("base push: queued by the local merge, made by the outbox step", () => 
   it("two replicas running the step at once push the row once", async () => {
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
-    await f.controller.mergeLocal(f.id, WHO, "k");
+    await merge(f);
     const other = replica(f.store, f.clock, f.sandbox, g.forge);
     await Promise.all([f.controller.tickOutbox(), other.tickOutbox()]);
     expect(g.pushes).toHaveLength(1);

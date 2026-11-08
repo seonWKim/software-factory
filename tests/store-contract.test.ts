@@ -1611,6 +1611,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "identity_profiles", // display names by user id (owner decision 2026-11-08)
       "identity_revocations",
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
+      "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
+      "controller_merge_queue_entries",
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",

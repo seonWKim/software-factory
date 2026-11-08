@@ -33,6 +33,11 @@ export interface LocalMergeSpec {
   checks: readonly (readonly string[])[];
   /** Each check's time limit. */
   timeout_ms: number;
+  /**
+   * The merge queue's landing (RFC 0015 M8): the base its merge-check run checked the merged result on. A base at
+   * another commit moves nothing (`base_moved`), so what lands is the tree that was checked.
+   */
+  expected_base?: string;
 }
 
 /**
@@ -47,14 +52,22 @@ export type LocalMergeResult =
    */
   | { merged: true; sha: string; already: boolean; not_updated: string[] }
   | { merged: false; conflicts: string[] }
-  | { merged: false; refused: string };
+  | { merged: false; refused: string }
+  | { merged: false; base_moved: string };
 
 /**
  * A sandbox that can merge locally: `mergeLocal` writes the merge commit in the factory repo's object store
  * (never the owner's checkout), runs the checks on it in a temporary worktree, and moves only
  * `refs/heads/<base_ref>`, conditionally on the base it merged.
  */
-export type LocalMergeSandbox = Sandbox & { mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> };
+export type LocalMergeSandbox = Sandbox & {
+  mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult>;
+  /**
+   * The paths `branch` conflicts in when merged into the local `base_ref` (sorted; empty: it merges cleanly), from
+   * objects only; null when either branch is missing. A merge queue entry is refused at once on a conflict.
+   */
+  localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null>;
+};
 
 /** What the base push step asks the sandbox: bring the remote base into the local one before the push. */
 export interface BaseSyncSpec {
@@ -88,5 +101,6 @@ export function canSyncBase(sandbox: Sandbox | undefined): sandbox is BaseSyncSa
 }
 
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
-  return !!sandbox && typeof (sandbox as Partial<LocalMergeSandbox>).mergeLocal === "function";
+  const s = sandbox as Partial<LocalMergeSandbox> | undefined;
+  return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
 }

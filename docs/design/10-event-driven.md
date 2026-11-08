@@ -195,10 +195,35 @@ force.
   transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
   and checked by the ToolBroker on every call. The auth plugins still decide commands; every decision is written to
   `authz_audit`.
+- **The merge queue** (decision changed 2026-11-08, RFC 0015 M8; see History). A local change merges only through
+  the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
+  `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
+  migration `20261109T0300-controller-merge-queue`; each entry is a `MergeQueueEntry` actor). Entry: only a ready
+  change (merge_pending: reviewed, its own checks green) approved by `factory merge` / the Merge button (the
+  approver role) or by auto mode where its tier allows, so a change waiting on a person is never in the queue. A
+  branch that conflicts with the base is refused at once, as before. Check: the head entry's `merge-check` run
+  (`src/worker/runs/merge-check/`, no agent, no push) merges the branches ahead of it and then its own onto the base
+  in a fresh run folder and runs the install command and the checks there. Green: `LocalMergeUnit.land` moves the
+  base only while it is still at the checked commit, so the tree that lands is the tree that was checked (no check
+  runs again; a moved base sends the entry back to be checked again). Red, or a failed check run: the entry leaves
+  with the reason posted on the item (which stays in merge_pending), the entries behind it are rebuilt, and the next
+  one is checked. Every move is conditional on the state it leaves; entries of one queue are made one at a time (the
+  queue row is locked). Auto mode tries once per passed review run (its key no longer names the item version, which
+  the queue's state changes bump). Solo default and the only path built: depth 1, no batching. Not built yet: the
+  enterprise depth setting (speculative depth N, default 2, as a discovered `*.setting.ts`), batches with bisect and
+  partitions; the delayed `MergeCheckTimedOut{entry_id}` message (`MergeQueueUnit.timedOut` exists; the units have
+  no way to emit a bus message yet, so a stuck check waits for the run's own timeouts and the reaper); the `paused`
+  state's command; the `github-change` merge delivery (the factory merges no PR today; a person merges it on the
+  forge) and the outbound `local` merge delivery: `land` is the one function the M7 delivery handler takes over.
+  The unit's I/O goes through the actor's store and `local-merge` (unit-purity follow-up).
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
 ## History
+
+- **Merging a local change** (decision changed 2026-11-08, RFC 0015 M8). Before: `factory merge` and auto mode
+  merged at once in the controller's sandbox, running the install command and the checks on the merge commit; two
+  changes approved together were each checked against the base alone (05-sources.md "Merge").
 
 - **Table names and schema steps** (decision changed 2026-11-08, RFC 0015 M1). Before: unprefixed tables shared
   by every part of the code, schema changes appended to SQLite's numbered list and to `migrations/mysql/`

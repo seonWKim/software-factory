@@ -47,7 +47,7 @@ export const gitVerb = (args: readonly string[]): string => {
   return args[i] ?? "";
 };
 
-export const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve"];
+export const KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "resolve", "improve", "merge-check"];
 /** Files of a PR kept as its pr_files (design §5, 2026-11-03); past the size gate's file cap anyway. */
 export const MAX_PR_FILES = 500;
 /** The read role's tools (triage): only `read` capability, no write or exec tool. */

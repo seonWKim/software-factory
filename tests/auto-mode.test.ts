@@ -40,8 +40,8 @@ const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
   git(dir, "add", "-A");
   git(dir, ...ident, "commit", "--quiet", "-m", msg);
 };
-/** A check that passes everywhere except on a merge commit (the local merge's `.merge-*` worktree). */
-const FAILS_ON_MERGE = ["sh", "-c", 'case "$PWD" in */.merge-*) exit 1;; esac; exit 0'];
+/** A check that passes everywhere except on a merge commit (the merge queue's merge-check run checks one). */
+const FAILS_ON_MERGE = ["sh", "-c", "git rev-parse -q --verify HEAD^2 >/dev/null && exit 1; exit 0"];
 const OK = ["sh", "-c", "exit 0"];
 
 interface Opts {

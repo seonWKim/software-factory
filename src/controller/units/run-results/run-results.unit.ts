@@ -154,6 +154,8 @@ export class RunResultsUnit {
   }
 
   async apply(run: Run): Promise<void> {
+    // A merge-check run changes no item stage: the merge queue decides on its entry and acks it (RFC 0015 M8).
+    if (run.kind === "merge-check") return this.c.unit("merge-queue").checked(run);
     // A succeeded improve run's groups are filed before its ack (design §7); a fault is logged and the run acked.
     if (run.kind === "improve" && run.outcome?.status === "succeeded") await this.c.k.guard("improve filing", () => this.c.unit("improve").fileImprove(run));
     const ack = (reason: string): Decision => ({ patch: {}, actor: SYSTEM, reason, ack_run: run.id });
@@ -175,6 +177,8 @@ export class RunResultsUnit {
         return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
+      // Never reached: apply hands merge-check runs to the merge queue first.
+      if (run.kind === "merge-check") return ack("run_ignored");
       switch (run.kind) {
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).

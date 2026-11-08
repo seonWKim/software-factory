@@ -6,6 +6,7 @@ import { type SourceRef, type SourceType, type WorkItem } from "../../core/types
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
+import type { SqlDriver } from "../../state/index.js";
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
@@ -152,6 +153,11 @@ export class Kernel {
   /** Now, in ms, from the injected clock: the role's ticks and the units' time-based decisions (no-clock follow-up). */
   nowMs(): number {
     return this.d.clock.now().getTime();
+  }
+
+  /** The SQL driver under the store, for the controller's own actor tables (the merge queue); null for another store. */
+  get db(): SqlDriver | null {
+    return (this.d.store as { db?: SqlDriver }).db ?? null;
   }
 
   /** The configured repo's project key (design 2026-11-01): what every write and lookup uses. Never shown. */

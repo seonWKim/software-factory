@@ -373,6 +373,37 @@ CREATE TABLE `controller_merge_checks` (
   CONSTRAINT `controller_merge_checks_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_merge_queue_entries` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `entry_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `queue_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `work_item_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `state` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `entered_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `merge_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `detail` text COLLATE utf8mb4_bin NOT NULL,
+  `run_key` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `base_sha` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `reason` text COLLATE utf8mb4_bin,
+  `version` bigint NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `controller_merge_queue_entries_entry` (`entry_id`),
+  KEY `controller_merge_queue_entries_queue` (`queue_id`,`state`,`seq`),
+  KEY `controller_merge_queue_entries_item` (`work_item_id`,`state`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `controller_merge_queues` (
+  `queue_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `project_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `base_ref` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `state` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `version` bigint NOT NULL,
+  `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`queue_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_outbox` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `topic` varchar(191) COLLATE utf8mb4_bin NOT NULL,

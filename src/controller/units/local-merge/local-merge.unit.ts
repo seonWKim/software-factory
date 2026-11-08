@@ -27,6 +27,17 @@ type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
 /** Base pushes one outbox step tries at most: each fetches the remote base, so a few at a time. */
 const BASE_PUSH_BATCH = 5;
 
+/** Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. */
+function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[]): string {
+  return [
+    `\`${branch}\` does not merge cleanly into the local \`${base}\`, so nothing moved and the item still waits for a merge. Conflicting files:`,
+    "",
+    ...conflicts.map((f) => `- \`${f}\``),
+    "",
+    `\`${branch}\` is a local branch of this repository: merge \`${base}\` into it and commit the resolution there, then run \`factory merge ${id}\` again`,
+  ].join("\n");
+}
+
 /** The local merge, base pushes, auto mode's merges and its stop conditions. */
 export class LocalMergeUnit {
   constructor(private readonly c: Ctx) {}
@@ -36,16 +47,14 @@ export class LocalMergeUnit {
    * `factory merge <id>` through the command inbox and by the status page's Merge button (an app request,
    * applyAppRequest), never a second path. `who` is the CLI's local identity or the app request's factory user ID.
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
-   * for a merge. The controller's sandbox merges the item's local branch into the local base branch after the
-   * install command and the checks passed on the merge commit in a temporary worktree; a conflict or a failing
-   * check leaves the item in merge_pending and the reply says why. A checkout of the base is fast-forwarded when
-   * clean and left as it was otherwise (the close's detail and the reply say so). A merge closes the item
-   * (completed, its merge sha) with the approver as its actor and releases the items waiting on it; with a forge
-   * that can push a base, the same transition queues one base push, which the base push step makes later, so the
-   * merge never waits on the remote. `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no
-   * person to authorize, actor `system:auto`, and the state change names the mode change it ran under. Safe to run
-   * twice: a branch the base already contains moves nothing and closes the item with the base's commit; `key` keys
-   * the reply and `detail` goes on the state change. Returns the refusal, or null when the item merged.
+   * for a merge, and at once for a branch that conflicts with the local base. Otherwise the change enters the merge
+   * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
+   * lands (`land`); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
+   * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
+   * `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no person to authorize, actor
+   * `system:auto`, and the state change names the mode change it ran under. Safe to run twice: the same `key` is
+   * the same queue entry; `key` keys the replies and `detail` goes on the state change. Returns the refusal, or
+   * null when the change is in the queue.
    */
   async mergeLocal(id: WorkItemId, who: ExternalIdentity | UserId | typeof AUTO_MERGE, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
     const item = await this.c.k.d.store.getWorkItem(id);
@@ -67,55 +76,90 @@ export class LocalMergeUnit {
         : `${item.id} is not waiting for a merge (${at}); \`factory merge\` applies once its review passed (merge_pending)`;
     } else if (!canMergeLocal(this.c.k.d.sandbox)) refusal = "this controller has no sandbox that can merge locally";
     else {
-      const r = await this.c.k.d.sandbox.mergeLocal({
-        repo: repo.path, base_ref: repo.base_branch, branch, identity: this.c.k.cfg.agent_git_identity,
-        // The install command, then the checks, on the merge commit before the base moves: a failure merges nothing.
-        checks: [repo.install_command, ...checkCommands(repo)], timeout_ms: this.c.k.cfg.run_timeout_ms,
-        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} ${auto ? "in auto mode" : "with `factory merge`"}.`,
-      });
-      if (r.merged) {
-        const actor: Actor = auto ? AUTO : { kind: "user", id: principal.user_id as UserId };
-        const push = this.basePusher() !== null;
-        const stale = r.not_updated.join(", ");
-        const lost = await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
-          ? {
-              patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
-              actor,
-              reason: "local_merged",
-              detail: {
-                ...detail, branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}), ...(stale ? { checkout_not_updated: stale } : {}),
-              },
-              ...(push ? { base_push: { base_ref: repo.base_branch, merge_sha: r.sha } } : {}),
-            }
-          : null));
-        if (lost === null) {
-          this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: principal.user_id, base_push: push });
-          const how = auto ? " in auto mode" : "";
-          const body = [
-            `Merged \`${branch}\` into the local \`${repo.base_branch}\`${how} as \`${r.sha.slice(0, 12)}\` (${push ? "its push to origin is queued" : "no push"}). The item is closed.`,
-            ...(stale ? [`\`${repo.base_branch}\` is checked out with uncommitted changes in ${stale}: that checkout was not updated (its HEAD is detached where it was); switch it back to \`${repo.base_branch}\` when ready.`] : []),
-          ];
-          await this.c.unit("outbox").post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
-          await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
-          // Red main (design 03-risk): the checks run again on the new base tip; a failure stops auto mode.
-          if (auto && !r.already) await this.c.k.guard("red main", () => this.redMainCheck(item));
-          return null;
-        }
-        refusal = lost;
-      } else if ("conflicts" in r) {
-        refusal = [
-          `\`${branch}\` does not merge cleanly into the local \`${repo.base_branch}\`, so nothing moved and the item still waits for a merge. Conflicting files:`,
-          "",
-          ...r.conflicts.map((f) => `- \`${f}\``),
-          "",
-          `\`${branch}\` is a local branch of this repository: merge \`${repo.base_branch}\` into it and commit the resolution there, then run \`factory merge ${item.id}\` again`,
-        ].join("\n");
-      } else refusal = r.refused;
+      const conflicts = await this.c.k.d.sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
+      if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
+      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts);
+      else {
+        // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
+        const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
+        if (r === null) return null;
+        refusal = r;
+      }
     }
-    this.c.k.d.log.info("command refused", { work_item_id: item.id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
-    const what = auto ? "The automatic merge" : "`factory merge`";
-    await this.c.unit("outbox").post(item, item.source, `${what} was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
+    await this.refused(item.id, auto ? AUTO_ACTOR : "", key, refusal);
     return refusal;
+  }
+
+  /**
+   * The merge itself (RFC 0015 M8): the merge queue calls it for an entry whose merge-check run passed on `base_sha`.
+   * The sandbox merges the item's local branch into the local base only while the base is still at `base_sha`, so
+   * the tree that lands is the tree that was checked (no check runs again); a base that moved returns `moved`, and
+   * the queue checks the entry again. A merge closes the item (completed, its merge sha) with the approver, or
+   * `system:auto`, as its actor and releases the items waiting on it; with a forge that can push a base, the same
+   * transition queues one base push. This is the function the outbound `local` merge delivery takes over (M7).
+   */
+  async land(id: WorkItemId, by: string, key: string, base_sha: string, detail: Record<string, unknown>): Promise<"landed" | "moved" | string> {
+    const item = await this.c.k.d.store.getWorkItem(id);
+    if (!item) return "the work item was not found";
+    if (!awaitingMerge(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
+    if (!canMergeLocal(this.c.k.d.sandbox)) return "this controller has no sandbox that can merge locally";
+    const { repo, branch_prefix } = this.c.k.cfg;
+    const branch = branchFor(item, branch_prefix);
+    const auto = by === AUTO_ACTOR;
+    const r = await this.c.k.d.sandbox.mergeLocal({
+      repo: repo.path, base_ref: repo.base_branch, branch, identity: this.c.k.cfg.agent_git_identity,
+      checks: [], timeout_ms: this.c.k.cfg.run_timeout_ms, expected_base: base_sha,
+      message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${auto ? "in auto mode" : "with `factory merge`"}.`,
+    });
+    if (!r.merged) {
+      if ("base_moved" in r) return "moved";
+      return "conflicts" in r ? conflictRefusal(item.id, branch, repo.base_branch, r.conflicts) : r.refused;
+    }
+    const actor: Actor = auto ? AUTO : { kind: "user", id: by as UserId };
+    const push = this.basePusher() !== null;
+    const stale = r.not_updated.join(", ");
+    const lost = await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
+      ? {
+          patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+          actor,
+          reason: "local_merged",
+          detail: {
+            ...detail, branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}), ...(stale ? { checkout_not_updated: stale } : {}),
+          },
+          ...(push ? { base_push: { base_ref: repo.base_branch, merge_sha: r.sha } } : {}),
+        }
+      : null));
+    if (lost !== null) return lost;
+    this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: by, base_push: push });
+    const how = auto ? " in auto mode" : "";
+    const body = [
+      `Merged \`${branch}\` into the local \`${repo.base_branch}\`${how} as \`${r.sha.slice(0, 12)}\` (${push ? "its push to origin is queued" : "no push"}). The item is closed.`,
+      ...(stale ? [`\`${repo.base_branch}\` is checked out with uncommitted changes in ${stale}: that checkout was not updated (its HEAD is detached where it was); switch it back to \`${repo.base_branch}\` when ready.`] : []),
+    ];
+    await this.c.unit("outbox").post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
+    await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
+    // Red main (design 03-risk): the checks run again on the new base tip; a failure stops auto mode.
+    if (auto && !r.already) await this.c.k.guard("red main", () => this.redMainCheck(item));
+    return "landed";
+  }
+
+  /** The item's local branch. */
+  branchOf(item: WorkItem): string {
+    return branchFor(item, this.c.k.cfg.branch_prefix);
+  }
+
+  /** The item, as the merge queue checks whether its entry still waits for a merge. */
+  item(id: WorkItemId): Promise<WorkItem | null> {
+    return this.c.k.d.store.getWorkItem(id);
+  }
+
+  /** A refusal posted on the item: why the merge did not apply, keyed by `key`. */
+  async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
+    const item = await this.c.k.d.store.getWorkItem(id);
+    if (!item) return;
+    this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
+    const what = by === AUTO_ACTOR ? "The automatic merge" : "`factory merge`";
+    await this.c.unit("outbox").post(item, item.source, `${what} was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
   }
 
   /** The forge's base push and the sandbox that syncs the base before it, or null when either cannot (no push is queued). */
@@ -185,8 +229,8 @@ export class LocalMergeUnit {
   /**
    * Auto mode's merge (design 03-risk): each local item waiting for a merge, in a project in auto mode, merges
    * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
-   * the merge check runs on the merge commit first, so a failing check or a conflict moves nothing. One try per item
-   * version: a refusal is posted once under a key of the version, and the item stays in merge_pending for a person.
+   * the change enters the merge queue, so a failing check or a conflict on its merged result moves nothing. One try per
+   * passed review: a refusal is posted once under a key of that review run, and the item stays in merge_pending for a person.
    * A sync source's item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
    */
   async autoMergeStep(): Promise<void> {
@@ -197,7 +241,9 @@ export class LocalMergeUnit {
       if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
       const auto = await this.autoMode(it.project);
       if (!auto) continue;
-      const key = `auto-merge:${it.id}:v${it.version}`;
+      // Keyed by the review that passed, not the item version: the merge queue's own state changes bump the version.
+      const review = await this.c.unit("run-results").latestReview(it.id);
+      const key = `auto-merge:${it.id}:${review?.id ?? `v${it.version}`}`;
       if ((await this.c.k.d.store.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
       const missing = lastPrNotes(await this.c.k.d.store.listRuns(it.id))?.missing ?? [];
       const refusal = autoMergeRefusal({
