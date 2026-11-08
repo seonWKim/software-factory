@@ -56,6 +56,8 @@ export class ComponentConsumer<C extends HandlerContext> {
             await this.o.bus.ack(c);
             continue;
           }
+          // The lease ran out while earlier messages of the batch were handled: another consumer has it now.
+          if (!(await this.o.bus.renew(c))) continue;
           const drafts: Draft[] = [];
           const emit = (d: Draft) => void drafts.push(d);
           const publish = (tx: SqlExecutor, msg: Envelope) => this.o.bus.publish(tx, drafts.map((d) => envelope(d, causeOf(msg), h.name)));

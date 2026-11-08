@@ -37,6 +37,12 @@ export interface EventBus {
   publish(tx: Tx, messages: readonly Envelope[]): Promise<void>;
   /** Claims up to `max` messages of `topic` for `group`. Per partition, one message at a time, in order. */
   consume(group: string, topic: string, max: number): Promise<Claimed[]>;
+  /**
+   * Called right before the consumer handles `c`: extends its lease from the bus's time, so a batch's later
+   * messages keep their lease while the earlier ones are handled. False when the lease is no longer this claim's
+   * (it ran out, or another consumer took the message): the consumer must not handle it.
+   */
+  renew(c: Claimed): Promise<boolean>;
   ack(c: Claimed): Promise<void>;
   nack(c: Claimed, err: NackError): Promise<void>;
 }

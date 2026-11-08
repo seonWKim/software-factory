@@ -218,6 +218,29 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     expect(await s.a.consume("g", EVENTS.name, 10)).toEqual([]);
   });
 
+  it("renew keeps a batch's later message from another consumer while the earlier ones are handled, and refuses once it ran out", async () => {
+    const s = await setup(backend);
+    await s.publish(...Array.from({ length: 8 }, (_, i) => s.msg("Happened", `s${i}`)));
+    await s.publish(s.msg("WorkRequested", "w1"), s.msg("WorkRequested", "w2"));
+    await s.relay();
+    for (const topic of [EVENTS.name, WORK.name]) {
+      // One consume leases a whole batch; the consumer handles it in order.
+      const [handled, later] = await s.a.consume("g", topic, 2);
+      // Handling the first took most of the lease; the second is renewed right before its turn.
+      await s.advance(LEASE_MS - 1);
+      expect(await s.a.renew(later!)).toBe(true);
+      await s.advance(LEASE_MS - 1);
+      // The first one's lease ran out (its consumer crashed): only it goes to another consumer.
+      const taken = (await s.b.consume("g", topic, 10)).map((c) => c.message.id);
+      expect(taken).toContain(handled!.message.id);
+      expect(taken).not.toContain(later!.message.id);
+      // Taken over, and run out: renew refuses both, so neither is handled by a stale consumer.
+      expect(await s.a.renew(handled!)).toBe(false);
+      await s.advance(LEASE_MS);
+      expect(await s.a.renew(later!)).toBe(false);
+    }
+  });
+
   it("keeps per-partition order: one message of a partition at a time, in publish order", async () => {
     const s = await setup(backend);
     const subjects = ["s1", "s2", "s3", "s4", "s5"];

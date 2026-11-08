@@ -191,6 +191,29 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     return topic.consumption === "competing" ? this.consumeRows(group, topic, max, horizon) : this.consumePartitions(group, topic, max, horizon);
   }
 
+  async renew(c: Claimed): Promise<boolean> {
+    const t = topicTables(c.topic);
+    const horizon = await readHorizon(this.db);
+    const until = addMs(horizon, this.leaseMs);
+    // Still ours and not yet run out: another consumer may claim it once `lease_until <= horizon`.
+    const n =
+      this.topic(c.topic).consumption === "competing"
+        ? await this.db.run(`UPDATE ${t.messages} SET claim_until = ? WHERE seq = ? AND claim_token = ? AND acked_at IS NULL AND claim_until > ?`, [
+            until,
+            c.seq,
+            c.token,
+            horizon,
+          ])
+        : await this.db.run(`UPDATE ${t.cursors} SET lease_until = ? WHERE consumer_group = ? AND ${P} = ? AND lease_token = ? AND lease_until > ?`, [
+            until,
+            c.group,
+            c.partition,
+            c.token,
+            horizon,
+          ]);
+    return n === 1;
+  }
+
   async ack(c: Claimed): Promise<void> {
     const topic = this.topic(c.topic);
     const t = topicTables(topic.name);
