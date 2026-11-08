@@ -4,7 +4,7 @@ import {
   sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
-import { PROTECTED_PATHS } from "../src/core/standing.js";
+import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { WorkItemId } from "../src/core/types.js";
@@ -149,6 +149,20 @@ describe("auto mode rules (design 03-risk)", () => {
   it("the gate list is one list: the merge check's paths, every standing-rule protected path, the grant and tool folders", () => {
     expect(GATE_PATHS).toEqual(expect.arrayContaining([...Object.values(PROTECTED_PATHS).flat(), "src/impl/grant/", "src/core/tools/"]));
     expect(new Set(GATE_PATHS).size).toBe(GATE_PATHS.length);
+  });
+
+  it("guard code is on the gate list and protected: identity, the G1 check and passport wrapper, outbound's scan, the default broker", () => {
+    for (const file of [
+      "src/identity/passport/restrictions.ts", // passport tokens and restrictions
+      "src/compose.ts", // G1 toolchain check, PassportToolBroker around every broker
+      "src/outbound/outbound.ts", // G5 scan and passport authorize before each delivery
+      "src/impl/broker/passport-broker.ts",
+      "src/impl/github/github-tool-broker.ts", // the default ToolBroker
+      "src/impl/github/broker.plugin.ts",
+    ]) {
+      expect(gatePathTouched([file]), file).toBe(file);
+      expect(protectedCategory([file], []), file).not.toBeNull();
+    }
   });
 
   it("an allowed path or changed file touches the gate list when it is on it, under it, or a folder holding it", () => {
