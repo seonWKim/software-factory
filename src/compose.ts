@@ -800,6 +800,8 @@ export async function build(
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
   // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
   const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
+  // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
+  const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
@@ -871,6 +873,7 @@ export async function build(
     capability,
     testDatabase,
     settings,
+    engines,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };

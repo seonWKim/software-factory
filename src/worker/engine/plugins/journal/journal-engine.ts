@@ -20,7 +20,9 @@ import {
   RUN_DEADLINE,
   RunDeadlineError,
   StepTimeoutError,
+  type EngineOptions,
   type ExecutionEngine,
+  type ExecutionEngines,
   type RunRef,
   type RunResult,
   type RunTimeouts,
@@ -29,24 +31,23 @@ import {
   type TickPeriods,
 } from "../../index.js";
 
-export interface JournalEngineOptions {
+export interface JournalEngineOptions extends EngineOptions {
   readonly db: SqlDriver;
-  /** This worker's id, stored as `lease_owner`. */
-  readonly workerId: string;
-  /** The revision this process runs, stored on every run it claims or takes over. */
-  readonly codeVersion: string;
-  /** The run kinds this worker executes, with their named timeouts. */
-  readonly kinds: Readonly<Record<string, RunTimeouts>>;
   /** Whether this code may resume a run journaled by `version`. Default: only its own version. */
   readonly resumes?: (version: string) => boolean;
   /** Most runs held at once; claims and takeovers beyond it are refused. Default: no limit. */
   readonly slots?: number;
   /** Called with each run the reaper took over; the worker resumes it from the journal. */
   readonly onTakeover?: (run: RunRef) => void;
-  /** Lease length at each renewal. Default: the kind's `heartbeat_ms`; the worker passes its live `lease_ms`. */
-  readonly leaseMs?: (run: RunRef) => number;
-  /** Called when this worker loses a held run (taken over, finished elsewhere, or past its deadline). */
-  readonly onLost?: (run: RunRef, reason: Error) => void;
+}
+
+/** The `journal` plugin's product: a JournalEngine per worker loop, all over one database. */
+export class JournalEngines implements ExecutionEngines {
+  constructor(private readonly db: SqlDriver) {}
+
+  create(o: EngineOptions): ExecutionEngine {
+    return new JournalEngine({ db: this.db, ...o });
+  }
 }
 
 interface InFlight {

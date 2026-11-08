@@ -75,6 +75,25 @@ export interface ExecutionEngine {
   reap(tick: Tick): Promise<RunRef[]>;
 }
 
+/** What a worker gives its engine: who it is, the code it runs, its run kinds, and how it hears of a lost run. */
+export interface EngineOptions {
+  /** This worker's id, stored as the lease owner. */
+  readonly workerId: string;
+  /** The revision this process runs (`worker_runs.code_version`). */
+  readonly codeVersion: string;
+  /** The run kinds this worker executes, with their named timeouts. */
+  readonly kinds: Readonly<Record<string, RunTimeouts>>;
+  /** Lease length at each renewal; default: the kind's `heartbeat_ms`. */
+  readonly leaseMs?: (run: RunRef) => number;
+  /** Called when the worker loses a held run (taken over, finished elsewhere, or past its deadline). */
+  readonly onLost?: (run: RunRef, reason: Error) => void;
+}
+
+/** The `engine` plugin (`plugins.engine`, default `journal`): one ExecutionEngine per worker loop. */
+export interface ExecutionEngines {
+  create(o: EngineOptions): ExecutionEngine;
+}
+
 export interface TickPeriods {
   readonly heartbeat: number;
   readonly reaper: number;

@@ -85,6 +85,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false, optional: false },
   forge: { interface: "Forge", configKey: "plugins.forge", guard: false, optional: true },
   network_probe: { interface: "NetworkProbe", configKey: "plugins.network_probe", guard: false, optional: false },
+  engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

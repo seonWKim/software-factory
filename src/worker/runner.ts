@@ -1,6 +1,6 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
-import { type ExecutionEngine, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
-import { JournalEngine } from "./engine/plugins/journal/journal-engine.js";
+import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
+import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { tickAt } from "../shared/ticks/tick-generator.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type FactoryConfig, STALL_DEFAULTS, grantsFor } from "../core/config.js";
@@ -53,7 +53,14 @@ export class Worker {
   /** The lease signal of each run the engine holds: aborted when the engine loses the run. */
   readonly leases = new Map<string, AbortController>();
 
-  constructor(readonly d: WorkerDeps) {
+  /**
+   * `engines`: the selected `engine` plugin. Absent (a Worker a test builds): the journal over the store's
+   * database, the plugin's default.
+   */
+  constructor(
+    readonly d: WorkerDeps,
+    private readonly engines: ExecutionEngines = new JournalEngines(storeSql(d.store)),
+  ) {
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     this.cfg = this.live.config();
     this.runModels = d.settings ? this.live.models() : d.models;
@@ -135,8 +142,7 @@ export class Worker {
    * this worker's id as lease owner, the live `lease_ms` at each renewal.
    */
   engine(): Promise<ExecutionEngine> {
-    this.engineReady ??= loadRunKinds().then((kinds) => new JournalEngine({
-      db: storeSql(this.d.store),
+    this.engineReady ??= loadRunKinds().then((kinds) => this.engines.create({
       workerId: this.d.id,
       codeVersion: this.d.code_version ?? DEV_CODE_VERSION,
       kinds: Object.fromEntries([...kinds.values()].map((k: RunKindDescriptor) => [k.name, k.timeouts])),

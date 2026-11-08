@@ -91,6 +91,8 @@
   "component-imports-legacy|runtime/roles/controller-role.ts|core/policy.ts",
   "component-imports-legacy|runtime/roles/controller-role.ts|core/settings.ts",
   "component-imports-legacy|runtime/roles/controller-role.ts|core/types.ts",
+  "component-imports-legacy|worker/engine/plugins/journal/journal.plugin.ts|impl/store/sql/store-sql.ts",
+  "component-imports-legacy|worker/engine/plugins/journal/journal.plugin.ts|plugin-api.ts",
   "component-imports-legacy|worker/pool.ts|core/settings.ts",
   "component-imports-legacy|worker/pool.ts|core/types.ts",
   "component-imports-legacy|worker/pool.ts|interfaces/factory-store.ts",

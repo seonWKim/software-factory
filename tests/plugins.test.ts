@@ -30,6 +30,7 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
+import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -85,6 +86,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   // Optional with no default plugin (issue #172); github-issues among the sources implies github (issue #273).
   forge: { github: GitHubForge },
   network_probe: { http: HttpNetworkProbe },
+  engine: { journal: JournalEngines },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -185,6 +187,7 @@ describe("plugin registry: defaults", () => {
       github_auth: "token",
       test_database: "none",
       network_probe: "http",
+      engine: "journal",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -889,7 +892,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 18 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(18);
+  it("covers 19 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(19);
   });
 });
