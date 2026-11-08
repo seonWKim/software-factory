@@ -487,7 +487,7 @@ CREATE TABLE controller_merge_queue_entries (
     version       INTEGER NOT NULL,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
-  );
+  , heads TEXT);
 
 CREATE TABLE controller_merge_queues (
     queue_id     TEXT PRIMARY KEY,
@@ -1503,6 +1503,8 @@ CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
 CREATE INDEX controller_merge_queue_entries_item ON controller_merge_queue_entries (work_item_id, state);
 
 CREATE INDEX controller_merge_queue_entries_queue ON controller_merge_queue_entries (queue_id, state, seq);
+
+CREATE INDEX controller_merge_queue_entries_run ON controller_merge_queue_entries (run_key);
 
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 

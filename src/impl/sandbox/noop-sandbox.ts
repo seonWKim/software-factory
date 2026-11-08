@@ -208,10 +208,11 @@ export class NoOpSandbox implements Sandbox {
     }
     const base = await this.localCommit(spec.repo, spec.base_ref);
     if (base === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.base_ref}\`` };
-    if (spec.expected_base !== undefined && base !== spec.expected_base) return { merged: false, base_moved: base };
     const head = await this.localCommit(spec.repo, spec.branch);
     if (head === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.branch}\`` };
     if (await this.isAncestor(spec.repo, head, base)) return { merged: true, sha: base, already: true, not_updated: [] };
+    if (spec.expected_base !== undefined && base !== spec.expected_base) return { merged: false, base_moved: base };
+    if (spec.expected_head !== undefined && head !== spec.expected_head) return { merged: false, head_moved: head };
     const tree = await this.mergeTree(spec.repo, base, head);
     if (tree.conflicts.length > 0) return { merged: false, conflicts: tree.conflicts };
     const sha = await this.commitMerge(spec.repo, tree.tree, [base, head], spec.message, spec.identity);

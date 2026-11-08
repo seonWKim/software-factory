@@ -98,16 +98,19 @@ export class LocalMergeUnit {
   }
 
   /**
-   * The merge itself (RFC 0015 M8): the merge queue calls it for an entry whose merge-check run passed on `base_sha`.
-   * The sandbox merges the item's local branch into the local base only while the base is still at `base_sha`, so
-   * the tree that lands is the tree that was checked (no check runs again); a base that moved returns `moved`, and
-   * the queue checks the entry again. A merge closes the item (completed, its merge sha) with the approver, or
-   * `system:auto`, as its actor and releases the items waiting on it; with a forge that can push a base, the same
-   * transition queues one base push. This is the function the outbound `local` merge delivery takes over (M7).
+   * The merge itself (RFC 0015 M8): the merge queue calls it for an entry whose merge-check run passed on `base_sha`
+   * with the branch at `head_sha`. The sandbox merges the item's local branch into the local base only while the
+   * base is still at `base_sha` and the branch at `head_sha`, so the tree that lands is the tree that was checked (no
+   * check runs again); a base or branch that moved returns `moved`, and the queue checks the entry again. A merge
+   * closes the item (completed, its merge sha) with the approver, or `system:auto`, as its actor and releases the
+   * items waiting on it; with a forge that can push a base, the same transition queues one base push. Safe to run
+   * again after a crash: an item already closed by this merge is `landed`, and a branch already in the base closes
+   * the item on the base it is in. A close that did not apply throws, so the queue lands it again.
    */
-  async land(id: WorkItemId, by: string, key: string, base_sha: string, detail: Record<string, unknown>): Promise<"landed" | "moved" | string> {
+  async land(id: WorkItemId, by: string, key: string, base_sha: string | null, head_sha: string | null, detail: Record<string, unknown>): Promise<"landed" | "moved" | string> {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
+    if (item.stage === "CLOSED" && item.close_reason === "completed" && item.merge_sha !== null) return "landed";
     if (!awaitingMerge(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
     if (!canMergeLocal(this.c.k.d.sandbox)) return "this controller has no sandbox that can merge locally";
     const { repo, branch_prefix } = this.c.k.cfg;
@@ -115,17 +118,19 @@ export class LocalMergeUnit {
     const auto = by === AUTO_ACTOR;
     const r = await this.c.k.d.sandbox.mergeLocal({
       repo: repo.path, base_ref: repo.base_branch, branch, identity: this.c.k.cfg.agent_git_identity,
-      checks: [], timeout_ms: this.c.k.cfg.run_timeout_ms, expected_base: base_sha,
+      checks: [], timeout_ms: this.c.k.cfg.run_timeout_ms,
+      // No base known (an entry ahead landed without telling it): any base is moved, and it is checked again.
+      expected_base: base_sha ?? "", ...(head_sha !== null ? { expected_head: head_sha } : {}),
       message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${auto ? "in auto mode" : "with `factory merge`"}.`,
     });
     if (!r.merged) {
-      if ("base_moved" in r) return "moved";
+      if ("base_moved" in r || "head_moved" in r) return "moved";
       return "conflicts" in r ? conflictRefusal(item.id, branch, repo.base_branch, r.conflicts) : r.refused;
     }
     const actor: Actor = auto ? AUTO : { kind: "user", id: by as UserId };
     const push = this.basePusher() !== null;
     const stale = r.not_updated.join(", ");
-    const lost = await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
+    await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
       ? {
           patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
           actor,
@@ -136,7 +141,13 @@ export class LocalMergeUnit {
           ...(push ? { base_push: { base_ref: repo.base_branch, merge_sha: r.sha } } : {}),
         }
       : null));
-    if (lost !== null) return lost;
+    // decide returns null whether or not the close applied: only the item says. The base holds the change either
+    // way, so a close that did not apply (version conflicts, a store error) is retried by landing again.
+    const closed = await this.c.k.reader.getWorkItem(item.id);
+    if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) {
+      if (closed && (!awaitingMerge(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
+      throw new Error(`the close of ${item.id} after its local merge did not apply; landed again`);
+    }
     this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: by, base_push: push });
     const how = auto ? " in auto mode" : "";
     const body = [
@@ -145,9 +156,19 @@ export class LocalMergeUnit {
     ];
     await this.c.unit("outbox").post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
-    // Red main (design 03-risk): the checks run again on the new base tip; a failure stops auto mode.
-    if (auto && !r.already) await this.c.k.guard("red main", () => this.redMainCheck(item));
     return "landed";
+  }
+
+  /**
+   * Whether auto mode may still land `id` now (design 03-risk): auto mode on for its project and the controller's
+   * service passport allowing `approve_merge`. Checked again at the landing, since a person may have switched to
+   * manual, a stop condition fired or the passport changed while the entry waited. Returns the refusal, or null.
+   */
+  async autoRefusal(id: WorkItemId): Promise<string | null> {
+    const item = await this.c.k.reader.getWorkItem(id);
+    if (!item) return "the work item was not found";
+    if (!(await this.autoMode(item.project))) return "auto mode is off now; a person merges it: `factory merge` (approver role)";
+    return this.c.unit("auth").automatic("approve_merge", item);
   }
 
   /** The item's local branch. */

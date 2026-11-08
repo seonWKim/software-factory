@@ -5,12 +5,17 @@
 // are checked at once (speculative depth; solo default 1). The head lands once its check passed, through the
 // `before_merge` hooks; red removes the entry with the reason and rebuilds the entries behind it. A check that does
 // not come back in time is ended by the delayed MergeCheckTimedOut message the unit emits when it starts it.
+//
+// Crash safety: every write is keyed or conditional, so each step may run again. A checking entry whose run is
+// missing (the process died before it was queued) gets it again; a landing whose process died is taken over after
+// a lease; a landing that threw leaves its entry `merging`, and the next step lands it again (`land` finds its own
+// merge). A result or timer of a check that was replaced moves nothing: every such move names the run.
 
 import { createHash } from "node:crypto";
-import { type MergeQueueEntry, MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
-import type { MergeQueueState } from "../../actors/merge-queue/merge-queue.actor.js";
+import type { EntryFields, MergeQueue, MergeQueueEntry } from "../../actors/merge-queue/merge-queue.store.js";
+import { MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
 import { MERGE_CHECK_TIMED_OUT } from "../../topics/controller-events.topic.js";
-import { SYSTEM, awaitingMerge } from "../support.js";
+import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import type { UnitOperations } from "../../router/unit.js";
@@ -42,11 +47,11 @@ export class MergeQueueUnit {
 
   /**
    * How long a check may take before MergeCheckTimedOut ends it: every attempt the reaper may give its run, each up
-   * to the run timeout plus a lease to notice a dead worker.
+   * to the run timeout plus a lease to notice a dead worker plus the longest retry backoff before it is claimed again.
    */
   checkTimeoutMs(): number {
-    const { run_timeout_ms, lease_ms } = this.c.k.cfg;
-    return this.c.k.settings(this.c.k.project()).max_attempts * (run_timeout_ms + lease_ms);
+    const { run_timeout_ms, lease_ms, retry_max_ms } = this.c.k.cfg;
+    return this.c.k.settings(this.c.k.project()).max_attempts * (run_timeout_ms + lease_ms + retry_max_ms);
   }
 
   /**
@@ -71,62 +76,89 @@ export class MergeQueueUnit {
 
   /**
    * Moves the queue on: an entry whose item no longer waits for a merge (closed, sent back) leaves; a head whose
-   * check passed lands; each queued entry within the depth gets its check, on the base plus every entry ahead of
-   * it. Safe to run twice: every move is conditional, and a check's run is keyed by the entry's version.
+   * check passed lands, and so does a head left landing (a throw) or a landing whose process died (past a lease);
+   * each queued entry within the depth gets its check, on the base plus every entry ahead of it, and a checking one
+   * whose run is missing gets its run again. Safe to run twice: every move is conditional, and a check's run and
+   * timer are keyed by the entry's version.
    */
   async advance(): Promise<void> {
     const s = this.store();
     const q = await this.queueOf();
-    if (q.state === "paused" || q.state === "merging") return;
+    if (q.state === "merging" && this.c.k.nowMs() - Date.parse(q.updated_at) < this.c.k.cfg.lease_ms) return;
     const items = new Map<string, WorkItem>();
     for (const e of await s.live(q.queue_id)) {
+      // A landing entry's item closes as it lands: only the landing decides on it.
+      if (e.state === "merging") continue;
       const item = await this.c.unit("local-merge").item(e.work_item_id as WorkItemId);
       if (item && awaitingMerge(item) && item.change_ref === null) items.set(e.entry_id, item);
       else await this.leave(e, "the item no longer waits for a merge", false);
     }
     const live = await s.live(q.queue_id);
-    if (live[0]?.state === "passed") return this.land(q.queue_id, q.state, live[0]);
+    const head = live[0];
+    if (q.state === "merging" || head?.state === "passed" || head?.state === "merging") return this.land(q, head);
     const window = live.slice(0, this.c.k.cfg.merge_queue_depth);
     for (const [i, e] of window.entries()) {
       const upTo = window.slice(0, i + 1).map((x) => items.get(x.entry_id));
-      if (e.state === "queued" && upTo.every((it) => it !== undefined)) await this.check(e, upTo as WorkItem[]);
+      if (!upTo.every((it) => it !== undefined)) continue;
+      if (e.state === "queued") await this.check(e, upTo as WorkItem[]);
+      else if (e.state === "checking" && e.run_key !== null) await this.ensureRun(e.entry_id, e.run_key, upTo as WorkItem[]);
     }
     await this.settle(q.queue_id);
   }
 
-  /** Starts the check of `e` on the base plus `items` (the entries ahead, then its own), with its timeout timer. */
+  /**
+   * Starts the check of `e` on the base plus `items` (the entries ahead, then its own). The timer first, then the
+   * move, then the run: a crash after the timer leaves a queued entry (checked again, the same keys), one after the
+   * move a checking entry with its timer (its run is queued again by `advance`).
+   */
   private async check(e: MergeQueueEntry, items: readonly WorkItem[]): Promise<void> {
     const run_key = `${e.entry_id}:check:v${e.version}`;
-    if (!(await this.store().move(e.entry_id, "queued", "checking", { run_key, base_sha: null }))) return;
-    const branches = items.map((it) => this.c.unit("local-merge").branchOf(it));
-    const item = items.at(-1)!;
-    await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it)
-      ? {
-          patch: {}, actor: SYSTEM, reason: "merge_check_queued", detail: { entry_id: e.entry_id },
-          enqueue: { kind: MERGE_CHECK, idempotency_key: run_key, input: { merge_check: { base_ref: this.c.k.cfg.repo.base_branch, branches } } },
-        }
-      : null));
     await this.c.k.emit({
       type: MERGE_CHECK_TIMED_OUT, subject: e.queue_id, idempotency_key: `${run_key}:timeout`, idempotency_key_ttl_ms: TIMER_KEY_TTL_MS,
       not_before: new Date(this.c.k.nowMs() + this.checkTimeoutMs()).toISOString(), payload: { entry_id: e.entry_id, run_key },
     });
+    if (!(await this.store().move(e.entry_id, "queued", "checking", { run_key, base_sha: null }))) return;
+    await this.queueRun(e.entry_id, run_key, items);
   }
 
-  /** The queue's state from its entries, unless it is paused or landing: checking while a check is out, else idle. */
+  /** A checking entry's run, queued again when it is missing (the process died before it, or the transition gave up). */
+  private async ensureRun(entry_id: string, run_key: string, items: readonly WorkItem[]): Promise<void> {
+    const item = items.at(-1)!;
+    if ((await this.c.k.reader.listRuns(item.id)).some((r) => r.idempotency_key === run_key)) return;
+    await this.queueRun(entry_id, run_key, items);
+  }
+
+  private async queueRun(entry_id: string, run_key: string, items: readonly WorkItem[]): Promise<void> {
+    const branches = items.map((it) => this.c.unit("local-merge").branchOf(it));
+    await this.c.unit("transitions").decide(items.at(-1)!.id, (it) => (awaitingMerge(it)
+      ? {
+          patch: {}, actor: SYSTEM, reason: "merge_check_queued", detail: { entry_id },
+          enqueue: { kind: MERGE_CHECK, idempotency_key: run_key, input: { merge_check: { base_ref: this.c.k.cfg.repo.base_branch, branches } } },
+        }
+      : null));
+  }
+
+  /** The queue's state from its entries, unless it is landing: checking while a check is out, else idle. */
   private async settle(queue_id: string): Promise<void> {
     const s = this.store();
     const q = await this.queueOf();
-    if (q.state === "paused" || q.state === "merging") return;
+    if (q.state === "merging") return;
     const out = (await s.live(queue_id)).some((e) => e.state === "checking");
     await s.setQueue(queue_id, q.state, out ? "checking" : "idle");
   }
 
   /**
    * A finished merge-check run (from run-results): green passes the entry (it lands once at the head), red removes
-   * it. A run of an entry that left or was rebuilt meanwhile changes nothing. The run is acked either way.
+   * it. A run of an entry that left or was rebuilt meanwhile changes nothing. The run is acked once decided; a
+   * decision that threw (a store error) leaves it unacked, so the next runs step decides on it again.
    */
   async checked(run: Run): Promise<void> {
-    await this.c.k.guard("merge check result", () => this.decideCheck(run));
+    let decided = false;
+    await this.c.k.guard("merge check result", async () => {
+      await this.decideCheck(run);
+      decided = true;
+    });
+    if (!decided) return;
     await this.c.unit("transitions").decide(run.work_item_id, () => ({ patch: {}, actor: SYSTEM, reason: "merge_check_done", ack_run: run.id }));
   }
 
@@ -147,48 +179,78 @@ export class MergeQueueUnit {
       return this.red(e, `${why}, so \`${base}\` did not move and the change left the merge queue; fix it on the branch and run the merge again`);
     }
     // The base the landing must find: the checked base when no entry was ahead of it; else the commit the last
-    // entry ahead landed as, which that landing sets (see land). Not known yet while an entry ahead is still live.
-    const head = (await s.live(e.queue_id))[0]?.entry_id === e.entry_id;
-    const base_sha = e.base_sha ?? (head ? String(d.base_sha) : null);
-    if (!(await s.move(e.entry_id, "checking", "passed", { base_sha }))) return;
+    // entry ahead landed as, which that landing writes (see landHead), so it is left as it is here.
+    const branches = (run.input?.merge_check as { branches?: unknown[] } | undefined)?.branches ?? [];
+    const heads = d.heads !== null && typeof d.heads === "object" ? (d.heads as Record<string, string>) : {};
+    const set: EntryFields = branches.length === 1 ? { heads, base_sha: String(d.base_sha) } : { heads };
+    if (!(await s.move(e.entry_id, "checking", "passed", set, e.run_key))) return;
     await this.advance();
   }
 
   /**
-   * Lands the head entry, whose check passed: the `before_merge` hooks first (a veto removes it), then
-   * `LocalMergeUnit.land`, which moves the base only while it is still at the checked commit (`base_sha`). Each entry
-   * behind it that was checked with it ahead learns the commit it landed as; a moved base sends it and them back.
+   * Lands the head entry, whose check passed (or which was left landing): the queue is taken (conditional on the
+   * version read, so a stale `merging` is taken over once), and given back in any case, to its version only.
    */
-  private async land(queue_id: string, from: MergeQueueState, e: MergeQueueEntry): Promise<void> {
+  private async land(q: MergeQueue, head: MergeQueueEntry | undefined): Promise<void> {
     const s = this.store();
-    if (!(await s.setQueue(queue_id, from, "merging"))) return;
-    if (await s.move(e.entry_id, "passed", "merging")) await this.landHead({ ...e, state: "merging" });
-    await s.setQueue(queue_id, "merging", "idle");
+    if (!(await s.setQueue(q.queue_id, q.state, "merging", q.version))) return;
+    let auto: WorkItemId | null = null;
+    try {
+      if (head && (head.state === "merging" || (head.state === "passed" && (await s.move(head.entry_id, "passed", "merging"))))) {
+        auto = await this.landHead({ ...head, state: "merging" });
+      }
+    } finally {
+      await s.setQueue(q.queue_id, "merging", "idle", q.version + 1);
+    }
+    // Red main (design 03-risk), after the queue is given back: the checks run again on the new base tip, and a
+    // failure stops auto mode before the next automatic landing.
+    if (auto !== null) {
+      const item = await this.c.unit("local-merge").item(auto);
+      if (item) await this.c.k.guard("red main", () => this.c.unit("local-merge").redMainCheck(item));
+    }
     await this.advance();
   }
 
-  private async landHead(e: MergeQueueEntry): Promise<void> {
+  /**
+   * The landing: an automatic entry only while auto mode still may merge it, then the `before_merge` hooks (a veto
+   * removes it), then `LocalMergeUnit.land`, which moves the base only while it is at the checked commit (`base_sha`)
+   * and the branch at the head that was checked. Each entry behind it that was checked with it ahead learns the commit
+   * it landed as; a moved base or branch sends it and them back. Returns the item when auto mode landed it.
+   */
+  private async landHead(e: MergeQueueEntry): Promise<WorkItemId | null> {
     const s = this.store();
-    const at = new Date(this.c.k.nowMs()).toISOString();
-    const hooks = await this.c.k.hooks.beforeMerge(e.work_item_id, null, at);
-    if (!hooks.allowed) {
-      await this.leave(e, `${hooks.reason}, so \`${this.c.k.cfg.repo.base_branch}\` did not move and the change left the merge queue`, true);
-      return;
+    const lm = this.c.unit("local-merge");
+    const id = e.work_item_id as WorkItemId;
+    const base = this.c.k.cfg.repo.base_branch;
+    const auto = e.entered_by === AUTO.id;
+    const off = auto ? await lm.autoRefusal(id) : null;
+    if (off !== null) {
+      await this.leave(e, `${off}, so \`${base}\` did not move and the change left the merge queue`, true);
+      return null;
     }
-    const landed = await this.c.unit("local-merge").land(e.work_item_id as WorkItemId, e.entered_by, e.merge_key, e.base_sha!, e.detail);
+    const hooks = await this.c.k.hooks.beforeMerge(e.work_item_id, null, new Date(this.c.k.nowMs()).toISOString());
+    if (!hooks.allowed) {
+      await this.leave(e, `${hooks.reason}, so \`${base}\` did not move and the change left the merge queue`, true);
+      return null;
+    }
+    const item = await lm.item(id);
+    const head = item ? (e.heads[lm.branchOf(item)] ?? null) : null;
+    const landed = await lm.land(id, e.entered_by, e.merge_key, e.base_sha, head, e.detail);
     if (landed === "landed") {
       await s.move(e.entry_id, "merging", "merged");
-      const merge_sha = (await this.c.unit("local-merge").item(e.work_item_id as WorkItemId))?.merge_sha ?? null;
-      for (const behind of await this.behind(e)) await s.move(behind.entry_id, behind.state, behind.state, { base_sha: merge_sha });
-      return;
+      const merge_sha = (await lm.item(id))?.merge_sha ?? null;
+      // Checking or passed: a result that comes back meanwhile keeps this base (it writes none of its own).
+      for (const behind of await this.behind(e)) await s.move(behind.entry_id, ["checking", "passed"], behind.state, { base_sha: merge_sha });
+      return auto ? id : null;
     }
-    // The base moved between the check and the landing (a merge outside the queue): checked again on the new base,
-    // and so is every entry checked with it ahead.
+    // The base or the branch moved between the check and the landing (a merge outside the queue, a commit on the
+    // branch): checked again on the new base, and so is every entry checked with it ahead.
     if (landed === "moved") {
       if (await s.move(e.entry_id, "merging", "queued", { run_key: null, base_sha: null })) await this.rebuild(e);
-      return;
+      return null;
     }
     await this.leave(e, landed, true);
+    return null;
   }
 
   /** The entries behind `e` whose check ran with `e` ahead: checking, or passed and waiting for it to land. */
@@ -201,9 +263,9 @@ export class MergeQueueUnit {
     for (const x of await this.behind(e)) await this.store().move(x.entry_id, x.state, "queued", { run_key: null, base_sha: null });
   }
 
-  /** A red check: the entry leaves with the reason, the entries behind it are rebuilt, and the queue moves on. */
+  /** A red check of the entry's current run: it leaves with the reason, the entries behind it are rebuilt, the queue moves on. */
   private async red(e: MergeQueueEntry, reason: string): Promise<void> {
-    if (!(await this.leave(e, reason, true))) return;
+    if (!(await this.leave(e, reason, true, e.run_key ?? undefined))) return;
     await this.advance();
   }
 
@@ -217,9 +279,12 @@ export class MergeQueueUnit {
     await this.red(e, "its merge check did not finish in time; run `factory merge` again");
   }
 
-  /** The entry leaves (removed, with the reason posted when `reply`) and every entry checked with it ahead is rebuilt. */
-  private async leave(e: MergeQueueEntry, reason: string, reply: boolean): Promise<boolean> {
-    if (!(await this.store().move(e.entry_id, e.state, "removed", { reason: reason.slice(0, 1000) }))) return false;
+  /**
+   * The entry leaves (removed, with the reason posted when `reply`) and every entry checked with it ahead is
+   * rebuilt. With `run_key`, only while that check is still the entry's.
+   */
+  private async leave(e: MergeQueueEntry, reason: string, reply: boolean, run_key?: string): Promise<boolean> {
+    if (!(await this.store().move(e.entry_id, e.state, "removed", { reason: reason.slice(0, 1000) }, run_key))) return false;
     this.c.k.d.log.info("merge queue entry removed", { work_item_id: e.work_item_id, entry_id: e.entry_id });
     await this.rebuild(e);
     if (reply) await this.c.unit("local-merge").refused(e.work_item_id as WorkItemId, e.entered_by, e.merge_key, reason);
