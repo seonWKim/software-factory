@@ -1507,6 +1507,8 @@ CREATE TABLE `outbound_actions` (
   `outcome` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
   `last_error` mediumtext COLLATE utf8mb4_bin,
   `intent_key` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `delivered_ref` varchar(1024) COLLATE utf8mb4_bin DEFAULT NULL,
+  `delivered_url` varchar(1024) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`seq`),
   UNIQUE KEY `outbound_actions_key` (`intent_key`),
   KEY `outbound_actions_pending` (`delivered_at`,`seq`)
