@@ -7,6 +7,7 @@ import { GitHubForge } from "../../src/impl/github/github-forge.js";
 import type { Secret } from "../../src/interfaces/secret-store.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import { FakeAuth, cleanScanner, pipeline, silent } from "../helpers/fakes.js";
+import { issue, system } from "../helpers/store.js";
 
 // RFC 0015 M7, a run's push and PR: the implement run's last step stores its branch in the factory repo and records
 // keyed push and pr intents; outbound pushes and opens the PR; the PR delivery puts the PR on the item and queues
@@ -93,6 +94,54 @@ describe("an implement run's push and PR leave through outbound", () => {
     await f.controller.tickOutbox();
     expect(f.forge.pushes).toHaveLength(1);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+  });
+});
+
+describe("an update or resolve run's push leaves through outbound", () => {
+  /** An item with PR 42 and one queued resolve run, as after `/resolve`. */
+  async function resolving(f: F) {
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup",
+      patch: { stage: "RUNNING", change_ref: "42", allowed_paths: ["src/"] },
+      enqueue: { kind: "resolve", idempotency_key: "resolve-1" },
+    });
+    if (!moved.ok) throw new Error("setup");
+    return moved.item;
+  }
+
+  it("the review of a resolve run's head waits for its push: a held push queues no review until it is delivered", async () => {
+    const f = await pipeline();
+    f.forge.pushErrors = [new Error("network_unavailable: could not reach github.com")];
+    const it0 = await resolving(f);
+    await f.w1.tick();
+    await f.controller.tickRuns();
+    const [run] = await f.runs(it0, "resolve");
+    expect(run!.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed", push_intent: expect.stringMatching(/^push:/) } });
+    // The worker stored the merge; outbound's push failed, so the item waits and no review reads the old head.
+    expect(f.broker.calls.filter((c) => c.ctx !== undefined)).toEqual([]);
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "outbound", blocked_reason: "push_pending" });
+    expect(await f.runs(it0, "review")).toEqual([]);
+
+    f.clock.advance(f.config.retry_max_ms);
+    await f.controller.tickOutbox();
+    expect(f.forge.pushes).toHaveLength(2);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "none" });
+    expect((await f.runs(it0, "review")).map((r) => r.idempotency_key)).toEqual([`${it0.id}:review:after-resolve:${run!.id}`]);
+    // Delivered again (a redelivery) or applied again: one review.
+    await f.controller.tickOutbox();
+    await f.controller.applyRun(run!);
+    expect(await f.runs(it0, "review")).toHaveLength(1);
+  });
+
+  it("a push delivered before the resolve result is applied queues the review with the result", async () => {
+    const f = await pipeline();
+    const it0 = await resolving(f);
+    await f.w1.tick();
+    await f.store.db.run("UPDATE outbound_actions SET delivered_at = ?, outcome = 'sent' WHERE action = 'push'", [f.clock.now().toISOString()]);
+    await f.controller.tickRuns();
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "none" });
+    expect(await f.runs(it0, "review")).toHaveLength(1);
   });
 });
 
