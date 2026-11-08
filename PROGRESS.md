@@ -128,7 +128,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 |---|---|---|
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | table-ownership-sql | 0 | empty list |
-| file-budget | 13 files | src files over 600 lines (`known-violations/file-budget.json`) |
+| file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`) |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
 | dependency-direction | 74 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup) and `controller/settings/floors.setting.ts`; they go as legacy code goes |
