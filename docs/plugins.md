@@ -14,7 +14,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 |---|---|---|
 | How selection works | config keys, defaults, rules, the discovered registry, declared secrets | [selection.md](plugins/selection.md) |
 | FactoryStore | `mysql`, `sqlite` | [factory-store.md](plugins/factory-store.md) |
-| AuthProvider | `github`, `none` | [auth-provider.md](plugins/auth-provider.md) |
+| AuthProvider | `github`, `local`, `none` | [auth-provider.md](plugins/auth-provider.md) |
 | GrantSource | `github-permission`, `static` | [grant-source.md](plugins/grant-source.md) |
 | SecretStore (guard) | `env-file` | [secret-store.md](plugins/secret-store.md) |
 | EgressScanner (guard) | `pattern` | [egress-scanner.md](plugins/egress-scanner.md) |
@@ -22,7 +22,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | Sandbox | `noop` | [sandbox.md](plugins/sandbox.md) |
 | AgentRunner | `claude-code`, `openai-compatible` | [agent-runner.md](plugins/agent-runner.md) |
 | LLMProvider | `claude-cli`, `openai-compatible` | [llm-provider.md](plugins/llm-provider.md) |
-| SourceAdapter | `github-issues`, `local` | [source-adapter.md](plugins/source-adapter.md) |
+| SourceAdapter | `github-issues`, `local`, `slack` | [source-adapter.md](plugins/source-adapter.md) |
 | SharedStorage | `fs` | [shared-storage.md](plugins/shared-storage.md) |
 | CapabilitySearch | `list-all`, `bm25` | [capability-search.md](plugins/capability-search.md) |
 | Clock | `system` | [clock.md](plugins/clock.md) |
