@@ -819,7 +819,7 @@ export class Worker {
      * `pausable`: `workers pause` may stop this step (design §5 Pause); then RunPaused is thrown instead of a
      * failure. `resume`: the stored session this step continues (`--resume`); null starts a new one.
      */
-    opts: { pausable?: boolean; resume?: string | null; onSession?: (id: string) => Promise<void> } = {},
+    opts: { pausable?: boolean; resume?: string | null } = {},
   ): Promise<AgentRunResult> {
     const s = this.scratch.get(run);
     const pause = opts.pausable ? s?.pause.signal : undefined;
@@ -839,8 +839,6 @@ export class Worker {
       s.warmed = true;
     }
     if (session) s?.sessions.add(session.id);
-    // A new session is journaled as the step's partial result before the agent starts (RFC 0015 §7).
-    if (session && !session.resume) await opts.onSession?.(session.id);
     if (s) s.step_session = session?.id ?? null;
     // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
     const declared = await this.roleSpec(role.role ?? run.kind);

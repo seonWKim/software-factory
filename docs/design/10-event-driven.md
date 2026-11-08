@@ -57,8 +57,8 @@ force.
   each step's result is stored in `worker_run_steps` and returned instead of running the step again, so a resumed
   run skips finished steps; results are JSON, and a step can save a partial result for the attempt that resumes it.
   Writes are fenced by `worker_runs.lease_token`.
-  - Steps today: triage `run-agent`; review `run-agent`, `post-review`; implement `run-agent` (partial: the agent's
-    session id, resumed when this host's runner still has it; result: the work and a G5-scanned git bundle of its
+  - Steps today: triage `run-agent`; review `run-agent`, `post-review`; implement `run-agent` (an interrupted agent
+    step starts a new session, since its retry has a new folder without the old session's commits; result: the work and a G5-scanned git bundle of its
     commits in shared storage), `record-handoffs`, `push-branch`, `open-pr`. A run taken over after its agent step
     restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`, SQLite and MySQL);
     with no bundle (the commits did not scan clean) it fails `resume_lost` (infra) and is retried afresh. The local
@@ -479,3 +479,8 @@ force.
 - **Stopping a timed-out step** (decision changed 2026-11-09, worker review finding 3). Before: a step timeout or
   the run deadline rejected the step but no run kind passed the step's signal to its work, so the agent kept
   running (and spending) in a folder the runner had already removed, beside the retry's agent.
+- **An interrupted agent step starts a new session** (decision changed 2026-11-09, worker review finding 2). Before:
+  the implement and review agent steps saved the session id as the step's partial result, and implement resumed it
+  when this host's runner still had it. A network requeue or a restart gives the retry a new folder, so the agent
+  was resumed in an empty folder and told its earlier work was there. A pause still resumes its session, in the
+  folder it kept.

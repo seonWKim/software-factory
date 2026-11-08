@@ -67,12 +67,11 @@ async function implement(
     };
   } else {
     // The agent step (RFC 0015 §7): its result is journaled with a bundle of its commits, so a worker that takes
-    // the run over after it restores the commits instead of running the agent again. Its partial result is the
-    // agent's session id, resumed when this host's runner still has it.
+    // the run over after it restores the commits instead of running the agent again. An interrupted agent step
+    // starts a new session: its retry has a new folder, without the old session's commits.
     let ran = false;
-    const agentStep = await step("run-agent", async (s): Promise<AgentStep> => {
+    const agentStep = await step("run-agent", async (): Promise<AgentStep> => {
       ran = true;
-      const prior = plan || kept ? null : await liveSession(w, s.partial);
       const previous = await previousContext(w, item);
       const notes = await w.approverNotes(item);
       const feedback = await prFeedback(w, item, run);
@@ -80,8 +79,8 @@ async function implement(
       const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
       const limits = { max_diff_lines, max_diff_files };
       const budget = renderBudget(limits);
-      const prompt = plan?.session || kept || prior
-        ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan || prior ? null : "stopped"), budget].join("\n\n")
+      const prompt = plan?.session || kept
+        ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan ? null : "stopped"), budget].join("\n\n")
         : await w.withIndex(
           [
             renderWorkItem(item, { includeSpec: true }), budget, notes, feedback, previous,
@@ -103,7 +102,7 @@ async function implement(
         env_allowlist: gitIdentity(w.cfg.agent_git_identity),
         gate_hooks: gateHooks(w, run, item, start, baseSha),
       }, plan ? `resumed-${ctx.lease_token}` : undefined, {
-        pausable: true, resume: plan?.session ?? kept ?? prior, onSession: (id) => s.savePartial(id),
+        pausable: true, resume: plan?.session ?? kept,
       }).catch(async (err: unknown) => {
         stopWatch.abort();
         await watching;
@@ -1117,9 +1116,3 @@ type AgentStep =
     /** Shared-storage key of the bundle of start..head; null when the commits did not scan clean (G5). */
     readonly bundle: string | null;
   };
-
-/** The session an interrupted agent step saved, when this host's runner still has it; else null (a new session). */
-async function liveSession(w: Worker, partial: unknown): Promise<string | null> {
-  if (typeof partial !== "string" || !w.d.runner.hasSession) return null;
-  return (await w.d.runner.hasSession(partial).catch(() => false)) ? partial : null;
-}

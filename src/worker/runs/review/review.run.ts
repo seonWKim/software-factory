@@ -47,7 +47,7 @@ async function review(
   // Blind pass: work item + diff only, no implementer transcript (design §4). A paused review resumes its own
   // session on the same host; anywhere else it reviews afresh (design §5 Pause).
   // The agent step's parsed verdict is journaled, so a takeover posts it without reviewing again.
-  const review = await step("run-agent", async (s) => {
+  const review = await step("run-agent", async () => {
     const result = await w.agent(run, item, handle, signal, {
       prompt: plan?.session
         ? renderSessionResume(null)
@@ -58,7 +58,7 @@ async function review(
       model_class: model,
       output_schema: REVIEW_SCHEMA,
       env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-    }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null, onSession: (id) => s.savePartial(id) });
+    }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null });
     const parsed = parseReview(result.output);
     if (!parsed.ok) throw new RunFailure("invalid_output", parsed.error, false, { output_tail: tail(result.transcript) });
     return parsed;
