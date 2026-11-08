@@ -1,0 +1,300 @@
+diff --git a/SET_UP.md b/SET_UP.md
+index 363f25f..187a3ef 100644
+--- a/SET_UP.md
++++ b/SET_UP.md
+@@ -93,9 +93,9 @@ A command is the first line of a comment: `/` and the command name (any case), t
+ | Command | What it does | Applies when |
+ |---|---|---|
+ | `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check |
+-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice |
+-| `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice; on its PR: waiting for a human merge, blocked by a failed review run |
+-| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge |
++| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached |
++| `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached; on its PR: waiting for a human merge, blocked by a failed review run |
++| `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge, review loop limit reached |
+ | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
+ | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
+ | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result, also after the merge; it does not change the state. `/verdict accept` alone (or `yes`, `ok`) records severity `none`; it replaces the verdict the factory recorded for the PR's head from a merge or a push | any open or merged item, once it has a PR |
+diff --git a/docs/design/04-gate-commands.md b/docs/design/04-gate-commands.md
+index 2b48864..e557e84 100644
+--- a/docs/design/04-gate-commands.md
++++ b/docs/design/04-gate-commands.md
+@@ -1,5 +1,7 @@
+ # 4. Agents: gate commands
+ 
++**Commands at the review loop limit** (decision changed 2026-11-08; replaces "at `max_loops` no command changes the state"). An item blocked on a human with `max_loops` (command phase `max_loops`, label "review loop limit reached") now takes the three existing commands, from the issue and from the CLI, with or without a PR. `/retry [notes]` starts one implement run: the item goes to `RUNNING`, unblocked, with `loop_count` back at 0 and `restart_count` + 1, and the run key uses the reset count (`…:implement:l0:r<n>`); `+paths` widens `allowed_paths` exactly as after a failed implement run (at most 10, no `..`, no glob, covered paths not added again). `/revise <feedback>` takes the after-failure path (`reviseAfterFailure`): back to `NEW` with a triage run and the feedback stored, `loop_count` 0 (only at `max_loops`); the open PR and its branch stay. With no feedback it is refused with one reply and nothing changes. `/reject <reason>` closes the item as at the spec gate (`rejected`, the issue closed as not planned). A human chose to try again, so the loop count restarts (and the model bump that follows it may drop). The max-loops comment's footer lists the three commands and `/help`, so it no longer ends with "No command changes this item's state now." Unchanged: the limit itself, the review loop, `/retry` on the other phases (a failed triage, review or update run still refuses `+paths`) and commands on the PR conversation at `max_loops` (none). No schema change. Solo and enterprise behave the same.
++
+ **Implicit verdicts and the lenient `/verdict`** (decision changed 2026-11-08, issue #316; replaces "only `/verdict` writes verdicts, and every kind but `accept` needs a severity"). The factory records a verdict on its own from three PR events of a **factory** item (origin `factory`; adopted PRs, Slack items and local items get none here): a merge whose merger resolves to a user and with no `manual` run on the item (no person pushed) is one `accept`, severity `none`, for the merged head (`last_head_sha`), the merger as actor, stored just before the `pr_merged` transition; a person's push (the `manual` run of design 05-sources) is one `changes`, severity `minor`, for the pushed head, the pusher (or `system:pr-sync`) as actor, its reason naming the commit count from `Forge.commitsBetween` (`a person pushed 3 commits to the PR`) or saying the count is unknown; a revert of a merged item (CLOSED / `completed`) is one `reverted`, severity `major`, per reverting commit, as `system:links`, with no PR head. A merge whose merger does not resolve writes no verdict and logs why. **Implicit verdicts never change `stage`, `blocked_on` or `blocked_reason`:** like `/verdict`, each bumps the version and adds one `state_changes` row, reason `implicit_verdict`, `changes` = {}. A `verdicts` row now has `implicit` (0/1) and `pr_head` (SQLite migration 39, MySQL step 0039, which also widens `comment_id` to 128); an implicit verdict keeps its event key in `comment_id` (`implicit:<merged|pushed|reverted>:<item>:<sha>`), so a redelivered event or a second run of the merge handler stores nothing. **One verdict per PR head:** an implicit verdict for a head that already has one is a no-op, so a person's push then a merge ends with that head's `changes` and no `accept`; an explicit `/verdict` is stored for the item's current head and deletes that head's implicit verdict (its `state_changes` row stays). The parser now takes `/verdict accept` alone (severity `none`), `accept <reason>` without a severity, and `yes` and `ok` as `accept`; an unknown word gets the usage line and stores nothing. `/verdict` also applies to a merged item (command phase `merged`); a closed item whose PR was not merged is refused with one reply. Solo default: no forge, so no PR events and no implicit verdicts. Enterprise: the GitHub forge, implicit verdicts from its PR events, on the shared store with both migrations applied.
+ 
+ **Standing approvals at the spec gate** (decision changed 2026-11-07, issue #299, phase 2 of #293). A tier 1 spec that waits at the spec gate is approved without a reply when the standing rule `spec-t1` is on and none of its allowed paths is protected (see `05-standing-approvals.md`). The state change is `standing_approved` with actor `standing:spec-t1` and the owner's user ID (`owner_id`, the rule's `set_by`) in its detail, and the spec comment says which rule approved it and how to turn it off. The rule acts only where `dials.spec_gate_min_tier` already sends a spec to the gate (that dial is unchanged); a spec the dial lets through, a split spec, a spec above tier 1 and a protected one go on as before. **`/standing [accept|decline <rule>]`** is a new command in the table: with no arguments it shows the rule's state, `accept` turns it on and `decline` turns it off (or declines its proposal). It needs the same permission check as `/approve` (`approve_spec`), records the user ID as `set_by`, and gets 👀 and one reply keyed on the comment; a rule already in the asked state is left alone with no reply, so a second accept or a redelivery posts nothing new. It is a factory command, about the rules and not the item, so `/help` and the `SET_UP.md` table list it and no footer does (like `/link`). It is parsed in the one comment parser (`src/core/commands.ts`), turned into a `standing_requested` event by `commentEvent` (`src/core/comment-event.ts`, so the command inbox and Slack get it) and by the GitHub issue source, and answered on a work item only. A `/revise` or `/reject` applied on an item a rule approved turns that rule off, with one reply that says so (marker `standing-off:<comment id>`).
+@@ -22,7 +24,7 @@ All three need write permission, and on an item in any other state they are refu
+ **Approval notes, `/help`, unknown commands and footers.** One table in `src/core/commands.ts` lists every command (name, usage, one-line description, the item states where it applies, whether it needs a PR) and holds the parser. A command is the comment's first line: `/` plus letters (any case), then whitespace, the end of the line or one of `.,:;!?`; anything else (`/`, `/ x`, `/src/x.ts`, `/approve2`) is not a command, and `/rejectfoo` is an unknown command, not `/reject`. The text after the command word, same line and following lines joined by a newline and trimmed, is the command's text.
+ - `/approve [notes]` on a spec or a floor block: the note is untrusted. After the permission check (a non-writer's note is never stored), the whole note goes through the `EgressScanner`; a finding refuses the approval with one reply naming the rule, stores nothing and leaves the stage. Otherwise the note, capped at 2000 characters, goes on the approval's `state_changes` row as `detail.note` (`spec_approved` or `floor_tier_approved`; no schema change). The implement and review prompts get a "Notes from the approver" section, labelled untrusted and fenced, holding the note of the item's latest approval that has one; with none the section is absent. Prompt files are unchanged; the section is added in code.
+ - An unknown command on a work item gets 👀 and one reply (`Unknown command "/xyz".`, then the commands for the item's current state, then `/help`), keyed on the comment id. `/help` gets one reply listing every command and marking the ones that apply now; it names the current state by its label, not the phase id. On an issue that is not a work item, both get no reply and no 👀. Neither needs write permission: they change nothing.
+-- Every comment that waits for a human (spec, max revisions, floor block, failed run, dead letter, diff too large, failed update, max loops, merge waiting) ends with a footer built from the same table, for the state the item will be in after the transition (these comments are posted before it). Where no listed command changes the state (max loops, merge waiting), a last line says so. A test runs every command in every state through the controller and checks that the footer lists exactly the accepted ones; another fails when the command table in `SET_UP.md` differs from the code. A known command in the wrong state keeps its existing refusal reply.
++- Every comment that waits for a human (spec, max revisions, floor block, failed run, dead letter, diff too large, failed update, max loops, merge waiting) ends with a footer built from the same table, for the state the item will be in after the transition (these comments are posted before it). Where no listed command changes the state (merge waiting), a last line says so. A test runs every command in every state through the controller and checks that the footer lists exactly the accepted ones; another fails when the command table in `SET_UP.md` differs from the code. A known command in the wrong state keeps its existing refusal reply.
+ 
+ **Command suggestions for plain-language replies.** The GitHub source now emits a `plain_comment` event (author, comment id, whole body) for each non-bot issue comment that is not a command; PR conversation comments are left alone. The controller, in this order: finds the work item (none: ignored); checks the commenter's write permission with the action the gate commands use (`approve_spec`), and without it makes no model call and posts nothing; skips comments over 300 characters, empty ones and `CLOSED` items; then calls `suggestCommand(text, state, llm)` (`src/core/suggest.ts`). That is one `LLMProvider` call, `model_class: "cheap"`, `data_env: "test"` (the comment is factory input of the same kind as the issue text triage reads). The prompt lists only the commands `commandsFor` allows in the item's state, with their usage lines, never `/verdict` (structured args), and holds the person's text once, in a fenced section labelled untrusted that the text cannot close; the model answers JSON `{command, args, confidence}` with one command name from the list or `none`. Malformed output, any stop reason but `end`, a confidence below 0.7, `none`, extra keys, a command not in the list, or one that does not apply in the state gives no suggestion. Args: `/revise` carries the feedback and `/reject` the reason (the person's text when the model gives none), `/approve` no note, `/budget` only a whole number. Non-empty args go through the `EgressScanner`; a finding drops the suggestion. The reply is one comment keyed on the comment id (`factory:suggest:<comment id>`, so a redelivery posts nothing new): the suggested command in a code block to type, or, with no suggestion, the command list for the state. **The rule: a suggestion never changes state** (no `state_changes` row, no stage or block change, no run, no stored pending suggestion); the person confirms by typing the command, which goes through the normal command path and its permission check. The controller takes the LLM as an optional dependency (`compose.ts` wires the configured one); without it plain comments get no reply. Not built: Slack Confirm/Cancel buttons, suggestions on PR conversations, a per-command permission model (#107 would replace the `approve_spec` check).
+ 
+@@ -32,6 +34,7 @@ All three need write permission, and on an item in any other state they are refu
+ 
+ ## History
+ 
++- **Commands at the review loop limit** (decision changed 2026-11-08). Before: `max_loops` had no command in the table; its footer ended with "No command changes this item's state now.", `/retry` was refused as "no failed run to retry", and `/revise` and `/reject` were refused because no spec was waiting, so the item could only be closed or changed by hand.
+ - **Implicit verdicts and the lenient `/verdict`** (decision changed 2026-11-08, issue #316). Before: only `/verdict` wrote verdicts; `/verdict accept` alone and `/verdict yes` were refused (a severity was required for every kind), so every owner `/verdict` on record was refused; merges, pushes and reverts wrote no verdict; a `/verdict` on a merged item was refused as closed.
+ - **Standing approvals at the spec gate** (decision changed 2026-11-07, issue #299). Before: every spec at or above `dials.spec_gate_min_tier` waited in `spec_pending` for a human `/approve`, `/reject` or `/revise`; no command accepted or declined a standing rule, and nothing acted on one.
+ - **Commands from the command inbox** (decision changed 2026-11-07, issue #282). Before: CLI commands reached the controller only through the `local` source's poll, so only when `local` was listed in `plugins.source`; app requests were read straight from their own table each tick; and a refusal reply that failed to post kept an app request pending.
+diff --git a/src/core/commands.ts b/src/core/commands.ts
+index b22db91..d0cf442 100644
+--- a/src/core/commands.ts
++++ b/src/core/commands.ts
+@@ -98,6 +98,7 @@ export const COMMANDS: readonly CommandSpec[] = [
+     description: "Close the item without a merge, giving your reason",
+     phases: [
+       "spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
++      "max_loops",
+     ],
+     needs_pr: false,
+     changes_state: true,
+@@ -106,7 +107,7 @@ export const COMMANDS: readonly CommandSpec[] = [
+     name: "revise",
+     usage: "/revise <feedback>",
+     description: "Get a new spec written with your feedback",
+-    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure"],
++    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
+     needs_pr: false,
+     changes_state: true,
+     pr_phases: ["merge_pending", "failed_review"],
+@@ -118,9 +119,10 @@ export const COMMANDS: readonly CommandSpec[] = [
+     description:
+       "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
+       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
+-      "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed",
++      "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
++      "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too",
+     // At a dependency closed unmerged it reads the dependencies again and releases the item if they merged (design §5).
+-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed"],
++    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops"],
+     needs_pr: false,
+     changes_state: true,
+   },
+diff --git a/src/core/controller.ts b/src/core/controller.ts
+index ff89a67..9e8b5a0 100644
+--- a/src/core/controller.ts
++++ b/src/core/controller.ts
+@@ -2061,7 +2061,9 @@ export class Controller {
+       };
+     }
+     const phase = commandPhase(it);
+-    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure";
++    // At the review loop limit too: a human chose to go back through triage or to close (design §4).
++    const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
++      phase === "max_loops";
+     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
+     if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
+       const onPr = e.kind === "revise_requested" && it.pr_number !== null && commandSpec("revise").pr_phases?.includes(phase)
+@@ -2384,11 +2386,12 @@ export class Controller {
+   }
+ 
+   /**
+-   * `/revise <feedback>` at a failed implement run or a `diff_too_large` block (design §4): the item goes back
+-   * through triage with the feedback, then to the spec gate. The revision counter and `max_loops` apply as at
+-   * the spec gate, but at the limit nothing changes: the item keeps its block, where `/retry` and `/reject`
+-   * still apply. restart_count + 1 so the implement run after the next `/approve` gets a new run key; the old
+-   * failure comment is unlinked.
++   * `/revise <feedback>` at a failed implement run, a `diff_too_large` block or the review loop limit (design §4):
++   * the item goes back through triage with the feedback, then to the spec gate. The revision counter and
++   * `max_loops` apply as at the spec gate, but at the limit nothing changes: the item keeps its block, where
++   * `/retry` and `/reject` still apply. restart_count + 1 so the implement run after the next `/approve` gets a
++   * new run key; the old failure comment is unlinked. At the loop limit loop_count goes back to 0; the PR and
++   * its branch stay.
+    */
+   private reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
+     const feedback = e.feedback.trim();
+@@ -2408,6 +2411,7 @@ export class Controller {
+         blocked_reason: null,
+         revision_count: n,
+         restart_count: it.restart_count + 1,
++        ...(it.blocked_reason === "max_loops" ? { loop_count: 0 } : {}),
+         spec_feedback: feedback,
+         failure_comment_url: null,
+       },
+@@ -3670,8 +3674,9 @@ export class Controller {
+     return it.blocked_reason === AGENT_NEEDS_HUMAN ? this.blockedBy(it) : undefined;
+   }
+ 
+-  /** The step a `/retry` restarts: the run behind an agent block, else what the item's fields say. */
++  /** The step a `/retry` restarts: implement at the loop limit, the run behind an agent block, else what the item's fields say. */
+   private async retryKind(it: WorkItem): Promise<RunKind | undefined> {
++    if (it.blocked_on === "human" && it.blocked_reason === "max_loops") return "implement";
+     return (await this.blockedBy(it)) ?? failedRunKind(it);
+   }
+ 
+@@ -4183,7 +4188,8 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
+ /**
+  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
+  * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
+- * (and is a resolve run's notes).
++ * (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
++ * the item RUNNING (a human chose to try again).
+  */
+ function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
+   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
+@@ -4192,14 +4198,15 @@ function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: stri
+   }
+   const w = widen ?? NO_WIDENING;
+   const detail = { ...(note ? { note } : {}), ...w.detail };
+-  const next = { ...it, restart_count: it.restart_count + 1 };
++  const loops = it.blocked_reason === "max_loops" ? { stage: "RUNNING" as const, loop_count: 0 } : {};
++  const next = { ...it, restart_count: it.restart_count + 1, ...loops };
+   // A retried update goes back to waiting for the merge, which is the state an update run expects.
+   const unblocked = kind === "update"
+     ? { blocked_on: "human" as const, blocked_reason: "merge_pending" }
+     : { blocked_on: "none" as const, blocked_reason: null };
+   // A new step key with no not_before: a human retry starts at once, with a fresh retry budget.
+   return {
+-    patch: { ...unblocked, restart_count: next.restart_count, ...w.patch },
++    patch: { ...unblocked, restart_count: next.restart_count, ...loops, ...w.patch },
+     actor,
+     reason: "retry_requested",
+     ...(Object.keys(detail).length > 0 ? { detail } : {}),
+diff --git a/tests/flow.test.ts b/tests/flow.test.ts
+index cd13609..8b4b5eb 100644
+--- a/tests/flow.test.ts
++++ b/tests/flow.test.ts
+@@ -2040,13 +2040,14 @@ describe("approval notes, unknown commands, /help and footers", () => {
+     expect(lastLines(spec.body, 1)[0]).toMatch(/^- `\/help`/);
+   });
+ 
+-  it("the max-loops and merge comments end with /help and a line saying no command changes the state", async () => {
++  it("the max-loops comment lists /retry, /revise, /reject and ends with /help; the merge comment ends with a line saying no command changes the state", async () => {
+     const f = await atSpecGate(80, { review: "bug" });
+     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "8001", approver: alice });
+     await f.step();
+     const max = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:max-loops:"))!;
+-    expect(lastLines(max.body, 2)[0]).toMatch(/^- `\/help`/);
+-    expect(lastLines(max.body, 1)[0]).toBe("No command changes this item's state now.");
++    for (const usage of ["/retry", "/revise <feedback>", "/reject <reason>"]) expect(max.body).toContain(`- \`${usage}\``);
++    expect(lastLines(max.body, 1)[0]).toMatch(/^- `\/help`/);
++    expect(max.body).not.toContain("No command changes this item's state now.");
+ 
+     const g = await atSpecGate(81);
+     g.source.queue.push({ kind: "spec_approved", source: g.src, comment_id: "8101", approver: alice });
+@@ -2083,6 +2084,103 @@ describe("approval notes, unknown commands, /help and footers", () => {
+   });
+ });
+ 
++describe("/retry, /revise and /reject at the review loop limit (max_loops)", () => {
++  const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
++  /**
++   * An item blocked at max_loops: with a PR (review found bugs until the limit), or without one (put there
++   * from the spec gate).
++   */
++  async function atMaxLoops(n: number, withPr: boolean) {
++    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement: implementOk, review: review("bug") });
++    const f = await factory(runner);
++    const src = issueRef(n);
++    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
++    await f.step();
++    let item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
++    if (withPr) {
++      f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}00`, approver: alice });
++      await f.step();
++    } else {
++      const r = await f.store.transition({
++        id: item.id, expected_version: item.version, actor: { kind: "system", id: "test" }, reason: "max_loops",
++        patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 },
++      });
++      if (!r.ok) throw new Error("setup failed");
++    }
++    item = (await f.store.getWorkItem(item.id))!;
++    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", pr_number: withPr ? 42 : null });
++    expect(item.loop_count).toBeGreaterThan(0);
++    return { ...f, runner, src, item };
++  }
++  type F = Awaited<ReturnType<typeof atMaxLoops>>;
++  const current = (f: F) => f.store.getWorkItem(f.item.id).then((x) => x!);
++  const runsOf = (f: F, kind: string) => f.store.listRuns(f.item.id).then((rs) => rs.filter((r) => r.kind === kind));
++  const refusals = (f: F, id: string) => f.source.comments.filter((c) => c.marker === `<!-- factory:refused:${id} -->`);
++
++  for (const withPr of [true, false]) {
++    const label = withPr ? "with a PR" : "without a PR";
++
++    it(`${label}: /retry +paths starts one implement run with loop_count 0 and widens the paths; /reject closes the item`, async () => {
++      const f = await atMaxLoops(withPr ? 110 : 111, withPr);
++      const before = await runsOf(f, "implement");
++      f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "11001", requester: alice, note: "+paths src/core/x.ts\ntry again" });
++      await f.controller.tickIntake();
++      const item = await current(f);
++      expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: 0, restart_count: f.item.restart_count + 1 });
++      expect(item.allowed_paths).toContain("src/core/x.ts");
++      const started = (await runsOf(f, "implement")).filter((r) => !before.some((b) => b.id === r.id));
++      expect(started).toHaveLength(1);
++      expect(started[0]!.idempotency_key).toContain(":l0:");
++      expect(refusals(f, "11001")).toEqual([]);
++      const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;
++      expect(row.detail).toMatchObject({ added_paths: JSON.stringify(["src/core/x.ts"]), note: "try again" });
++
++      const g = await atMaxLoops(withPr ? 112 : 113, withPr);
++      g.source.queue.push({ kind: "spec_rejected", source: g.src, comment_id: "11201", approver: alice, reason: "not worth it" });
++      await g.step();
++      expect(await current(g)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
++      expect(g.source.closed).toContainEqual(g.src);
++      expect(g.source.closeReasons.at(g.source.closed.findIndex((s) => s.id === g.src.id))).toBe("not_planned");
++      expect(refusals(g, "11201")).toEqual([]);
++    });
++
++    it(`${label}: /retry +paths with a covered path adds nothing, and a bad path is refused`, async () => {
++      const f = await atMaxLoops(withPr ? 114 : 115, withPr);
++      const before = await current(f);
++      const bad = ["+paths src/../x.ts", "+paths src/*.ts", `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
++      bad.forEach((note, i) => f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: `114b${i}`, requester: alice, note }));
++      await f.controller.tickIntake();
++      expect(await current(f)).toEqual(before);
++      bad.forEach((_, i) => expect(refusals(f, `114b${i}`)).toHaveLength(1));
++      f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "114ok", requester: alice, note: "+paths .github/workflows/x.yml" });
++      await f.controller.tickIntake();
++      expect((await current(f)).allowed_paths).toEqual(before.allowed_paths);
++      expect((await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "retry_requested")!.detail?.added_paths).toBeUndefined();
++    });
++
++    it(`${label}: /revise <feedback> goes back through triage with loop_count 0; with no feedback it is refused once`, async () => {
++      const f = await atMaxLoops(withPr ? 116 : 117, withPr);
++      const before = await current(f);
++      const empty = { kind: "revise_requested" as const, source: f.src, comment_id: "11601", requester: alice, feedback: "  " };
++      f.source.queue.push(empty, empty);
++      await f.controller.tickIntake();
++      expect(await current(f)).toEqual(before);
++      expect(refusals(f, "11601")).toHaveLength(1);
++
++      const triage = await runsOf(f, "triage");
++      f.source.queue.push({ kind: "revise_requested", source: f.src, comment_id: "11602", requester: alice, feedback: "split the gate change" });
++      await f.controller.tickIntake();
++      const item = await current(f);
++      expect(item).toMatchObject({
++        stage: "NEW", blocked_on: "none", loop_count: 0, spec_feedback: "split the gate change", revision_count: before.revision_count + 1,
++        pr_number: before.pr_number,
++      });
++      expect((await runsOf(f, "triage")).filter((r) => !triage.some((t) => t.id === r.id))).toHaveLength(1);
++      expect(refusals(f, "11602")).toEqual([]);
++    });
++  }
++});
++
+ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
+   const SECRET = "known-secret-value-0123456789";
+   const implementOk = () => ({ output: { summary: "s", next_steps: "n" } });
+diff --git a/tests/pr-revise.test.ts b/tests/pr-revise.test.ts
+index 815f6ca..b1d957f 100644
+--- a/tests/pr-revise.test.ts
++++ b/tests/pr-revise.test.ts
+@@ -186,7 +186,8 @@ describe("/revise on a factory PR", () => {
+     expect(max).toHaveLength(1);
+     expect(max[0]!.body).toContain("limit `max_loops` = 3");
+     expect(max[0]!.body).toContain("Commands you can reply with now:");
+-    expect(max[0]!.body.trim().split("\n").at(-1)).toBe("No command changes this item's state now.");
++    expect(max[0]!.body.trim().split("\n").at(-1)).toMatch(/^- `\/help`/);
++    expect(max[0]!.body).not.toContain("No command changes this item's state now.");
+     expect(f.refusals()).toEqual([]);
+ 
+     // Delivered again: no second comment, no change.

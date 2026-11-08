@@ -1,0 +1,276 @@
+diff --git a/SET_UP.md b/SET_UP.md
+index 187a3ef..ca6cab1 100644
+--- a/SET_UP.md
++++ b/SET_UP.md
+@@ -81,7 +81,7 @@ Then on GitHub:
+    - `/budget <tokens>` to continue with your own budget, a whole number greater than the current one (e.g. `/budget 9000000`);
+    - `/reject <reason>` to close the item. The branch and the PR stay as they are; close the PR yourself if you want.
+ 5. To rate the result, comment `/verdict accept|changes|reject <severity> <reason>` on the issue or the PR. Severity is `none`, `minor`, `major` or `critical`; `accept` may leave out the severity (it is then `none`) and the reason, and `yes` or `ok` mean `accept`. A verdict is only recorded; it does not move the item. It needs a PR to exist, still works after the merge, and is refused once the item is closed without a merge. With a forge, the factory also records verdicts on its own: an `accept` when a factory PR is merged with no commits by people, a `changes` when a person pushes to it, and a `reverted` when its merge is reverted. A `/verdict` replaces the one the factory recorded for the PR's head.
+-6. If the PR stops merging cleanly and the factory cannot update it (the PR is marked `sf: needs human` with a conflict comment), reply `/resolve [notes]` on the issue or on the PR. An agent resolves the conflict, and the factory pushes only if the changed files stay within the conflicting files and the allowed paths and `repo.install_command` / `repo.test_command` pass. The PR then goes through review again. If the resolve fails, it comments why; you can send `/resolve` again. Anything after `/resolve` (same line or below) is passed to the agent as notes.
++6. If the PR stops merging cleanly and the factory cannot update it (the PR is marked `sf: needs human` with a conflict comment), reply `/resolve [notes]` on the issue or on the PR. An agent resolves the conflict, and the factory pushes only if the changed files stay within the conflicting files and the allowed paths and `repo.install_command` / `repo.test_command` pass. The PR then goes through review again. If the resolve fails, it comments why; you can send `/resolve` again. Anything after `/resolve` (same line or below) is passed to the agent as notes. When the resolve needs a file outside the conflicting files and the allowed paths (say, a test that imports a file the PR moved), start the reply with `/resolve +paths <path>...`: those paths are added to the allowed paths, and the lines below are the notes.
+ 
+ Only users with write permission on the repository can approve, reject, revise, retry, resolve, answer a budget checkpoint or record a verdict.
+ The factory reacts 👀 to each command it handled and to each issue it took in; if it refused a command, it replies saying why.
+@@ -96,7 +96,7 @@ A command is the first line of a comment: `/` and the command name (any case), t
+ | `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached |
+ | `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached; on its PR: waiting for a human merge, blocked by a failed review run |
+ | `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge, review loop limit reached |
+-| `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent | PR has a merge conflict, blocked: the agent asked for a human |
++| `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent. `/resolve +paths <path>...` (at most 10, notes on the lines below) also adds those paths to the allowed paths | PR has a merge conflict, blocked: the agent asked for a human |
+ | `/budget [tokens]` | Continue past the budget checkpoint with the suggested budget, or with a larger whole number of tokens | paused at a budget checkpoint |
+ | `/verdict accept\|changes\|reject <severity> <reason>` | Record a verdict on the result, also after the merge; it does not change the state. `/verdict accept` alone (or `yes`, `ok`) records severity `none`; it replaces the verdict the factory recorded for the PR's head from a merge or a push | any open or merged item, once it has a PR |
+ | `/standing [accept\|decline <rule>]` | Show the standing-approval rules, or turn one on or off. `/standing accept spec-t1` lets tier 1 specs that wait at the spec gate be approved without a reply; `/standing decline spec-t1` turns it off or declines its proposal. A `/revise` or `/reject` on an item the rule approved also turns it off | any time |
+diff --git a/docs/design/04-gate-commands.md b/docs/design/04-gate-commands.md
+index e557e84..ccbdae5 100644
+--- a/docs/design/04-gate-commands.md
++++ b/docs/design/04-gate-commands.md
+@@ -1,5 +1,7 @@
+ # 4. Agents: gate commands
+ 
++**`/resolve +paths` and `/resolve` notes** (decision changed 2026-11-08; replaces "`/resolve` takes its whole text as the run's notes, unscanned, and never widens `allowed_paths`"). `/resolve` now reads its text as `/retry` does: the whole text is egress-scanned first (a finding refuses the `/resolve` with one reply and stores nothing), then `parseCommandPaths` splits a `+paths <path>...` first line off, and the notes are the lines below (empty when there are none), capped at 2000 characters. The `+paths` rules are those of `/retry +paths`: at most 10 paths, no `..`, no glob, no absolute path, a refused path changes nothing and gets one reply, and paths already covered by `allowed_paths` are not added again. The widening (the same `widen` helper, so a path under a higher floor raises the tier) lands in the `resolve_requested` transition that queues the resolve run, with `detail.added_paths` and the old and new `allowed_paths` in `changes`; the resolve run's scope gate reads the widened list. It applies where `/resolve` applies: an item waiting on a merge conflict, or one whose resolve run asked for a human (`agent_needs_human`); anywhere else it is refused and nothing changes. Why: a resolve run may change only the conflicting files and the allowed paths, so when the base needs one more file (a test that imports a file the PR moved) the run failed with `out_of_scope` every time, and the item stayed at `merge_conflict_pending`. Unchanged: `/resolve` without `+paths` (same run input, no change to `allowed_paths`), `/retry +paths` on a failed resolve run (still refused), the `factory resolve` CLI usage, automatic resolve notes, the resolve prompt and the scope gate. No schema change. Solo and enterprise behave the same.
++
+ **Commands at the review loop limit** (decision changed 2026-11-08; replaces "at `max_loops` no command changes the state"). An item blocked on a human with `max_loops` (command phase `max_loops`, label "review loop limit reached") now takes the three existing commands, from the issue and from the CLI, with or without a PR. `/retry [notes]` starts one implement run: the item goes to `RUNNING`, unblocked, with `loop_count` back at 0 and `restart_count` + 1, and the run key uses the reset count (`…:implement:l0:r<n>`); `+paths` widens `allowed_paths` exactly as after a failed implement run (at most 10, no `..`, no glob, covered paths not added again). `/revise <feedback>` takes the after-failure path (`reviseAfterFailure`): back to `NEW` with a triage run and the feedback stored, `loop_count` 0 (only at `max_loops`); the open PR and its branch stay. With no feedback it is refused with one reply and nothing changes. `/reject <reason>` closes the item as at the spec gate (`rejected`, the issue closed as not planned). A human chose to try again, so the loop count restarts (and the model bump that follows it may drop). The max-loops comment's footer lists the three commands and `/help`, so it no longer ends with "No command changes this item's state now." Unchanged: the limit itself, the review loop, `/retry` on the other phases (a failed triage, review or update run still refuses `+paths`) and commands on the PR conversation at `max_loops` (none). No schema change. Solo and enterprise behave the same.
+ 
+ **Implicit verdicts and the lenient `/verdict`** (decision changed 2026-11-08, issue #316; replaces "only `/verdict` writes verdicts, and every kind but `accept` needs a severity"). The factory records a verdict on its own from three PR events of a **factory** item (origin `factory`; adopted PRs, Slack items and local items get none here): a merge whose merger resolves to a user and with no `manual` run on the item (no person pushed) is one `accept`, severity `none`, for the merged head (`last_head_sha`), the merger as actor, stored just before the `pr_merged` transition; a person's push (the `manual` run of design 05-sources) is one `changes`, severity `minor`, for the pushed head, the pusher (or `system:pr-sync`) as actor, its reason naming the commit count from `Forge.commitsBetween` (`a person pushed 3 commits to the PR`) or saying the count is unknown; a revert of a merged item (CLOSED / `completed`) is one `reverted`, severity `major`, per reverting commit, as `system:links`, with no PR head. A merge whose merger does not resolve writes no verdict and logs why. **Implicit verdicts never change `stage`, `blocked_on` or `blocked_reason`:** like `/verdict`, each bumps the version and adds one `state_changes` row, reason `implicit_verdict`, `changes` = {}. A `verdicts` row now has `implicit` (0/1) and `pr_head` (SQLite migration 39, MySQL step 0039, which also widens `comment_id` to 128); an implicit verdict keeps its event key in `comment_id` (`implicit:<merged|pushed|reverted>:<item>:<sha>`), so a redelivered event or a second run of the merge handler stores nothing. **One verdict per PR head:** an implicit verdict for a head that already has one is a no-op, so a person's push then a merge ends with that head's `changes` and no `accept`; an explicit `/verdict` is stored for the item's current head and deletes that head's implicit verdict (its `state_changes` row stays). The parser now takes `/verdict accept` alone (severity `none`), `accept <reason>` without a severity, and `yes` and `ok` as `accept`; an unknown word gets the usage line and stores nothing. `/verdict` also applies to a merged item (command phase `merged`); a closed item whose PR was not merged is refused with one reply. Solo default: no forge, so no PR events and no implicit verdicts. Enterprise: the GitHub forge, implicit verdicts from its PR events, on the shared store with both migrations applied.
+@@ -34,6 +36,7 @@ All three need write permission, and on an item in any other state they are refu
+ 
+ ## History
+ 
++- **`/resolve +paths` and `/resolve` notes** (decision changed 2026-11-08). Before: `/resolve` passed its raw text as the resolve run's notes, with no egress scan and no length cap, and `+paths` was not split off, so a resolve that needed a file outside the conflicts and the allowed paths could only fail `out_of_scope` (PR #416).
+ - **Commands at the review loop limit** (decision changed 2026-11-08). Before: `max_loops` had no command in the table; its footer ended with "No command changes this item's state now.", `/retry` was refused as "no failed run to retry", and `/revise` and `/reject` were refused because no spec was waiting, so the item could only be closed or changed by hand.
+ - **Implicit verdicts and the lenient `/verdict`** (decision changed 2026-11-08, issue #316). Before: only `/verdict` wrote verdicts; `/verdict accept` alone and `/verdict yes` were refused (a severity was required for every kind), so every owner `/verdict` on record was refused; merges, pushes and reverts wrote no verdict; a `/verdict` on a merged item was refused as closed.
+ - **Standing approvals at the spec gate** (decision changed 2026-11-07, issue #299). Before: every spec at or above `dials.spec_gate_min_tier` waited in `spec_pending` for a human `/approve`, `/reject` or `/revise`; no command accepted or declined a standing rule, and nothing acted on one.
+diff --git a/src/core/commands.ts b/src/core/commands.ts
+index d0cf442..26cb3d8 100644
+--- a/src/core/commands.ts
++++ b/src/core/commands.ts
+@@ -129,7 +129,9 @@ export const COMMANDS: readonly CommandSpec[] = [
+   {
+     name: "resolve",
+     usage: "/resolve [notes]",
+-    description: "Let an agent resolve the PR's merge conflict; notes go to the agent",
++    description:
++      "Let an agent resolve the PR's merge conflict; notes go to the agent. " +
++      "`/resolve +paths <path>...` (at most 10, notes on the lines below) also adds those paths to the allowed paths",
+     // Also the answer to a resolve run that asked for a human: the reply is the next resolve run's notes.
+     phases: ["merge_conflict", "agent_needs_human"],
+     asked_by: ["resolve"],
+@@ -406,7 +408,7 @@ export function commandPathProblem(p: string): string | null {
+ }
+ 
+ /**
+- * Splits `+paths <path>...` off the text after `/approve` or `/retry` (design §4, issue #280). The flag starts
++ * Splits `+paths <path>...` off the text after `/approve`, `/retry` or `/resolve` (design §4, issue #280). The flag starts
+  * the text's first line; the paths are the rest of that line, separated by whitespace (a path may be wrapped
+  * in backticks, and a leading `./` is dropped); the note is the lines below. Without the flag, no paths and
+  * the whole text is the note. A refusal for no paths, more than MAX_COMMAND_PATHS, or a path that is empty,
+diff --git a/src/core/controller.ts b/src/core/controller.ts
+index 9e8b5a0..e5a06d1 100644
+--- a/src/core/controller.ts
++++ b/src/core/controller.ts
+@@ -1711,15 +1711,16 @@ export class Controller {
+   }
+ 
+   /**
+-   * The note and the `+paths` of an `/approve` or `/retry` (design §4, issue #280); none for other commands. The
+-   * whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is split off
+-   * and checked; the note is what is left, capped. A finding or a bad path refuses the command.
++   * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
++   * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
++   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command.
+    */
+   private async commandInput(id: WorkItemId, e: CommandEvent): Promise<{ note: string | null; paths: string[] } | Refusal> {
+-    if (e.kind !== "spec_approved" && e.kind !== "retry_requested") return { note: null, paths: [] };
+-    const scanned = await this.approvalNote(id, e.note, COMMAND[e.kind]);
++    if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
++    const text = e.kind === "resolve_requested" ? e.notes : e.note;
++    const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
+     if ("refuse" in scanned) return scanned;
+-    const split = parseCommandPaths(e.note ?? "");
++    const split = parseCommandPaths(text ?? "");
+     if ("refuse" in split) return split;
+     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
+     return { note: note || null, paths: split.paths };
+@@ -2033,7 +2034,9 @@ export class Controller {
+     tag: StateChangeDetail | null = null,
+     paths: readonly string[] = [],
+   ): Promise<Decision | Refusal> {
+-    if (e.kind === "resolve_requested") return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve");
++    if (e.kind === "resolve_requested") {
++      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
++    }
+     if (e.kind === "revise_requested" && e.pr) {
+       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, pr_number: e.pr.pr_number, key: { comment_id: e.comment_id } });
+     }
+@@ -4313,9 +4316,10 @@ function quote(text: string): string {
+  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
+  * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
+  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
+- * /resolve would otherwise be a silent no-op. The notes go on the run for the worker; they are untrusted.
++ * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
++ * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
+  */
+-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean): Decision | Refusal {
++function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, note: string | null, w: Widening): Decision | Refusal {
+   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
+   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
+   if (!conflictPending(it) && !asked) {
+@@ -4326,11 +4330,11 @@ function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAske
+   }
+   const next = { ...it, restart_count: it.restart_count + 1 };
+   return {
+-    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count },
++    patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: next.restart_count, ...w.patch },
+     actor,
+     reason: "resolve_requested",
+-    detail: { comment_id: e.comment_id },
+-    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: e.notes } },
++    detail: { comment_id: e.comment_id, ...w.detail },
++    enqueue: { kind: "resolve", idempotency_key: runKey(next, "resolve"), input: { notes: note ?? "" } },
+   };
+ }
+ 
+diff --git a/tests/commands.test.ts b/tests/commands.test.ts
+index 4220a34..335bd3a 100644
+--- a/tests/commands.test.ts
++++ b/tests/commands.test.ts
+@@ -81,12 +81,14 @@ describe("+paths (issue #280)", () => {
+     expect(retryPathsReply(Array.from({ length: 11 }, (_, i) => `f${i}`))).toBeNull();
+   });
+ 
+-  it("/help and the command table show the +paths usage of /approve and /retry", () => {
++  it("/help and the command table show the +paths usage of /approve, /retry and /resolve", () => {
+     const help = helpReply({ phase: "spec_pending", has_pr: false });
+-    expect(help).toContain("`/approve +paths <path>...`");
+-    expect(help).toContain("`/retry +paths <path>...`");
+-    expect(commandTableMarkdown()).toContain("`/approve +paths <path>...`");
+-    expect(commandTableMarkdown()).toContain("`/retry +paths <path>...`");
++    for (const usage of ["`/approve +paths <path>...`", "`/retry +paths <path>...`", "`/resolve +paths <path>...`"]) {
++      expect(help).toContain(usage);
++      expect(commandTableMarkdown()).toContain(usage);
++    }
++    // The usage column stays `/resolve [notes]`; `+paths` is in its description, as for /retry.
++    expect(helpReply({ phase: "merge_conflict", has_pr: true })).toContain("`/resolve [notes]` **(now)**");
+   });
+ });
+ 
+diff --git a/tests/flow.test.ts b/tests/flow.test.ts
+index 8b4b5eb..0ce04fb 100644
+--- a/tests/flow.test.ts
++++ b/tests/flow.test.ts
+@@ -1278,6 +1278,7 @@ describe("/revise after a failed implement run", () => {
+ });
+ 
+ describe("/resolve on a merge conflict", () => {
++  const SECRET = "known-secret-value-0123456789";
+   const CONFLICT = [
+     "export const a = 1;",
+     "<<<<<<< HEAD",
+@@ -1301,7 +1302,7 @@ describe("/resolve on a merge conflict", () => {
+       review: review("pass"),
+       resolve: () => ({ output: { summary: "kept both gates", next_steps: "none" } }),
+     });
+-    const f = await factory(runner);
++    const f = await factory(runner, [SECRET]);
+     const src = issueRef(n);
+     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+     await f.step();
+@@ -1550,6 +1551,98 @@ describe("/resolve on a merge conflict", () => {
+     expect(refusals(f)).toEqual([]);
+   });
+ 
++  it("/resolve +paths at merge_conflict_pending widens allowed_paths and queues one resolve run whose notes are the lines below", async () => {
++    const f = await conflicted(75);
++    f.source.queue.push(resolveEvent(f, "7501", "+paths tests/x.test.ts\nKeep both imports"));
++    await f.controller.tickIntake();
++    const item = (await f.store.getWorkItem(f.item.id))!;
++    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
++    expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
++    const runs = (await f.store.listRuns(f.item.id)).filter(byPerson);
++    expect(runs.map((r) => [r.status, r.input])).toEqual([["queued", { notes: "Keep both imports" }]]);
++    const row = (await f.store.listStateChanges(f.item.id)).at(-1)!;
++    expect(row).toMatchObject({ reason: "resolve_requested", detail: { comment_id: "7501", added_paths: JSON.stringify(["tests/x.test.ts"]) } });
++    expect(row.changes.allowed_paths).toBeDefined();
++    expect(refusals(f)).toEqual([]);
++  });
++
++  it("/resolve +paths with no lines below gives the run empty notes; a covered path is not added again", async () => {
++    const f = await conflicted(76);
++    f.source.queue.push(resolveEvent(f, "7601", "+paths .github/workflows/x.yml"));
++    await f.controller.tickIntake();
++    const item = (await f.store.getWorkItem(f.item.id))!;
++    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
++    expect(item.allowed_paths).toEqual(f.item.allowed_paths);
++    expect((await f.store.listRuns(f.item.id)).filter(byPerson).map((r) => r.input)).toEqual([{ notes: "" }]);
++    expect(refusals(f)).toEqual([]);
++  });
++
++  it("/resolve +paths with a bad path, or more than 10, is refused with one reply each and nothing changes", async () => {
++    const f = await conflicted(77);
++    const before = await snapshot(f);
++    const bad = ["+paths", "+paths /etc/passwd", "+paths tests/../x.ts", "+paths tests/*.ts",
++      `+paths ${Array.from({ length: 11 }, (_, i) => `f${i}.ts`).join(" ")}`];
++    bad.forEach((notes, i) => f.source.queue.push(resolveEvent(f, `77b${i}`, notes)));
++    await f.controller.tickIntake();
++    expect(await snapshot(f)).toEqual(before);
++    for (let i = 0; i < bad.length; i++) {
++      const r = f.source.comments.filter((c) => c.marker === `<!-- factory:refused:77b${i} -->`);
++      expect(r).toHaveLength(1);
++      expect(r[0]!.body).toContain("`/resolve` was not applied");
++      expect(r[0]!.body).toContain("`+paths`");
++    }
++  });
++
++  it("a /resolve note is egress-scanned (refused once, nothing stored) and capped at 2000 characters", async () => {
++    const f = await conflicted(80);
++    const before = await snapshot(f);
++    const e = resolveEvent(f, "8001", `+paths tests/x.test.ts\nuse ${SECRET}`);
++    f.source.queue.push(e, e);
++    await f.controller.tickIntake();
++    expect(await snapshot(f)).toEqual(before);
++    expect(refusals(f)).toHaveLength(1);
++    expect(refusals(f)[0]!.body).toContain("`/resolve` was not applied");
++    expect(refusals(f)[0]!.body).not.toContain(SECRET);
++
++    f.source.queue.push(resolveEvent(f, "8002", "x".repeat(5000)));
++    await f.controller.tickIntake();
++    expect((await f.store.listRuns(f.item.id)).filter(byPerson).map((r) => r.input)).toEqual([{ notes: "x".repeat(2000) }]);
++  });
++
++  it("/resolve +paths on an item not waiting on a merge conflict is refused and nothing changes", async () => {
++    const f = await conflicted(81);
++    const it0 = (await f.store.getWorkItem(f.item.id))!;
++    const r = await f.store.transition({
++      id: it0.id, expected_version: it0.version, actor: { kind: "system", id: "test" }, reason: "test_setup",
++      patch: { blocked_reason: "merge_pending" },
++    });
++    if (!r.ok) throw new Error("setup");
++    const before = await snapshot(f);
++    f.source.queue.push(resolveEvent(f, "8101", "+paths tests/x.test.ts"));
++    await f.controller.tickIntake();
++    expect(await snapshot(f)).toEqual(before);
++    expect(refusals(f)).toHaveLength(1);
++    expect(refusals(f)[0]!.body).toContain("not waiting on a merge conflict");
++  });
++
++  it("/resolve +paths answering a resolve run's agent_needs_human widens allowed_paths and queues one resolve run", async () => {
++    const f = await conflicted(82);
++    const resolve = f.runner.script.resolve!;
++    f.runner.script.resolve = () => ({ output: { needs_human: { reason: "r", question: "q" } } });
++    f.source.queue.push(resolveEvent(f, "8201"));
++    await f.step();
++    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
++    f.runner.script.resolve = resolve;
++    f.source.queue.push(resolveEvent(f, "8202", "+paths tests/x.test.ts\nThe test imports the moved file"));
++    await f.controller.tickIntake();
++    const item = (await f.store.getWorkItem(f.item.id))!;
++    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
++    expect(item.allowed_paths).toEqual([...f.item.allowed_paths, "tests/x.test.ts"]);
++    const queued = (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
++    expect(queued.map((r) => [r.kind, r.input])).toEqual([["resolve", { notes: "The test imports the moved file" }]]);
++    expect(refusals(f)).toEqual([]);
++  });
++
+   it("scope gate: a changed file outside the conflicts and allowed_paths fails out_of_scope, pushes nothing, re-blocks with a comment; a later /resolve is accepted", async () => {
+     const f = await conflicted(74);
+     f.sandbox.resolveChanged = ["src/gate.ts", ".github/workflows/new.yml", "package.json", "src/extra.ts"];

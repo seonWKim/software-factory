@@ -1,0 +1,16 @@
+{
+  "id": "418",
+  "pr_number": 418,
+  "work_item_id": "wi_ab560f5014dd4eef96a5f46772dc9e82",
+  "expect": "should_pass",
+  "outcome": "clean_merge",
+  "human_verdict": {
+    "reason": "pr_merged",
+    "actor_id": "github:69591622",
+    "record_id": "sc_e4bdfd5419a0402ba0982ffbfb7dd47b"
+  },
+  "revert_reason": null,
+  "source_record_ids": [
+    "sc_e4bdfd5419a0402ba0982ffbfb7dd47b"
+  ]
+}

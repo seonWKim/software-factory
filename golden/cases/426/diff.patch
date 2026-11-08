@@ -1,0 +1,293 @@
+diff --git a/docs/design/05-sources.md b/docs/design/05-sources.md
+index 3e4c0fc..67d9e7a 100644
+--- a/docs/design/05-sources.md
++++ b/docs/design/05-sources.md
+@@ -4,6 +4,7 @@
+   - **Startup.** No GitHub credential is read (the `github_auth` plugin is not built; plugins get a GitHub client and credentials that refuse every call) and no repository lookup is made. The project key is `local:local:<first 32 hex of the SHA-256 of owner/name>`, labelled `local/<owner>/<name>`, stored as #350's key of the configured repo, so the CLI and the next start read it. No forge ID: a rename starts a new project. Switching a store back to GitHub keeps the stored local key until GitHub's background read stores the GitHub key for the next start (the existing "another repository ID" warning).
+   - **Base and fetches.** Nothing fetches origin: the sandbox's trusted base is the factory repo's local `refs/heads/<base_branch>`, a run folder's `refs/remotes/origin/*` are the factory repo's local branches (so the worker's `origin/<base>` and `origin/<branch>` read them unchanged), the worker's base fetch copies the local branch, and the git-worktree updater builds the local base branch with no fetch and no fast-forward of the main checkout.
+   - **Broker.** The `local` ToolBroker (docs/plugins/tool-broker.md) commits a run's branch to the local branch `refs/heads/factory/<id>` of the factory repo, never to a remote, behind the same lease, prefix, trusted-git and egress checks as the GitHub broker (one helper, `src/impl/broker/trusted-git.ts`). It has no PR, preflight or comment tool, so the worker skips the PR open, the preflight's forge checks and PR comments, and the implement outcome has no `pr_number`.
++  - **A local item's gate comments with GitHub selected.** The decision that changed: **a local item makes no forge comment, also when the GitHub broker is selected** (2026-11-08, issue #421; local first). Its merge-conflict, failed-checks, checks-env and scope-violation messages stay in its item thread; only an item of the GitHub source posts them on its issue. The issue number comes from one helper, `issueNumber` in src/core/change-ref.ts: the `<digits>` of an `owner/repo#<digits>` source id, null for a local item and for any other id (core names no forge, so it reads the id's shape, not the `github_issue` type). The worker's one comment helper (`forgeComment`) makes no broker call for a null number and succeeds, so the run fails with its own gate code; a review or update with no PR is the same. The broker's `github.comment` checks its `number` (agent-supplied args reach it) and refuses a value that is not a positive integer with `invalid_args`, making no request. Solo default: a local item never calls GitHub for a comment. Enterprise setting: a GitHub item keeps its comments, markers and bodies unchanged. Not built: the rest of a local item with GitHub selected (preflight, push, PR open, checks) stays with #333.
+   - **Review and gate.** The item enters `REVIEW` with no `pr_number`; the review reads the local branch's diff against the local base, and a pass reaches `merge_pending` the same way a PR does (no PR, so no checks to wait for). Its message names `factory merge <id>`.
+   - **Merge.** `factory merge <id>` stores a `merge` command in the command inbox; the controller's one local merge function (`Controller.mergeLocal`; #333 and #246 call it, no second path) authorizes it through the local auth plugin for `approve_merge` (the approver role; a requester's refusal names `factory users add`), refuses an item not waiting for a merge, and merges through the sandbox the controller already holds, as the merge check does, so core runs no git. The sandbox writes the merge commit with `git merge-tree` and `git commit-tree` (objects only, no checkout, no index, no hook) and moves `refs/heads/<base>` conditionally on the base it merged, with no push. A conflict moves nothing, leaves the item in `merge_pending` and replies with the conflicting files; a base branch checked out in any worktree is refused, since moving it would change that checkout. A merge closes the item (`completed`, `merge_sha`, the approver as actor, reason `local_merged`) and releases the items waiting on it; a repeat finds the branch merged and moves nothing. Never automatic: `auto_merge_max_tier` stays 0.
+   - Solo default: `plugins.source: ["local"]`, `plugins.broker: "local"`, `"auth": "local"`, `permissions.grants: ["static"]`. Enterprise setting: the GitHub source, GitHub auth and the GitHub broker, unchanged, with no local broker. No new table, column or state. Not built (follow-ups): degraded mode and forge state, the outbox for GitHub writes and CLI mirror comments, the `factory status` line for GitHub; `factory session` with the local broker; local items while GitHub is selected (#333).
+@@ -40,6 +41,7 @@
+ 
+ ## History
+ 
++- **A local item's gate comments with GitHub selected** (decision changed 2026-11-08, issue #421). Before: the worker took the issue number as `Number(source id after "#")`, so with the GitHub broker selected a local item's merge-conflict, failed-checks, checks-env and scope-violation comments were sent to `issues/NaN/comments`, the checks-env one through a direct broker call, and a review or update comment with no PR was sent with a null number.
+ - **Local startup** (decision changed 2026-11-07). Before: every start needed GitHub: build() read the GitHub credentials and made a GitHub client for every config, a first start resolved the project key through GitHub, the only broker pushed to GitHub and opened PRs, and the sandbox and the updater fetched origin and read the base from `origin/<base>`, so a local task had no path to a merge.
+ - **CLI intake** (decision changed 2026-11-08). Before: the CLI refused `approve|retry|revise|reject` for any non-local item ("is not a local work item: reply `/<command>` on its issue instead") and the controller skipped CLI commands for non-local items, so a local approver could act on a GitHub item only through a GitHub account with write access.
+ - **GitHub issues are the home of the conversation** (decision changed 2026-11-07, issue #284). Before: the GitHub source turned each new comment into an event the controller handled at once; nothing wrote a GitHub comment to the item thread or the command inbox, the inbox reader built only local identities and skipped every item that was not local, and dedupe relied only on the poll cursor's `last_comment_id`.
+diff --git a/src/core/change-ref.ts b/src/core/change-ref.ts
+index 2fd3fd8..c1580e0 100644
+--- a/src/core/change-ref.ts
++++ b/src/core/change-ref.ts
+@@ -9,3 +9,17 @@ export function prNumber(item: Pick<WorkItem, "change_ref">): number | null {
+   const n = Number(item.change_ref);
+   return Number.isSafeInteger(n) ? n : null;
+ }
++
++/** A local item's source type: its messages are its item thread, so it has no forge issue. */
++const LOCAL_SOURCE = "local";
++
++/**
++ * The forge issue number of an issue item, from its `owner/repo#<digits>` source id (design 05-sources). Null for
++ * a local item, and for any other id (a chat thread, a malformed id): such an item gets no forge comment.
++ */
++export function issueNumber(item: Pick<WorkItem, "source">): number | null {
++  if (item.source.type === LOCAL_SOURCE) return null;
++  const m = /^[^\s#/]+\/[^\s#/]+#(\d+)$/.exec(item.source.id);
++  const n = m ? Number(m[1]) : 0;
++  return Number.isSafeInteger(n) && n > 0 ? n : null;
++}
+diff --git a/src/core/worker.ts b/src/core/worker.ts
+index 953e0dd..d2140e8 100644
+--- a/src/core/worker.ts
++++ b/src/core/worker.ts
+@@ -1,5 +1,5 @@
+ import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
+-import { prNumber } from "./change-ref.js";
++import { issueNumber, prNumber } from "./change-ref.js";
+ import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
+ import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
+ import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
+@@ -1610,7 +1610,7 @@ export class Worker {
+       ...conflicts.map((f) => `- \`${f}\``),
+     ].join("\n");
+     const posted = await this.forgeComment(ctx, {
+-      number: Number(item.source.id.split("#")[1]),
++      number: issueNumber(item),
+       body,
+       marker: `<!-- factory:merge-conflict:${run.id} -->`,
+     });
+@@ -1750,7 +1750,7 @@ export class Worker {
+       "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
+     ].join("\n");
+     const posted = await this.forgeComment(ctx, {
+-      number: Number(item.source.id.split("#")[1]),
++      number: issueNumber(item),
+       body,
+       marker: `<!-- factory:checks:${run.id} -->`,
+     });
+@@ -1779,8 +1779,8 @@ export class Worker {
+       "",
+       `Nothing was pushed to the change's branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
+     ].join("\n");
+-    const posted = await this.d.broker.call(ctx, "github.comment", {
+-      number: Number(item.source.id.split("#")[1]),
++    const posted = await this.forgeComment(ctx, {
++      number: issueNumber(item),
+       body,
+       marker: `<!-- factory:checks:${run.id} -->`,
+     });
+@@ -2049,7 +2049,7 @@ export class Worker {
+       ...scopeReply(outside),
+     ].join("\n");
+     const posted = await this.forgeComment(ctx, {
+-      number: Number(item.source.id.split("#")[1]),
++      number: issueNumber(item),
+       body,
+       marker: `<!-- factory:scope:${run.id} -->`,
+     });
+@@ -2720,11 +2720,13 @@ export class Worker {
+   }
+ 
+   /**
+-   * A comment on the item's issue or PR through the broker; a broker with no comment tool (the local one, whose
+-   * items' messages are their thread) posts nothing and succeeds.
++   * A comment on the item's issue or PR through the broker. It posts nothing and succeeds with a broker with no
++   * comment tool (the local one, whose items' messages are their thread) or with no number: an item that is not
++   * a forge issue (a local item, also with a forge broker selected; design 05-sources), or a review or update
++   * without a change.
+    */
+   private async forgeComment(ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
+-    if (!this.hasTool("github.comment")) return { ok: true, content: null };
++    if (!this.hasTool("github.comment") || args.number === null) return { ok: true, content: null };
+     return this.d.broker.call(ctx, "github.comment", args);
+   }
+ 
+diff --git a/src/impl/github/github-tool-broker.ts b/src/impl/github/github-tool-broker.ts
+index 8c08bfd..a67e42f 100644
+--- a/src/impl/github/github-tool-broker.ts
++++ b/src/impl/github/github-tool-broker.ts
+@@ -260,6 +260,10 @@ export class GitHubToolBroker implements ToolBroker {
+   }
+ 
+   private async comment(a: CommentArgs): Promise<ToolResult> {
++    // The boundary check: agent-supplied args reach this tool, and a non-number would become `issues/NaN/comments`.
++    if (!Number.isSafeInteger(a.number) || a.number <= 0) {
++      return { ok: false, error_code: "invalid_args", message: `comment: number must be a positive integer, got ${String(a.number).slice(0, 40)}` };
++    }
+     const scan = await this.deps.scanner.scan("comment", a.body);
+     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
+     try {
+diff --git a/tests/local-forge-calls.test.ts b/tests/local-forge-calls.test.ts
+new file mode 100644
+index 0000000..0ca0091
+--- /dev/null
++++ b/tests/local-forge-calls.test.ts
+@@ -0,0 +1,164 @@
++import { describe, expect, it } from "vitest";
++import { issueNumber } from "../src/core/change-ref.js";
++import type { SourceRef, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
++import { Worker } from "../src/core/worker.js";
++import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
++import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
++import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
++import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
++import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
++import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts } from "./helpers/fakes.js";
++import { issue, newStore, system } from "./helpers/store.js";
++
++// A local item with GitHub selected (design 05-sources): its gate comments stay in its item thread, so the
++// implement run makes no forge comment. A GitHub item keeps its comments on its issue.
++
++/** The GitHub fake: throws on any path with `NaN`, answers the preflight, records every request. */
++class NanGuardClient extends FakeGitHubClient {
++  requests: string[] = [];
++  override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
++    this.requests.push(`${method} ${path}`);
++    if (path.includes("NaN")) throw new Error(`request with NaN: ${method} ${path}`);
++    if (method === "GET" && path === "/repos/o/r") return { permissions: { push: true } } as T;
++    if (method === "GET" && path.startsWith("/repos/o/r/pulls?")) return [] as T;
++    return super.request<T>(method, path, body);
++  }
++  /** Requests other than the preflight's two reads, which stay with #333 for a local item. */
++  forgeWrites(): string[] {
++    return this.requests.filter((r) => r !== "GET /repos/o/r" && !r.startsWith("GET /repos/o/r/pulls?"));
++  }
++}
++
++/** The check commands fail and name a test file, so the base rerun fails it too: `checks_env`. */
++class FailingTestsSandbox extends FakeSandbox {
++  override async exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
++    if (cmd[0] === "npm" && cmd[1] === "test") {
++      this.commands.push(cmd.join(" "));
++      return { exit_code: 1, signal: null, stdout: " FAIL  tests/flaky.test.ts > breaks\n", stderr: "", timed_out: false };
++    }
++    return super.exec(h, cmd, o);
++  }
++}
++
++/** The sync's merge (hooks off: `-c core.hooksPath=…`) conflicts, as do both resolution steps' retries. */
++class ConflictingSandbox extends FakeSandbox {
++  override ancestorExit = 1;
++  override conflicts = ["src/a.ts"];
++  override async exec(h: SandboxHandle, cmd: readonly string[], o: ExecOptions): Promise<ExecResult> {
++    if (cmd[0] === "git" && /^-c \S+ merge --no-ff /.test(cmd.slice(1).join(" "))) {
++      this.gitCalls.push(cmd.slice(1).join(" "));
++      return { exit_code: 1, signal: null, stdout: "", stderr: "CONFLICT", timed_out: false };
++    }
++    return super.exec(h, cmd, o);
++  }
++}
++
++const LOCAL: SourceRef = { type: "local", id: "task-1", link: "local:task-1" };
++
++/** The pipeline's controller and store, with one worker whose broker is the real GitHub broker over the fake. */
++async function withGitHub(source: SourceRef, sandbox: FakeSandbox = new FakeSandbox()) {
++  const f = await pipeline();
++  const client = new NanGuardClient();
++  const broker = new GitHubToolBroker({
++    client, credentials: { token: async () => null } as unknown as GitHubCredentials, store: f.store, scanner: cleanScanner,
++    clock: f.clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
++  });
++  const worker = new Worker({
++    id: "w-gh" as WorkerId, store: f.store, sandbox, runner: f.runner, broker, storage: new MemoryStorage(),
++    clock: f.clock, config: f.config, prompts, log: f.log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
++  });
++  f.source.queue.push({ kind: "item_requested", source, requester: alice, title: "t", body: "b" });
++  await f.controller.tickIntake();
++  const item = (await f.store.getWorkItemBySource(source.type, source.id))!;
++  const step = async () => {
++    while (await worker.tick()) await f.controller.tickRuns();
++    await f.controller.tickRuns();
++  };
++  const implement = async () => {
++    await step();
++    return (await f.runs(item, "implement"))[0]!;
++  };
++  return { f, client, sandbox, item, implement };
++}
++
++describe("issueNumber", () => {
++  const item = (source: SourceRef): Pick<WorkItem, "source"> => ({ source });
++  it("is the number of a GitHub issue item's `#<digits>` source id", () => {
++    expect(issueNumber(item(issueRef(12)))).toBe(12);
++  });
++  it("is null for a local item, another source, or an id without a positive number", () => {
++    expect(issueNumber(item(LOCAL))).toBeNull();
++    expect(issueNumber(item({ type: "local", id: "o/r#3", link: "" }))).toBeNull();
++    expect(issueNumber(item({ type: "slack", id: "slack:T1:C1:1700000000.1", link: "" }))).toBeNull();
++    for (const id of ["o/r", "o/r#", "o/r#x", "o/r#0", "o/r#1#2", "o/r#12a", "#5", "r#5", "a/b/c#5", `o/r#${"9".repeat(20)}`]) {
++      expect(issueNumber(item({ type: "github_issue", id, link: "" }))).toBeNull();
++    }
++  });
++});
++
++describe("a local item's implement run with the GitHub broker selected", () => {
++  it("scope violation: the run fails with its own code and makes no GitHub comment request", async () => {
++    const g = await withGitHub(LOCAL);
++    g.sandbox.changedFiles = ["src/outside.ts"];
++    const run = await g.implement();
++    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
++    expect(g.client.requests.some((r) => r.includes("NaN"))).toBe(false);
++    expect(g.client.forgeWrites()).toEqual([]);
++  });
++
++  it("failed checks: checks_failed, and no GitHub comment request", async () => {
++    const g = await withGitHub(LOCAL);
++    g.sandbox.exits["npm test"] = 1;
++    const run = await g.implement();
++    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
++    expect(g.client.forgeWrites()).toEqual([]);
++  });
++
++  it("checks failing on the base too: checks_env, and no GitHub comment request", async () => {
++    const g = await withGitHub(LOCAL, new FailingTestsSandbox());
++    const run = await g.implement();
++    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
++    expect(g.client.forgeWrites()).toEqual([]);
++  });
++
++  it("merge conflict: merge_conflict, and no GitHub comment request", async () => {
++    const g = await withGitHub(LOCAL, new ConflictingSandbox());
++    g.f.runner.script.resolve = () => ({ output: { summary: "resolved", next_steps: "n" } });
++    const run = await g.implement();
++    expect(run.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
++    expect(g.client.forgeWrites()).toEqual([]);
++  });
++});
++
++describe("a GitHub item's implement run", () => {
++  it("still posts its gate comment to its issue, with the marker", async () => {
++    const g = await withGitHub(issueRef(7));
++    g.sandbox.changedFiles = ["src/outside.ts"];
++    const run = await g.implement();
++    expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
++    const posted = g.client.comments.get(7) ?? [];
++    expect(posted.map((c) => c.body)).toEqual([expect.stringContaining(`<!-- factory:scope:${run.id} -->`)]);
++    expect(posted[0]!.body).toContain("## Factory scope check: push blocked");
++  });
++});
++
++describe("github.comment in the broker", () => {
++  it("returns a failed result and makes no request when its number is not a positive integer", async () => {
++    const { store } = await newStore();
++    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
++    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
++    const client = new NanGuardClient();
++    const broker = new GitHubToolBroker({
++      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
++      clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
++    });
++    const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
++    for (const number of [Number.NaN, null, undefined, 0, -1, 1.5, "3", Number.POSITIVE_INFINITY]) {
++      const r = await broker.call(ctx, "github.comment", { number, body: "b", marker: "<!-- m -->" });
++      expect(r).toMatchObject({ ok: false, error_code: "invalid_args" });
++    }
++    expect(client.requests).toEqual([]);
++    expect(await broker.call(ctx, "github.comment", { number: 1, body: "b", marker: "<!-- m -->" })).toMatchObject({ ok: true });
++    expect(client.requests.some((r) => r.includes("/issues/1/comments"))).toBe(true);
++  });
++});
