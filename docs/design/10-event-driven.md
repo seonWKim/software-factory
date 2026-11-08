@@ -72,7 +72,9 @@ force.
     (idle claim loop, heartbeat interval, pause watch, the implement diff watch, the host-sleep check) still sleep
     on the injected Clock, which reaches the worker through the legacy `WorkerDeps` (`src/core/worker-deps.ts`, so
     `src/worker/` imports no clock); they move onto a TickGenerator in a later step.
-  - Pushes, PR writes and review comments stay in the worker as journaled steps until outbound takes them (M7).
+  - A run's comments are thread entries outbound delivers (M7, worker half). Pushes and PR writes stay in the worker
+    as journaled steps until outbound's `github-push` and `github-change` take them (see "Writes to the outside
+    world leave through outbound").
 - **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
   and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
   the rows to the topic on the component's `relay` tick. Each topic has its own tables (`bus_<topic>`,
@@ -167,8 +169,8 @@ force.
   `checks-gate`/`local-merge` after M8). The `legacy-controller` bridge keeps "inbox row after the effect" for
   every message: no message it carries is exactly-once yet, since `commands` and the event units are not pure.
   Solo and enterprise: the same; each replica runs every unit.
-- **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half; the
-  worker's pushes, PR writes and review comments are still worker steps). Controller units store intents (thread
+- **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half and the
+  worker's comments; the worker's pushes and PR writes are still worker steps). Controller units store intents (thread
   entries in `outbound_intents`; status labels, 👀, issue closes and posts with no thread entry in
   `outbound_actions`) instead of calling a source or the forge. The outbox step announces them as
   `DeliveryRequested{commit_id, commit_count, destination, intent_ids, reply}` on `deliveries.requests`
@@ -189,7 +191,37 @@ force.
   URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
-  ratchets the writes still outside outbound (the worker's, base push, PR close, sub-issue filing).
+  ratchets the writes still outside outbound (the worker's pushes and PR writes, the session's, base push, PR close,
+  sub-issue filing).
+  - A run's comments (decision changed 2026-11-09, M7 worker half; 05-sources.md "A run's comments are thread
+    entries"): the gate, review and update comments are thread entries on the item, stored once per marker, which
+    the outbox step announces like the controller's. The worker imports nothing of outbound: it writes the thread
+    through the store and gets the forge's `prRef` (a pure function) from compose. A restart re-runs at most the
+    step, whose entry is keyed by its marker, so it is delivered once. The broker's `github.comment` is gone.
+  - Pushes and PR open/update: decided, not built (M7 worker half, rest). A run will end with its commits in the
+    factory repo, not on the forge: its last trusted step (after the gates and the G5 branch scan) writes the run
+    folder's HEAD to a local ref of the factory repo with git's local transport, as the `local` broker does today,
+    so the worker holds no forge credential at all. It then records keyed intents: `push:<branch>:<sha>` and
+    `pr:<branch>` (title, body, labels). Outbound's `github-push` pushes the sha to the branch from the factory repo
+    with the credentials only its target holds (G1/G2), reconciling first (the remote ref already at the sha is
+    delivered with no push); `github-change` opens the PR or updates the open one (reconcile: an open PR for the
+    branch). The PR number does not come back to the run: the delivery records it on the action row, and the
+    controller applies it on `DeliveryCompleted` (the `delivery-results` handler: `change_ref` and `change_url` at
+    the item's version; the item waits meanwhile with `blocked_on: outbound`, `blocked_reason: pr_pending`, no new
+    stage), then queues the review as today. Not a run step that waits for the delivery: that would hold a worker
+    slot for up to `max_wait` under a low forge budget, tie run capacity to outbound's liveness, and put an item
+    decision in the worker. Restart safety: the steps are journaled, intents are keyed (a unique key on
+    `outbound_actions`, so a re-run step stores nothing new), and the targets reconcile before they send (§5.2). The
+    push failure classes the run reports today (`network_unavailable`, `forge_auth`, `github_rate_limited`,
+    `push_failed`) become delivery failures: retried by outbound with backoff, with the claim pauses moving to a
+    hold of the destination. The wip push of a failed run becomes the local ref only. The session's push
+    (`factory session finish`), the base push (the `local` target over `base_pushes`), the PR close (a `close_pr`
+    action whose delivery clears `pr_close_pending`) and sub-issue filing (a keyed `file_sub_issue` action whose
+    delivered ref the phases unit records) take the same path. Solo default: the factory repo is on the one
+    machine, and every process's outbound can push from it. Enterprise setting: a factory repo per host, so a
+    push's destination names the host that holds the ref (`git:<host>:<branch>`) and only that host's outbound
+    flushes it (the flush's "kinds this process can write now"); the PR intent waits behind the push in the same
+    destination order. Outbound uses its service passport (M9) for these deliveries once they exist.
 - **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
@@ -275,3 +307,6 @@ force.
 - **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
   transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
   inline), outside any batch, and outbox delivery never waited on the forge budget.
+- **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,
+  review and update comments itself through the broker's `github.comment`, inside the run, and an update run failed
+  when its comment failed.
