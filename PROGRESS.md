@@ -41,6 +41,8 @@ minutes; past that the main session takes over from their WIP commit.
 | 00:27 | One `addMs` in `shared/time.ts` (a2edc15) | main | SQLite green |
 | 00:12–00:28 | Merge queue review findings (b2464a7, 99f4c4b): crash-safe landing with a lease, only the checked head lands, stale results and timers ignored, auto entries re-checked against auto mode | agent | merged 00:32 (fast-forward), SQLite green (3738); MySQL merge-queue tests green |
 | 00:12– | M7 pushes + PR open/update via outbound (m7-push) | agent | running, time box 90 min |
+| 00:30–00:36 | Review of the worker (read-only agent): 7 findings. 1 (wip-branch push refused by the run passport) handed to m7-push; 2 (resume in a fresh folder) waits for m7-push; 3–7 (step abort signal, resume blocked by failed rows, passport end vs lease, recording error hides the cause, deadline) to an agent | agent | fixes running from 00:38 (worker-fixes) |
+| after m7-push | Worker finding 2: an interrupted agent step resumes its session in a fresh folder | main | |
 | after m7-push | Outbound `local` merge delivery (landing finishes on DeliveryCompleted); left by the mq-fixes agent, it touches outbound | main or agent | |
 | next | Merge both agents; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
