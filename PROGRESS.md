@@ -33,6 +33,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
 | –23:30 | M8 merge queue (depth 1); M7 outbound, controller half; M5 follow-up: pure units on ticks | agents + main | merged 23:30 (bf0e449, 39bcb41, 0964cd6), SQLite green; M7 fixes by main: flush starvation, G5 retry loop |
 | 23:35–01:05 | M7 worker half; M6 leftovers + M10 roles/hooks in the worker; M8 leftovers + router findings; pure units 2 + M9 command auth | 4 agents | running |
+| 23:45–00:45 | M11 contract migrations (main, done 23:50, e28aab9); review of bus, inbound, identity, state, runtime (read-only agent) | main + agent | running |
 | 01:05–03:00 | Merge the four branches; finish what an agent left; full MySQL suite with no agents running | main | |
 | 03:00–05:00 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
 | 05:00–07:30 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
@@ -55,7 +56,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 8 | Merge queue | depth 1 merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands. Left: `MergeCheckTimedOut` (units cannot emit yet), the depth setting and speculative depth, the outbound merge deliveries (M7 takes over `LocalMergeUnit.land`), `github-change` merge |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
-| 11 | Cleanup (contract migrations, docs, empty ratchet lists) | not started | |
+| 11 | Cleanup (contract migrations, docs, empty ratchet lists) | contract migrations written | e28aab9: `legacy_*` drops for M1 and M4, run only by `npm run migrate -- --contract` 14 days after their rename (not applied); docs, ratchets and the file budget left |
 
 ## Architecture today
 
