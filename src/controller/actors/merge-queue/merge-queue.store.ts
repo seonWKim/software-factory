@@ -26,8 +26,8 @@ export interface MergeQueueEntry {
   readonly merge_key: string;
   /** Goes on the merge's state change (auto mode's mode change). */
   readonly detail: Record<string, unknown>;
-  /** The merge-check run out for it (checking), or the last one. */
-  readonly run_id: string | null;
+  /** The idempotency key of its merge-check run (checking), or of the last one. */
+  readonly run_key: string | null;
   /** The base its last green check ran on: the landing moves the base only from there. */
   readonly base_sha: string | null;
   /** Why it was removed (removed). */
@@ -58,7 +58,7 @@ function entryOf(r: Row): MergeQueueEntry {
     seq: Number(r.seq), entry_id: String(r.entry_id), queue_id: String(r.queue_id), work_item_id: String(r.work_item_id),
     state: String(r.state) as MergeQueueEntryState, entered_by: String(r.entered_by), merge_key: String(r.merge_key),
     detail: JSON.parse(String(r.detail)) as Record<string, unknown>,
-    run_id: r.run_id == null ? null : String(r.run_id), base_sha: r.base_sha == null ? null : String(r.base_sha),
+    run_key: r.run_key == null ? null : String(r.run_key), base_sha: r.base_sha == null ? null : String(r.base_sha),
     reason: r.reason == null ? null : String(r.reason), version: Number(r.version),
   };
 }
@@ -102,7 +102,9 @@ export class MergeQueueStore {
    */
   async enter(e: NewEntry): Promise<{ entry: MergeQueueEntry; created: boolean } | { refused: MergeQueueEntry }> {
     return this.db.transaction(async (tx) => {
-      const same = await tx.all(`SELECT * FROM controller_merge_queue_entries WHERE entry_id = ?${this.db.dialect.forUpdate}`, [e.entry_id]);
+      // The queue row first: entries of one queue are made one at a time (MySQL's gap locks let two inserts through).
+      await tx.all(`SELECT queue_id FROM controller_merge_queues WHERE queue_id = ?${this.db.dialect.forUpdate}`, [e.queue_id]);
+      const same =await tx.all(`SELECT * FROM controller_merge_queue_entries WHERE entry_id = ?${this.db.dialect.forUpdate}`, [e.entry_id]);
       if (same[0]) return { entry: entryOf(same[0]), created: false };
       const live = await tx.all(
         `SELECT * FROM controller_merge_queue_entries WHERE work_item_id = ? AND state IN (${LIVE})${this.db.dialect.forUpdate}`,
@@ -134,9 +136,9 @@ export class MergeQueueStore {
     return r ? entryOf(r) : null;
   }
 
-  /** The entry whose merge-check run is `run_id`, if any. */
-  async byRun(run_id: string): Promise<MergeQueueEntry | null> {
-    const r = (await this.db.all("SELECT * FROM controller_merge_queue_entries WHERE run_id = ? ORDER BY seq DESC LIMIT 1", [run_id]))[0];
+  /** The entry whose merge-check run has the idempotency key `run_key`, if any. */
+  async byRun(run_key: string): Promise<MergeQueueEntry | null> {
+    const r = (await this.db.all("SELECT * FROM controller_merge_queue_entries WHERE run_key = ? ORDER BY seq DESC LIMIT 1", [run_key]))[0];
     return r ? entryOf(r) : null;
   }
 
@@ -154,7 +156,7 @@ export class MergeQueueStore {
     entry_id: string,
     from: MergeQueueEntryState,
     to: MergeQueueEntryState,
-    set: { run_id?: string | null; base_sha?: string | null; reason?: string | null } = {},
+    set: { run_key?: string | null; base_sha?: string | null; reason?: string | null } = {},
   ): Promise<boolean> {
     const cols = Object.keys(set) as (keyof typeof set)[];
     const n = await this.db.run(

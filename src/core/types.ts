@@ -174,7 +174,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
  * system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -193,6 +193,8 @@ export interface RunInput {
    * not read.
    */
   ci_checks?: PrCheckResult[] | null;
+  /** A merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8). */
+  merge_check?: { base_ref: string; branches: string[] };
 }
 
 /** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */

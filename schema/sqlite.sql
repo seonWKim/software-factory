@@ -319,7 +319,7 @@ CREATE TABLE controller_merge_queue_entries (
     entered_by    TEXT NOT NULL,
     merge_key     TEXT NOT NULL,
     detail        TEXT NOT NULL,
-    run_id        TEXT,
+    run_key       TEXT,
     base_sha      TEXT,
     reason        TEXT,
     version       INTEGER NOT NULL,

@@ -38,8 +38,8 @@ for (const backend of BACKENDS) {
       expect(await q.enter({ ...entry(3), work_item_id: "wi_1" })).toMatchObject({ refused: { entry_id: "mqe_1" } });
       expect((await q.live(queueId("p", "main"))).map((e) => e.entry_id)).toEqual(["mqe_1", "mqe_2"]);
 
-      expect(await q.move("mqe_1", "queued", "checking", { run_id: "run_1" })).toBe(true);
-      expect(await q.move("mqe_1", "queued", "checking", { run_id: "run_2" })).toBe(false);
+      expect(await q.move("mqe_1", "queued", "checking", { run_key: "run_1" })).toBe(true);
+      expect(await q.move("mqe_1", "queued", "checking", { run_key: "run_2" })).toBe(false);
       expect(await q.byRun("run_1")).toMatchObject({ entry_id: "mqe_1", state: "checking", version: 2 });
       expect(await q.move("mqe_1", "checking", "removed", { reason: "red" })).toBe(true);
       expect((await q.live(queueId("p", "main"))).map((e) => e.entry_id)).toEqual(["mqe_2"]);
