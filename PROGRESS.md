@@ -18,7 +18,7 @@ background agents) is paused until it lands.
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | — |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | — |
-| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | — |
+| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core on `refactor/rfc-0015-m6-engine`: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | — |
 | 8 | Merge queue | — |
 | 9 | Identity and passports | — |
@@ -38,6 +38,10 @@ src/
                             baseline, recorded in runtime_schema_migrations), copy-tables.ts (rename by copy +
                             verify, old tables to legacy_*), rehearse.ts (D8: fingerprint, then no row lost)
                             migrations/20261108T1300-state-prefix-tables: the M1 rename of 39 tables
+  worker/engine/       NEW  ExecutionEngine (index.ts) and the journal engine (plugins/journal/): named steps journaled
+                            in worker_run_steps (a stored result wins), lease fencing by token, heartbeat and reaper
+                            ticks, named timeouts, code_version pinning. Not wired into the legacy worker yet
+  worker/migrations/   NEW  20261108T1730-worker-run-journal: worker_run_steps, worker_runs.code_version/deadline_at
   core/                LEGACY  controller.ts (4,959 lines), worker.ts (3,098), policy, coordination, ...
   impl/                LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/          LEGACY  FactoryStore (136 methods) and the other plugin interfaces
@@ -78,6 +82,9 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 - 2026-11-08: `cli_commands` and `item_messages` had no code left; M1 only archives them as `legacy_*`.
 - 2026-11-08: tests that rolled a migrated database back to an old schema step and re-ran it were removed
   (they cannot work once the store only knows the new names); upgrade tests from old states still run.
+- 2026-11-08 (M6 engine): `ExecutionEngine` grew `claim`, `complete`, `attach`, `heartbeat` and `reap` beside the
+  RFC's `step`, so a Temporal or Restate engine can own leases too. The journal is keyed by (run, step) as in the
+  target schema; `attempt` is the attempt that last ran the step. Engine time is the latest tick's (no clock).
 - 2026-11-08: added `npm run migrate -- --rehearse` (D8) and wired the D1 backup folder
   (`<stateDir>/db/backups`) into MySQL `npm run migrate`, which had none.
 
