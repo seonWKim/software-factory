@@ -157,7 +157,7 @@ force.
   The units' steps run on one `decide` schedule each `tick_ms` of a TickGenerator over the injected `Clock`
   (`TickSource.create(onError, time)`; the time-based plugin reads and sleeps on `time` when given), so FakeClock
   tests move them by hand as before; `poll` steps run with the `tick` steps once `poll_interval_ms` passed by the
-  tick's time. `tick_ms` is read when the loop starts (before: each pass). Pure today: `reaper` (its time is the
+  tick's time. `tick_ms` is read again before each wait (a schedule's `Period` may be a function), so a change applies from the next tick. Pure today: `reaper` (its time is the
   tick's), `mirror`, and `transitions` (its re-read and budget reads go through the reader, its budget hold is a
   pure function of them, its writes through `commitItem`; its follow-ups, the status labels and the auto stop, are
   still other units' operations). `tests/architecture/unit-purity.test.ts` lists the rest, and the list only

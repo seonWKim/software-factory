@@ -324,7 +324,7 @@ M5 follow-up (pure units, partial):
   conditional, not yet in one transaction: the store has no way to run several of its writes in a caller's
   transaction (only `applyTransition` internally).
 - The units' loop is one `decide` schedule on a TickGenerator over the injected `Clock` (`TickSource.create` takes an
-  optional time source). `tick_ms` is read at start, not each pass.
+  optional time source). `tick_ms` is read again before each wait (`Period`), as it was each pass before.
 - Pure: `reaper`, `mirror`, `transitions`. `transitions`' follow-ups (`outbox.showStatus`, `local-merge.stopAuto`)
   are still other units' operations, which the unit-purity regex does not see.
 - Not converted: `run-results` and `commands`. Their decisions post through `outbox.comment` (whose returned URL

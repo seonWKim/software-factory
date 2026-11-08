@@ -63,4 +63,24 @@ describe("tick generators", () => {
     expect(n).toBe(3);
     expect(errors).toEqual(["fast"]);
   });
+
+  it("time-based: a live period is read again after each tick, so a change sets the next wait and slot", async () => {
+    const waits: number[] = [];
+    let now = 0;
+    const stop = new AbortController();
+    const g = new TimeBasedTickGenerator(() => {}, {
+      now: () => new Date(now),
+      sleep: async (ms) => void (waits.push(ms), (now += ms)),
+    });
+    let period = 1_000;
+    const slots: number[] = [];
+    g.schedule("decide", () => period, async (t) => {
+      slots.push(t.slot);
+      if (slots.length === 1) period = 5_000; // a tick that refreshed tick_ms
+      if (slots.length === 3) stop.abort();
+    });
+    await g.run(stop.signal);
+    expect(waits).toEqual([5_000, 5_000, 5_000]);
+    expect(slots).toEqual([0, 1, 2]);
+  });
 });

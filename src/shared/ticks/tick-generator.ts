@@ -11,9 +11,16 @@ export interface Tick {
 
 export type TickHandler = (tick: Tick) => Promise<void>;
 
+/** A schedule's period in ms: fixed, or read again before each tick (a live setting), so a change applies from the next. */
+export type Period = number | (() => number);
+
+export function periodOf(p: Period): number {
+  return typeof p === "number" ? p : p();
+}
+
 export interface TickGenerator {
   /** Registers a schedule. Each schedule runs one tick at a time; a slow tick delays the next, never overlaps it. */
-  schedule(name: string, periodMs: number, onTick: TickHandler): void;
+  schedule(name: string, period: Period, onTick: TickHandler): void;
   /** Starts ticking until `signal` aborts. Resolves once every schedule has stopped. */
   run(signal: AbortSignal): Promise<void>;
 }
