@@ -286,8 +286,6 @@
   "component-imports-legacy|worker/runs/update/update.run.ts|core/checks.ts",
   "component-imports-legacy|worker/runs/update/update.run.ts|core/mechanical.ts",
   "component-imports-legacy|worker/runs/update/update.run.ts|core/policy.ts",
-  "component-imports-legacy|worker/runs/update/update.run.ts|core/types.ts",
-  "component-imports-legacy|worker/runs/update/update.run.ts|interfaces/tool-broker.ts",
   "component-imports-legacy|worker/support.ts|core/commands.ts",
   "component-imports-legacy|worker/support.ts|core/diff-gate.ts",
   "component-imports-legacy|worker/support.ts|core/mechanical.ts",

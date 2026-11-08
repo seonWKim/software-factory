@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import type { Timestamp } from "../src/core/types.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { forgeAuthRefused } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts: a 401 or 403 from the forge pauses implement-type claims (implement and update) for every
@@ -168,34 +167,28 @@ describe("forge-auth pause", () => {
   });
 });
 
-describe("the broker maps forge 401/403 to forge_auth", () => {
-  async function brokerWith(request: (method: string, path: string) => unknown) {
-    const { store } = await newStore();
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+describe("the forge maps 401/403 to forge_auth", () => {
+  // The PR write is outbound's (github-change, RFC 0015 M7): its failure is a delivery failure named by its class.
+  function forgeWith(request: (method: string, path: string) => unknown) {
     const client = { request: async (m: string, p: string) => request(m, p) } as unknown as GitHubClient;
-    const broker = new GitHubToolBroker({
-      client, store, scanner: cleanScanner,
-      clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    });
-    return { broker, ctx: { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token }, branch: `factory/${item.id}` };
+    return new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", {} as never);
   }
+  const pr = { branch: "factory/wi_1", base_ref: "main", title: "t", body: "b" };
 
-  it("open_pr: a 401 or 403 is a forge_auth result, not a thrown exception", async () => {
+  it("openPr: a 401 or 403 fails with forge_auth first", async () => {
     for (const status of [401, 403]) {
-      const b = await brokerWith(() => {
+      const forge = forgeWith(() => {
         throw new GitHubError(status, `GitHub POST /repos/o/r/pulls → ${status} Resource not accessible by integration`);
       });
-      const r = await b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" });
-      expect(r).toMatchObject({ ok: false, error_code: "forge_auth" });
+      await expect(forge.openPr(pr)).rejects.toThrow(/^forge_auth: open_pr: GitHub refused the credentials/);
     }
   });
 
-  it("open_pr: other errors still throw as before", async () => {
-    const b = await brokerWith(() => {
+  it("openPr: other errors throw as they are", async () => {
+    const forge = forgeWith(() => {
       throw new GitHubError(422, "GitHub POST → 422");
     });
-    await expect(b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" })).rejects.toThrow("422");
+    await expect(forge.openPr(pr)).rejects.toThrow(/^GitHub POST → 422/);
   });
 
   it("push: git's 401/403 and auth messages are recognized; other push errors are not", () => {

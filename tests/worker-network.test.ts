@@ -5,7 +5,6 @@ import { GitHubError } from "../src/impl/github/github-client.js";
 import { NETWORK_UNAVAILABLE, classifyNetwork, unreachableHost } from "../src/core/policy.js";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
 import { NETWORK_PAUSED_BY } from "../src/worker/index.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { FakeNetworkProbe, cleanScanner, pipeline } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";

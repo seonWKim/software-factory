@@ -5,6 +5,7 @@ import {
 import type { Run, RunOutcome, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubClient, GitHubError, GitHubRateLimitError } from "../src/impl/github/github-client.js";
 import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
@@ -116,7 +117,7 @@ describe("REST client: rate limits", () => {
   });
 });
 
-describe("broker: github_rate_limited", () => {
+describe("broker and forge: github_rate_limited", () => {
   async function brokerWith(answer: (method: string, path: string) => Answer | null) {
     const { store, clock } = await newStore();
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
@@ -126,11 +127,19 @@ describe("broker: github_rate_limited", () => {
     const broker = new GitHubToolBroker({
       client, store, scanner: cleanScanner, clock: fake, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
+    const forge = new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", {} as never);
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     const branch = `factory/${item.id}`;
     const calls = {
       preflight: () => broker.call(ctx, "github.preflight", { branch, base_ref: "main" }),
-      open_pr: () => broker.call(ctx, "github.open_pr", { branch, base_ref: "main", title: "t", body: "b" }),
+      // The PR write is the forge's (outbound's github-change, RFC 0015 M7): its error starts with its class.
+      open_pr: () => forge.openPr({ branch, base_ref: "main", title: "t", body: "b" }).then(
+        (): ToolResult => ({ ok: true, content: {} }),
+        (e: Error): ToolResult => {
+          const [code, ...rest] = e.message.split(": ");
+          return { ok: false, error_code: code!, message: rest.join(": ") };
+        },
+      ),
     };
     return { calls, now: fake.now().getTime() };
   }

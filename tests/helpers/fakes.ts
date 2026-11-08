@@ -713,8 +713,6 @@ const OBJECT_SCHEMA = { type: "object" } as const;
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
   { name: STORE_BRANCH, description: "store the branch in the factory repo", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
   { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
 ];
 
@@ -759,8 +757,8 @@ export class FakeNoteBroker implements ToolBroker {
 
 export class FakeBroker implements ToolBroker {
   /**
-   * Every call that acts on the forge (push, PR, comment), in order, and, when a FakeForge logs to it, outbound's
-   * pushes and PR opens (no `ctx`: outbound holds no run's lease). The read-only preflight is in `preflights`.
+   * Every other tool call, in order, and, when a FakeForge logs to it, outbound's pushes and PR opens under the names
+   * of the broker tools they replaced (no `ctx`: outbound holds no run's lease). The preflight is in `preflights`.
    */
   calls: { ctx?: ToolCallContext; name: string; args: unknown }[] = [];
   /** Every read-only `github.preflight` call, in order. */
@@ -772,7 +770,7 @@ export class FakeBroker implements ToolBroker {
   toForge = true;
   /**
    * Scripted results per tool name, used in order before the default. A function gets the call's args, so a
-   * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
+   * test can fail a store of one branch only (e.g. the wip branch, not the PR branch); null falls through.
    */
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
   /** The GitHub broker's tools, flagged as it flags them: only the preflight is read-only. */
@@ -783,17 +781,13 @@ export class FakeBroker implements ToolBroker {
   allTools(): readonly ToolDescriptor[] {
     return this.tools;
   }
-  /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
-  remote = new Map<string, string>();
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     (name === "github.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
     // A stored branch must still reach the forge: outbound pushes it. Each store names a new sha.
     if (name === STORE_BRANCH && !scripted) return { ok: true, content: { sha: (++this.stored).toString(16).padStart(40, "0"), forge: this.toForge } };
-    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
     if (scripted) return scripted;
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
 }
