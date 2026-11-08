@@ -265,9 +265,16 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   return (
     <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
       <span>Mode</span>
-      <Editor row={mode.row} label="Auto mode" value={mode.value} token={v.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />
+      <ModeControl view={v} floating={floating} />
     </div>
   );
+}
+
+/** The mode's own control, without the top bar's "Mode" label. */
+function ModeControl({ view, floating = false }: { view: SettingsView; floating?: boolean }) {
+  const mode = currentMode(view);
+  if (!mode) return null;
+  return <Editor row={mode.row} label="Auto mode" value={mode.value} token={view.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />;
 }
 
 /** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
@@ -280,11 +287,15 @@ function ModeSection({ view }: { view: SettingsView }) {
         tier; tier 4 and the gate list always wait for a person. A red main, a failure alarm or a budget checkpoint sets it
         back to manual. Changing either needs approve_merge.
       </p>
-      <div className="flex flex-wrap items-start gap-6">
-        <ModeSwitch />
+      {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        <div className="flex max-w-md flex-col gap-1 text-sm">
+          <span className="font-medium">Mode</span>
+          <ModeControl view={view} />
+        </div>
         {tier && (
-          <div className="flex items-center gap-2 text-sm">
-            <span>Auto-merge tier (0 to 3)</span>
+          <div className="flex max-w-md flex-col gap-1 text-sm">
+            <span className="font-medium whitespace-nowrap">Auto-merge tier (0 to 3)</span>
             <Editor row={tier} label="Auto-merge tier" value={tier.value} token={view.csrf_token} />
           </div>
         )}
