@@ -18,6 +18,12 @@ import { controllerUnit } from "../context.js";
 
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
+
+/** The status page's user (an app request): its factory user id and the page's edge passport (absent: none). */
+interface AppActor {
+  readonly user_id: UserId;
+  readonly passport_id?: string | undefined;
+}
 /** Settings audit rows read to find the mode change an automatic action ran under. */
 const MODE_HISTORY = 500;
 /** Items waiting for a merge looked at per auto-merge step. */
@@ -56,16 +62,17 @@ export class LocalMergeUnit {
    * the same queue entry; `key` keys the replies and `detail` goes on the state change. Returns the refusal, or
    * null when the change is in the queue.
    */
-  async mergeLocal(id: WorkItemId, who: ExternalIdentity | UserId | typeof AUTO_MERGE, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
+  async mergeLocal(id: WorkItemId, who: ExternalIdentity | AppActor | typeof AUTO_MERGE, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
     const item = await this.c.k.d.store.getWorkItem(id);
     if (!item) return "the work item was not found";
     const { repo, branch_prefix } = this.c.k.cfg;
     const branch = branchFor(item, branch_prefix);
     const auto = who === AUTO_MERGE;
-    const principal = typeof who === "string"
-      ? await this.c.unit("auth").allowed({ user_id: who, attributes: {} }, "approve_merge", item.id, true)
+    const service = auto ? await this.c.unit("auth").automatic("approve_merge", item) : null;
+    const principal = "user_id" in who
+      ? await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id, true, who.passport_id)
       : "auto" in who
-        ? { user_id: AUTO_ACTOR }
+        ? service === null ? { user_id: AUTO_ACTOR } : { refuse: service }
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;

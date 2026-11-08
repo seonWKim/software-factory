@@ -257,7 +257,11 @@ export class RunResultsUnit {
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
           const auto = spec.phases ? null : await this.c.unit("local-merge").autoMode(it.project);
-          const refusal = auto ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) }) : null;
+          // Auto mode approves under the controller's service passport (RFC 0015 §8).
+          const refusal = auto
+            ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
+              ?? (await this.c.unit("auth").automatic("approve_spec", it))
+            : null;
           if (auto && refusal === null) {
             const next = { ...it, ...fields };
             const patch = { ...fields, stage: "RUNNING" as const };

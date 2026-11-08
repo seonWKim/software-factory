@@ -53,7 +53,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
 | 8 | Merge queue | depth 1 merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands. Left: `MergeCheckTimedOut` (units cannot emit yet), the depth setting and speculative depth, the outbound merge deliveries (M7 takes over `LocalMergeUnit.land`), `github-change` merge |
-| 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
+| 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; left: SecretStore key for enterprise, outbound's service passport |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | not started | |
 
@@ -279,7 +279,9 @@ M9 (identity and passports):
   `allowed_paths`) and no tier caveat. Their tools are the worker's own forge tools per run kind plus `tool_grants`.
 - Wiring: comment commands get their passport at inbound's relay, not in the normalizer (the normalizer runs in
   the consumer's transaction; Identity writes on its own connection). `CommandReceived` inherits it.
-- Wiring: the auth plugins still decide; `AuditedAuthProvider` records each decision with passport id `none`.
+- Follow-up: Identity decides a command with a passport (chain, expiry, revocation, caveats, principal) and asks the
+  origin's auth plugin for the role half (`RoleCheck`), so the grants stay where they were; with none, the plugin
+  decides and the audit row says `none`. Auto mode's approvals and merges go through `service:controller`.
 - Wiring: the solo key is `<state>/passport.key` (0600, on `deny_paths`); `SF_PASSPORT_KEY` from the SecretStore
   is not wired.
 - Wiring: service passports last 24 h and renew at half-life; revoking one ends its runs' passports, and the next
@@ -363,8 +365,6 @@ M5 follow-up (pure units, partial):
    - roles drive the worker's prompts and tools (M6);
    - a stored setting to enable hooks.
 4. M9 follow-up:
-   - M5: command units decide through `authorize(passport_id, ...)` and audit with the command's passport (today the
-     auth plugins decide and the audit row says `none`); the controller's automatic steps use its service passport;
    - M7: outbound uses its service passport;
    - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;
    - sessions (`factory session`) push through an unguarded broker: give them a passport;

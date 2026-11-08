@@ -7,7 +7,8 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId } from "../src/core/types.js";
 import { startIdentity } from "../src/identity/index.js";
 import { commandIdentity } from "../src/identity/runtime/start.js";
-import { PluginIdentityProvider } from "../src/impl/auth/audited-auth.js";
+import { AuditedAuthProvider, PluginIdentityProvider } from "../src/impl/auth/audited-auth.js";
+import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeAuth, FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
@@ -75,6 +76,31 @@ describe("edge passports", () => {
       expect(p).toEqual({ principal: "github:42", provider: "github", origin: "github" });
       // An actor no provider of its origin resolves gets none; the controller's authorize still decides.
       expect(sent[1]!.passport_id).toBeNull();
+    } finally {
+      await identity.stop();
+    }
+  });
+
+  it("the controller decides a command under its passport: audited under it, and refused once it is revoked", async () => {
+    const { store, clock, identity } = await setup();
+    try {
+      const plugin: AuthProvider = { resolve: async (i) => ({ user_id: `local:${i.subject}` as UserId, attributes: {} }), authorize: async () => ({ allow: true }) };
+      const auth = new AuditedAuthProvider(plugin, identity.passports);
+      const controller = new ControllerRole({ store, source: new FakeSource(), auth, clock, config, log: silent, scanner: cleanScanner, identity });
+      const { item } = await store.createWorkItem(
+        { source: { type: "local", id: "l1", link: "local:l1" }, requester_id: "local:ada" as UserId, project: PROJECT_KEY, problem: "p", resources: [] },
+        { kind: "system", id: "system:test" },
+      );
+      const passport = await identity.edge({ provider: "local", subject: "ada" }, "cli");
+      await store.appendCliCommand({ key: "cli:1", actor: "local:ada", command: "approve", args: { item: item.id }, passport_id: passport });
+      await controller.tickCommands();
+      await identity.passports.revoke(passport, "local:owner", "lost laptop");
+      await store.appendCliCommand({ key: "cli:2", actor: "local:ada", command: "approve", args: { item: item.id }, passport_id: passport });
+      await controller.tickCommands();
+      expect(await store.db.all("SELECT passport_id, principal, decision, reason FROM authz_audit ORDER BY seq")).toEqual([
+        { passport_id: passport, principal: "local:ada", decision: "allow", reason: "allowed" },
+        { passport_id: passport, principal: "local:ada", decision: "deny", reason: "revoked" },
+      ]);
     } finally {
       await identity.stop();
     }

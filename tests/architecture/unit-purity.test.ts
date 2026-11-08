@@ -17,7 +17,7 @@ import { SRC, codeOnly, importsOf, ratchet, read } from "./lib.js";
 const IO_IMPORT = /^node:(?:fs|net|http|https|child_process)(?:\/|$)|\/(?:state|bus)\/(?!index\.js$)|\/plugins\/|\/impl\//;
 const IO_REACH: readonly [string, RegExp][] = [
   ["store", /\.d\.store\b/],
-  ["auth", /\.d\.(?:auth|local_auth)\b/],
+  ["auth", /\.d\.(?:auth|local_auth|service_auth)\b/],
   ["forge", /\.k\.forge\b|\.d\.forge\b/],
   ["sources", /\.k\.(?:sources|byType|adapterFor)\b/],
   ["sandbox", /\.d\.sandbox\b/],

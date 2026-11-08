@@ -5,7 +5,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
-import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
+import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
@@ -153,7 +153,7 @@ export class CommandsUnit {
     // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
     // CLI refuses it for any other when it writes one.
     if (c.command === MERGE_COMMAND) {
-      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key);
+      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
       return;
     }
     const e = commandEvent(c, item.source);

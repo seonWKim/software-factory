@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { NotAuthenticated, PassportService, REVOCATIONS_TICK, localKeyFile, secretKeyring } from "../src/identity/index.js";
-import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
+import { LocalAuthProvider, NotAuthenticated, PassportService, REVOCATIONS_TICK, localKeyFile, secretKeyring } from "../src/identity/index.js";
+import { AuditedAuthProvider, controllerServiceAuth } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker, type HeldRunPassport } from "../src/impl/broker/passport-broker.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
@@ -147,6 +147,44 @@ describe("audited legacy auth", () => {
     expect(await audit()).toEqual([
       { principal: "local:ada", action: "submit_work", decision: "allow", reason: "allowed" },
       { principal: "local:ada", action: "approve_merge", decision: "deny", reason: "no_role" },
+    ]);
+  });
+
+  it("with the command's passport, Identity checks it first and the plugin's grants decide the role, audited under it", async () => {
+    const db = new SqliteDriver(":memory:");
+    await db.migrate();
+    const ticks = new ManualTickGenerator();
+    let n = 0;
+    const identity = new PassportService({
+      db, keys: secretKeyring(KEY, { current: "K" }), providers: [new LocalAuthProvider()], grants: [], ticks, newId: () => `pp_${++n}`,
+    });
+    await ticks.tick(REVOCATIONS_TICK, T0);
+    const allowAll: AuthProvider = { resolve: async () => null, authorize: async () => ({ allow: true }) };
+    const auth = new AuditedAuthProvider(allowAll, identity);
+    const ada = (await identity.authenticate({ provider: "local", subject: "ada" }, "cli")).passport.id;
+    const bob = (await identity.authenticate({ provider: "local", subject: "bob" }, "cli")).passport.id;
+    const who = { user_id: "local:ada" as never, attributes: {} };
+    const item = { kind: "work_item" as const, id: "wi_1" };
+    expect(await auth.authorize(who, "approve_spec", item, ada)).toEqual({ allow: true });
+    // Another person's passport, or a revoked one, refuses although the plugin would allow.
+    expect(await auth.authorize(who, "approve_spec", item, bob)).toEqual({ allow: false, reason: "passport_principal_mismatch" });
+    await identity.revoke(ada, "local:owner", "lost laptop");
+    expect(await auth.authorize(who, "approve_spec", item, ada)).toEqual({ allow: false, reason: "revoked" });
+    expect(await db.all("SELECT passport_id, principal, decision, reason FROM authz_audit ORDER BY seq")).toEqual([
+      { passport_id: ada, principal: "local:ada", decision: "allow", reason: "allowed" },
+      { passport_id: bob, principal: "local:bob", decision: "deny", reason: "passport_principal_mismatch" },
+      { passport_id: ada, principal: "local:ada", decision: "deny", reason: "revoked" },
+    ]);
+  });
+
+  it("the controller's automatic steps act under its service passport, limited to its actions", async () => {
+    const { identity, db } = await setup();
+    const service = controllerServiceAuth(identity);
+    expect(await service("approve_merge", { project: "proj", item: "wi_1" })).toEqual({ allow: true });
+    expect(await service("record_verdict", { project: "proj", item: "wi_1" })).toEqual({ allow: false, reason: "outside_actions" });
+    expect(await db.all("SELECT principal, action, decision FROM authz_audit ORDER BY seq")).toEqual([
+      { principal: "service:controller", action: "approve_merge", decision: "allow" },
+      { principal: "service:controller", action: "record_verdict", decision: "deny" },
     ]);
   });
 });

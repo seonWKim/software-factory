@@ -29,6 +29,7 @@ import {
   type PassportChecker,
   type PassportId,
   type ResourceRef,
+  type RoleCheck,
   type Restrictions,
 } from "./types.js";
 
@@ -188,9 +189,9 @@ export class PassportService implements Authorization, PassportChecker {
   }
 
   /** Decides on a stored passport by id (messages carry ids). Audited. */
-  async authorize(passport: PassportId, action: Action, resource: ResourceRef): Promise<AuthzResult> {
+  async authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck): Promise<AuthzResult> {
     const now = this.now();
-    return this.decide(passport, await this.chainById(passport, now), action, resource, now);
+    return this.decide(passport, await this.chainById(passport, now), action, resource, now, roles);
   }
 
   /** Decides on a bearer token, offline: signature, expiry, the deny list of the last refresh. Audited. */
@@ -256,14 +257,14 @@ export class PassportService implements Authorization, PassportChecker {
     return { ok: true, links };
   }
 
-  private async decide(passport_id: string, chain: Chain, action: Action, resource: ResourceRef, at: string): Promise<AuthzResult> {
+  private async decide(passport_id: string, chain: Chain, action: Action, resource: ResourceRef, at: string, roles?: RoleCheck): Promise<AuthzResult> {
     let result: AuthzResult;
     if (!chain.ok) result = { allow: false, reason: chain.reason, principal: chain.principal };
     else {
       const principal = chain.links[0]!.principal;
       const scopes = chain.links.map((l) => l.restrictions);
       const broken = outside(scopes, action, resource);
-      const granted = broken ? `outside_${broken}` : await this.grantsAllow(principal, action, resource.project);
+      const granted = broken ? `outside_${broken}` : roles ? await roles(principal) : await this.grantsAllow(principal, action, resource.project);
       result = granted === "allowed" ? { allow: true, reason: "allowed", principal, scopes } : { allow: false, reason: granted, principal };
     }
     await this.store.audit({

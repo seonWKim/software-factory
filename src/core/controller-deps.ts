@@ -6,7 +6,7 @@ import type { FactoryConfig } from "./config.js";
 import type { TickLease } from "./lease.js";
 import type { Logger } from "./log.js";
 import type { LearnedSettingsSource, LiveSettings } from "./settings.js";
-import type { AuthProvider } from "../interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -63,6 +63,11 @@ export interface ControllerDeps {
    * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
    */
   local_auth?: AuthProvider;
+  /**
+   * The controller's automatic steps (auto mode's spec approvals and merges) authorized under its service passport
+   * (RFC 0015 §8, `service:controller`), audited there. Absent (no Identity: tests, a startup check): allowed.
+   */
+  service_auth?: (action: AuthAction, resource: { project: string; item: string }) => Promise<AuthDecision>;
   clock: Clock;
   config: FactoryConfig;
   log: Logger;

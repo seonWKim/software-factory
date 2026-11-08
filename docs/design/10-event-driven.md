@@ -216,8 +216,9 @@ force.
   never used), and puts it on `InboundReceived`, so `CommandReceived` inherits it as its cause's `passport_id`. The
   RFC puts this in the normalizer; it is at the relay because the normalizer runs inside the consumer's
   transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
-  and checked by the ToolBroker on every call. The auth plugins still decide commands; every decision is written to
-  `authz_audit`.
+  and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
+  it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
+  written to `authz_audit`.
 - **The merge queue** (decision changed 2026-11-08, RFC 0015 M8; see History). A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
