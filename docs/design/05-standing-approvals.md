@@ -33,7 +33,7 @@
     `kind` and `owner_id` (the rule's `set_by`), implement run queued. The spec comment names the rule, who turned it
     on, and how to turn it off. `standing_approved` is not a human decision, so the run check does not read it.
   - **Protected paths.** A rule never approves a spec whose allowed paths touch, by the floor touch rule (under the
-    prefix, or covering it): gates (`src/core/controller.ts`, `policy.ts`, `diff-gate.ts`, `pre-push.ts`, `checks.ts`,
+    prefix, or covering it): gates (`src/controller/` since RFC 0015 M5, before it `src/core/controller.ts`; `policy.ts`, `diff-gate.ts`, `pre-push.ts`, `checks.ts`,
     `merge-check.ts`, `standing.ts`), prompts (`prompts/`), permissions (`src/core/authorize.ts`, `src/impl/auth/`,
     `src/impl/grant/`, `.claude/`), tools (`src/core/tools/`, `src/impl/broker/`), guard settings
     (`factory.config.json`, `src/core/config.ts`, `src/core/settings.ts`, `src/config-keys.ts`, `src/plugins.ts`,
