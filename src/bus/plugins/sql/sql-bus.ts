@@ -15,19 +15,23 @@ import { envelopeProblems, newMessageId, type Envelope } from "../../../shared/e
 import { maxRedeliveryMs, partitionOf, type TopicDescriptor } from "../../../shared/topic.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
-import type { Claimed, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
+import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
 import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
+import { SqlRetryScheduler } from "./sql-scheduler.js";
 
-export interface SqlBusOptions {
-  readonly db: SqlDriver;
-  readonly dialect: Dialect;
-  /** The component this instance publishes and dedupes for: it writes `<component>_outbox` and `<component>_inbox`. */
-  readonly component: string;
-  /** Every topic this instance publishes to or consumes (from discovery). */
-  readonly topics: readonly TopicDescriptor[];
-  /** This process, recorded as the owner of what it claims. */
-  readonly consumerId: string;
+/** The `sql` EventBus plugin (docs/plugins/event-bus.md): the topic tables live in the store's own database. */
+export class SqlBus implements BusPlugin {
+  component(o: ComponentBusOptions): SqlEventBus {
+    return new SqlEventBus(o);
+  }
+
+  scheduler(db: SqlDriver, topics: readonly TopicDescriptor[]): SqlRetryScheduler {
+    return new SqlRetryScheduler(db, topics);
+  }
+}
+
+export interface SqlBusOptions extends ComponentBusOptions {
   /** How long a claim lasts past the release horizon before another consumer may take the message. */
   readonly leaseMs?: number;
   /** Outbox rows published per relay tick. */
@@ -57,7 +61,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   constructor(o: SqlBusOptions) {
     if (!/^[a-z]+$/.test(o.component)) throw new Error(`component name "${o.component}" must be lowercase letters`);
     this.db = o.db;
-    this.dialect = o.dialect;
+    this.dialect = o.db.dialect.name;
     this.outbox = `${o.component}_outbox`;
     this.inbox = `${o.component}_inbox`;
     this.consumerId = o.consumerId;

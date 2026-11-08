@@ -18,6 +18,14 @@ export interface TickGenerator {
   run(signal: AbortSignal): Promise<void>;
 }
 
+/**
+ * A TickGenerator plugin (`plugins.ticks`, docs/plugins/tick-generator.md): makes one generator per component a
+ * process runs. `onError` hears a schedule's failed tick; the schedule goes on.
+ */
+export interface TickSource {
+  create(onError: (schedule: string, err: unknown) => void): TickGenerator;
+}
+
 export function tickAt(schedule: string, periodMs: number, ms: number): Tick {
   return { schedule, now: new Date(ms).toISOString(), slot: Math.floor(ms / periodMs) };
 }

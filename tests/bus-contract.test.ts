@@ -84,7 +84,7 @@ async function setup(backend: Backend) {
   const busTicks = new ManualTickGenerator();
   const scheduler = new SqlRetryScheduler(db, TOPICS);
   scheduleBus(busTicks, scheduler);
-  const newBus = (consumerId: string) => new SqlEventBus({ db, dialect: backend.name, component: "testc", topics: TOPICS, consumerId, leaseMs: LEASE_MS });
+  const newBus = (consumerId: string) => new SqlEventBus({ db, component: "testc", topics: TOPICS, consumerId, leaseMs: LEASE_MS });
   const a = newBus("a");
   const b = newBus("b");
   const componentTicks = new ManualTickGenerator();
