@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
-import { WRITE_TOOLS, Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { WRITE_TOOLS, Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -11,7 +11,7 @@ import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Capability, CapabilitySearch } from "../src/interfaces/capability-search.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec, cleanScanner,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, triageSpec, cleanScanner,
 } from "./helpers/fakes.js";
 
 const RESULTS: Capability[] = [
@@ -38,7 +38,7 @@ async function flow(capability?: CapabilitySearch): Promise<AgentRunSpec[]> {
     implement: () => ({ output: { summary: "s", next_steps: "n" } }),
     review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "ok" } }),
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(),

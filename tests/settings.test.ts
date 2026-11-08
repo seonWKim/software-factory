@@ -8,14 +8,8 @@ import {
   BUILT_IN_SETTINGS,
   type LearnedSettingsSource,
   PROJECT_SETTING_KEYS,
-  PR_ONLY_DESCRIPTIONS,
-  PR_ONLY_KEYS,
-  type PrOnlyKey,
   SETTABLE_DEFAULTS,
   SETTABLE_KEYS,
-  SETTING_APPLIES,
-  SETTING_DESCRIPTIONS,
-  type SettableKey,
   type ProjectSettingKey,
   type ProjectSettings,
   type SettingsLayers,
@@ -388,37 +382,6 @@ describe("settings: alarm keys (design 05-alarms)", () => {
     expect(alarmConfig({})).toEqual({ alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 });
     expect(alarmConfig({ alarm_restart_count: 8 }).alarm_restart_count).toBe(8);
     expect(() => alarmConfig({ alarm_repeat_count: 0 })).toThrow("alarm_repeat_count must be a positive integer");
-  });
-});
-
-describe("settings: descriptions", () => {
-  const all: [string, string | undefined][] = [
-    ...SETTABLE_KEYS.map((k) => [k, SETTING_DESCRIPTIONS[k]] as [string, string | undefined]),
-    ...PR_ONLY_KEYS.map((k) => [k, PR_ONLY_DESCRIPTIONS[k]] as [string, string | undefined]),
-  ];
-
-  it("every settable and PR-only key has one plain sentence of at most 100 characters", () => {
-    for (const [k, d] of all) {
-      expect(typeof d, k).toBe("string");
-      expect(d!.trim(), k).not.toBe("");
-      expect(d!.length, k).toBeLessThanOrEqual(100);
-      expect(d, k).toMatch(/^[A-Z][^\n]*\.$/);
-    }
-  });
-
-  it("does not repeat the applies-at text", () => {
-    for (const k of SETTABLE_KEYS) expect(SETTING_DESCRIPTIONS[k]).not.toContain(SETTING_APPLIES[k]);
-  });
-
-  it("the records are typed so a missing key fails the type check", () => {
-    const { max_loops: _l, ...settable } = SETTING_DESCRIPTIONS;
-    // @ts-expect-error max_loops is missing
-    const s: Record<SettableKey, string> = settable;
-    const { plugins: _p, ...prOnly } = PR_ONLY_DESCRIPTIONS;
-    // @ts-expect-error plugins is missing
-    const p: Record<PrOnlyKey, string> = prOnly;
-    expect(Object.keys(s)).not.toContain("max_loops");
-    expect(Object.keys(p)).not.toContain("plugins");
   });
 });
 

@@ -1,9 +1,10 @@
 // The local merge (design 05-sources, Local items): `factory merge <id>` merges an item's local branch into the
 // factory repo's local base branch, through the sandbox the controller already holds (as the merge check does),
-// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which the
-// controller's base push step brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
+// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which
+// outbound's `local` target brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
-import type { SourceType } from "./types.js";
+import type { SourceRef, SourceType, WorkItem } from "./types.js";
+import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-store.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 
 /**
@@ -11,6 +12,15 @@ import type { Sandbox } from "../interfaces/sandbox.js";
  * adapter (issue #282), and they take the local broker and the local merge, never the forge (design 05-sources).
  */
 export const LOCAL_SOURCE: SourceType = "local";
+
+/**
+ * Where a factory message on `it`'s thread is delivered (issue #282): nowhere for a local item, whose thread is its
+ * surface; else the item's own source, on `target` (e.g. the item's PR) when it is of that source's type.
+ */
+export function threadDelivery(it: Pick<WorkItem, "source">, target: SourceRef, link: ThreadLinkField | null = null): NewThreadDelivery | null {
+  const type = it.source.type;
+  return type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+}
 
 /** The command inbox name `factory merge <id>` stores; the controller applies it as the local merge. */
 export const MERGE_COMMAND = "merge";
@@ -33,12 +43,24 @@ export interface LocalMergeSpec {
   checks: readonly (readonly string[])[];
   /** Each check's time limit. */
   timeout_ms: number;
+  /**
+   * The merge queue's landing (RFC 0015 M8): the base its merge-check run checked the merged result on. A base at
+   * another commit moves nothing (`base_moved`), so what lands is the tree that was checked.
+   */
+  expected_base?: string;
+  /**
+   * The merge queue's landing: the branch head its merge-check run merged. A branch at another commit (a commit made
+   * on it during the check) moves nothing (`head_moved`), so no unchecked commit lands. A branch already in the base
+   * is `already` first, whatever the base: a landing re-run after its base moved finds its own merge.
+   */
+  expected_head?: string;
 }
 
 /**
  * `merged`: the base branch now contains the branch, at `sha` (`already`: it did before this call, so a repeat
  * changes nothing). `conflicts`: the conflicting file paths, sorted; nothing moved. `refused`: why nothing moved
- * (no such branch, a failing check, the base moved during the merge).
+ * (no such branch, a failing check). `base_moved`: the base is not where it was checked, or it moved during the
+ * merge; nothing moved and the merge is checked again.
  */
 export type LocalMergeResult =
   /**
@@ -47,16 +69,25 @@ export type LocalMergeResult =
    */
   | { merged: true; sha: string; already: boolean; not_updated: string[] }
   | { merged: false; conflicts: string[] }
-  | { merged: false; refused: string };
+  | { merged: false; refused: string }
+  | { merged: false; base_moved: string }
+  | { merged: false; head_moved: string };
 
 /**
  * A sandbox that can merge locally: `mergeLocal` writes the merge commit in the factory repo's object store
  * (never the owner's checkout), runs the checks on it in a temporary worktree, and moves only
  * `refs/heads/<base_ref>`, conditionally on the base it merged.
  */
-export type LocalMergeSandbox = Sandbox & { mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> };
+export type LocalMergeSandbox = Sandbox & {
+  mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult>;
+  /**
+   * The paths `branch` conflicts in when merged into the local `base_ref` (sorted; empty: it merges cleanly), from
+   * objects only; null when either branch is missing. A merge queue entry is refused at once on a conflict.
+   */
+  localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null>;
+};
 
-/** What the base push step asks the sandbox: bring the remote base into the local one before the push. */
+/** What the base push asks the sandbox: bring the remote base into the local one before the push. */
 export interface BaseSyncSpec {
   repo: string;
   base_ref: string;
@@ -88,5 +119,6 @@ export function canSyncBase(sandbox: Sandbox | undefined): sandbox is BaseSyncSa
 }
 
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
-  return !!sandbox && typeof (sandbox as Partial<LocalMergeSandbox>).mergeLocal === "function";
+  const s = sandbox as Partial<LocalMergeSandbox> | undefined;
+  return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
 }

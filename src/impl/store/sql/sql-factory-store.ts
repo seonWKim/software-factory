@@ -71,6 +71,7 @@ import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
+import { recordAction } from "../../../outbound/index.js";
 import type {
   AbandonedAttempt,
   AppCommandRequest,
@@ -78,6 +79,7 @@ import type {
   AnswerBudgetCheckpointInput,
   ApproveClaimHoldInput,
   ApproveClaimHoldResult,
+  RunIntent,
   BudgetCheckpointResult,
   ClaimInput,
   CliCommand,
@@ -144,7 +146,7 @@ import type {
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
 import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
-import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {
@@ -166,13 +168,13 @@ import {
 } from "./rows.js";
 
 /**
- * FactoryStore over any SqlDriver (SQLite, MySQL). Every write is one driver transaction. Correctness
+ * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
  * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there".
  */
 export class SqlFactoryStore implements FactoryStore {
   constructor(
-    private readonly db: SqlDriver,
+    readonly db: SqlDriver,
     private readonly clock: Clock,
   ) {}
 
@@ -212,7 +214,7 @@ export class SqlFactoryStore implements FactoryStore {
       const { columns, values } = workItemInsert(item);
       const inserted = await this.insertOnce(
         tx,
-        `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
+        `INSERT INTO controller_work_items (${columns}) VALUES (${placeholders(values.length)})`,
         values,
       );
       // A concurrent intake of the same source committed first.
@@ -248,7 +250,7 @@ export class SqlFactoryStore implements FactoryStore {
     const pr_number = prNumber({ change_ref });
     const [row] = await this.db.all(
       // change_ref first; pr_number for a row an older controller wrote without it (change_ref NULL).
-      `SELECT * FROM work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
+      `SELECT * FROM controller_work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
          ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
       [project, change_ref, pr_number],
     );
@@ -257,19 +259,19 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getWorkItemByMergeSha(project: string, sha: string): Promise<WorkItem | null> {
     const [row] = await this.db.all(
-      `SELECT * FROM work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
+      `SELECT * FROM controller_work_items WHERE merge_sha = ? AND project = ? ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
       [sha, project],
     );
     return row ? rowToWorkItem(row) : null;
   }
 
   async listPhases(parentId: WorkItemId): Promise<WorkItem[]> {
-    const rows = await this.db.all(`SELECT * FROM work_items WHERE parent_id = ? ORDER BY phase, ${this.db.dialect.seq}`, [parentId]);
+    const rows = await this.db.all(`SELECT * FROM controller_work_items WHERE parent_id = ? ORDER BY phase, ${this.db.dialect.seq}`, [parentId]);
     return rows.map(rowToWorkItem);
   }
 
   async listWorkItems(limit: number): Promise<WorkItem[]> {
-    const rows = await this.db.all(`SELECT * FROM work_items ORDER BY created_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [
+    const rows = await this.db.all(`SELECT * FROM controller_work_items ORDER BY created_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [
       limit,
     ]);
     return rows.map(rowToWorkItem);
@@ -278,7 +280,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listWorkItemsWhere(filter: WorkItemFilter): Promise<WorkItem[]> {
     const { where, params } = whereOf(filter);
     const rows = await this.db.all(
-      `SELECT * FROM work_items${where} ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
+      `SELECT * FROM controller_work_items${where} ORDER BY updated_at DESC, ${this.db.dialect.seq} DESC LIMIT ?`,
       [...params, filter.limit],
     );
     return rows.map(rowToWorkItem);
@@ -286,13 +288,13 @@ export class SqlFactoryStore implements FactoryStore {
 
   async countWorkItemsWhere(filter: Omit<WorkItemFilter, "limit">): Promise<number> {
     const { where, params } = whereOf(filter);
-    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM work_items${where}`, params);
+    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM controller_work_items${where}`, params);
     return Number(row?.n ?? 0);
   }
 
   async countWorkItemsByStage(): Promise<Record<Stage, number>> {
     const counts: Record<Stage, number> = { NEW: 0, READY: 0, RUNNING: 0, REVIEW: 0, CLOSED: 0 };
-    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM work_items GROUP BY stage");
+    const rows = await this.db.all("SELECT stage, COUNT(*) AS n FROM controller_work_items GROUP BY stage");
     for (const r of rows) counts[r.stage as Stage] = Number(r.n);
     return counts;
   }
@@ -320,7 +322,7 @@ export class SqlFactoryStore implements FactoryStore {
     const now = this.now();
     const version = current.version + 1;
     const updated = await tx.run(
-      `UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
+      `UPDATE controller_work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`,
       [...values, version, now, input.id, input.expected_version],
     );
     if (updated !== 1) return { ok: false, reason: "version_conflict", current };
@@ -329,17 +331,9 @@ export class SqlFactoryStore implements FactoryStore {
       tx, input.id, version, input.actor, input.reason, changes, input.detail ?? null,
     );
     if (input.ack_run !== undefined) {
-      await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
+      await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
     const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-    if (input.base_push) {
-      await this.insertOnce(
-        tx,
-        `INSERT INTO base_pushes (work_item_id, base_ref, merge_sha, attempts, next_attempt_at, claim_token, created_at)
-         VALUES (?, ?, ?, 0, ?, 0, ?)`,
-        [input.id, input.base_push.base_ref, input.base_push.merge_sha, now, now],
-      );
-    }
     const cancelled = [
       ...(input.cancel_queued_runs ? await this.cancelRuns(tx, input.id, "queued", now) : []),
       ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
@@ -348,15 +342,15 @@ export class SqlFactoryStore implements FactoryStore {
     // Closing the item settles its checkpoints that have no outcome yet (design §6).
     const outcome = item.close_reason === null ? null : OUTCOME[item.close_reason];
     if (current.stage !== "CLOSED" && item.stage === "CLOSED" && outcome) {
-      await tx.run("UPDATE budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
+      await tx.run("UPDATE controller_budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
     }
     // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so
     // the queued runs' decisions that name it go too; the next claim records what holds them now (design §5).
     // An approval stays: it is the human's, for that run.
     if (current.stage !== "CLOSED" && item.stage === "CLOSED") {
       await tx.run(
-        `DELETE FROM claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
-           AND run_id IN (SELECT id FROM runs WHERE status = 'queued')`,
+        `DELETE FROM controller_claim_decisions WHERE holder_work_item_id = ? AND approved_by IS NULL
+           AND run_id IN (SELECT id FROM worker_runs WHERE status = 'queued')`,
         [input.id],
       );
     }
@@ -364,7 +358,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listStateChanges(id: WorkItemId): Promise<StateChange[]> {
-    const rows = await this.db.all("SELECT * FROM state_changes WHERE work_item_id = ? ORDER BY version", [id]);
+    const rows = await this.db.all("SELECT * FROM controller_state_changes WHERE work_item_id = ? ORDER BY version", [id]);
     return rows.map(rowToStateChange);
   }
 
@@ -381,16 +375,16 @@ export class SqlFactoryStore implements FactoryStore {
         // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
         if (input.pr_head !== null) {
           const [onHead] = await tx.all(
-            `SELECT * FROM verdicts WHERE work_item_id = ? AND pr_head = ? ORDER BY at, ${this.db.dialect.seq}`,
+            `SELECT * FROM controller_verdicts WHERE work_item_id = ? AND pr_head = ? ORDER BY at, ${this.db.dialect.seq}`,
             [input.id, input.pr_head],
           );
           if (onHead && input.implicit) return { ok: false, reason: "duplicate", verdict: rowToVerdict(onHead) };
-          if (onHead) await tx.run("DELETE FROM verdicts WHERE work_item_id = ? AND pr_head = ? AND implicit = 1", [input.id, input.pr_head]);
+          if (onHead) await tx.run("DELETE FROM controller_verdicts WHERE work_item_id = ? AND pr_head = ? AND implicit = 1", [input.id, input.pr_head]);
         }
 
         const now = this.now();
         const version = current.version + 1;
-        const updated = await tx.run("UPDATE work_items SET version = ?, updated_at = ? WHERE id = ? AND version = ?", [
+        const updated = await tx.run("UPDATE controller_work_items SET version = ?, updated_at = ? WHERE id = ? AND version = ?", [
           version, now, input.id, input.expected_version,
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
@@ -412,7 +406,7 @@ export class SqlFactoryStore implements FactoryStore {
         };
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
+          `INSERT INTO controller_verdicts (id, work_item_id, state_change_id, verdict, severity, reason, comment_id, target, implicit, pr_head, at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             verdict.id, verdict.work_item_id, verdict.state_change_id, verdict.verdict, verdict.severity,
@@ -430,7 +424,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
-    const rows = await this.db.all(`SELECT * FROM verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
+    const rows = await this.db.all(`SELECT * FROM controller_verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
   }
 
@@ -439,13 +433,13 @@ export class SqlFactoryStore implements FactoryStore {
   async openBudgetCheckpoint(input: OpenBudgetCheckpointInput): Promise<BudgetCheckpointResult> {
     const { checkpoint, ...transition } = input;
     return this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
-      const [pending] = await tx.all("SELECT id FROM budget_checkpoints WHERE work_item_id = ? AND answer = 'pending'", [input.id]);
+      const [pending] = await tx.all("SELECT id FROM controller_budget_checkpoints WHERE work_item_id = ? AND answer = 'pending'", [input.id]);
       if (pending) return { ok: false, reason: "checkpoint_pending" };
       const r = await this.applyTransition(tx, transition);
       if (!r.ok) return r;
       const id = newId("bc") as BudgetCheckpointId;
       await tx.run(
-        `INSERT INTO budget_checkpoints (id, work_item_id, tier, tokens_spent, budget, suggested_budget, answer, granted_budget,
+        `INSERT INTO controller_budget_checkpoints (id, work_item_id, tier, tokens_spent, budget, suggested_budget, answer, granted_budget,
            held_run_kind, held_run_key, held_run_not_before, outcome, created_at, answered_at)
          VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?, NULL, ?, NULL)`,
         [
@@ -466,7 +460,7 @@ export class SqlFactoryStore implements FactoryStore {
         const r = await this.applyTransition(tx, transition);
         if (!r.ok) return r;
         const answered = await tx.run(
-          "UPDATE budget_checkpoints SET answer = ?, granted_budget = ?, answered_at = ? WHERE id = ? AND answer = 'pending'",
+          "UPDATE controller_budget_checkpoints SET answer = ?, granted_budget = ?, answered_at = ? WHERE id = ? AND answer = 'pending'",
           [answer, granted_budget, this.now(), checkpoint_id],
         );
         // A concurrent answer committed first: undo this transition.
@@ -481,7 +475,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listBudgetCheckpoints(id: WorkItemId): Promise<BudgetCheckpoint[]> {
     const rows = await this.db.all(
-      `SELECT * FROM budget_checkpoints WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
+      `SELECT * FROM controller_budget_checkpoints WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
       [id],
     );
     return rows.map(rowToBudgetCheckpoint);
@@ -489,7 +483,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getTierHistory(project: string, tier: Tier): Promise<TierHistory> {
     const rows = await this.db.all(
-      "SELECT close_reason, token_cost FROM work_items WHERE project = ? AND tier = ? AND stage = 'CLOSED'",
+      "SELECT close_reason, token_cost FROM controller_work_items WHERE project = ? AND tier = ? AND stage = 'CLOSED'",
       [project, tier],
     );
     return {
@@ -501,7 +495,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]> {
     const { seq } = this.db.dialect;
     // Three plain reads, no transaction: a read-only command takes no write lock (SQLite) and no row lock.
-    const items = await this.db.all(`SELECT id, tier, stage, token_cost, origin FROM work_items ORDER BY created_at, ${seq}`);
+    const items = await this.db.all(`SELECT id, tier, stage, token_cost, origin FROM controller_work_items ORDER BY created_at, ${seq}`);
     const records = new Map<string, StatsRecord>();
     for (const r of items) {
       records.set(r.id as string, {
@@ -517,13 +511,13 @@ export class SqlFactoryStore implements FactoryStore {
     }
     if (reasons.length > 0) {
       const changes = await this.db.all(
-        `SELECT work_item_id, reason FROM state_changes WHERE reason IN (${placeholders(reasons.length)})
+        `SELECT work_item_id, reason FROM controller_state_changes WHERE reason IN (${placeholders(reasons.length)})
          ORDER BY work_item_id, version`,
         [...reasons],
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM verdicts ORDER BY at, ${seq}`);
+    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM controller_verdicts ORDER BY at, ${seq}`);
     for (const v of verdicts) {
       const record = records.get(v.work_item_id as string);
       if (!record) continue;
@@ -546,7 +540,7 @@ export class SqlFactoryStore implements FactoryStore {
       // see "nothing of this item is running" and claim two runs of one item. Only a claim moves a run to 'running',
       // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
       // serializes; the select is a no-op.)
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
       // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
@@ -554,7 +548,7 @@ export class SqlFactoryStore implements FactoryStore {
       // under the lock.
       const pauses = new Map(
         (
-          await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)", [
+          await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?, ?, ?, ?, ?, ?, ?)", [
             RATE_LIMIT_PAUSE, FORGE_AUTH_PAUSE, PREFLIGHT_ACCESS_PAUSE, GITHUB_RATE_LIMIT, MODEL_STALL, MODEL_ANSWERED, NETWORK, NETWORK_ANSWERED,
           ])
         ).map((r) => [r.name as string, r.resume_at as string]),
@@ -574,7 +568,7 @@ export class SqlFactoryStore implements FactoryStore {
       // allowed_paths overlap do run side by side; their conflicts are resolved at merge.
       const busy = new Set(
         (
-          await tx.all(`SELECT work_item_id FROM runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
+          await tx.all(`SELECT work_item_id FROM worker_runs WHERE status = 'running' AND kind IN (${writeKinds})`, [...IMPLEMENT_KINDS])
         ).map((r) => r.work_item_id as string),
       );
       // Open sessions (design §5, 2026-11-01): an implement-type run waits while its item has one or overlaps one.
@@ -589,7 +583,7 @@ export class SqlFactoryStore implements FactoryStore {
       // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
       const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
       const queued = await tx.all(
-        `SELECT r.id, r.kind, r.work_item_id FROM runs r
+        `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
            AND (r.not_before IS NULL OR r.not_before <= ?)
          ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
@@ -616,7 +610,7 @@ export class SqlFactoryStore implements FactoryStore {
         const id = next.id as RunId;
         // A paused run's resume adds nothing to attempt (design §5 Pause): it was not a new try.
         const claimed = await tx.run(
-          `UPDATE runs SET status = 'running', attempt = attempt + CASE WHEN paused_at IS NULL THEN 1 ELSE 0 END,
+          `UPDATE worker_runs SET status = 'running', attempt = attempt + CASE WHEN paused_at IS NULL THEN 1 ELSE 0 END,
              lease_owner = ?, lease_token = lease_token + 1, lease_expires_at = ?, started_at = ?, updated_at = ?,
              paused_at = NULL, paused_by = NULL
            WHERE id = ? AND status = 'queued'`,
@@ -641,15 +635,15 @@ export class SqlFactoryStore implements FactoryStore {
     const runs = queued.filter((q) => q.kind === "implement");
     const ids = [...new Set([...runs.map((q) => q.work_item_id as string), ...busy])];
     const items = new Map<string, WorkItem>();
-    for (const r of await tx.all(`SELECT * FROM work_items WHERE id IN (${placeholders(ids.length)})`, ids)) {
+    for (const r of await tx.all(`SELECT * FROM controller_work_items WHERE id IN (${placeholders(ids.length)})`, ids)) {
       items.set(r.id as string, rowToWorkItem(r));
     }
-    const openPrs = (await tx.all("SELECT * FROM work_items WHERE pr_number IS NOT NULL AND stage <> 'CLOSED'")).map(rowToWorkItem);
+    const openPrs = (await tx.all("SELECT * FROM controller_work_items WHERE pr_number IS NOT NULL AND stage <> 'CLOSED'")).map(rowToWorkItem);
     for (const it of openPrs) items.set(it.id, it);
     const queuedIds = [...new Set(runs.map((q) => q.work_item_id as string))];
     const edges = await tx.all(
-      `SELECT e.work_item_id, e.state, w.stage, w.close_reason, w.merge_sha FROM dependency_edges e
-       LEFT JOIN work_items w ON w.source_type = 'github_issue' AND w.source_id = e.depends_on
+      `SELECT e.work_item_id, e.state, w.stage, w.close_reason, w.merge_sha FROM controller_dependency_edges e
+       LEFT JOIN controller_work_items w ON w.source_type = 'github_issue' AND w.source_id = e.depends_on
        WHERE e.work_item_id IN (${placeholders(queuedIds.length)})`,
       queuedIds,
     );
@@ -662,7 +656,7 @@ export class SqlFactoryStore implements FactoryStore {
     const conflicts = new Map<string, Map<string, number>>();
     if (projects.length > 0) {
       const rows = await tx.all(
-        `SELECT project_key, path, COUNT(*) AS n FROM file_conflicts WHERE project_key IN (${placeholders(projects.length)})
+        `SELECT project_key, path, COUNT(*) AS n FROM controller_file_conflicts WHERE project_key IN (${placeholders(projects.length)})
          GROUP BY project_key, path`,
         projects,
       );
@@ -674,7 +668,7 @@ export class SqlFactoryStore implements FactoryStore {
     }
     const runIds = runs.map((q) => q.id as string);
     const decisions = new Map<string, ClaimDecision>();
-    for (const r of await tx.all(`SELECT * FROM claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
+    for (const r of await tx.all(`SELECT * FROM controller_claim_decisions WHERE run_id IN (${placeholders(runIds.length)})`, runIds)) {
       decisions.set(r.run_id as string, rowToClaimDecision(r));
     }
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
@@ -771,14 +765,14 @@ export class SqlFactoryStore implements FactoryStore {
     ];
     const now = this.now();
     const updated = await tx.run(
-      `UPDATE claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
+      `UPDATE controller_claim_decisions SET decision = ?, holder_work_item_id = ?, holder_ref = ?, holder_kind = ?, shared = ?, cost = ?,
          threshold = ?, fallback = ?, held_since = ?, at = ? WHERE run_id = ?`,
       [...values, now, runId],
     );
     if (updated === 0) {
       await this.insertOnce(
         tx,
-        `INSERT INTO claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
+        `INSERT INTO controller_claim_decisions (run_id, work_item_id, decision, holder_work_item_id, holder_ref, holder_kind, shared, cost,
            threshold, fallback, held_since, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
         [runId, it.id, ...values, now],
       );
@@ -796,21 +790,21 @@ export class SqlFactoryStore implements FactoryStore {
     if (probe === name) return this.pauseForProbe(probe, resume_at);
     if (probe !== null && name === PROBE_PAUSES[probe].since) throw new Error(`${name} is written by the store when a ${probe} pause starts`);
     return this.db.transaction(async (tx) => {
-      if (await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
+      if (await this.insertOnce(tx, "INSERT INTO worker_claim_pauses (name, resume_at) VALUES (?, ?)", [name, resume_at])) {
         return result(true, true, resume_at);
       }
       // Conditional, so concurrent callers never both start it: only the update that finds the pause already
       // ended starts a new one (the row stays after a pause ends), and only a later time moves a running one.
       const now = this.now();
-      const restarted = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at <= ? AND resume_at < ?", [
+      const restarted = await tx.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ? AND resume_at <= ? AND resume_at < ?", [
         resume_at, name, now, resume_at,
       ]);
       if (restarted === 1) return result(true, true, resume_at);
-      const moved = await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ? AND resume_at < ?", [
+      const moved = await tx.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ? AND resume_at < ?", [
         resume_at, name, now, resume_at,
       ]);
       if (moved === 1) return result(true, false, resume_at);
-      const [row] = await tx.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
+      const [row] = await tx.all("SELECT resume_at FROM worker_claim_pauses WHERE name = ?", [name]);
       return result(false, false, row!.resume_at as Timestamp);
     });
   }
@@ -827,7 +821,7 @@ export class SqlFactoryStore implements FactoryStore {
       const { current, answered } = await this.probeRows(tx, pause, true);
       if (current !== undefined && probeInEffect(current, answered)) {
         if (resume_at <= current) return { extended: false, started: false, resume_at: current };
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, pause]);
+        await tx.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ?", [resume_at, pause]);
         return { extended: true, started: false, resume_at };
       }
       // A probe time not after the last answer would start a pause that is already over.
@@ -839,10 +833,10 @@ export class SqlFactoryStore implements FactoryStore {
 
   /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
   private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
-    if (lock) await tx.all(`SELECT name FROM claim_locks WHERE name = ?${this.db.dialect.forUpdate}`, [CLAIM_LOCK]);
+    if (lock) await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${this.db.dialect.forUpdate}`, [CLAIM_LOCK]);
     const answeredRow = PROBE_PAUSES[pause].answered;
     const rows = new Map(
-      (await tx.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
+      (await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
         .map((r) => [r.name as string, r.resume_at as Timestamp]),
     );
     const current = rows.get(pause);
@@ -853,8 +847,8 @@ export class SqlFactoryStore implements FactoryStore {
   /** Writes each claim_pauses row, inserting the ones not there yet. */
   private async setPauseRows(tx: SqlExecutor, rows: readonly (readonly [string, Timestamp])[]): Promise<void> {
     for (const [name, at] of rows) {
-      if (!(await this.insertOnce(tx, "INSERT INTO claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
-        await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
+      if (!(await this.insertOnce(tx, "INSERT INTO worker_claim_pauses (name, resume_at) VALUES (?, ?)", [name, at]))) {
+        await tx.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ?", [at, name]);
       }
     }
   }
@@ -865,13 +859,13 @@ export class SqlFactoryStore implements FactoryStore {
       // In effect until a probe passes, not until a time: the probe time is returned also once it passed.
       const { since, answered } = PROBE_PAUSES[probe];
       const rows = new Map(
-        (await this.db.all("SELECT name, resume_at FROM claim_pauses WHERE name IN (?, ?, ?)", [probe, since, answered]))
+        (await this.db.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?, ?)", [probe, since, answered]))
           .map((r) => [r.name as string, r.resume_at as Timestamp]),
       );
       if (!probeInEffect(rows.get(probe), rows.get(answered))) return null;
       return rows.get(name) ?? null;
     }
-    const [row] = await this.db.all("SELECT resume_at FROM claim_pauses WHERE name = ?", [name]);
+    const [row] = await this.db.all("SELECT resume_at FROM worker_claim_pauses WHERE name = ?", [name]);
     const at = (row?.resume_at as Timestamp | undefined) ?? null;
     return at !== null && at > this.now() ? at : null;
   }
@@ -882,7 +876,7 @@ export class SqlFactoryStore implements FactoryStore {
     if (probe !== null) return this.endProbe(probe);
     // Conditional: only a row still in effect moves, so a second call, or one with no pause in effect, writes nothing.
     const now = this.now();
-    const ended = await this.db.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ?", [now, name, now]);
+    const ended = await this.db.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ? AND resume_at > ?", [now, name, now]);
     return { ended: ended === 1 };
   }
 
@@ -907,7 +901,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const { answered } = await this.probeRows(tx, name, true);
       if (!probeInEffect(due, answered) || next <= due) return false;
-      return (await tx.run("UPDATE claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
+      return (await tx.run("UPDATE worker_claim_pauses SET resume_at = ? WHERE name = ? AND resume_at = ?", [next, name, due])) === 1;
     });
   }
 
@@ -921,10 +915,10 @@ export class SqlFactoryStore implements FactoryStore {
         return { paused: (await this.insertOnce(tx, PAUSE_INSERT, [ALL_WORKERS, by, now])) ? [ALL_WORKERS] : [] };
       }
       // Under the claim lock, so no claim moves a run to running between the read and the pause rows.
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
-        `SELECT lease_owner FROM runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
+        `SELECT lease_owner FROM worker_runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
         [INTERACTIVE],
       );
       const paused: WorkerId[] = [];
@@ -960,7 +954,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       // Conditional on status and token, like completeRun. attempt is left as it is: the resuming claim adds nothing.
       const paused = await tx.run(
-        `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = NULL,
+        `UPDATE worker_runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = NULL,
            paused_at = ?, paused_by = ?, session_id = ?, pause_state = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [now, pause.paused_by, pause.session_id, pause.resume === null ? null : JSON.stringify(pause.resume), now, runId, token],
@@ -977,7 +971,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const extended = await tx.run(
-        `UPDATE runs SET lease_expires_at = ?, updated_at = ?
+        `UPDATE worker_runs SET lease_expires_at = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [this.after(lease_ms), now, runId, token],
       );
@@ -989,7 +983,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const now = this.now();
       const completed = await tx.run(
-        `UPDATE runs SET status = ?, outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
+        `UPDATE worker_runs SET status = ?, outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
          WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [outcome.status, JSON.stringify(outcome), now, now, runId, token],
       );
@@ -1000,7 +994,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listUnacknowledgedRuns(limit: number): Promise<Run[]> {
     const rows = await this.db.all(
-      `SELECT * FROM runs WHERE status IN ('succeeded', 'failed', 'cancelled') AND acknowledged_at IS NULL
+      `SELECT * FROM worker_runs WHERE status IN ('succeeded', 'failed', 'cancelled') AND acknowledged_at IS NULL
        ORDER BY updated_at, ${this.db.dialect.seq} LIMIT ?`,
       [limit],
     );
@@ -1018,7 +1012,7 @@ export class SqlFactoryStore implements FactoryStore {
       // A run another reaper holds right now is left for the next tick. started_at and updated_at (the last
       // heartbeat on a running run) are read here, before this transaction's write rewrites updated_at.
       const expired = await tx.all(
-        `SELECT id, kind, attempt, lease_token, work_item_id, started_at, updated_at FROM runs
+        `SELECT id, kind, attempt, lease_token, work_item_id, started_at, updated_at FROM worker_runs
          WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
         [now],
       );
@@ -1037,7 +1031,7 @@ export class SqlFactoryStore implements FactoryStore {
           // A closed item never runs again: its expired run is cancelled, not requeued.
           outcome = "cancelled";
           moved = await tx.run(
-            `UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            `UPDATE worker_runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [now, run.id as string],
           );
@@ -1046,7 +1040,7 @@ export class SqlFactoryStore implements FactoryStore {
           const lost: RunOutcome = { status: "failed", error_code: SESSION_LOST, detail: "the session's lease expired", infra: false };
           outcome = "failed";
           moved = await tx.run(
-            "UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            "UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
             [JSON.stringify(lost), now, now, run.id as string],
           );
           if (moved === 1) {
@@ -1057,7 +1051,7 @@ export class SqlFactoryStore implements FactoryStore {
         } else if (Number(run.attempt) >= max_attempts) {
           outcome = "failed";
           moved = await tx.run(
-            `UPDATE runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
+            `UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?,
                updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [JSON.stringify(failed), now, now, run.id as string],
@@ -1067,7 +1061,7 @@ export class SqlFactoryStore implements FactoryStore {
           const not_before = backoff_ms ? this.after(backoff_ms(Number(run.attempt))) : null;
           outcome = "queued";
           moved = await tx.run(
-            `UPDATE runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
+            `UPDATE worker_runs SET status = 'queued', lease_owner = NULL, lease_expires_at = NULL, not_before = ?, updated_at = ?
              WHERE id = ? AND status = 'running'`,
             [not_before, now, run.id as string],
           );
@@ -1096,11 +1090,11 @@ export class SqlFactoryStore implements FactoryStore {
     const { forUpdate, seq } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<StartSessionResult> => {
       // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
-      await tx.all(`SELECT name FROM claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
       const current = await this.selectItem(tx, input.id, forUpdate);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
-      const own = await tx.all(`SELECT id, kind, status FROM runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
+      const own = await tx.all(`SELECT id, kind, status FROM worker_runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
       const open = own.find((r) => r.kind === INTERACTIVE && r.status === "running");
       if (open) return { ok: false, reason: "session_open", run_id: open.id as RunId };
       const writer = own.find((r) => (IMPLEMENT_KINDS as readonly string[]).includes(r.kind as string));
@@ -1115,7 +1109,7 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       const session: SessionRecord = { notes: [], last_finish: null };
       await tx.run(
-        `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, actor_id,
+        `INSERT INTO worker_runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_owner, lease_token, lease_expires_at, input, actor_id,
            transcript_url, started_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'running', 1, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
         [runId, input.id, INTERACTIVE, `${input.id}:interactive:${runId}`, input.owner, this.after(input.lease_ms),
           JSON.stringify({ session } satisfies RunInput), input.actor.id, input.transcript_url, now, now, now],
@@ -1124,13 +1118,13 @@ export class SqlFactoryStore implements FactoryStore {
       await this.openAttempt(tx, (await this.selectRun(tx, runId))!, now);
       const { changes, sets, values } = await this.patchSql(tx, current, input.patch);
       const version = current.version + 1;
-      await tx.run(`UPDATE work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
+      await tx.run(`UPDATE controller_work_items SET ${[...sets, "version = ?", "updated_at = ?"].join(", ")} WHERE id = ? AND version = ?`, [
         ...values, version, now, input.id, input.expected_version,
       ]);
       const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.reason, changes, { ...input.detail, run_id: runId });
       const cancelled: RunId[] = [];
       for (const r of own.filter((x) => x.kind === "triage")) {
-        const n = await tx.run("UPDATE runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'queued'", [now, r.id as string]);
+        const n = await tx.run("UPDATE worker_runs SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'queued'", [now, r.id as string]);
         if (n === 1) cancelled.push(r.id as RunId);
       }
       return { ok: true, item: (await this.selectItem(tx, input.id))!, run: (await this.selectRun(tx, runId))!, state_change, cancelled };
@@ -1148,7 +1142,7 @@ export class SqlFactoryStore implements FactoryStore {
         ...(update.note !== undefined ? { notes: [...s.notes, { at: now, text: update.note }].slice(-MAX_SESSION_NOTES) } : {}),
         ...(update.last_finish !== undefined ? { last_finish: { ...update.last_finish, at: now } } : {}),
       };
-      await tx.run("UPDATE runs SET input = ?, session_tokens = ?, transcript_url = ?, updated_at = ? WHERE id = ?", [
+      await tx.run("UPDATE worker_runs SET input = ?, session_tokens = ?, transcript_url = ?, updated_at = ? WHERE id = ?", [
         JSON.stringify({ ...run.input, session: next }), update.tokens ?? run.session_tokens, update.transcript_url ?? run.transcript_url, now, runId,
       ]);
       return { ok: true, run: (await this.selectRun(tx, runId))! };
@@ -1158,7 +1152,7 @@ export class SqlFactoryStore implements FactoryStore {
   /** Running runs of `kinds` with their item's allowed_paths. */
   private runningPaths(tx: SqlExecutor, kinds: readonly RunKind[]): Promise<Row[]> {
     return tx.all(
-      `SELECT r.id, r.work_item_id, w.allowed_paths FROM runs r JOIN work_items w ON w.id = r.work_item_id
+      `SELECT r.id, r.work_item_id, w.allowed_paths FROM worker_runs r JOIN controller_work_items w ON w.id = r.work_item_id
        WHERE r.status = 'running' AND r.kind IN (${placeholders(kinds.length)}) ORDER BY r.created_at, r.${this.db.dialect.seq}`,
       [...kinds],
     );
@@ -1167,21 +1161,21 @@ export class SqlFactoryStore implements FactoryStore {
   async listRunsByKind(kind: RunKind, statuses: readonly RunStatus[]): Promise<Run[]> {
     if (statuses.length === 0) return [];
     const rows = await this.db.all(
-      `SELECT * FROM runs WHERE kind = ? AND status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq}`,
+      `SELECT * FROM worker_runs WHERE kind = ? AND status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq}`,
       [kind, ...statuses],
     );
     return rows.map(rowToRun);
   }
 
   async listRuns(id: WorkItemId): Promise<Run[]> {
-    const rows = await this.db.all(`SELECT * FROM runs WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
+    const rows = await this.db.all(`SELECT * FROM worker_runs WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToRun);
   }
 
   async listRunAttempts(id: WorkItemId): Promise<RunAttempt[]> {
     const { seq } = this.db.dialect;
     const rows = await this.db.all(
-      `SELECT a.* FROM run_attempts a JOIN runs r ON r.id = a.run_id WHERE r.work_item_id = ?
+      `SELECT a.* FROM worker_run_attempts a JOIN worker_runs r ON r.id = a.run_id WHERE r.work_item_id = ?
        ORDER BY r.created_at, r.${seq}, a.attempt`,
       [id],
     );
@@ -1191,7 +1185,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listRunsByStatus(statuses: readonly RunStatus[], limit: number): Promise<Run[]> {
     if (statuses.length === 0) return [];
     const rows = await this.db.all(
-      `SELECT * FROM runs WHERE status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq} LIMIT ?`,
+      `SELECT * FROM worker_runs WHERE status IN (${placeholders(statuses.length)}) ORDER BY created_at, ${this.db.dialect.seq} LIMIT ?`,
       [...statuses, limit],
     );
     return rows.map(rowToRun);
@@ -1199,7 +1193,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listRunsFinishedWithin(window_ms: number): Promise<Run[]> {
     const rows = await this.db.all(
-      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at DESC, ${this.db.dialect.seq} DESC`,
+      `SELECT * FROM worker_runs WHERE finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at DESC, ${this.db.dialect.seq} DESC`,
       [this.after(-window_ms)],
     );
     return rows.map(rowToRun);
@@ -1207,7 +1201,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listRunsFinishedBetween(start: Timestamp, end: Timestamp): Promise<Run[]> {
     const rows = await this.db.all(
-      `SELECT * FROM runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
+      `SELECT * FROM worker_runs WHERE finished_at IS NOT NULL AND finished_at >= ? AND finished_at < ? ORDER BY finished_at, ${this.db.dialect.seq}`,
       [start, end],
     );
     return rows.map(rowToRun);
@@ -1217,7 +1211,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const run = await this.insertRun(tx, input);
       if (run) return { run, created: true };
-      const [row] = await tx.all("SELECT * FROM runs WHERE idempotency_key = ?", [input.idempotency_key]);
+      const [row] = await tx.all("SELECT * FROM worker_runs WHERE idempotency_key = ?", [input.idempotency_key]);
       return { run: rowToRun(row!), created: false };
     });
   }
@@ -1228,7 +1222,7 @@ export class SqlFactoryStore implements FactoryStore {
     const report: ImproveReport = { ...input, id: newId("ir") as ImproveReportId, created_at: this.now() };
     const created = await this.insertOnce(
       this.db,
-      `INSERT INTO improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
+      `INSERT INTO controller_improve_reports (id, run_id, project_key, window_start, window_end, failure_groups, patterns, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         report.id, report.run_id, report.project, report.window_start, report.window_end,
@@ -1239,14 +1233,14 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async getImproveReport(run_id: RunId): Promise<ImproveReport | null> {
-    const [row] = await this.db.all("SELECT * FROM improve_reports WHERE run_id = ?", [run_id]);
+    const [row] = await this.db.all("SELECT * FROM controller_improve_reports WHERE run_id = ?", [run_id]);
     return row ? rowToImproveReport(row) : null;
   }
 
   async getLatestImproveReport(project?: string): Promise<ImproveReport | null> {
     const where = project === undefined ? "" : "WHERE project_key = ? ";
     const [row] = await this.db.all(
-      `SELECT * FROM improve_reports ${where}ORDER BY created_at DESC, id DESC LIMIT 1`,
+      `SELECT * FROM controller_improve_reports ${where}ORDER BY created_at DESC, id DESC LIMIT 1`,
       project === undefined ? [] : [project],
     );
     return row ? rowToImproveReport(row) : null;
@@ -1254,18 +1248,18 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listImproveReports(project: string, since: Timestamp): Promise<ImproveReport[]> {
     const rows = await this.db.all(
-      "SELECT * FROM improve_reports WHERE project_key = ? AND created_at >= ? ORDER BY created_at, id",
+      "SELECT * FROM controller_improve_reports WHERE project_key = ? AND created_at >= ? ORDER BY created_at, id",
       [project, since],
     );
     return rows.map(rowToImproveReport);
   }
 
   async setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void> {
-    await this.db.run("UPDATE improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
+    await this.db.run("UPDATE controller_improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
   }
 
   async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
-    const [row] = await this.db.all("SELECT * FROM filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
+    const [row] = await this.db.all("SELECT * FROM controller_filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
     return row ? rowToFiledPattern(row) : null;
   }
 
@@ -1273,13 +1267,13 @@ export class SqlFactoryStore implements FactoryStore {
     const now = this.now();
     await this.insertOnce(
       this.db,
-      `INSERT INTO filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
+      `INSERT INTO controller_filed_patterns (id, project_key, pattern_key, error_code, detail, report_id, filed_ref, created_at)
        VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`,
       [newId("fp"), input.project, input.pattern_key, input.error_code, input.detail, input.report_id, now],
     );
     if (replace !== undefined && replace !== input.report_id) {
       await this.db.run(
-        `UPDATE filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
+        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
          WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
         [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
       );
@@ -1288,7 +1282,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
-    await this.db.run("UPDATE filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
+    await this.db.run("UPDATE controller_filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -1299,39 +1293,39 @@ export class SqlFactoryStore implements FactoryStore {
       const enabled = input.enabled ? 1 : 0;
       const inserted = await this.insertOnce(
         tx,
-        "INSERT INTO standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO controller_standing_rules (gate, tier, enabled, set_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         [input.gate, input.tier, enabled, input.set_by, now, now],
       );
       if (!inserted) {
-        await tx.run("UPDATE standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
+        await tx.run("UPDATE controller_standing_rules SET enabled = ?, set_by = ?, updated_at = ? WHERE gate = ? AND tier = ?", [
           enabled, input.set_by, now, input.gate, input.tier,
         ]);
       }
-      const [row] = await tx.all("SELECT * FROM standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
+      const [row] = await tx.all("SELECT * FROM controller_standing_rules WHERE gate = ? AND tier = ?", [input.gate, input.tier]);
       return rowToStandingRule(row!);
     });
   }
 
   async listStandingRules(): Promise<StandingRule[]> {
-    return (await this.db.all("SELECT * FROM standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
+    return (await this.db.all("SELECT * FROM controller_standing_rules ORDER BY gate, tier")).map(rowToStandingRule);
   }
 
   async recordStandingProposal(input: NewStandingProposal): Promise<{ proposal: StandingProposal; created: boolean }> {
     const proposal: StandingProposal = { ...input, id: newId("sp") as StandingProposalId, created_at: this.now() };
     const created = await this.insertOnce(
       this.db,
-      "INSERT INTO standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "INSERT INTO controller_standing_proposals (id, gate, tier, run_length, threshold, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       [proposal.id, proposal.gate, proposal.tier, proposal.run_length, proposal.threshold, proposal.created_at],
     );
     if (created) return { proposal, created };
-    const [row] = await this.db.all("SELECT * FROM standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
+    const [row] = await this.db.all("SELECT * FROM controller_standing_proposals WHERE gate = ? AND tier = ? AND run_length = ?", [
       input.gate, input.tier, input.run_length,
     ]);
     return { proposal: rowToStandingProposal(row!), created };
   }
 
   async listStandingProposals(): Promise<StandingProposal[]> {
-    return (await this.db.all("SELECT * FROM standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
+    return (await this.db.all("SELECT * FROM controller_standing_proposals ORDER BY gate, tier, run_length")).map(rowToStandingProposal);
   }
 
   // Coordination (design §5, 2026-11-03)
@@ -1341,33 +1335,33 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       const wanted = new Map<string, DependencyLink>();
       for (const l of links) if (!wanted.has(l.depends_on)) wanted.set(l.depends_on, l);
-      const current = (await tx.all("SELECT depends_on FROM dependency_edges WHERE work_item_id = ?", [id])).map((r) => r.depends_on as string);
+      const current = (await tx.all("SELECT depends_on FROM controller_dependency_edges WHERE work_item_id = ?", [id])).map((r) => r.depends_on as string);
       for (const d of current) {
-        if (!wanted.has(d)) await tx.run("DELETE FROM dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, d]);
+        if (!wanted.has(d)) await tx.run("DELETE FROM controller_dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, d]);
       }
       for (const l of wanted.values()) {
         await this.insertOnce(
           tx,
-          "INSERT INTO dependency_edges (work_item_id, depends_on, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)",
+          "INSERT INTO controller_dependency_edges (work_item_id, depends_on, kind, state, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, ?)",
           [id, l.depends_on, l.kind, now, now],
         );
       }
       if (read_at !== undefined) {
-        await tx.run("UPDATE dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
-        await tx.run("UPDATE work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
+        await tx.run("UPDATE controller_dependency_edges SET source_updated_at = ? WHERE work_item_id = ?", [read_at, id]);
+        await tx.run("UPDATE controller_work_items SET edges_source_updated_at = ? WHERE id = ?", [read_at, id]);
       }
-      const rows = await tx.all(`SELECT * FROM dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
+      const rows = await tx.all(`SELECT * FROM controller_dependency_edges WHERE work_item_id = ? ORDER BY created_at, ${this.db.dialect.seq}`, [id]);
       return rows.map(rowToDependencyEdge);
     });
   }
 
   async dependencyLinksReadAt(id: WorkItemId): Promise<Timestamp | null> {
-    const [row] = await this.db.all("SELECT edges_source_updated_at FROM work_items WHERE id = ?", [id]);
+    const [row] = await this.db.all("SELECT edges_source_updated_at FROM controller_work_items WHERE id = ?", [id]);
     return (row?.edges_source_updated_at as Timestamp | null | undefined) ?? null;
   }
 
   async markDependencyLinksStale(id: WorkItemId): Promise<void> {
-    await this.db.run("UPDATE work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
+    await this.db.run("UPDATE controller_work_items SET edges_source_updated_at = NULL WHERE id = ?", [id]);
   }
 
   async listDependencyEdges(filter: { work_item_id?: WorkItemId; depends_on?: string } = {}): Promise<DependencyEdge[]> {
@@ -1382,7 +1376,7 @@ export class SqlFactoryStore implements FactoryStore {
       params.push(filter.depends_on);
     }
     const rows = await this.db.all(
-      `SELECT * FROM dependency_edges${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, ${this.db.dialect.seq}`,
+      `SELECT * FROM controller_dependency_edges${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at, ${this.db.dialect.seq}`,
       params,
     );
     return rows.map(rowToDependencyEdge);
@@ -1390,10 +1384,10 @@ export class SqlFactoryStore implements FactoryStore {
 
   async setDependencyState(id: WorkItemId, depends_on: string, state: DependencyState): Promise<boolean> {
     return this.db.transaction(async (tx) => {
-      const [row] = await tx.all("SELECT state FROM dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, depends_on]);
+      const [row] = await tx.all("SELECT state FROM controller_dependency_edges WHERE work_item_id = ? AND depends_on = ?", [id, depends_on]);
       if (!row) return false;
       if (row.state !== state) {
-        await tx.run("UPDATE dependency_edges SET state = ?, updated_at = ? WHERE work_item_id = ? AND depends_on = ?", [
+        await tx.run("UPDATE controller_dependency_edges SET state = ?, updated_at = ? WHERE work_item_id = ? AND depends_on = ?", [
           state, this.now(), id, depends_on,
         ]);
       }
@@ -1408,7 +1402,7 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       let n = 0;
       for (const path of paths) {
-        const inserted = await this.insertOnce(tx, "INSERT INTO file_conflicts (project_key, path, event_key, at) VALUES (?, ?, ?, ?)", [
+        const inserted = await this.insertOnce(tx, "INSERT INTO controller_file_conflicts (project_key, path, event_key, at) VALUES (?, ?, ?, ?)", [
           input.project, path, input.event_key, this.now(),
         ]);
         if (inserted) n++;
@@ -1418,12 +1412,12 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async conflictCounts(project: string): Promise<Map<string, number>> {
-    const rows = await this.db.all("SELECT path, COUNT(*) AS n FROM file_conflicts WHERE project_key = ? GROUP BY path", [project]);
+    const rows = await this.db.all("SELECT path, COUNT(*) AS n FROM controller_file_conflicts WHERE project_key = ? GROUP BY path", [project]);
     return new Map(rows.map((r) => [r.path as string, Number(r.n)]));
   }
 
   async listClaimDecisions(id: WorkItemId): Promise<ClaimDecision[]> {
-    const rows = await this.db.all(`SELECT * FROM claim_decisions WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
+    const rows = await this.db.all(`SELECT * FROM controller_claim_decisions WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToClaimDecision);
   }
 
@@ -1431,7 +1425,7 @@ export class SqlFactoryStore implements FactoryStore {
     const out = new Map<WorkItemId, ClaimDecision>();
     if (ids.length === 0) return out;
     const rows = await this.db.all(
-      `SELECT * FROM claim_decisions WHERE work_item_id IN (${placeholders(ids.length)}) ORDER BY at, ${this.db.dialect.seq}`,
+      `SELECT * FROM controller_claim_decisions WHERE work_item_id IN (${placeholders(ids.length)}) ORDER BY at, ${this.db.dialect.seq}`,
       [...ids],
     );
     for (const row of rows) {
@@ -1445,7 +1439,7 @@ export class SqlFactoryStore implements FactoryStore {
     const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<ApproveClaimHoldResult> => {
       const [row] = await tx.all(
-        `SELECT d.* FROM claim_decisions d JOIN runs r ON r.id = d.run_id
+        `SELECT d.* FROM controller_claim_decisions d JOIN worker_runs r ON r.id = d.run_id
          WHERE d.run_id = ? AND d.work_item_id = ? AND d.decision = 'held' AND d.approved_by IS NULL AND r.status = 'queued'${forUpdate}`,
         [input.run_id, input.id],
       );
@@ -1460,8 +1454,8 @@ export class SqlFactoryStore implements FactoryStore {
         detail: { run_id: input.run_id, holder: held.holder_ref, cost: held.cost, threshold: held.threshold },
       });
       if (!r.ok) return r;
-      await tx.run("UPDATE claim_decisions SET approved_by = ? WHERE run_id = ?", [input.actor.id, input.run_id]);
-      const [after] = await tx.all("SELECT * FROM claim_decisions WHERE run_id = ?", [input.run_id]);
+      await tx.run("UPDATE controller_claim_decisions SET approved_by = ? WHERE run_id = ?", [input.actor.id, input.run_id]);
+      const [after] = await tx.all("SELECT * FROM controller_claim_decisions WHERE run_id = ?", [input.run_id]);
       return { ok: true, item: r.item, state_change: r.state_change, decision: rowToClaimDecision(after!) };
     });
   }
@@ -1473,11 +1467,11 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       // FOR SHARE, as appendHandoff: the run stays `running` with this token until this commits.
       const [held] = await tx.all(
-        `SELECT work_item_id FROM runs WHERE id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        `SELECT work_item_id FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?${forShare}`,
         [runId, token],
       );
       if (!held) return { ok: false, reason: "lease_lost" };
-      await tx.run("UPDATE work_items SET last_head_sha = ? WHERE id = ?", [head_sha, held.work_item_id as string]);
+      await tx.run("UPDATE controller_work_items SET last_head_sha = ? WHERE id = ?", [head_sha, held.work_item_id as string]);
       return { ok: true };
     });
   }
@@ -1489,7 +1483,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (!current) return { ok: false, reason: "not_found" };
       if (current.last_head_sha !== input.expected_head) return { ok: false, reason: "head_moved", current };
       const moved = await tx.run(
-        `UPDATE work_items SET last_head_sha = ? WHERE id = ? AND ${input.expected_head === null ? "last_head_sha IS NULL" : "last_head_sha = ?"}`,
+        `UPDATE controller_work_items SET last_head_sha = ? WHERE id = ? AND ${input.expected_head === null ? "last_head_sha IS NULL" : "last_head_sha = ?"}`,
         input.expected_head === null ? [input.head_sha, input.id] : [input.head_sha, input.id, input.expected_head],
       );
       if (moved !== 1) return { ok: false, reason: "head_moved", current };
@@ -1505,7 +1499,7 @@ export class SqlFactoryStore implements FactoryStore {
         // Written finished and acknowledged: never queued, so no claim returns it and the controller applies nothing.
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, outcome, acknowledged_at,
+          `INSERT INTO worker_runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, outcome, acknowledged_at,
              started_at, finished_at, created_at, updated_at)
            VALUES (?, ?, 'manual', ?, 'succeeded', 0, 0, ?, ?, ?, ?, ?, ?)`,
           [id, input.id, `${input.id}:manual:${input.expected_head}..${input.head_sha}`, JSON.stringify(outcome), now, now, now, now, now],
@@ -1526,21 +1520,21 @@ export class SqlFactoryStore implements FactoryStore {
       if (pr_number === null) throw new Error(`unreviewed merge change_ref is not a PR number: ${input.change_ref}`);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO controller_unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [newId("um") as UnreviewedMergeId, input.project, pr_number, input.change_ref, input.merge_sha, input.merger_id, this.now()],
       );
-      const [row] = await tx.all("SELECT * FROM unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, pr_number]);
+      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, pr_number]);
       return { merge: rowToUnreviewedMerge(row!), created };
     });
   }
 
   async listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]> {
-    const rows = await this.db.all(`SELECT * FROM unreviewed_merges ORDER BY at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [limit]);
+    const rows = await this.db.all(`SELECT * FROM controller_unreviewed_merges ORDER BY at DESC, ${this.db.dialect.seq} DESC LIMIT ?`, [limit]);
     return rows.map(rowToUnreviewedMerge);
   }
 
   async countUnreviewedMergesSince(since: Timestamp): Promise<number> {
-    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM unreviewed_merges WHERE at >= ?", [since]);
+    const [row] = await this.db.all("SELECT COUNT(*) AS n FROM controller_unreviewed_merges WHERE at >= ?", [since]);
     return Number(row!.n);
   }
 
@@ -1556,37 +1550,37 @@ export class SqlFactoryStore implements FactoryStore {
       // FOR SHARE: status and token are what fence the holder; the row lock keeps the reaper and a
       // completion from moving the run out of 'running' (and a reclaim from bumping the token) until this commits.
       const [holds] = await tx.all(
-        `SELECT 1 AS held FROM runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        `SELECT 1 AS held FROM worker_runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?${forShare}`,
         [input.run_id, input.work_item_id, token],
       );
       if (!holds) return { ok: false, reason: "lease_lost" };
       await this.insertOnce(
         tx,
-        `INSERT INTO handoffs (id, run_id, work_item_id, commit_sha, worked_on, next_steps, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO controller_handoffs (id, run_id, work_item_id, commit_sha, worked_on, next_steps, at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         [newId("ho"), input.run_id, input.work_item_id, input.commit_sha, input.worked_on, input.next_steps, now],
       );
-      const [row] = await tx.all("SELECT * FROM handoffs WHERE run_id = ? AND commit_sha = ?", [input.run_id, input.commit_sha]);
+      const [row] = await tx.all("SELECT * FROM controller_handoffs WHERE run_id = ? AND commit_sha = ?", [input.run_id, input.commit_sha]);
       return { ok: true, handoff: rowToHandoff(row!) };
     });
   }
 
   async listHandoffs(id: WorkItemId): Promise<Handoff[]> {
-    const rows = await this.db.all(`SELECT * FROM handoffs WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
+    const rows = await this.db.all(`SELECT * FROM controller_handoffs WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToHandoff);
   }
 
   // Cursors
 
   async getCursor(name: string): Promise<string | null> {
-    const [row] = await this.db.all("SELECT value FROM cursors WHERE name = ?", [name]);
+    const [row] = await this.db.all("SELECT value FROM inbound_cursors WHERE name = ?", [name]);
     return (row?.value as string | undefined) ?? null;
   }
 
   async advanceCursor(name: string, expected: string | null, next: string): Promise<boolean> {
     return this.db.transaction(async (tx) =>
       expected === null
-        ? this.insertOnce(tx, "INSERT INTO cursors (name, value) VALUES (?, ?)", [name, next])
-        : (await tx.run("UPDATE cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1,
+        ? this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [name, next])
+        : (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1,
     );
   }
 
@@ -1598,7 +1592,7 @@ export class SqlFactoryStore implements FactoryStore {
       // FOR UPDATE on the lease row: a takeover (token + 1) waits for this append to commit, and appends of
       // one source type commit one at a time, so their seqs commit in order and a cursor never skips one.
       const [held] = await tx.all(
-        `SELECT token FROM listener_leases WHERE source_type = ? AND token = ?${forUpdate}`,
+        `SELECT token FROM inbound_listener_leases WHERE source_type = ? AND token = ?${forUpdate}`,
         [input.source_type, input.lease_token],
       );
       if (!held) return { ok: false, reason: "lease_lost" };
@@ -1606,7 +1600,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { ok: true, row: existing, duplicate: true };
       const inserted = await this.insertOnce(
         tx,
-        "INSERT INTO source_inbox (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO inbound_raw_records (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)",
         [input.source_type, input.dedupe_key, JSON.stringify(input.event), this.now()],
       );
       const row = (await this.selectInbox(tx, input.source_type, input.dedupe_key))!;
@@ -1615,18 +1609,10 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]> {
-    const rows = await this.db.all("SELECT * FROM source_inbox WHERE source_type = ? AND seq > ? ORDER BY seq LIMIT ?", [
+    const rows = await this.db.all("SELECT * FROM inbound_raw_records WHERE source_type = ? AND seq > ? ORDER BY seq LIMIT ?", [
       source_type, after_seq, limit,
     ]);
     return rows.map(rowToInbox);
-  }
-
-  async pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number> {
-    return this.db.transaction((tx) =>
-      tx.run("DELETE FROM source_inbox WHERE source_type = ? AND seq <= ? AND received_at < ?", [
-        source_type, through_seq, this.after(-older_than_ms),
-      ]),
-    );
   }
 
   async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
@@ -1634,13 +1620,13 @@ export class SqlFactoryStore implements FactoryStore {
       const expires_at = this.after(lease_ms);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)",
+        "INSERT INTO inbound_listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)",
         [source_type, owner, expires_at],
       );
       if (created) return { ok: true, lease: { source_type, owner, token: 1, expires_at } };
       // Conditional: only an expired (or released) lease can be taken, and taking it bumps the token.
       const taken = await tx.run(
-        "UPDATE listener_leases SET owner = ?, token = token + 1, expires_at = ? WHERE source_type = ? AND expires_at <= ?",
+        "UPDATE inbound_listener_leases SET owner = ?, token = token + 1, expires_at = ? WHERE source_type = ? AND expires_at <= ?",
         [owner, expires_at, source_type, this.now()],
       );
       const lease = await this.selectListenerLease(tx, source_type);
@@ -1650,7 +1636,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async renewListenerLease(source_type: SourceType, token: number, lease_ms: number): Promise<ListenerLeaseResult> {
     return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
-      const renewed = await tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [
+      const renewed = await tx.run("UPDATE inbound_listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [
         this.after(lease_ms), source_type, token,
       ]);
       const lease = await this.selectListenerLease(tx, source_type);
@@ -1660,7 +1646,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async releaseListenerLease(source_type: SourceType, token: number): Promise<void> {
     await this.db.transaction((tx) =>
-      tx.run("UPDATE listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [this.now(), source_type, token]),
+      tx.run("UPDATE inbound_listener_leases SET expires_at = ? WHERE source_type = ? AND token = ?", [this.now(), source_type, token]),
     );
   }
 
@@ -1669,14 +1655,14 @@ export class SqlFactoryStore implements FactoryStore {
   async acquireSyncLease(name: string, owner: string, lease_ms: number): Promise<SyncLeaseResult> {
     return this.db.transaction(async (tx): Promise<SyncLeaseResult> => {
       const expires_at = this.after(lease_ms);
-      const created = await this.insertOnce(tx, "INSERT INTO sync_leases (name, owner, token, expires_at) VALUES (?, ?, 1, ?)", [
+      const created = await this.insertOnce(tx, "INSERT INTO inbound_sync_leases (name, owner, token, expires_at) VALUES (?, ?, 1, ?)", [
         name, owner, expires_at,
       ]);
       if (created) return { ok: true, lease: { name, owner, token: 1, expires_at } };
       // Conditional: the holder itself extends its lease with the same token; anyone else takes only an expired (or
       // released) lease, and taking it bumps the token.
       const taken = await tx.run(
-        `UPDATE sync_leases SET token = CASE WHEN owner = ? THEN token ELSE token + 1 END, owner = ?, expires_at = ?
+        `UPDATE inbound_sync_leases SET token = CASE WHEN owner = ? THEN token ELSE token + 1 END, owner = ?, expires_at = ?
          WHERE name = ? AND (owner = ? OR expires_at <= ?)`,
         [owner, owner, expires_at, name, owner, this.now()],
       );
@@ -1687,33 +1673,24 @@ export class SqlFactoryStore implements FactoryStore {
 
   async renewSyncLease(name: string, token: number, lease_ms: number): Promise<SyncLeaseResult> {
     return this.db.transaction(async (tx): Promise<SyncLeaseResult> => {
-      const renewed = await tx.run("UPDATE sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.after(lease_ms), name, token]);
+      const renewed = await tx.run("UPDATE inbound_sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.after(lease_ms), name, token]);
       const lease = await this.selectSyncLease(tx, name);
       return renewed === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "lease_lost", holder: lease };
     });
   }
 
   async releaseSyncLease(name: string, token: number): Promise<void> {
-    await this.db.transaction((tx) => tx.run("UPDATE sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.now(), name, token]));
+    await this.db.transaction((tx) => tx.run("UPDATE inbound_sync_leases SET expires_at = ? WHERE name = ? AND token = ?", [this.now(), name, token]));
   }
 
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
   }
 
-  async advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      if (!(await this.fenceHeld(tx, fence))) return false;
-      return expected === null
-        ? this.insertOnce(tx, "INSERT INTO cursors (name, value) VALUES (?, ?)", [cursor, next])
-        : (await tx.run("UPDATE cursors SET value = ? WHERE name = ? AND value = ?", [next, cursor, expected])) === 1;
-    });
-  }
-
   // Forge budget (design 05-sources, call budget)
 
   async getForgeBudget(project: string, plugin: string): Promise<ForgeBudget | null> {
-    const [row] = await this.db.all("SELECT * FROM forge_budget WHERE project_key = ? AND plugin = ?", [project, plugin]);
+    const [row] = await this.db.all("SELECT * FROM outbound_forge_budget WHERE project_key = ? AND plugin = ?", [project, plugin]);
     return row ? rowToForgeBudget(row) : null;
   }
 
@@ -1722,13 +1699,13 @@ export class SqlFactoryStore implements FactoryStore {
       const values = [b.remaining, b.limit, b.reset_at, b.updated_at];
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO forge_budget (project_key, plugin, remaining, `limit`, reset_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO outbound_forge_budget (project_key, plugin, remaining, `limit`, reset_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
         [b.project, b.plugin, ...values],
       );
       if (created) return true;
       // Conditional: only a newer reading replaces the row, so replicas writing out of order keep the latest.
       const n = await tx.run(
-        "UPDATE forge_budget SET remaining = ?, `limit` = ?, reset_at = ?, updated_at = ? WHERE project_key = ? AND plugin = ? AND updated_at < ?",
+        "UPDATE outbound_forge_budget SET remaining = ?, `limit` = ?, reset_at = ?, updated_at = ? WHERE project_key = ? AND plugin = ? AND updated_at < ?",
         [...values, b.project, b.plugin, b.updated_at],
       );
       return n === 1;
@@ -1738,13 +1715,13 @@ export class SqlFactoryStore implements FactoryStore {
   // Identity links (design 2026-11-01)
 
   async resolveLink(provider: LinkedAccount["provider"], subject: string): Promise<UserId | null> {
-    const [row] = await this.db.all("SELECT user_id FROM user_links WHERE provider = ? AND subject = ?", [provider, subject]);
+    const [row] = await this.db.all("SELECT user_id FROM identity_user_links WHERE provider = ? AND subject = ?", [provider, subject]);
     return row ? (String(row.user_id) as UserId) : null;
   }
 
   async listLinks(user_id: UserId): Promise<LinkedAccount[]> {
     const rows = await this.db.all(
-      `SELECT provider, subject FROM user_links WHERE user_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
+      `SELECT provider, subject FROM identity_user_links WHERE user_id = ? ORDER BY created_at, ${this.db.dialect.seq}`,
       [user_id],
     );
     return rows.map((r) => ({ provider: String(r.provider) as LinkedAccount["provider"], subject: String(r.subject) }));
@@ -1753,7 +1730,7 @@ export class SqlFactoryStore implements FactoryStore {
   async createLinkCode(user_id: UserId, code: string): Promise<{ expires_at: Timestamp }> {
     const expires_at = this.after(LINK_CODE_TTL_MS);
     await this.db.transaction((tx) =>
-      tx.run("INSERT INTO link_codes (code_hash, user_id, expires_at, failures, created_at) VALUES (?, ?, ?, 0, ?)", [
+      tx.run("INSERT INTO identity_link_codes (code_hash, user_id, expires_at, failures, created_at) VALUES (?, ?, ?, 0, ?)", [
         hashCode(code), user_id, expires_at, this.now(),
       ]),
     );
@@ -1763,7 +1740,7 @@ export class SqlFactoryStore implements FactoryStore {
   async redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult> {
     const now = this.now();
     return this.db.transaction(async (tx): Promise<RedeemLinkResult> => {
-      const [row] = await tx.all(`SELECT * FROM link_codes WHERE code_hash = ?${this.db.dialect.forUpdate}`, [hashCode(code)]);
+      const [row] = await tx.all(`SELECT * FROM identity_link_codes WHERE code_hash = ?${this.db.dialect.forUpdate}`, [hashCode(code)]);
       const user_id = row ? (String(row.user_id) as UserId) : null;
       if (row && row.used_at !== null && row.used_provider === account.provider && row.used_subject === account.subject) {
         return { ok: true, user_id: user_id! };
@@ -1772,17 +1749,17 @@ export class SqlFactoryStore implements FactoryStore {
         : Number(row.failures) >= LINK_CODE_MAX_FAILURES ? "locked" : null;
       if (reason !== null) {
         // A failed attempt counts against every live code, so guessing cannot outlast the lock.
-        await tx.run("UPDATE link_codes SET failures = failures + 1 WHERE used_at IS NULL AND expires_at > ?", [now]);
+        await tx.run("UPDATE identity_link_codes SET failures = failures + 1 WHERE used_at IS NULL AND expires_at > ?", [now]);
         return { ok: false, reason };
       }
-      const [linked] = await tx.all("SELECT user_id FROM user_links WHERE provider = ? AND subject = ?", [account.provider, account.subject]);
+      const [linked] = await tx.all("SELECT user_id FROM identity_user_links WHERE provider = ? AND subject = ?", [account.provider, account.subject]);
       if (linked && linked.user_id !== user_id) return { ok: false, reason: "already_linked" };
       if (!linked) {
-        await tx.run("INSERT INTO user_links (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)", [
+        await tx.run("INSERT INTO identity_user_links (provider, subject, user_id, created_at) VALUES (?, ?, ?, ?)", [
           account.provider, account.subject, user_id, now,
         ]);
       }
-      await tx.run("UPDATE link_codes SET used_at = ?, used_provider = ?, used_subject = ? WHERE code_hash = ?", [
+      await tx.run("UPDATE identity_link_codes SET used_at = ?, used_provider = ?, used_subject = ? WHERE code_hash = ?", [
         now, account.provider, account.subject, row!.code_hash as string,
       ]);
       return { ok: true, user_id: user_id! };
@@ -1792,30 +1769,30 @@ export class SqlFactoryStore implements FactoryStore {
   // Local users (issue #318)
 
   async getLocalUser(user_id: UserId): Promise<LocalUser | null> {
-    const [row] = await this.db.all("SELECT * FROM local_users WHERE user_id = ?", [user_id]);
+    const [row] = await this.db.all("SELECT * FROM identity_local_users WHERE user_id = ?", [user_id]);
     return row ? rowToLocalUser(row) : null;
   }
 
   async listLocalUsers(): Promise<LocalUser[]> {
-    const rows = await this.db.all("SELECT * FROM local_users ORDER BY CASE WHEN owner_slot = 1 THEN 0 ELSE 1 END, created_at, user_id");
+    const rows = await this.db.all("SELECT * FROM identity_local_users ORDER BY CASE WHEN owner_slot = 1 THEN 0 ELSE 1 END, created_at, user_id");
     return rows.map(rowToLocalUser);
   }
 
   async claimLocalOwner(user_id: UserId): Promise<LocalUser> {
     const owner = async () => {
-      const [row] = await this.db.all("SELECT * FROM local_users WHERE owner_slot = 1");
+      const [row] = await this.db.all("SELECT * FROM identity_local_users WHERE owner_slot = 1");
       return row ? rowToLocalUser(row) : null;
     };
     const now = this.now();
     try {
       return await this.db.transaction(async (tx): Promise<LocalUser> => {
-        const [held] = await tx.all(`SELECT * FROM local_users WHERE owner_slot = 1${this.db.dialect.forUpdate}`);
+        const [held] = await tx.all(`SELECT * FROM identity_local_users WHERE owner_slot = 1${this.db.dialect.forUpdate}`);
         if (held) return rowToLocalUser(held);
-        const updated = await tx.run("UPDATE local_users SET role = 'owner', owner_slot = 1, added_by = ? WHERE user_id = ?", [user_id, user_id]);
+        const updated = await tx.run("UPDATE identity_local_users SET role = 'owner', owner_slot = 1, added_by = ? WHERE user_id = ?", [user_id, user_id]);
         if (updated === 0) {
-          await tx.run("INSERT INTO local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, 'owner', 1, ?, ?)", [user_id, user_id, now]);
+          await tx.run("INSERT INTO identity_local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, 'owner', 1, ?, ?)", [user_id, user_id, now]);
         }
-        const [row] = await tx.all("SELECT * FROM local_users WHERE user_id = ?", [user_id]);
+        const [row] = await tx.all("SELECT * FROM identity_local_users WHERE user_id = ?", [user_id]);
         return rowToLocalUser(row!);
       });
     } catch (err) {
@@ -1831,23 +1808,23 @@ export class SqlFactoryStore implements FactoryStore {
   ): Promise<{ ok: true; created: boolean } | { ok: false; reason: "owner" }> {
     const now = this.now();
     return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(`SELECT role FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
+      const [row] = await tx.all(`SELECT role FROM identity_local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
       if (row && row.role === "owner") return { ok: false as const, reason: "owner" as const };
       if (row) {
-        await tx.run("UPDATE local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
+        await tx.run("UPDATE identity_local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
         return { ok: true as const, created: false };
       }
-      await tx.run("INSERT INTO local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
+      await tx.run("INSERT INTO identity_local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
       return { ok: true as const, created: true };
     });
   }
 
   async removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner"> {
     return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(`SELECT role FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
+      const [row] = await tx.all(`SELECT role FROM identity_local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
       if (!row) return "missing" as const;
       if (row.role === "owner") return "owner" as const;
-      await tx.run("DELETE FROM local_users WHERE user_id = ?", [user_id]);
+      await tx.run("DELETE FROM identity_local_users WHERE user_id = ?", [user_id]);
       return "removed" as const;
     });
   }
@@ -1855,7 +1832,7 @@ export class SqlFactoryStore implements FactoryStore {
   // Runtime settings overrides (design 2026-11-03)
 
   async listSettingOverrides(): Promise<SettingOverride[]> {
-    const rows = await this.db.all("SELECT * FROM settings_overrides ORDER BY setting_key, project_key");
+    const rows = await this.db.all("SELECT * FROM runtime_settings_overrides ORDER BY setting_key, project_key");
     return rows.map(rowToOverride);
   }
 
@@ -1864,11 +1841,11 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const old = await this.selectOverride(tx, input.key, input.project);
       if (old) {
-        await tx.run("UPDATE settings_overrides SET value_json = ?, set_by = ?, set_at = ? WHERE setting_key = ? AND project_key = ?", [
+        await tx.run("UPDATE runtime_settings_overrides SET value_json = ?, set_by = ?, set_at = ? WHERE setting_key = ? AND project_key = ?", [
           input.value, input.actor, at, input.key, input.project,
         ]);
       } else {
-        await tx.run("INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)", [
+        await tx.run("INSERT INTO runtime_settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)", [
           input.key, input.project, input.value, input.actor, at,
         ]);
       }
@@ -1881,29 +1858,29 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const old = await this.selectOverride(tx, input.key, input.project);
       if (!old) return null;
-      const n = await tx.run("DELETE FROM settings_overrides WHERE setting_key = ? AND project_key = ?", [input.key, input.project]);
+      const n = await tx.run("DELETE FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?", [input.key, input.project]);
       if (n === 0) return null;
       return this.insertSettingChange(tx, input.key, input.project, old.value, null, input.actor, at);
     });
   }
 
   async listSettingChanges(limit: number): Promise<SettingChange[]> {
-    const rows = await this.db.all(`SELECT * FROM settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
+    const rows = await this.db.all(`SELECT * FROM runtime_settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
     return rows.map(rowToSettingChange);
   }
 
   private async selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
-    const [row] = await tx.all(`SELECT * FROM settings_overrides WHERE setting_key = ? AND project_key = ?${this.db.dialect.forUpdate}`, [key, project]);
+    const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?${this.db.dialect.forUpdate}`, [key, project]);
     return row ? rowToOverride(row) : null;
   }
 
   private async insertSettingChange(
     tx: SqlExecutor, key: string, project: string, old_value: string | null, new_value: string | null, actor: string, at: Timestamp,
   ): Promise<SettingChange> {
-    await tx.run("INSERT INTO settings_changes (setting_key, project_key, old_value, new_value, actor, at) VALUES (?, ?, ?, ?, ?, ?)", [
+    await tx.run("INSERT INTO runtime_settings_changes (setting_key, project_key, old_value, new_value, actor, at) VALUES (?, ?, ?, ?, ?, ?)", [
       key, project, old_value, new_value, actor, at,
     ]);
-    const [row] = await tx.all("SELECT * FROM settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
+    const [row] = await tx.all("SELECT * FROM runtime_settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
     return rowToSettingChange(row!);
   }
 
@@ -1914,14 +1891,14 @@ export class SqlFactoryStore implements FactoryStore {
     const values: SqlValue[] = [c.mergeable ? 1 : 0, JSON.stringify(c.conflicts), c.head_sha, c.base_sha, checked_at];
     const update = () =>
       this.db.run(
-        "UPDATE merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?",
+        "UPDATE controller_merge_checks SET mergeable = ?, conflicts = ?, head_sha = ?, base_sha = ?, checked_at = ? WHERE work_item_id = ?",
         [...values, c.work_item_id],
       );
     // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
     if ((await update()) === 0) {
       try {
         await this.db.run(
-          "INSERT INTO merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)",
           [...values, c.work_item_id],
         );
       } catch (err) {
@@ -1933,13 +1910,13 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async getMergeCheck(work_item_id: WorkItemId): Promise<MergeCheck | null> {
-    const [row] = await this.db.all("SELECT * FROM merge_checks WHERE work_item_id = ?", [work_item_id]);
+    const [row] = await this.db.all("SELECT * FROM controller_merge_checks WHERE work_item_id = ?", [work_item_id]);
     return row ? rowToMergeCheck(row) : null;
   }
 
   async listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]> {
     if (work_item_ids.length === 0) return [];
-    const rows = await this.db.all(`SELECT * FROM merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
+    const rows = await this.db.all(`SELECT * FROM controller_merge_checks WHERE work_item_id IN (${placeholders(work_item_ids.length)})`, [...work_item_ids]);
     return rows.map(rowToMergeCheck);
   }
 
@@ -1948,7 +1925,7 @@ export class SqlFactoryStore implements FactoryStore {
   async getPostedComment(
     source_id: string, marker: string, body: string,
   ): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null> {
-    const [row] = await this.db.all("SELECT * FROM posted_comments WHERE source_id = ? AND marker = ?", [source_id, marker]);
+    const [row] = await this.db.all("SELECT * FROM outbound_deliveries WHERE source_id = ? AND marker = ?", [source_id, marker]);
     if (!row) return null;
     const c = rowToPostedComment(row);
     return { ...c, same_body: c.body_hash === bodyHash(body), waiting: c.next_attempt_at !== null && c.next_attempt_at > this.now() };
@@ -1960,14 +1937,14 @@ export class SqlFactoryStore implements FactoryStore {
     // A row of failed posts only gets the comment; a row that has one keeps it.
     const update = () =>
       this.db.run(
-        `UPDATE posted_comments SET comment_id = ?, url = ?, body_hash = ?, attempts = 0, next_attempt_at = NULL, updated_at = ?
+        `UPDATE outbound_deliveries SET comment_id = ?, url = ?, body_hash = ?, attempts = 0, next_attempt_at = NULL, updated_at = ?
          WHERE source_id = ? AND marker = ? AND comment_id IS NULL`,
         [...values, c.source_id, c.marker],
       );
     if ((await update()) > 0) return;
     try {
       await this.db.run(
-        `INSERT INTO posted_comments (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
+        `INSERT INTO outbound_deliveries (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
          VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
         [...values, now, c.source_id, c.marker],
       );
@@ -1983,14 +1960,14 @@ export class SqlFactoryStore implements FactoryStore {
     if (attempts === 1) {
       const inserted = await this.insertOnce(
         this.db,
-        `INSERT INTO posted_comments (source_id, marker, comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at)
+        `INSERT INTO outbound_deliveries (source_id, marker, comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at)
          VALUES (?, ?, NULL, NULL, NULL, 1, ?, ?, ?)`,
         [source_id, marker, next_attempt_at, now, now],
       );
       if (inserted) return true;
     }
     const changed = await this.db.run(
-      "UPDATE posted_comments SET attempts = ?, next_attempt_at = ?, updated_at = ? WHERE source_id = ? AND marker = ? AND attempts = ?",
+      "UPDATE outbound_deliveries SET attempts = ?, next_attempt_at = ?, updated_at = ? WHERE source_id = ? AND marker = ? AND attempts = ?",
       [attempts, next_attempt_at, now, source_id, marker, attempts - 1],
     );
     return changed > 0;
@@ -2002,12 +1979,12 @@ export class SqlFactoryStore implements FactoryStore {
     const until = this.after(ttl_ms);
     return this.db.transaction(async (tx) => {
       const [row] = await tx.all(
-        `SELECT * FROM label_states WHERE source_id = ? AND target = ?${this.db.dialect.forUpdate}`, [source_id, target],
+        `SELECT * FROM outbound_label_states WHERE source_id = ? AND target = ?${this.db.dialect.forUpdate}`, [source_id, target],
       );
       if (!row) {
         const inserted = await this.insertOnce(
           tx,
-          `INSERT INTO label_states (source_id, target, status, claim_token, claim_status, claim_until, updated_at)
+          `INSERT INTO outbound_label_states (source_id, target, status, claim_token, claim_status, claim_until, updated_at)
            VALUES (?, ?, NULL, ?, ?, ?, ?)`,
           [source_id, target, token, status, until, now],
         );
@@ -2019,7 +1996,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (held) return null;
       // Conditional on the claim read, so of two replicas taking over the same row only one wins.
       const changed = await tx.run(
-        `UPDATE label_states SET claim_token = ?, claim_status = ?, claim_until = ?, updated_at = ?
+        `UPDATE outbound_label_states SET claim_token = ?, claim_status = ?, claim_until = ?, updated_at = ?
          WHERE source_id = ? AND target = ? AND ${row.claim_token === null ? "claim_token IS NULL" : "claim_token = ?"}`,
         [token, status, until, now, source_id, target, ...(row.claim_token === null ? [] : [row.claim_token as string])],
       );
@@ -2029,7 +2006,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async recordLabelState(source_id: string, target: LabelTarget, status: string, token: string): Promise<void> {
     await this.db.run(
-      `UPDATE label_states SET status = ?, claim_token = NULL, claim_status = NULL, claim_until = NULL, updated_at = ?
+      `UPDATE outbound_label_states SET status = ?, claim_token = NULL, claim_status = NULL, claim_until = NULL, updated_at = ?
        WHERE source_id = ? AND target = ? AND claim_token = ?`,
       [status, this.now(), source_id, target, token],
     );
@@ -2037,7 +2014,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async releaseLabelClaim(source_id: string, target: LabelTarget, token: string): Promise<void> {
     await this.db.run(
-      "UPDATE label_states SET claim_token = NULL, claim_status = NULL, claim_until = NULL WHERE source_id = ? AND target = ? AND claim_token = ?",
+      "UPDATE outbound_label_states SET claim_token = NULL, claim_status = NULL, claim_until = NULL WHERE source_id = ? AND target = ? AND claim_token = ?",
       [source_id, target, token],
     );
   }
@@ -2047,7 +2024,7 @@ export class SqlFactoryStore implements FactoryStore {
     // In chunks, so a long list stays under every backend's parameter limit.
     for (let i = 0; i < source_ids.length; i += 500) {
       const chunk = source_ids.slice(i, i + 500);
-      const rows = await this.db.all(`SELECT * FROM label_states WHERE source_id IN (${placeholders(chunk.length)})`, [...chunk]);
+      const rows = await this.db.all(`SELECT * FROM outbound_label_states WHERE source_id IN (${placeholders(chunk.length)})`, [...chunk]);
       out.push(...rows.map(rowToLabelState));
     }
     return out;
@@ -2097,7 +2074,7 @@ export class SqlFactoryStore implements FactoryStore {
     if (existing) return { created: false, sleep: existing };
     const created = await this.insertOnce(
       this.db,
-      "INSERT INTO host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)",
+      "INSERT INTO worker_host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)",
       [sleep.worker_id, sleep.woke_at, Math.round(sleep.gap_ms), sleep.run_id],
     );
     // A concurrent first write that lost the insert reports the row the other one stored.
@@ -2108,9 +2085,9 @@ export class SqlFactoryStore implements FactoryStore {
     const limit = Math.max(0, Math.floor(opts.limit));
     // limit is an integer computed here, inlined as the other paged reads do.
     const rows = opts.work_item_id === undefined
-      ? await this.db.all(`SELECT * FROM host_sleeps ORDER BY woke_at DESC, worker_id DESC LIMIT ${limit}`)
+      ? await this.db.all(`SELECT * FROM worker_host_sleeps ORDER BY woke_at DESC, worker_id DESC LIMIT ${limit}`)
       : await this.db.all(
-          `SELECT h.* FROM host_sleeps h JOIN runs r ON r.id = h.run_id WHERE r.work_item_id = ?
+          `SELECT h.* FROM worker_host_sleeps h JOIN worker_runs r ON r.id = h.run_id WHERE r.work_item_id = ?
            ORDER BY h.woke_at DESC, h.worker_id DESC LIMIT ${limit}`,
           [opts.work_item_id],
         );
@@ -2118,7 +2095,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectHostSleep(worker_id: WorkerId, woke_at: Timestamp): Promise<HostSleep | null> {
-    const [row] = await this.db.all("SELECT * FROM host_sleeps WHERE worker_id = ? AND woke_at = ?", [worker_id, woke_at]);
+    const [row] = await this.db.all("SELECT * FROM worker_host_sleeps WHERE worker_id = ? AND woke_at = ?", [worker_id, woke_at]);
     return row ? rowToHostSleep(row) : null;
   }
 
@@ -2129,14 +2106,14 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       // Conditional: only the first write of a pattern, or the one that finds its last alert dedupe_ms old, wins.
       const due =
-        (await this.insertOnce(tx, "INSERT INTO alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
-        (await tx.run("UPDATE alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND last_alert_at <= ?", [
+        (await this.insertOnce(tx, "INSERT INTO controller_alert_patterns (pattern_key, last_alert_at) VALUES (?, ?)", [input.pattern_key, now])) ||
+        (await tx.run("UPDATE controller_alert_patterns SET last_alert_at = ? WHERE pattern_key = ? AND last_alert_at <= ?", [
           now, input.pattern_key, this.after(-dedupe_ms),
         ])) === 1;
       if (!due) return { created: false as const };
       const alert: Alert = { ...input, id: newId("al"), created_at: now };
       await tx.run(
-        "INSERT INTO alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO controller_alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [alert.id, alert.pattern, alert.pattern_key, alert.error_code, alert.count, alert.detail, alert.created_at],
       );
       return { created: true as const, alert };
@@ -2146,7 +2123,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listAlerts(opts: { limit: number }): Promise<Alert[]> {
     const limit = Math.max(0, Math.floor(opts.limit));
     // limit is an integer computed here, inlined as the other paged reads do.
-    const rows = await this.db.all(`SELECT * FROM alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
+    const rows = await this.db.all(`SELECT * FROM controller_alerts ORDER BY created_at DESC, id DESC LIMIT ${limit}`);
     return rows.map(rowToAlert);
   }
 
@@ -2155,18 +2132,22 @@ export class SqlFactoryStore implements FactoryStore {
 
   async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
     const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
-    const created = await this.insertOnce(this.db, "INSERT INTO child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
+    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
       key, restart.at, restart.reason, this.now(),
     ]);
     return { created };
   }
 
   async listChildRestartsWithin(window_ms: number): Promise<ChildRestart[]> {
-    const rows = await this.db.all("SELECT at, reason FROM child_restarts WHERE at >= ? ORDER BY at, restart_key", [this.after(-window_ms)]);
+    const rows = await this.db.all("SELECT at, reason FROM runtime_child_restarts WHERE at >= ? ORDER BY at, restart_key", [this.after(-window_ms)]);
     return rows.map((r) => ({ at: r.at as string, reason: r.reason as string }));
   }
 
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
+
+  async recordRunIntent(intent: RunIntent): Promise<void> {
+    await recordAction(this.db, intent, this.clock.now().toISOString());
+  }
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
     return this.db.transaction(async (tx) => {
@@ -2175,14 +2156,14 @@ export class SqlFactoryStore implements FactoryStore {
       const now = this.now();
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO controller_item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)",
         [input.work_item_id, input.marker, input.body, now, input.actor ?? null],
       );
       const message = (await this.selectItemMessage(tx, input.work_item_id, input.marker))!;
       const d = input.delivery;
       if (created && d) {
         await tx.run(
-          `INSERT INTO thread_outbox (thread_seq, work_item_id, source_type, target, link_field, attempts, next_attempt_at, claim_token,
+          `INSERT INTO outbound_intents (thread_seq, work_item_id, source_type, target, link_field, attempts, next_attempt_at, claim_token,
              created_at) VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?)`,
           [message.seq, input.work_item_id, d.source_type, JSON.stringify(d.target), d.link_field ?? null, now, now],
         );
@@ -2214,65 +2195,54 @@ export class SqlFactoryStore implements FactoryStore {
     return this.claimQueued(QUEUES.outbox, seq, lease_ms, fence);
   }
 
+  async getDelivery(seq: number): Promise<ThreadDelivery | null> {
+    const [row] = await this.db.all(`${DELIVERY_SELECT} WHERE o.seq = ?`, [seq]);
+    return row ? rowToDelivery(row) : null;
+  }
+
   async finishDelivery(seq: number, token: number, url: string | null): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      const now = this.now();
-      const n = await tx.run(
-        `UPDATE thread_outbox SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
-         WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
-        [now, url, seq, token],
-      );
-      if (n === 0) return false;
-      const [row] = await tx.all("SELECT work_item_id, link_field FROM thread_outbox WHERE seq = ?", [seq]);
-      const field = row!.link_field as string | null;
-      if (url !== null && (field === "spec_comment_url" || field === "failure_comment_url")) {
-        // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
-        await tx.run(
-          `UPDATE work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
-             SELECT 1 FROM thread_outbox n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
-          [url, row!.work_item_id as string, row!.work_item_id as string, field, seq],
-        );
-      }
-      return true;
-    });
+    const n = await this.db.run(
+      `UPDATE outbound_intents SET delivered_at = ?, url = ?, claimed_until = NULL, last_error = NULL
+       WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
+      [this.now(), url, seq, token],
+    );
+    return n > 0;
+  }
+
+  async linkDelivery(seq: number): Promise<void> {
+    const [row] = await this.db.all("SELECT work_item_id, link_field, url FROM outbound_intents WHERE seq = ? AND delivered_at IS NOT NULL", [seq]);
+    const field = row?.link_field as string | null | undefined;
+    const url = row?.url as string | null | undefined;
+    if (!row || !url || (field !== "spec_comment_url" && field !== "failure_comment_url")) return;
+    // Only the item's newest entry for this field fills it: an older one delivered late never hides a newer.
+    await this.db.run(
+      `UPDATE controller_work_items SET ${field} = ? WHERE id = ? AND NOT EXISTS (
+         SELECT 1 FROM outbound_intents n WHERE n.work_item_id = ? AND n.link_field = ? AND n.seq > ?)`,
+      [url, row.work_item_id as string, row.work_item_id as string, field, seq],
+    );
   }
 
   async failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items): the outbox's claim rules on its own table.
-
-  async listPendingBasePushes(limit: number): Promise<BasePush[]> {
-    const now = this.now();
-    const rows = await this.db.all(
-      `SELECT * FROM base_pushes WHERE finished_at IS NULL AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until <= ?)
-       ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-      [now, now],
-    );
-    return rows.map(rowToBasePush);
-  }
+  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
 
   async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all("SELECT * FROM base_pushes WHERE work_item_id = ?", [work_item_id]);
-    return row ? rowToBasePush(row) : null;
-  }
-
-  async claimBasePush(seq: number, lease_ms: number): Promise<number | null> {
-    return this.claimQueued(QUEUES.base_push, seq, lease_ms);
-  }
-
-  async finishBasePush(seq: number, token: number, result: { outcome: BasePushOutcome; pushed_sha: string | null; error?: string }): Promise<boolean> {
-    const n = await this.db.run(
-      `UPDATE base_pushes SET finished_at = ?, outcome = ?, pushed_sha = ?, last_error = ?, claimed_until = NULL
-       WHERE seq = ? AND claim_token = ? AND finished_at IS NULL AND claimed_until IS NOT NULL`,
-      [this.now(), result.outcome, result.pushed_sha, result.error?.slice(0, 1000) ?? null, seq, token],
+    const [row] = await this.db.all(
+      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
     );
-    return n > 0;
-  }
-
-  async failBasePush(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
-    return this.failQueued(QUEUES.base_push, seq, token, error, retry_in_ms);
+    if (!row) return null;
+    const [batch] = await this.db.all(
+      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
+    );
+    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
+    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
+    return {
+      base_ref: args.base_ref, merge_sha: args.merge_sha,
+      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
+      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
+    };
   }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
@@ -2304,7 +2274,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]> {
-    const rows = await this.db.all("SELECT * FROM item_thread WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
+    const rows = await this.db.all("SELECT * FROM controller_item_thread WHERE work_item_id = ? ORDER BY seq", [work_item_id]);
     return rows.map(rowToItemMessage);
   }
 
@@ -2312,17 +2282,18 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectCliCommand(tx, input.key);
       if (existing) return { created: false, command: existing };
+      await this.lockCommandSequence(tx);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO command_inbox (command_key, actor, command, args, created_at, mirror) VALUES (?, ?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0, input.passport_id ?? null],
       );
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
     });
   }
 
   async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(`SELECT * FROM command_inbox WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
+    const rows = await this.db.all(`SELECT * FROM inbound_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
       after_seq,
     ]);
     return rows.map(rowToCliCommand);
@@ -2330,13 +2301,13 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listUnmirroredCliCommands(limit: number): Promise<CliCommand[]> {
     const rows = await this.db.all(
-      `SELECT * FROM command_inbox WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+      `SELECT * FROM inbound_commands WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
     );
     return rows.map(rowToCliCommand);
   }
 
   async markCliCommandMirrored(key: string): Promise<boolean> {
-    const n = await this.db.run("UPDATE command_inbox SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [
+    const n = await this.db.run("UPDATE inbound_commands SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [
       this.now(),
       key,
     ]);
@@ -2349,36 +2320,29 @@ export class SqlFactoryStore implements FactoryStore {
     return this.db.transaction(async (tx) => {
       const existing = await this.selectAppCommandRequest(tx, input.key);
       if (existing) return { created: false, request: existing };
-      const now = this.now();
+      await this.lockCommandSequence(tx);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO app_command_requests (request_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-        [input.key, input.actor, input.command, JSON.stringify(input.args), now],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)",
+        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.passport_id ?? null],
       );
-      const request = (await this.selectAppCommandRequest(tx, input.key))!;
-      // The controller reads every command from the inbox (issue #282): the request goes there too, by its seq.
-      if (created) {
-        await this.insertOnce(
-          tx,
-          "INSERT INTO command_inbox (command_key, actor, command, args, created_at) VALUES (?, ?, ?, ?, ?)",
-          [`app:${request.seq}`, input.actor, input.command, JSON.stringify({ app_request: request.seq }), now],
-        );
-      }
-      return { created, request };
+      return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
     });
   }
 
   async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
-    const n = await this.db.run("UPDATE app_command_requests SET handled_at = ?, refusal = ? WHERE seq = ? AND handled_at IS NULL", [
+    const n = await this.db.run(`UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE ${APP_REQUEST_SEQ} AND handled_at IS NULL`, [
       this.now(),
       refusal,
+      seq,
       seq,
     ]);
     return n > 0;
   }
 
-  async getAppCommandRequest(seq: number): Promise<AppCommandRequest | null> {
-    const [row] = await this.db.all("SELECT * FROM app_command_requests WHERE seq = ?", [seq]);
+  async getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null> {
+    if (typeof ref === "string") return this.selectAppCommandRequest(this.db, ref);
+    const [row] = await this.db.all(`SELECT * FROM inbound_commands WHERE ${APP_REQUEST_SEQ}`, [ref, ref]);
     return row ? rowToAppCommandRequest(row) : null;
   }
 
@@ -2387,7 +2351,7 @@ export class SqlFactoryStore implements FactoryStore {
     // (its wildcards escaped with `!`), and the exact check below drops any row whose id only looked alike.
     const needle = `${JSON.stringify("work_item_id")}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`);
     const rows = await this.db.all(
-      `SELECT * FROM app_command_requests WHERE args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
+      `SELECT * FROM inbound_commands WHERE origin = 'app' AND args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
       [`%${needle}%`],
     );
     return rows.map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id).reverse();
@@ -2470,29 +2434,29 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectItemMessage(q: SqlExecutor, work_item_id: WorkItemId, marker: string): Promise<ItemMessage | null> {
-    const [row] = await q.all("SELECT * FROM item_thread WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
+    const [row] = await q.all("SELECT * FROM controller_item_thread WHERE work_item_id = ? AND marker = ?", [work_item_id, marker]);
     return row ? rowToItemMessage(row) : null;
   }
 
   private async selectAppCommandRequest(q: SqlExecutor, key: string): Promise<AppCommandRequest | null> {
-    const [row] = await q.all("SELECT * FROM app_command_requests WHERE request_key = ?", [key]);
+    const [row] = await q.all("SELECT * FROM inbound_commands WHERE command_key = ? AND origin = 'app'", [key]);
     return row ? rowToAppCommandRequest(row) : null;
   }
 
   private async selectCliCommand(q: SqlExecutor, key: string): Promise<CliCommand | null> {
-    const [row] = await q.all("SELECT * FROM command_inbox WHERE command_key = ?", [key]);
+    const [row] = await q.all("SELECT * FROM inbound_commands WHERE command_key = ?", [key]);
     return row ? rowToCliCommand(row) : null;
   }
 
   // Internals
 
   private async selectInbox(q: SqlExecutor, source_type: SourceType, dedupe_key: string): Promise<InboxRow | null> {
-    const [row] = await q.all("SELECT * FROM source_inbox WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
+    const [row] = await q.all("SELECT * FROM inbound_raw_records WHERE source_type = ? AND dedupe_key = ?", [source_type, dedupe_key]);
     return row ? rowToInbox(row) : null;
   }
 
   private async selectSyncLease(q: SqlExecutor, name: string): Promise<SyncLease | null> {
-    const [row] = await q.all("SELECT * FROM sync_leases WHERE name = ?", [name]);
+    const [row] = await q.all("SELECT * FROM inbound_sync_leases WHERE name = ?", [name]);
     return row ? { name: row.name as string, owner: row.owner as string, token: Number(row.token), expires_at: row.expires_at as Timestamp } : null;
   }
 
@@ -2501,12 +2465,12 @@ export class SqlFactoryStore implements FactoryStore {
    * fenced write to commit, so no write lands after another replica took the lease.
    */
   private async fenceHeld(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
-    const [held] = await tx.all(`SELECT token FROM sync_leases WHERE name = ? AND token = ?${this.db.dialect.forUpdate}`, [fence.name, fence.token]);
+    const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?${this.db.dialect.forUpdate}`, [fence.name, fence.token]);
     return held !== undefined;
   }
 
   private async selectListenerLease(q: SqlExecutor, source_type: SourceType): Promise<ListenerLease | null> {
-    const [row] = await q.all("SELECT * FROM listener_leases WHERE source_type = ?", [source_type]);
+    const [row] = await q.all("SELECT * FROM inbound_listener_leases WHERE source_type = ?", [source_type]);
     return row
       ? {
           source_type: row.source_type as SourceType,
@@ -2515,6 +2479,16 @@ export class SqlFactoryStore implements FactoryStore {
           expires_at: row.expires_at as Timestamp,
         }
       : null;
+  }
+
+  /**
+   * Takes the `commands` lock row until the transaction ends, so inserts into `inbound_commands` commit in seq
+   * order: MySQL assigns AUTO_INCREMENT at insert, and inbound's cursor (`seq > cursor`) would skip a lower seq
+   * that commits after a higher one (design 10-event-driven, sequence locks).
+   */
+  private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
+    const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'${this.db.dialect.forUpdate}`);
+    if (!row) throw new Error("inbound_sequence_locks has no commands row: run npm run migrate");
   }
 
   /** False if a unique key says the row is already there. */
@@ -2544,27 +2518,27 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   private async selectItem(q: SqlExecutor, id: WorkItemId, lock = ""): Promise<WorkItem | null> {
-    const [row] = await q.all(`SELECT * FROM work_items WHERE id = ?${lock}`, [id]);
+    const [row] = await q.all(`SELECT * FROM controller_work_items WHERE id = ?${lock}`, [id]);
     return row ? rowToWorkItem(row) : null;
   }
 
   private async selectItemBySource(q: SqlExecutor, type: SourceType, sourceId: string): Promise<WorkItem | null> {
-    const [row] = await q.all("SELECT * FROM work_items WHERE source_type = ? AND source_id = ?", [type, sourceId]);
+    const [row] = await q.all("SELECT * FROM controller_work_items WHERE source_type = ? AND source_id = ?", [type, sourceId]);
     return row ? rowToWorkItem(row) : null;
   }
 
   private async selectVerdictByComment(q: SqlExecutor, commentId: string): Promise<Verdict | null> {
-    const [row] = await q.all("SELECT * FROM verdicts WHERE comment_id = ?", [commentId]);
+    const [row] = await q.all("SELECT * FROM controller_verdicts WHERE comment_id = ?", [commentId]);
     return row ? rowToVerdict(row) : null;
   }
 
   private async selectCheckpoint(q: SqlExecutor, id: BudgetCheckpointId, lock = ""): Promise<BudgetCheckpoint | null> {
-    const [row] = await q.all(`SELECT * FROM budget_checkpoints WHERE id = ?${lock}`, [id]);
+    const [row] = await q.all(`SELECT * FROM controller_budget_checkpoints WHERE id = ?${lock}`, [id]);
     return row ? rowToBudgetCheckpoint(row) : null;
   }
 
   private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
-    const [row] = await q.all(`SELECT * FROM runs WHERE id = ?${lock}`, [id]);
+    const [row] = await q.all(`SELECT * FROM worker_runs WHERE id = ?${lock}`, [id]);
     return row ? rowToRun(row) : null;
   }
 
@@ -2577,13 +2551,13 @@ export class SqlFactoryStore implements FactoryStore {
   private async cancelRuns(
     tx: SqlExecutor, workItemId: WorkItemId, status: "queued" | "running", now: Timestamp,
   ): Promise<RunId[]> {
-    const rows = await tx.all(`SELECT id FROM runs WHERE work_item_id = ? AND status = ?${this.db.dialect.forUpdate}`, [
+    const rows = await tx.all(`SELECT id FROM worker_runs WHERE work_item_id = ? AND status = ?${this.db.dialect.forUpdate}`, [
       workItemId, status,
     ]);
     const cancelled: RunId[] = [];
     for (const r of rows) {
       const n = await tx.run(
-        "UPDATE runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
+        "UPDATE worker_runs SET status = 'cancelled', lease_owner = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = ?",
         [now, r.id as string, status],
       );
       if (n === 1) {
@@ -2599,9 +2573,9 @@ export class SqlFactoryStore implements FactoryStore {
    * so a resume of a paused run gets its own; keyed to the claim's lease token for the close.
    */
   private async openAttempt(tx: SqlExecutor, run: Run, now: Timestamp): Promise<void> {
-    const [last] = await tx.all("SELECT MAX(attempt) AS n FROM run_attempts WHERE run_id = ?", [run.id]);
+    const [last] = await tx.all("SELECT MAX(attempt) AS n FROM worker_run_attempts WHERE run_id = ?", [run.id]);
     await tx.run(
-      `INSERT INTO run_attempts (run_id, attempt, lease_token, worker_id, status, started_at, finished_at, error_code,
+      `INSERT INTO worker_run_attempts (run_id, attempt, lease_token, worker_id, status, started_at, finished_at, error_code,
          failure_class, tokens) VALUES (?, ?, ?, ?, 'running', ?, NULL, NULL, NULL, 0)`,
       [run.id, Number(last?.n ?? 0) + 1, run.lease!.token, run.lease!.owner, now],
     );
@@ -2620,7 +2594,7 @@ export class SqlFactoryStore implements FactoryStore {
     const error_code = failed ? failed.error_code : status === "lease_expired" ? "lease_expired" : null;
     const failure_class = failed ? failureClass(failed) : status === "lease_expired" ? "infra" : null;
     await tx.run(
-      `UPDATE run_attempts SET status = ?, finished_at = ?, error_code = ?, failure_class = ?, tokens = ?
+      `UPDATE worker_run_attempts SET status = ?, finished_at = ?, error_code = ?, failure_class = ?, tokens = ?
        WHERE run_id = ? AND status = 'running'${token === null ? "" : " AND lease_token = ?"}`,
       [status, now, error_code, failure_class, outcomeTokens(outcome), runId, ...(token === null ? [] : [token])],
     );
@@ -2632,7 +2606,7 @@ export class SqlFactoryStore implements FactoryStore {
     const now = this.now();
     const inserted = await this.insertOnce(
       tx,
-      `INSERT INTO runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, not_before, input, created_at, updated_at)
+      `INSERT INTO worker_runs (id, work_item_id, kind, idempotency_key, status, attempt, lease_token, not_before, input, created_at, updated_at)
        VALUES (?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?, ?)`,
       [
         id, input.work_item_id, input.kind, input.idempotency_key, input.not_before ?? null,
@@ -2662,7 +2636,7 @@ export class SqlFactoryStore implements FactoryStore {
       detail,
     };
     await tx.run(
-      "INSERT INTO state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO controller_state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
         change.id, workItemId, version, change.at, JSON.stringify(actor), reason, JSON.stringify(changes),
         detail === null ? null : JSON.stringify(detail),
@@ -2754,30 +2728,13 @@ function rowToForgeBudget(row: Row): ForgeBudget {
 }
 
 const DELIVERY_SELECT =
-  "SELECT o.*, t.marker AS thread_marker, t.body AS thread_body FROM thread_outbox o JOIN item_thread t ON t.seq = o.thread_seq";
+  "SELECT o.*, t.marker AS thread_marker, t.body AS thread_body FROM outbound_intents o JOIN controller_item_thread t ON t.seq = o.thread_seq";
 
 /** The claimed queues: their table and the column that marks a row done. Fixed names, never input. */
 type Queue = { table: string; done: string };
 const QUEUES = {
-  outbox: { table: "thread_outbox", done: "delivered_at" },
-  base_push: { table: "base_pushes", done: "finished_at" },
+  outbox: { table: "outbound_intents", done: "delivered_at" },
 } as const satisfies Record<string, Queue>;
-
-function rowToBasePush(row: Row): BasePush {
-  return {
-    seq: Number(row.seq),
-    work_item_id: row.work_item_id as WorkItemId,
-    base_ref: row.base_ref as string,
-    merge_sha: row.merge_sha as string,
-    attempts: Number(row.attempts),
-    next_attempt_at: row.next_attempt_at as Timestamp,
-    finished_at: (row.finished_at as Timestamp | null) ?? null,
-    outcome: (row.outcome as BasePushOutcome | null) ?? null,
-    pushed_sha: (row.pushed_sha as string | null) ?? null,
-    last_error: (row.last_error as string | null) ?? null,
-    created_at: row.created_at as Timestamp,
-  };
-}
 
 function rowToDelivery(row: Row): ThreadDelivery {
   return {
@@ -2798,22 +2755,31 @@ function rowToDelivery(row: Row): ThreadDelivery {
   };
 }
 
+/** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
+const APP_REQUEST_SEQ = "origin = 'app' AND ((legacy_table = 'app_command_requests' AND legacy_seq = ?) OR (legacy_table IS NULL AND seq = ?))";
+/** A command's id from its key, so a repeated append computes the same one; its origin from the key's prefix. */
+const commandId = (key: string) => `cmd_${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+const commandOrigin = (key: string) => (key.startsWith("github:") ? "github" : key.startsWith("app:") ? "app" : "cli");
+
 function rowToCliCommand(row: Row): CliCommand {
   return {
     seq: Number(row.seq),
+    id: row.id as string,
+    origin: row.origin as string,
     key: row.command_key as string,
     actor: row.actor as string,
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
+    ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
     created_at: row.created_at as Timestamp,
   };
 }
 
 function rowToAppCommandRequest(row: Row): AppCommandRequest {
   return {
-    seq: Number(row.seq),
-    key: row.request_key as string,
+    seq: row.legacy_table === "app_command_requests" ? Number(row.legacy_seq) : Number(row.seq),
+    key: row.command_key as string,
     actor: row.actor as UserId,
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,

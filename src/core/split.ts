@@ -21,12 +21,10 @@ export const PHASES_OPEN = "phases_open";
 export const SPLIT_APPROVED = "split_approved";
 /**
  * blocked_reason (with `blocked_on: upstream`, stage READY) of a split parent whose /approve claimed the filing:
- * only the approval that moved the parent here files its phases. State change reason `split_filing`, detail
- * `comment_id`: the command that claimed it.
+ * only the approval that moved the parent here files its phases, through outbound. State change reason
+ * `split_filing`, detail `comment_id` (the command that claimed it, which keys its filings), `note` and `tag`.
  */
 export const SPLIT_FILING = "split_filing";
-/** A claim this old was left by a process that stopped mid-filing, so `/approve` may take it over. */
-export const SPLIT_FILING_STALE_MS = 10 * 60_000;
 
 export interface SplitLimits {
   max_diff_lines: number;

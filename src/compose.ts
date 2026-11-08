@@ -20,13 +20,16 @@ import { canMergeLocal } from "./core/local-merge.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
-import { Controller } from "./core/controller.js";
+import { gitHost, hostId } from "./runtime/host-id.js";
+import { ControllerRole } from "./runtime/roles/controller-role.js";
+import { loadHooks } from "./runtime/index.js";
+import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
-import { WorkerPool } from "./core/worker-pool.js";
-import type { LocalRoute } from "./core/worker.js";
+import { WorkerPool } from "./worker/index.js";
+import type { LocalRoute } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -41,8 +44,13 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
+import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
+import { PassportToolBroker } from "./impl/broker/passport-broker.js";
+import { storeSql } from "./impl/store/sql/store-sql.js";
+import { RunPassports } from "./worker/passports/run-passports.js";
 import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
@@ -57,6 +65,7 @@ import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-sec
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
 } from "./plugins.js";
+import { batchingPolicies } from "./outbound/index.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -136,6 +145,12 @@ export interface FileConfig {
   run_timeout_ms: number;
   /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
   inbox_retention_days?: number;
+  /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
+  outbound?: { batching?: unknown };
+  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
+  merge_queue?: { depth?: unknown };
+  /** Hook names the owner enabled (RFC 0015 §15.2). Absent: none. Checked against the discovered hooks at startup. */
+  hooks?: unknown;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
@@ -231,11 +246,12 @@ export function cliConfig(
 }
 
 /**
- * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, and `toolchain`: what agents may read and
- * the env they get). On a shared store (MySQL: the enterprise case) they come only from the checked-in file, so a
- * user's own config cannot loosen them; solo use may set any key.
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, `toolchain`: what agents may read and
+ * the env they get, and `hooks`: the owner's checks, such as a `before_merge` veto). On a shared store (MySQL: the
+ * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use
+ * may set any key.
  */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain"] as const;
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks"] as const;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -371,9 +387,7 @@ export async function loadConfig(
         "`factory settings set auto_merge_max_tier <n>` or the Settings page, with approve_merge), read only in auto mode",
     );
   }
-  if (!isTier(file.dials.spec_gate_min_tier)) {
-    throw new Error("tiers must be integers 1–5");
-  }
+  if (!isTier(file.dials.spec_gate_min_tier)) throw new Error("tiers must be integers 1–5");
   if (file.heartbeat_ms * 2 >= file.lease_ms) throw new Error(HEARTBEAT_LEASE_MESSAGE);
   uiPort(file.ui);
   uiUserId(file.ui);
@@ -434,6 +448,9 @@ export async function loadConfig(
     ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
+    outbound_batching: batchingPolicies(file.outbound?.batching),
+    merge_queue_depth: mergeQueueDepth(file),
+    ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     workers,
     max_workers,
     deny_paths: [
@@ -442,6 +459,8 @@ export async function loadConfig(
       join(stateDir, "storage"),
       // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
       join(stateDir, "test-mysql.url"),
+      // The solo passport key (Identity): an agent that read it could mint passports.
+      join(stateDir, LOCAL_KEY_FILE),
       join(home, ".ssh"),
       join(home, ".aws"),
       join(home, ".config", "gh"),
@@ -639,7 +658,7 @@ export interface Built {
   secrets: SecretStore;
   /** The configured repo, from the store, or from GitHub on a first start (startupProject). */
   project: ProjectRef;
-  controller: Controller;
+  controller: ControllerRole;
   /** `config.max_workers` worker slots, `workers` of them claiming; `run(signal)` runs them all. */
   worker: WorkerPool;
   close(): Promise<void>;
@@ -737,7 +756,9 @@ export class Plugins {
    * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
    * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubApi, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
+  async forge(
+    github: GitHubApi, sync: { store: FactoryStore; clock: Clock; log: Logger; credentials?: GitHubCredentials } | null = null,
+  ): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
     if (name === undefined) return null;
     const ctx = { ...this.base, github, ...sync };
@@ -761,7 +782,8 @@ export async function build(
   const scanner = await p.scanner(secrets);
   // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
   await checkToolchainEnv(loaded.config.toolchain, scanner);
-  // The one forge client of this build: every plugin that calls the forge gets it; only the broker gets credentials.
+  // The one forge client of this build: every plugin that calls the forge gets it; only the broker and the forge (its
+  // writes are outbound's, RFC 0015 M7) get credentials.
   const { credentials, api: github } = await p.githubAccess({ secrets, clock });
   const sandbox = await p.sandbox();
 
@@ -772,12 +794,16 @@ export async function build(
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
   // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
-  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
+  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
-  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
-  const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  const localAuthPlugin = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  // Identity (RFC 0015 §8, M9): edge, service and run passports, and the audit of every authorize decision.
+  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
+  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
+  const local_auth = new AuditedAuthProvider(localAuthPlugin, identity.passports);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -787,8 +813,13 @@ export async function build(
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
-  const local = await p.localRoute({ broker, sandbox }, brokerDeps);
-  const runner = await p.runner(sandbox, secrets, { broker, scanner });
+  const unguardedLocal = await p.localRoute({ broker, sandbox }, brokerDeps);
+  // G2 with run passports: every broker the worker pool or an agent's granted tools reach checks the run passport.
+  const passports = new RunPassports(identity.passports);
+  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(b, { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
+  const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
+  const guarded = guard(broker);
+  const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
@@ -801,6 +832,11 @@ export async function build(
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
   // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
   const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
+  // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
+  const bus = await createPlugin(registry, "bus", sel.bus, base);
+  const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
+  // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
+  const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
@@ -809,6 +845,7 @@ export async function build(
     store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  await checkEnabledHooks(config.hooks ?? []);
   shareGitHubBudget(loaded, github, store, config);
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
@@ -821,20 +858,27 @@ export async function build(
   });
   await settings.refresh();
 
-  const controller = new Controller({
+  const controller = new ControllerRole({
+    identity,
     store,
     sources,
     forge,
     auth,
     local_auth,
+    service_auth: controllerServiceAuth(identity.passports),
+    outbound_auth: outboundServiceAuth(identity.passports),
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
     network_probe,
+    bus,
+    ticks,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
+    // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
+    git_host: gitHost(stateDir, sel.store),
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
@@ -850,13 +894,18 @@ export async function build(
 
   const worker = new WorkerPool({
     id_prefix: `${hostname()}:${process.pid}`,
+    // A run's push and PR go to this machine's git destination (`git:<host id>:<branch>`), which its controller flushes.
+    host: hostId(stateDir),
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
+    // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
+    ...codeVersion(process.env[CODE_VERSION_ENV]),
     store,
     sandbox,
     runner,
-    broker,
+    broker: guarded,
     local,
+    passports,
     scanner,
     storage,
     llm,
@@ -872,9 +921,27 @@ export async function build(
     capability,
     testDatabase,
     settings,
+    engines,
+    ticks,
+    // A run's PR comment is a thread entry on this ref; outbound posts it (RFC 0015 M7).
+    ...(forge ? { prRef: (pr: number) => forge.prRef(pr) } : {}),
   });
 
-  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };
+  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
+}
+
+/**
+ * This process's Identity on the store's database, its key in the state folder (denied to agents). Forge and chat
+ * accounts resolve through the selected auth plugin's mapping; local ones through Identity's own.
+ */
+export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, clock: Clock, auth?: AuthProvider): Promise<IdentityRuntime> {
+  const log = new ConsoleLogger(clock, "identity");
+  return startIdentity({
+    db: storeSql(store),
+    stateDir: loaded.stateDir,
+    ...(auth ? { providers: (["github", "slack", "oidc"] as const).map((p) => new PluginIdentityProvider(p, auth)) } : {}),
+    onError: (schedule, err) => log.error("identity tick failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }),
+  });
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
@@ -899,6 +966,33 @@ export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsB
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
   return Number.parseInt(value.trim(), 10);
+}
+
+/** `hooks` from factory.config.json: a list of hook names, or startup fails. */
+export function hookNames(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new Error("hooks must be a list of hook names");
+  return value as string[];
+}
+
+/**
+ * Every enabled hook name must be a discovered `*.hook.ts` at a point the factory calls: a typo, or a point no
+ * caller runs yet, would otherwise leave the owner's check off without a word.
+ */
+export async function checkEnabledHooks(enabled: readonly string[], discovered?: readonly HookDescriptor[]): Promise<void> {
+  if (enabled.length === 0) return;
+  const known = new Map((discovered ?? (await loadHooks()).map((h) => h.descriptor)).map((h) => [h.name, h]));
+  const missing = enabled.filter((n) => !known.has(n));
+  if (missing.length > 0) throw new Error(`hooks: no discovered hook named ${missing.join(", ")}`);
+  const unwired = enabled.filter((n) => UNCALLED_HOOK_POINTS.includes(known.get(n)!.point));
+  if (unwired.length > 0) {
+    throw new Error(`hooks: ${unwired.map((n) => `${n} (${known.get(n)!.point})`).join(", ")}: that point is not wired yet, so the hook would never run; remove it from hooks`);
+  }
+}
+
+/** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */
+export function codeVersion(value: string | undefined): { code_version?: string } {
+  const rev = value?.trim();
+  return rev ? { code_version: rev } : {};
 }
 
 export const DEFAULT_UI_PORT = 4310;
@@ -951,6 +1045,8 @@ export interface UiParts {
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
+  /** Display names by user id from Identity's identity_profiles (M9), only to show. */
+  displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   close(): Promise<void>;
 }
 
@@ -987,9 +1083,12 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // The owner check for "Resume now" and the Merge button's approve_merge check: the configured auth plugin over the
   // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
   // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
-  const base = p.base;
-  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
-  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const base = { ...p.base, github: NO_FORGE };
+  const grants = (await createGrants(GRANTS, loaded.grants, base)).filter((g) => !g.remote);
+  const authPlugin = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, store, grants });
+  // Identity (M9): the page's commands carry the actor's edge passport, and every decision here is audited.
+  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
+  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
   const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
@@ -997,16 +1096,14 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
-  // The Merge button's readiness facts, from config only (design §9): whether a forge is selected for a PR's merge,
-  // and whether the selected sandbox, the one the controller's local merge runs through, can merge locally. The
-  // sandbox is built only to ask that; the UI process never runs anything in it.
+  // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
+  const actor = who.actor;
   const commands: UiCommands = {
-    ...who, token,
-    mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
-    forge: loaded.plugins.forge !== undefined,
-    localMerge: canMergeLocal(await p.sandbox()),
+    ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
+    mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow,
+    ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };
-  // The mode switch and the auto-merge tier need approve_merge on the project (design 08-settings), as the Merge button.
+  // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
@@ -1016,7 +1113,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
+  const profiles = new ProfileStore(storeSql(store));
+  const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
+  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {
@@ -1024,7 +1123,7 @@ function refusalOf(d: AuthDecision): string | null {
 }
 
 /**
- * The approve_merge check of `factory settings` and `factory mode` for `mode` and `auto_merge_max_tier` (design
+ * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
  * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
  * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
  */
@@ -1096,9 +1195,7 @@ export function statsConfig(raw: FileConfig["stats"]): StatsConfig {
   const checked = {} as Record<VerdictSeverity, number>;
   for (const s of VERDICT_SEVERITIES) {
     const v = w[s];
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
-      throw new Error(`stats.weights.${s} must be a number ≥ 0`);
-    }
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) throw new Error(`stats.weights.${s} must be a number ≥ 0`);
     checked[s] = v;
   }
   const min_sample = raw?.min_sample === undefined ? STATS_MIN_SAMPLE_DEFAULT : raw.min_sample;
@@ -1277,6 +1374,19 @@ export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): nu
   const v = file.agent_stop_checks;
   if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
+}
+
+/** The deepest speculative merge queue: each level is one more merge-check run out at once. */
+export const MERGE_QUEUE_DEPTH_MAX = 10;
+
+/** `merge_queue.depth`: absent means 1 (solo: one check at a time), otherwise 1 to MERGE_QUEUE_DEPTH_MAX or startup fails. */
+export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
+  const v = file.merge_queue?.depth;
+  if (v === undefined) return 1;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > MERGE_QUEUE_DEPTH_MAX) {
+    throw new Error(`merge_queue.depth must be an integer from 1 to ${MERGE_QUEUE_DEPTH_MAX}`);
+  }
   return v;
 }
 

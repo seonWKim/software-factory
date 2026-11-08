@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LINK_CODE_PATTERN, linkCodeCommand, newLinkCode } from "../src/impl/auth/link-code.js";
@@ -159,7 +159,7 @@ describe("/link through the controller", () => {
     const source = new FakeSource();
     const log = recordingLog();
     const auth = new GitHubAuthProvider(store, []);
-    const controller = new Controller({ store, source, auth, clock, config, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth, clock, config, log, scanner: cleanScanner });
     let n = 100;
     const link = async (body: string, who = gh("5", "five")) => {
       const comment_id = String(++n);

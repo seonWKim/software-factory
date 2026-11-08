@@ -3,7 +3,7 @@
 // stop another.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import type { SourceRef, WorkItem } from "../src/core/types.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
@@ -47,7 +47,7 @@ async function setup(log: Logger = silent) {
   const gh = new FakeSource();
   const sl = new FakeSlackPollSource();
   const forge = new FakeForge(gh);
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: [gh, sl], forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, llm: new ApproveLLM(),
   });
   return { clock, store, gh, sl, forge, controller };
@@ -144,7 +144,7 @@ describe("multi-source controller: per-item routing", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const only = new FakeStreamSource();
-    const c = new Controller({ store, sources: [only], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const c = new ControllerRole({ store, sources: [only], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem(
       { source: slackRef(5), title: "t", requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
       { kind: "system", id: "system:test" },
@@ -154,12 +154,12 @@ describe("multi-source controller: per-item routing", () => {
     expect(only.statusCalls.map((x) => x.change_ref)).toEqual([null, "9"]);
   });
 
-  it("an item whose source type has no adapter keeps its state; its calls are skipped with a warning", async () => {
+  it("an item whose source type has no adapter keeps its state; its writes wait unsent for a process that has one", async () => {
     const f = await setup();
     const { slItem } = await intakeBoth(f);
     const log = recordingLog();
     const gh = new FakeSource();
-    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log, scanner: cleanScanner });
+    const ghOnly = new ControllerRole({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log, scanner: cleanScanner });
 
     await ghOnly.handleEvent({ kind: "help_requested", source: slackRef(1), comment_id: "400", requester: slackAlice });
     await ghOnly.catchUpStatus();
@@ -167,8 +167,9 @@ describe("multi-source controller: per-item routing", () => {
     expect(gh.comments).toEqual([]);
     expect(gh.reactions).toEqual([]);
     expect(gh.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([]);
-    expect(log.lines.filter((l) => l.level === "warn" && l.msg === "no source adapter for the item's source type; skipped").length)
-      .toBeGreaterThan(0);
+    // Outbound keeps them (RFC 0015 M7): a process with the Slack adapter sends them later.
+    const pending = await f.store.db.all("SELECT destination FROM outbound_batches WHERE state <> 'sent'");
+    expect(pending.map((r) => String(r.destination))).toContain(`slack_thread:${slackRef(1).id}`);
     const after = (await f.store.getWorkItem(slItem.id))!;
     expect(after.version).toBe(slItem.version);
     expect(after.stage).toBe(slItem.stage);
@@ -183,14 +184,14 @@ describe("multi-source controller: github-issues + local (2026-11-07)", () => {
     const { store } = await newStore(clock);
     const gh = new FakeSource();
     const local = new LocalSource(store);
-    const controller = new Controller({ store, sources: [gh, local], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, sources: [gh, local], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const create = async (source: SourceRef) =>
       (await store.createWorkItem(
         { source, title: "t", requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
         { kind: "system", id: "system:test" },
         { enqueue: { kind: "triage", idempotency_key: `${source.type}:${source.id}:triage` } },
       )).item;
-    const finishTriage = async (c: Controller) => {
+    const finishTriage = async (c: ControllerRole) => {
       for (;;) {
         const run = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
         if (!run) break;
@@ -223,7 +224,7 @@ describe("multi-source controller: github-issues + local (2026-11-07)", () => {
     const f = await localSetup();
     const localItem = await f.create(localRef(2));
     const gh = new FakeSource();
-    const ghOnly = new Controller({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
+    const ghOnly = new ControllerRole({ store: f.store, sources: [gh], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
 
     await f.finishTriage(ghOnly);
     expect((await f.store.getWorkItem(localItem.id))!.blocked_on).toBe("human");
@@ -336,7 +337,7 @@ describe("multi-source controller: commands", () => {
 
 describe("multi-source controller: startup checks", () => {
   const make = (sources: SourceAdapter[]) => () =>
-    new Controller({ store: {} as never, sources, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent, scanner: cleanScanner });
+    new ControllerRole({ store: {} as never, sources, auth: new FakeAuth(), clock: new FakeClock(), config, log: silent, scanner: cleanScanner });
 
   it("no sources is allowed: items and commands live in the store (issue #282)", () => {
     expect(make([])).not.toThrow();

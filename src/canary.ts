@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { RunId, WorkItemId } from "./core/types.js";
-import { toolsNamed } from "./core/worker.js";
+import { toolsNamed } from "./worker/index.js";
 import { type Loaded, Plugins } from "./compose.js";
 
 const CANARY_SCHEMA = {

@@ -18,8 +18,10 @@ export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
 /**
  * `dependency` (design 2026-11-03): the item's implement run waits for a linked item (`Depends on: #N`, a
  * sub-issue, a blocked-by link) to merge. Its status label is "implementing", never "needs human".
+ * `outbound` (RFC 0015 M7): the item waits for outbound to deliver a write its next step needs (`pr_pending`: the
+ * implement run's push and PR); it shows its stage, as `dependency` does.
  */
-export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency";
+export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency" | "outbound";
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 
@@ -174,7 +176,7 @@ export type StateChangeDetail = Record<string, string | number | boolean | null>
  * plain model call (no tools) per group of two or more runs for a draft cause and fix. It belongs to its project's
  * system work item, queued daily and by `factory improve`.
  */
-export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve";
+export type RunKind = "triage" | "implement" | "review" | "update" | "resolve" | "manual" | "interactive" | "improve" | "merge-check";
 
 /**
  * What the controller hands a run beyond the work item. `notes`: a human's `/resolve` text, untrusted. `wip`: the
@@ -193,6 +195,8 @@ export interface RunInput {
    * not read.
    */
   ci_checks?: PrCheckResult[] | null;
+  /** A merge-check run's base and the branches merged onto it in queue order, this change last (RFC 0015 M8). */
+  merge_check?: { base_ref: string; branches: string[] };
 }
 
 /** One check on a PR's head commit and its result. The name is forge text: untrusted (G5). */

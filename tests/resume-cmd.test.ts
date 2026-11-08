@@ -62,14 +62,14 @@ describe("factory resume", () => {
 
   it("an unknown name, or a part of model_stall, exits 1 and writes nothing", async () => {
     const { store, log, resume } = await setup();
-    const before = (await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const before = (await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
     for (const bad of ["nope", "model_stall_since", "model_answered"]) {
       const r = await resume(bad);
       expect(r.code).toBe(1);
       expect(r.lines[0]).toContain("unknown pause");
     }
     expect((await resume("rate_limit", "forge_auth")).code).toBe(1);
-    expect((await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows).toEqual(before);
+    expect((await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows).toEqual(before);
     expect(log.lines).toEqual([]);
   });
 

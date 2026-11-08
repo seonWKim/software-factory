@@ -8,7 +8,13 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettingsBase } from "../src/core/settings.js";
+import { PR_ONLY_KEYS, SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
+import { loadSettingCatalog } from "../src/runtime/index.js";
+
+const catalog = await loadSettingCatalog();
+const SETTING_DESCRIPTIONS = Object.fromEntries(catalog.all().map((s) => [s.key, s.description])) as Record<string, string>;
+const PR_ONLY_DESCRIPTIONS = SETTING_DESCRIPTIONS;
+const SETTING_APPLIES = Object.fromEntries(catalog.all().map((s) => [s.key, s.applies])) as Record<string, string>;
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -123,7 +129,9 @@ describe("GET /api/v1/settings", () => {
     expect(row("max_diff_files")).toMatchObject({ projects: [{ project: "github.com/o/r", value: "10", source: "file" }] });
     expect(row("phases_auto_approve")).toMatchObject({ kind: "boolean", value: "false" });
     expect(row("models")).toMatchObject({ kind: "models" });
-    expect(row("model_by")).toMatchObject({ kind: "model_by" });
+    expect(row("model_by")).toMatchObject({ kind: "json" });
+    // An object setting is edited as JSON text, never in a number input.
+    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "hold" }) });
     expect(v.repo).toBe("o/r");
     expect(v.project).toBe("github.com/o/r");
     // The project key is never shown.
@@ -164,7 +172,7 @@ describe("GET /api/v1/settings", () => {
 
   it("passes descriptions through the Withholder", async () => {
     const { d } = await setup();
-    const scanned: UiDeps = { ...d, scanner: new PatternEgressScanner(async () => [SETTING_DESCRIPTIONS.tick_ms, PR_ONLY_DESCRIPTIONS.secrets]) };
+    const scanned: UiDeps = { ...d, scanner: new PatternEgressScanner(async () => [SETTING_DESCRIPTIONS.tick_ms!, PR_ONLY_DESCRIPTIONS.secrets!]) };
     const v = await view(scanned);
     const tick = v.keys.find((k: { key: string }) => k.key === "tick_ms");
     expect(tick.description).not.toBe(SETTING_DESCRIPTIONS.tick_ms);
@@ -198,9 +206,9 @@ describe("POST /api/v1/settings", () => {
     await post(d, { action: "set", key: "max_loops", value: "4" });
     const [c] = await store.listSettingChanges(1);
     expect(c!.actor).toBe(`local:${userInfo().username}`);
-    // buildUiParts takes the actor main.ts builds as the CLI identity (issue #318): cli_user, git user.email, the OS
+    // buildUiParts takes the actor the ui command builds as the CLI identity (issue #318): cli_user, git user.email, the OS
     // login, or anonymous; an ID, never a display name (tests/local-cli.test.ts covers the order).
-    const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
+    const main = readFileSync(join(import.meta.dirname, "../src/cli/handlers/ui/ui.command.ts"), "utf8");
     expect(main).toContain("buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) })");
   });
 

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -31,7 +31,7 @@ class StrictSource extends FakeSource {
     super();
   }
   override async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
-    const fromOutbox = /Controller\.deliver\b/.test(new Error().stack ?? "");
+    const fromOutbox = /Outbound\.deliver\b/.test(new Error().stack ?? "");
     if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     const item = await this.store.getWorkItemBySource(source.type, source.id);
     const inThread = item ? (await this.store.listItemMessages(item.id)).some((m) => m.marker === marker && m.body === body) : false;
@@ -50,7 +50,7 @@ async function setup(sources?: (store: FactoryStore) => SourceAdapter[]) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new StrictSource(store);
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: sources ? sources(store) : [source], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner,
   });
   const intake = async (n: number): Promise<WorkItem> => {
@@ -59,10 +59,10 @@ async function setup(sources?: (store: FactoryStore) => SourceAdapter[]) {
     return (await store.getWorkItemBySource("github_issue", issueRef(n).id))!;
   };
   /** Finishes the queued triage run and applies it with `c`, without its outbox step. */
-  const finishTriage = async (c: Controller) => {
+  const finishTriage = async (c: ControllerRole) => {
     const run = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
     await store.completeRun(run!.id, run!.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
-    await (c as unknown as { runsStep(): Promise<void> }).runsStep();
+    await (await c.unit("run-results")).runsStep();
   };
   return { clock, store, source, controller, intake, finishTriage };
 }
@@ -162,7 +162,7 @@ describe("outbox delivery", () => {
     const other = new StrictSource(f.store);
     f.source.delayMs = 5;
     other.delayMs = 5;
-    const replica = new Controller({ store: f.store, sources: [other], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
+    const replica = new ControllerRole({ store: f.store, sources: [other], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
     await Promise.all([f.controller.tickOutbox(), replica.tickOutbox()]);
     await Promise.all([f.controller.tickOutbox(), replica.tickOutbox()]);
     const posted = [...f.source.calls, ...other.calls].map((c) => c.marker).sort();
@@ -192,7 +192,7 @@ describe("an item whose source type has no adapter", () => {
     expect(f.source.calls).toEqual([]);
 
     const slack = new FakeSlackPollSource();
-    const withSlack = new Controller({ store: f.store, sources: [f.source, slack], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
+    const withSlack = new ControllerRole({ store: f.store, sources: [f.source, slack], auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: cleanScanner });
     await withSlack.tickOutbox();
     expect(slack.comments.map((c) => c.marker)).toEqual(["<!-- factory:help:5 -->"]);
   });
@@ -205,13 +205,16 @@ describe("no source at all", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} })]);
-    const controller = new Controller({ store, sources: [], auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
+    const controller = new ControllerRole({ store, sources: [], auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
       implement: () => ({ output: { summary: "the summary", next_steps: "the next steps" } }),
     });
+    // A local item's branch in the factory repo is the change itself, as the local broker stores it.
+    const broker = new FakeBroker();
+    broker.toForge = false;
     const worker = new Worker({
-      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config,
+      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock, config,
       prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
     });
     let n = 0;

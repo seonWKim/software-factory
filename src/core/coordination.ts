@@ -31,8 +31,8 @@ export const DEFAULT_HOTSPOT_WEIGHT = 3.0;
 export const DEFAULT_HOTSPOTS: readonly string[] = [
   "src/impl/store/sqlite/schema.ts",
   "src/impl/store/mysql/schema.ts",
-  "src/core/controller.ts",
-  "src/core/worker.ts",
+  "src/controller/",
+  "src/worker/",
   "docs/design.md",
   "SET_UP.md",
 ];
@@ -266,7 +266,7 @@ function describePath(p: SharedPath): string {
 
 /**
  * The hold reason the item's comment and the dashboard show, e.g.
- * `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5`. A mechanical
+ * `waiting for #92 to merge: both change src/worker/runner.ts (conflicted 6 times), cost 4.0 > 2.5`. A mechanical
  * path names its weight: `docs/design.md (mechanical, 0.25)`.
  */
 export function holdReason(h: {

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { build, loadConfig } from "../src/compose.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceType, WorkItem, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
@@ -82,7 +82,7 @@ async function setup(opts: { sandbox: Sandbox; repo?: string; source?: FakeSourc
   const { store } = await newStore(clock);
   const source = opts.source ?? new FakeSource();
   const cfg = { ...config, repo: { ...config.repo, path: opts.repo ?? "/repo" } };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox });
   return { clock, store, source, controller };
 }
 
@@ -302,7 +302,7 @@ describe("merge check: composition", () => {
     vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets.env"));
     const built = await build(await loadConfig(dir), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      const controllerSandbox = (built.controller as unknown as { d: { sandbox?: Sandbox } }).d.sandbox;
+      const controllerSandbox = built.controller.kernel.d.sandbox;
       const workerSandbox = (built.worker as unknown as { d: { sandbox: Sandbox } }).d.sandbox;
       expect(controllerSandbox).toBeDefined();
       expect(controllerSandbox).toBe(workerSandbox);

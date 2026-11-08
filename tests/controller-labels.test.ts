@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -11,7 +11,7 @@ async function setup(log: Logger = silent) {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const forge = new FakeForge(source);
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   return { clock, store, source, forge, controller };
 }
 
@@ -148,12 +148,14 @@ describe("controller: start-up status catch-up", () => {
     ac.abort();
     await running;
 
+    // Outbound sends each item's labels as their own batch (RFC 0015 M7); the first call threw before reaching the
+    // fake, and every other write still went out: one of the two open issues is labelled, and b's PR status went
+    // to the forge.
     const labelled = [a, b].map((it) => f.source.statusLabels(it.source));
-    // Newest first: b (issue on the source, then PR on the forge), then a. The first call (b's issue) threw
-    // before reaching the fake.
-    expect(f.source.statusCalls.slice(0, 1)).toEqual([{ source: issueRef(1), status: "triaging", change_ref: null }]);
+    expect(f.source.statusCalls).toHaveLength(1);
+    expect(labelled.filter((l) => l.length > 0)).toHaveLength(1);
+    expect([["triaging"], ["ready_to_merge"]]).toContainEqual(labelled.find((l) => l.length > 0));
     expect(f.forge.statusCalls).toEqual([{ source: issueRef(2), status: "ready_to_merge", pr_number: 5 }]);
-    expect(labelled).toEqual([["triaging"], []]);
     expect(f.source.statusCalls.some((x) => x.source.id === issueRef(3).id)).toBe(false);
   });
 

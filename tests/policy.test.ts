@@ -4,7 +4,7 @@ import {
   sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
 import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
-import { PROTECTED_PATHS } from "../src/core/standing.js";
+import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { WorkItemId } from "../src/core/types.js";
@@ -151,13 +151,29 @@ describe("auto mode rules (design 03-risk)", () => {
     expect(new Set(GATE_PATHS).size).toBe(GATE_PATHS.length);
   });
 
+  it("guard code is on the gate list and protected: identity, the G1 check and passport wrapper, outbound's scan, the default broker", () => {
+    for (const file of [
+      "src/identity/passport/restrictions.ts", // passport tokens and restrictions
+      "src/compose.ts", // G1 toolchain check, PassportToolBroker around every broker
+      "src/outbound/outbound.ts", // G5 scan and passport authorize before each delivery
+      "src/impl/broker/passport-broker.ts",
+      "src/impl/github/github-tool-broker.ts", // the default ToolBroker
+      "src/impl/github/broker.plugin.ts",
+    ]) {
+      expect(gatePathTouched([file]), file).toBe(file);
+      expect(protectedCategory([file], []), file).not.toBeNull();
+    }
+  });
+
   it("an allowed path or changed file touches the gate list when it is on it, under it, or a folder holding it", () => {
     expect(gatePathTouched(["docs/x.md", "src/core/policy.ts"])).toBe("src/core/policy.ts");
     expect(gatePathTouched(["src/impl/grant/static.ts"])).toBe("src/impl/grant/static.ts");
     expect(gatePathTouched(["src/core/tools/"])).toBe("src/core/tools/");
     expect(gatePathTouched(["src/"])).toBe("src/");
     expect(gatePathTouched(["./prompts/triage.md"])).toBe("./prompts/triage.md");
-    expect(gatePathTouched(["docs/", "src/core/worker.ts", "tests/policy.test.ts"])).toBeNull();
+    expect(gatePathTouched(["tests/architecture/known-violations/unit-purity.json"])).toBe("tests/architecture/known-violations/unit-purity.json");
+    expect(gatePathTouched(["tests/"])).toBe("tests/");
+    expect(gatePathTouched(["docs/", "src/core/worker.ts", "tests/policy.test.ts", "tests/helpers/"])).toBeNull();
   });
 
   it("a triage decision keeps its default and flag; a plain or unflagged one is owner-only, and a stored answer parses the same", () => {

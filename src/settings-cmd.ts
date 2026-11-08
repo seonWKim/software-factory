@@ -9,7 +9,6 @@ import {
   MODES,
   PROJECT_SETTABLE_KEYS,
   SETTABLE_KEYS,
-  SETTING_APPLIES,
   type SettableKey,
   type SettingsBase,
   effectiveSetting,
@@ -20,6 +19,8 @@ import {
   workersCap,
 } from "./core/settings.js";
 import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.js";
+import { loadSettingCatalog } from "./runtime/index.js";
+import { loosens } from "./shared/setting.js";
 
 export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
   list                                        every settable key: its effective value and source (override, file, default)
@@ -27,7 +28,7 @@ export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
   reset <key> [--project <owner/name>]        removes an override; the file value (else the default) applies again
   history [--limit <n>]                       audit rows of every set and reset, newest first (default 50)
 --project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
-${APPROVE_MERGE_KEYS.join(" and ")}: only with approve_merge on the project.`;
+${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.`;
 
 export const MODE_USAGE = `usage: npm run factory -- mode auto|manual [--project <owner/name>]
   the same as settings set mode <auto|manual>: needs approve_merge on the project, and writes one audit row`;
@@ -98,7 +99,7 @@ export interface SettingsDeps {
   actor: string;
   /**
    * Whether `actor` holds `approve_merge` on the configured project (design 08-settings): asked before a set or reset
-   * of `mode` or `auto_merge_max_tier`; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
+   * of `mode` or `auto_merge_max_tier`, and before one that loosens a tighten-only key; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
    */
   mayApproveMerge?(): Promise<string | null>;
 }
@@ -140,6 +141,10 @@ async function aligned(deps: SettingsDeps, rows: readonly SettingOverride[], ref
   return { base, label };
 }
 
+/** This check asks local grants only (no forge call), so GitHub write access alone gives no role here. */
+const NO_LOCAL_ROLE =
+  ". This check reads local grants only, not GitHub access: give the user approver in permissions.static.roles (docs/plugins/grant-source.md)";
+
 function fmt(v: unknown): string {
   return JSON.stringify(v) ?? String(v);
 }
@@ -150,7 +155,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   const key = a.key as SettableKey;
   if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
-    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}`);
+    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
   }
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
@@ -203,17 +208,26 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   if (newly.length > 0) return fail(newly[0]!.reason);
 
   const was = effectiveSetting(before, key, project);
+  const now = effectiveSetting(after, key, project);
+  // Loosening a tighten-only key (a higher max_diff_lines, phases_auto_approve true) needs the same grant as mode;
+  // tightening needs none (design 08-settings, 2026-11-09).
+  if (!APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
+    const descriptor = (await loadSettingCatalog()).get(key);
+    if (descriptor && loosens(descriptor, now.value, was.value) !== null) {
+      const refused = await deps.mayApproveMerge();
+      if (refused !== null) return fail(`loosening ${key}${where} from ${fmt(was.raw)} to ${fmt(now.raw)} needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+    }
+  }
   if (value !== null) {
     await deps.store.setSettingOverride({ key, project, value, actor: deps.actor });
   } else if ((await deps.store.resetSettingOverride({ key, project, actor: deps.actor })) === null) {
     return fail(`${key} has no override${where}; nothing to reset`);
   }
-  const now = effectiveSetting(after, key, project);
   return {
     ok: true,
     lines: [
       `${key}${where} = ${fmt(now.raw)} (${now.source}; was ${fmt(was.raw)}, ${was.source})`,
-      `applies at ${SETTING_APPLIES[key]}, with no restart`,
+      `applies at ${(await loadSettingCatalog()).describe(key).applies}, with no restart`,
     ],
   };
 }

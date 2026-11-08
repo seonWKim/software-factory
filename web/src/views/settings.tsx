@@ -70,7 +70,7 @@ function parseObject(text: string): Record<string, unknown> {
  * The edit control for one value: a number field, a switch, a text field per tier, or JSON. No min or max on
  * the field: the server's checks decide, and their message shows next to the field.
  */
-function Editor({ row, label, value, token, project }: { row: SettingRow; label: string; value: string; token: string; project?: string }) {
+function Editor({ row, label, value, token, project, floating = false }: { row: SettingRow; label: string; value: string; token: string; project?: string; floating?: boolean }) {
   const { busy, error, done, write } = useWrite(token);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
@@ -109,7 +109,7 @@ function Editor({ row, label, value, token, project }: { row: SettingRow; label:
         </Button>
       </form>
     );
-  } else if (row.kind === "model_by") {
+  } else if (row.kind === "json") {
     const shown = draft ?? value;
     control = (
       <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
@@ -136,10 +136,17 @@ function Editor({ row, label, value, token, project }: { row: SettingRow; label:
       </form>
     );
   }
+  // In the top bar the outcome floats below the control, so a refusal never pushes the bar's other items onto two lines.
   return (
-    <div>
+    <div className={floating ? "relative" : undefined}>
       {control}
-      <Outcome error={error} done={done} />
+      {floating && (error || done) ? (
+        <div className="absolute top-full left-0 z-10 mt-2 w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-md dark:border-zinc-800 dark:bg-zinc-900">
+          <Outcome error={error} done={done} />
+        </div>
+      ) : (
+        <Outcome error={error} done={done} />
+      )}
     </div>
   );
 }
@@ -250,17 +257,24 @@ function currentMode(v: SettingsView): { row: SettingRow; value: string; project
  * The mode switch of the top bar and the Settings page (design 09): manual or auto for the configured project, written
  * through POST /api/v1/settings like any key, so it needs approve_merge and writes one audit row; a refusal shows beside it.
  */
-export function ModeSwitch() {
+export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   const settings = useApi<SettingsView>(API.settings);
   const v = settings.data;
   const mode = v ? currentMode(v) : null;
   if (!v || !mode) return <span className="text-sm text-zinc-600 dark:text-zinc-400">Mode …</span>;
   return (
-    <div data-testid="mode" className="flex items-center gap-2 text-sm">
+    <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
       <span>Mode</span>
-      <Editor row={mode.row} label="Auto mode" value={mode.value} token={v.csrf_token} {...(mode.project === undefined ? {} : { project: mode.project })} />
+      <ModeControl view={v} floating={floating} />
     </div>
   );
+}
+
+/** The mode's own control, without the top bar's "Mode" label. */
+function ModeControl({ view, floating = false }: { view: SettingsView; floating?: boolean }) {
+  const mode = currentMode(view);
+  if (!mode) return null;
+  return <Editor row={mode.row} label="Auto mode" value={mode.value} token={view.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />;
 }
 
 /** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
@@ -273,11 +287,15 @@ function ModeSection({ view }: { view: SettingsView }) {
         tier; tier 4 and the gate list always wait for a person. A red main, a failure alarm or a budget checkpoint sets it
         back to manual. Changing either needs approve_merge.
       </p>
-      <div className="flex flex-wrap items-start gap-6">
-        <ModeSwitch />
+      {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        <div className="flex max-w-md flex-col gap-1 text-sm">
+          <span className="font-medium">Mode</span>
+          <ModeControl view={view} />
+        </div>
         {tier && (
-          <div className="flex items-center gap-2 text-sm">
-            <span>Auto-merge tier (0 to 3)</span>
+          <div className="flex max-w-md flex-col gap-1 text-sm">
+            <span className="font-medium whitespace-nowrap">Auto-merge tier (0 to 3)</span>
             <Editor row={tier} label="Auto-merge tier" value={tier.value} token={view.csrf_token} />
           </div>
         )}

@@ -1,0 +1,292 @@
+import { LiveSettings } from "../core/settings.js";
+import type { Timestamp, WorkerId } from "../core/types.js";
+import { loadRunKinds, runKindProblems } from "./run-kind.js";
+import { Worker } from "./runner.js";
+import { KINDS, type WorkerDeps } from "./support.js";
+import type { ExecutionEngines } from "./engine/index.js";
+import type { TickSource } from "../shared/ticks/tick-generator.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { KeepAwake } from "../interfaces/keep-awake.js";
+
+export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "active"> {
+  /**
+   * `<host>:<pid>`. Worker n's id is `<id_prefix>:<n>`. The pool has `config.max_workers` slots (absent:
+   * `config.workers`); how many of them claim is the live `workers` setting, capped at that.
+   */
+  id_prefix: string;
+  /**
+   * The first worker index (SF_WORKER_INDEX_BASE from the supervisor; absent: 0). Workers are numbered
+   * base … base + max_workers - 1, so two processes alive at once on one host (an old version draining beside the
+   * new one) never hand the same SF_WORKER_INDEX to two runs.
+   */
+  index_base?: number;
+  /** The selected `engine` plugin (`plugins.engine`); absent: the journal over the store's database. */
+  engines?: ExecutionEngines;
+  /** The selected `ticks` plugin (`plugins.ticks`); absent: `time-based`. Each Worker runs its waits on it. */
+  ticks?: TickSource;
+}
+
+/** Why the live slot count changed, as the `worker slots` line gives it. "drain" is any stop of the pool. */
+export type SlotChangeReason = "start" | "settings change" | "drain";
+
+/** One running slot: its own stop signal (a drop in `workers`) and the loop's promise. */
+interface Slot {
+  stop: AbortController;
+  done: Promise<void>;
+}
+
+/**
+ * Up to `config.max_workers` Worker loops in one process (architecture §4). They share every dependency, so they
+ * share nothing in memory that matters for correctness: each claims through the store, whose claim keeps
+ * implement-type runs of overlapping items apart, and each run gets its own worktree. Shared handling:
+ * one counted KeepAwake (held while any run is in progress), and one signal, so a drain stops every loop
+ * from claiming and `run` resolves only once every in-flight run has finished.
+ *
+ * Live size (design 2026-11-03): each tick the pool re-reads the settings. Slots below the effective `workers`
+ * run; a slot at or above it stops claiming, finishes its current run and stops; a stopped slot starts again
+ * once `workers` rises. The slot count is the file's `max_workers` (absent: its `workers`), which sizes the
+ * supervisor's index block, so no index is ever shared with another process.
+ *
+ * Reporting (design §5 Coordination, 2026-11-07): one `worker slots` log line when the live count changes (start,
+ * a settings change, drain), never on an unchanged tick. Each tick the pool writes its row to the store (pid,
+ * host, slots, max_slots, busy, index_base, started_at); while draining it keeps writing with slots 0 until the
+ * last run ends, then removes the row. A failed write is logged once per failure streak and never stops a slot.
+ */
+export class WorkerPool {
+  /** Every slot's Worker, running or not. Slot i has index `index_base + i`. */
+  readonly workers: readonly Worker[];
+  private readonly live: LiveSettings;
+  /** Per slot: whether it holds a run now (set between the claim's hold and the run's release). */
+  private readonly slotAwake: readonly SlotAwake[];
+  private readonly process_id: string;
+  private readonly host: string;
+  private readonly pid: number;
+  private readonly index_base: number;
+  private reportFailing = false;
+
+  constructor(private readonly d: WorkerPoolDeps) {
+    const { id_prefix, index_base = 0, engines, ticks, ...shared } = d;
+    const awake = new CountedKeepAwake(d.awake);
+    this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
+    const settings = this.live;
+    const size = d.config.max_workers ?? d.config.workers;
+    this.slotAwake = Array.from({ length: size }, () => new SlotAwake(awake));
+    this.workers = Array.from({ length: size }, (_, i) => {
+      const index = index_base + i;
+      const slotAwake = this.slotAwake[i]!;
+      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, { ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}) });
+    });
+    // id_prefix is `<host>:<pid>`.
+    const cut = id_prefix.lastIndexOf(":");
+    const pid = Number(id_prefix.slice(cut + 1));
+    this.process_id = id_prefix;
+    this.host = d.host ?? (cut === -1 ? id_prefix : id_prefix.slice(0, cut));
+    this.pid = cut !== -1 && Number.isInteger(pid) ? pid : process.pid;
+    this.index_base = index_base;
+  }
+
+  /** Slots holding a run now. */
+  busy(): number {
+    return this.slotAwake.filter((a) => a.busy).length;
+  }
+
+  /** Slots that may claim now: the live `workers`, capped at the slot count. */
+  size(): number {
+    return Math.min(this.live.workers(), this.workers.length);
+  }
+
+  /**
+   * Runs the slots until `signal` aborts, starting and stopping them as `workers` changes; resolves after the
+   * last in-flight run is done.
+   */
+  async run(signal: AbortSignal): Promise<void> {
+    const problems = runKindProblems(KINDS, await loadRunKinds());
+    if (problems.length > 0) throw new Error(`run kinds are broken: ${problems.join("; ")}`);
+    const slots = new Map<number, Slot>();
+    const all = new Set<Promise<void>>();
+    const started_at = this.d.clock.now().toISOString() as Timestamp;
+    let current: number | null = null;
+    while (!signal.aborted) {
+      await this.live.refresh();
+      const want = this.size();
+      if (want !== current) {
+        this.logSlots(want, current, current === null ? "start" : "settings change");
+        current = want;
+      }
+      this.workers.forEach((w, i) => {
+        const slot = slots.get(i);
+        if (i < want && !slot) {
+          const stop = new AbortController();
+          const onAbort = () => stop.abort();
+          signal.addEventListener("abort", onAbort, { once: true });
+          const done: Promise<void> = w.run(stop.signal).finally(() => {
+            signal.removeEventListener("abort", onAbort);
+            all.delete(done);
+            if (slots.get(i)?.done === done) slots.delete(i);
+          });
+          all.add(done);
+          slots.set(i, { stop, done });
+        } else if (i >= want && slot && !slot.stop.signal.aborted) {
+          // Stops claiming; the loop finishes its current run, then ends and frees the slot.
+          slot.stop.abort();
+        }
+      });
+      await this.report(want, started_at);
+      await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
+    }
+    this.logSlots(0, current, "drain");
+    // Draining: keep the row fresh (slots 0, the runs still held) until the last run ends, then remove it.
+    while (all.size > 0) {
+      await this.report(0, started_at);
+      const wake = new AbortController();
+      await Promise.race([Promise.all([...all]), this.d.clock.sleep(this.live.config().tick_ms, wake.signal).catch(() => undefined)]);
+      wake.abort();
+    }
+    await this.d.store.removeWorkerProcess(this.process_id).catch((err: unknown) => this.reportFailed(err));
+  }
+
+  private logSlots(slots: number, from: number | null, reason: SlotChangeReason): void {
+    this.d.log.info("worker slots", { pid: this.pid, slots, from, reason });
+  }
+
+  private async report(slots: number, started_at: Timestamp): Promise<void> {
+    try {
+      await this.d.store.reportWorkerProcess({
+        process_id: this.process_id,
+        pid: this.pid,
+        host: this.host,
+        slots,
+        max_slots: this.workers.length,
+        busy: this.busy(),
+        index_base: this.index_base,
+        started_at,
+      });
+      this.reportFailing = false;
+    } catch (err) {
+      this.reportFailed(err);
+    }
+  }
+
+  /** The row is a report, not a gate: a failed write never stops a slot. Logged once per failure streak. */
+  private reportFailed(err: unknown): void {
+    if (this.reportFailing) return;
+    this.reportFailing = true;
+    this.d.log.warn("worker process report failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+  }
+}
+
+/** One slot's view of the shared KeepAwake: `busy` while the slot holds a run (hold to release). */
+class SlotAwake implements KeepAwake {
+  busy = false;
+
+  constructor(private readonly inner: KeepAwake) {}
+
+  hold(): Promise<void> {
+    this.busy = true;
+    return this.inner.hold();
+  }
+
+  release(): Promise<void> {
+    this.busy = false;
+    return this.inner.release();
+  }
+}
+
+/** `factory workers …` (design §5 Pause). */
+export type WorkersAction =
+  | { op: "pause"; count: number; by: string }
+  | { op: "pause_all"; by: string }
+  | { op: "resume" }
+  | { op: "status" };
+
+/** The paused-by ID when `--by` is not given: the operator's command line, not a person's display name. */
+export const WORKERS_CLI_ACTOR = "system:cli";
+
+export const WORKERS_USAGE = `factory workers pause <n> [--by <user id>]   pause the n workers whose runs started most recently
+factory workers pause --all [--by <user id>] pause every worker loop, idle ones included
+factory workers resume                       clear every pause
+factory workers status                       list the pauses in force`;
+
+/** Parses `workers` arguments; an error string for anything else. */
+export function parseWorkersArgs(args: readonly string[]): WorkersAction | { error: string } {
+  const rest = [...args];
+  let by = WORKERS_CLI_ACTOR;
+  const at = rest.indexOf("--by");
+  if (at !== -1) {
+    const v = rest[at + 1];
+    if (!v || v.startsWith("--") || !/^[\w.:@-]{1,255}$/.test(v)) return { error: "--by needs a user or agent ID, e.g. local:<name>" };
+    by = v;
+    rest.splice(at, 2);
+  }
+  const [op, arg, extra] = rest;
+  if (op === "resume" && rest.length === 1) return { op: "resume" };
+  if ((op === "status" || op === undefined) && rest.length <= 1) return { op: "status" };
+  if (op === "pause" && extra === undefined) {
+    if (arg === "--all") return { op: "pause_all", by };
+    if (arg !== undefined && /^[1-9]\d{0,3}$/.test(arg)) return { op: "pause", count: Number(arg), by };
+  }
+  return { error: WORKERS_USAGE };
+}
+
+/**
+ * Applies a `workers` action to the store, the only place pauses live: running workers see it within one
+ * tick_ms, on every host. Returns the lines to print.
+ */
+export async function runWorkersCommand(store: FactoryStore, action: WorkersAction): Promise<string[]> {
+  switch (action.op) {
+    case "pause": {
+      const { paused } = await store.pauseWorkers({ count: action.count }, action.by);
+      const lines = paused.length
+        ? [`paused ${paused.length} worker${paused.length === 1 ? "" : "s"}: ${paused.join(", ")}`]
+        : ["paused no worker: no unpaused worker has a run in progress"];
+      if (paused.length > 0 && paused.length < action.count) lines.push(`only ${paused.length} unpaused worker${paused.length === 1 ? " has" : "s have"} a run in progress`);
+      if (paused.length) lines.push(PAUSE_NOTE);
+      return lines;
+    }
+    case "pause_all": {
+      const { paused } = await store.pauseWorkers({ all: true }, action.by);
+      return [paused.length ? "paused every worker loop, idle ones included" : "every worker loop was already paused", PAUSE_NOTE];
+    }
+    case "resume": {
+      const { cleared } = await store.resumeWorkers();
+      return [cleared ? `cleared ${cleared} pause${cleared === 1 ? "" : "s"}: workers claim again, paused runs resume` : "no pause was in force"];
+    }
+    case "status": {
+      const pauses = await store.listWorkerPauses();
+      if (pauses.length === 0) return ["no worker is paused"];
+      return pauses.map((p) => `${p.worker_id === "*" ? "every worker" : p.worker_id} paused by ${p.paused_by} since ${p.paused_at}`);
+    }
+  }
+}
+
+const PAUSE_NOTE =
+  "implement and review runs go back to the queue within one tick, WIP committed locally and nothing pushed; other runs finish first. Undo with: factory workers resume";
+
+/**
+ * Several holders of one KeepAwake: the first hold holds the inner one, the last release releases it. A
+ * release with nothing held does nothing. Calls to the inner KeepAwake go out one at a time, in order, so a
+ * quick hold-release-hold never reaches it out of order.
+ */
+export class CountedKeepAwake implements KeepAwake {
+  private holders = 0;
+  private chain: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly inner: KeepAwake) {}
+
+  hold(): Promise<void> {
+    this.holders++;
+    return this.holders === 1 ? this.next(() => this.inner.hold()) : this.chain.then(() => undefined, () => undefined);
+  }
+
+  release(): Promise<void> {
+    if (this.holders === 0) return Promise.resolve();
+    this.holders--;
+    return this.holders === 0 ? this.next(() => this.inner.release()) : Promise.resolve();
+  }
+
+  private next(fn: () => Promise<void>): Promise<void> {
+    const result = this.chain.then(fn, fn);
+    this.chain = result.catch(() => undefined);
+    return result;
+  }
+}

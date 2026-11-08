@@ -1,7 +1,7 @@
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { describe, expect, it, vi } from "vitest";
-import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -135,19 +135,26 @@ describe("dev child: two children through a swap", () => {
     for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
   };
   /** Counts each controller step a pass runs, so a test sees whether a pass started. */
-  function countSteps(c: Controller) {
-    const steps = ["intake", "reaperStep", "checksStep", "coordinationStep", "commandsStep", "runsStep", "probeStep", "outboxStep"] as const;
-    const spies = steps.map((s) => vi.spyOn(c as unknown as Record<string, () => Promise<void>>, s));
-    return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<(typeof steps)[number], number>;
+  async function countSteps(c: ControllerRole) {
+    // Each step's method the pass calls: a legacy step's own, a pure step's load or decide.
+    const units: Record<string, [object, string]> = {
+      afterPoll: [await c.unit("closes"), "afterPoll"], reaper: [await c.unit("reaper"), "decide"],
+      checksStep: [await c.unit("checks-gate"), "checksStep"], coordinationStep: [await c.unit("coordination"), "coordinationStep"],
+      mirror: [await c.unit("mirror"), "load"], runsStep: [await c.unit("run-results"), "runsStep"],
+      probeStep: [await c.unit("model-probe"), "probeStep"], outboxStep: [await c.unit("outbox"), "outboxStep"],
+    };
+    const steps = Object.keys(units);
+    const spies = steps.map((s) => vi.spyOn(units[s]![0] as Record<string, () => Promise<void>>, units[s]![1]!));
+    return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<"probeStep" | "runsStep", number>;
   }
 
   it("the old controller makes no pass after the drain; its run completes; the new controller applies the outcome", async () => {
     const { clock, store, worker: oldWorker, release, started, completeRun } = await setup();
     const controllerOf = (log = silent) =>
-      new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, repeated_failure_rule: false });
+      new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, repeated_failure_rule: false });
     const oldLog = recordingLog();
     const oldController = controllerOf(oldLog);
-    const oldSteps = countSteps(oldController);
+    const oldSteps = await countSteps(oldController);
     const oldChannel = channel();
     const oldStop = new AbortController();
     const oldChild = runDevChild({ controller: oldController, worker: oldWorker }, oldChannel.ch, oldStop.signal, oldLog);
@@ -159,7 +166,7 @@ describe("dev child: two children through a swap", () => {
 
     // The swap: the new child starts first, then the old one is asked to drain.
     const newController = controllerOf();
-    const newSteps = countSteps(newController);
+    const newSteps = await countSteps(newController);
     const newWorker = { run: (s: AbortSignal) => new Promise<void>((r) => s.addEventListener("abort", () => r(), { once: true })) };
     const newChannel = channel();
     const newStop = new AbortController();

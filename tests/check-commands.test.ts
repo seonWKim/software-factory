@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { checkCommands, redact } from "../src/core/checks.js";
 import type { WorkItem } from "../src/core/types.js";
-import { config, pipeline } from "./helpers/fakes.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
+import { config, pipeline, runComments } from "./helpers/fakes.js";
 import { issue, system } from "./helpers/store.js";
 
 // repo.check_commands (design §4, decided 2026-11-03): one list of checks, run before every push, in the
@@ -115,8 +116,9 @@ describe("update and resolve runs run the check list", () => {
     if (!moved.ok) throw new Error("setup");
     return moved.item;
   }
+  // The worker's own file commands (conflict reads, index copies, the resolve step's bundle) are not gates.
   const gateCommands = (f: Awaited<ReturnType<typeof pipeline>>) =>
-    f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "));
+    f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"));
 
   it("update: every check runs on the merged branch in place of test_command, then the push", async () => {
     const f = await pipeline({ config: { repo: { ...config.repo, check_commands: checks } } });
@@ -126,8 +128,9 @@ describe("update and resolve runs run the check list", () => {
     expect(gateCommands(f)).toEqual(["npm run typecheck", "npm test"]);
     const run = (await f.runs(item, "update"))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed" } });
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.comment"]);
-    expect(JSON.stringify(f.broker.calls.at(-1)!.args)).toContain("`npm run typecheck`, `npm test` passed");
+    // The run stores the merge; the push is outbound's (RFC 0015 M7).
+    expect([f.broker.stores.map((c) => c.name), f.broker.calls]).toEqual([[STORE_BRANCH], []]);
+    expect((await runComments(f.store, item.id)).map((c) => c.body).join("\n")).toContain("`npm run typecheck`, `npm test` passed");
   });
 
   it("update: the first failing check stops the list; nothing is pushed and the comment names it", async () => {
@@ -141,8 +144,8 @@ describe("update and resolve runs run the check list", () => {
     expect(run.outcome).toMatchObject({
       status: "succeeded", data: { result: "tests_failed", command: "npm run typecheck", exit_code: 2, timed_out: false },
     });
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.comment"]);
-    expect(JSON.stringify(f.broker.calls[0]!.args)).toContain("`npm run typecheck` exited 2");
+    expect(f.broker.calls).toEqual([]);
+    expect((await runComments(f.store, item.id)).map((c) => c.body).join("\n")).toContain("`npm run typecheck` exited 2");
   });
 
   it("resolve: install_command first, then every check, then the push", async () => {
@@ -162,6 +165,6 @@ describe("update and resolve runs run the check list", () => {
     expect(gateCommands(f)).toEqual(["npm ci", "npm run typecheck", "npm test"]);
     const run = (await f.runs(item, "resolve"))[0]!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed", detail: "`npm test` exited 1" });
-    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.push_branch");
+    expect(f.broker.stores).toEqual([]);
   });
 });

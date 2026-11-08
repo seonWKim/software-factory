@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { networkProbeDelayMs } from "../src/core/policy.js";
 import type { RunKind, Timestamp } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -22,7 +22,7 @@ async function setup(answers: ConstructorParameters<typeof FakeNetworkProbe>[0] 
   const log = recordingLog();
   const probe = new FakeNetworkProbe(answers);
   const controller = (p: FakeNetworkProbe = probe) =>
-    new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, network_probe: p });
+    new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, network_probe: p });
   const t0 = clock.now().getTime();
   const pause = () => store.pauseClaims(iso(clock.now().getTime() + 30_000), "network");
   return { clock, store, log, probe, controller, t0, pause };
@@ -131,7 +131,7 @@ describe("the network probe (fake clock)", () => {
 
   it("with no network probe configured, the pause ends at its first probe time", async () => {
     const { store, clock, log, pause } = await setup();
-    const c = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const c = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
     await pause();
     clock.advance(30_000);
     await c.tickModelProbe();

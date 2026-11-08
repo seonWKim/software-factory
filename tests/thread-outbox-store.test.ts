@@ -105,47 +105,26 @@ for (const backend of BACKENDS) {
       await entry(store, id, "spec", { link: "spec_comment_url" });
       const [oldRow, newRow, specRow] = await store.listDeliveries(id);
       const version = (await store.getWorkItem(id))!.version;
-      const deliver = async (seq: number, url: string) => store.finishDelivery(seq, (await store.claimDelivery(seq, 1000))!, url);
+      // Outbound marks the row delivered; the controller records it on the item (DeliveryCompleted).
+      const deliver = async (seq: number, url: string) => {
+        await store.finishDelivery(seq, (await store.claimDelivery(seq, 1000))!, url);
+        await store.linkDelivery(seq);
+      };
       await deliver(newRow!.seq, "u-new");
       await deliver(oldRow!.seq, "u-old");
       await deliver(specRow!.seq, "u-spec");
       expect(await store.getWorkItem(id)).toMatchObject({ failure_comment_url: "u-new", spec_comment_url: "u-spec", version });
     });
 
-    it("an app request also lands in the command inbox, keyed on its seq", async () => {
+    it("an app request is one row of the command inbox (RFC 0015 D7), with origin app and its own key", async () => {
       const { store } = await backend.make();
       const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: { work_item_id: "x" } });
       await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: {} });
-      const inbox = (await store.listCliCommandsAfter(0, 100)).filter((c) => c.args.app_request === request.seq);
-      expect(inbox).toEqual([expect.objectContaining({ key: `app:${request.seq}`, actor: "github:1", command: "approve" })]);
+      const inbox = await store.listCliCommandsAfter(0, 100);
+      expect(inbox).toEqual([expect.objectContaining({ seq: request.seq, origin: "app", key: "k1", actor: "github:1", command: "approve" })]);
     });
   });
 }
-
-describe("SQLite migration 29: thread outbox", () => {
-  it("is in the migration list and creates thread_outbox; pending app requests are copied into the inbox once", async () => {
-    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
-    expect(MIGRATIONS[STEP - 1]).toContain("CREATE TABLE IF NOT EXISTS thread_outbox (");
-    const driver = new SqliteDriver(":memory:");
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
-    // Back to 27: no outbox, and requests written before the inbox copy existed.
-    await driver.run("DROP TABLE thread_outbox");
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
-    const req = "INSERT INTO app_command_requests (request_key, actor, command, args, created_at, handled_at) VALUES (?, ?, ?, ?, ?, ?)";
-    await driver.run(req, ["p1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", null]);
-    await driver.run(req, ["h1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z"]);
-    await store.migrate();
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    const copied = (await store.listCliCommandsAfter(0, 100)).filter((c) => typeof c.args.app_request === "number");
-    expect(copied.map((c) => c.command)).toEqual(["approve"]);
-    expect(copied[0]!.key).toBe(`app:${copied[0]!.args.app_request}`);
-    expect(await driver.all("SELECT * FROM thread_outbox")).toEqual([]);
-    await store.close();
-  });
-});
 
 describe("MySQL step 0029: thread outbox", () => {
   const sql = () => readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");

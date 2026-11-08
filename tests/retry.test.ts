@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { Worker } from "../src/worker/index.js";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -10,7 +10,7 @@ import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-run
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, config as baseConfig, gates, issueRef, prompts, recordingLog, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 
@@ -44,7 +44,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => []);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),

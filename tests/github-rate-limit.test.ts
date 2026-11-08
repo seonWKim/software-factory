@@ -5,6 +5,7 @@ import {
 import type { Run, RunOutcome, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubClient, GitHubError, GitHubRateLimitError } from "../src/impl/github/github-client.js";
 import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
@@ -116,7 +117,7 @@ describe("REST client: rate limits", () => {
   });
 });
 
-describe("broker: github_rate_limited", () => {
+describe("broker and forge: github_rate_limited", () => {
   async function brokerWith(answer: (method: string, path: string) => Answer | null) {
     const { store, clock } = await newStore();
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
@@ -124,20 +125,27 @@ describe("broker: github_rate_limited", () => {
     const fake = new FakeClock(clock.now());
     const { client } = clientWith(fake, answer);
     const broker = new GitHubToolBroker({
-      client, credentials, store, scanner: cleanScanner, clock: fake, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
+      client, store, scanner: cleanScanner, clock: fake, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
+    const forge = new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", {} as never);
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     const branch = `factory/${item.id}`;
     const calls = {
       preflight: () => broker.call(ctx, "github.preflight", { branch, base_ref: "main" }),
-      open_pr: () => broker.call(ctx, "github.open_pr", { branch, base_ref: "main", title: "t", body: "b" }),
-      comment: () => broker.call(ctx, "github.comment", { number: 1, body: "hello", marker: "<!-- m -->" }),
+      // The PR write is the forge's (outbound's github-change, RFC 0015 M7): its error starts with its class.
+      open_pr: () => forge.openPr({ branch, base_ref: "main", title: "t", body: "b" }).then(
+        (): ToolResult => ({ ok: true, content: {} }),
+        (e: Error): ToolResult => {
+          const [code, ...rest] = e.message.split(": ");
+          return { ok: false, error_code: code!, message: rest.join(": ") };
+        },
+      ),
     };
     return { calls, now: fake.now().getTime() };
   }
 
-  it("a rate-limit 403 gives github_rate_limited with the header's reset on preflight, open_pr and comment", async () => {
-    for (const tool of ["preflight", "open_pr", "comment"] as const) {
+  it("a rate-limit 403 gives github_rate_limited with the header's reset on preflight and open_pr", async () => {
+    for (const tool of ["preflight", "open_pr"] as const) {
       let reset = 0;
       const b = await brokerWith(() => primary(reset));
       reset = Math.floor(b.now / 1000) + 900;
@@ -149,7 +157,7 @@ describe("broker: github_rate_limited", () => {
 
   it("a 429 or a 403 with retry-after gives github_rate_limited with the retry-after reset", async () => {
     for (const status of [429, 403]) {
-      for (const tool of ["preflight", "open_pr", "comment"] as const) {
+      for (const tool of ["preflight", "open_pr"] as const) {
         const b = await brokerWith(() => ({ status, body: SECONDARY_BODY, headers: { "retry-after": "60" } }));
         const r = await b.calls[tool]();
         expect(r).toMatchObject({ ok: false, error_code: GITHUB_RATE_LIMITED });
@@ -216,28 +224,6 @@ describe("worker and controller: the github_rate_limit pause", () => {
     expect(retry).toMatchObject({ status: "queued", not_before: reset });
     expect(await f.item(a)).toMatchObject({ stage: "RUNNING", blocked_on: "none", restart_count: 0 });
     expect(f.agentCalls("implement")).toBe(0);
-  });
-
-  it("a PR open that hits the rate limit keeps its wip branch; the retry resumes from it with no agent run", async () => {
-    const f = await pipeline();
-    f.sandbox.commits = ["c1"];
-    f.sandbox.head = "headsha1\n";
-    const reset = iso(f.clock.now().getTime() + 5 * 60_000);
-    f.broker.responses["github.open_pr"] = [{ ok: false, error_code: GITHUB_RATE_LIMITED, message: githubRateLimitMessage("open_pr", reset) }];
-    const a = await f.submit();
-    await f.step();
-    const [failed] = await f.runs(a, "implement");
-    const wip = (failed!.outcome as Failed).wip!;
-    expect(failed!.outcome).toMatchObject({ error_code: GITHUB_RATE_LIMITED, wip: { head: "headsha1" } });
-    expect(f.broker.remote.has(wip.branch)).toBe(true);
-    f.sandbox.refs[`origin/${wip.branch}`] = wip.head;
-    expect(f.agentCalls("implement")).toBe(1);
-    // Nothing is claimed before the reset.
-    expect(await f.w1.tick()).toBe(false);
-    f.clock.advance(5 * 60_000);
-    await f.step();
-    expect(f.agentCalls("implement")).toBe(1);
-    expect(await f.item(a)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
   });
 
   it("the controller skips its GitHub poll while the pause holds and logs nothing for it", async () => {

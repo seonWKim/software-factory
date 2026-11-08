@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
@@ -13,10 +14,11 @@ import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrMergeMethod, PrMergeResult } from "../../src/interfaces/forge.js";
+import type { BranchPushInput, ClosePrInput, Forge, ForgeEvent, ForgePollResult, OpenPrInput, PrChecks, PrMergeMethod, PrMergeResult } from "../../src/interfaces/forge.js";
+import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
-import { Controller } from "../../src/core/controller.js";
-import { Worker } from "../../src/core/worker.js";
+import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
+import { Worker } from "../../src/worker/index.js";
 import type { Run, WorkItem, WorkItemId, WorkerId } from "../../src/core/types.js";
 import type { IssueLookup, SessionFile, SessionFiles, SessionIssue } from "../../src/core/session.js";
 import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
@@ -25,7 +27,7 @@ import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import { GitHubClient, GitHubError } from "../../src/impl/github/github-client.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { newStore } from "./store.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../src/interfaces/tool-broker.js";
 
 /**
  * A github_auth plugin's build for tests: `credentials`, and `api` (absent: a client over them whose calls go to
@@ -69,6 +71,10 @@ export const config: FactoryConfig = {
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
   inbox_retention_days: 14,
+  // Tests that are not about batching send each commit at once (`commit`): the `auto` debounce waits on time these
+  // tests never advance. Batching has its own tests (tests/outbound/).
+  outbound_batching: { "*": { mode: "commit", debounce_ms: 2_000, max_wait_ms: 30_000, max_messages: 10 } },
+  merge_queue_depth: 1,
   workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },
@@ -237,7 +243,44 @@ export class FakeForge implements Forge {
   /** When set, setPrStatus records the call, then throws this. */
   statusError: Error | null = null;
 
-  constructor(private readonly source: Pick<FakeSource, "closers"> | null = null) {}
+  constructor(
+    private readonly source: Pick<FakeSource, "closers"> | null = null,
+    /**
+     * A forge-write log to add outbound's pushes and PR opens to, as FakeBroker's `calls` (RFC 0015 M7): named by the
+     * GitHub tool that made them before they moved to outbound, so a flow's writes read in the order they hit the forge.
+     */
+    private readonly writes: { name: string; args: unknown }[] | null = null,
+  ) {}
+
+  /** Every pushBranch call outbound made (RFC 0015 M7), failed ones included, in order. */
+  pushes: BranchPushInput[] = [];
+  /** The forge's branches: a successful pushBranch moves its branch here. */
+  branches = new Map<string, string>();
+  /** Thrown by the next pushBranch calls, oldest first, before anything is pushed. */
+  pushErrors: Error[] = [];
+  async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
+    this.pushes.push(input);
+    this.writes?.push({ name: "github.push_branch", args: input });
+    const err = this.pushErrors.shift();
+    if (err) throw err;
+    if (this.branches.get(input.branch) === input.sha) return "already";
+    this.branches.set(input.branch, input.sha);
+    return "pushed";
+  }
+  /** Every openPr call, failed ones included, in order. */
+  prOpens: OpenPrInput[] = [];
+  /** Thrown by the next openPr calls, oldest first. */
+  prErrors: Error[] = [];
+  /** The PR number a branch's PR gets (absent: 42), and its link. */
+  prNumbers = new Map<string, number>();
+  async openPr(input: OpenPrInput): Promise<{ number: number; url: string | null }> {
+    this.prOpens.push(input);
+    this.writes?.push({ name: "github.open_pr", args: input });
+    const err = this.prErrors.shift();
+    if (err) throw err;
+    const n = this.prNumbers.get(input.branch) ?? 42;
+    return { number: n, url: this.prRef(n).link };
+  }
 
   async poll(cursor: string | null): Promise<ForgePollResult> {
     this.polls.push(cursor);
@@ -355,6 +398,20 @@ export class FakeForge implements Forge {
     this.mergeShas[pr] = sha;
     this.prStates.set(pr, "merged");
     return { merged: true, sha, already: false };
+  }
+}
+
+/**
+ * A FakeForge whose pushBranch also pushes for real, as the GitHub forge does (RFC 0015 M7): the stored sha from the
+ * factory repo to its origin (a local bare repo, no credential), never forced.
+ */
+export class GitForge extends FakeForge {
+  override async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
+    const r = await super.pushBranch(input);
+    execFileSync("git", ["push", "--quiet", "origin", `${input.sha}:refs/heads/${input.branch}`], {
+      cwd: input.repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    return r;
   }
 }
 
@@ -645,6 +702,28 @@ export class FakeRunner implements AgentRunner {
   }
 }
 
+/** PR `pr` of `owner/repo` as the GitHub forge hands it out (`prRef`): the target of a run's PR comment. */
+export function fakePrRef(pr: number, repo = "o/r"): SourceRef {
+  return { type: "github_issue", id: `${repo}#${pr}`, link: `https://github.com/${repo}/pull/${pr}` };
+}
+
+/**
+ * The comments a run handed to outbound for `item` (RFC 0015 M7): its thread entries with a delivery, in order.
+ * `number` is the issue or PR number the target names; `pr` whether the target is a PR.
+ */
+export async function runComments(
+  store: Pick<FactoryStore, "listDeliveries">,
+  item: WorkItemId,
+): Promise<{ number: number | null; pr: boolean; body: string; marker: string; target: SourceRef }[]> {
+  return (await store.listDeliveries(item)).map((d) => ({
+    number: /#(\d+)$/.test(d.target.id) ? Number(/#(\d+)$/.exec(d.target.id)![1]) : null,
+    pr: /\/pull\/\d+$/.test(d.target.link),
+    body: d.body,
+    marker: d.marker,
+    target: d.target,
+  }));
+}
+
 /**
  * Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). Gives up
  * after at least `tries` yields and `ms` of real time, so a slow machine (CI) gets the same chance as a fast one.
@@ -668,10 +747,8 @@ export function recordingLog(): Logger & { lines: { level: string; msg: string; 
 const OBJECT_SCHEMA = { type: "object" } as const;
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
-  { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: STORE_BRANCH, description: "store the branch in the factory repo", input_schema: OBJECT_SCHEMA, read_only: false },
   { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
-  { name: "github.comment", description: "comment", input_schema: OBJECT_SCHEMA, read_only: false },
 ];
 
 /**
@@ -714,13 +791,21 @@ export class FakeNoteBroker implements ToolBroker {
 }
 
 export class FakeBroker implements ToolBroker {
-  /** Every call that acts on the forge (push, PR, comment), in order. The read-only preflight is in `preflights`. */
-  calls: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  /**
+   * Every other tool call, in order, and, when a FakeForge logs to it, outbound's pushes and PR opens under the names
+   * of the broker tools they replaced (no `ctx`: outbound holds no run's lease). The preflight is in `preflights`.
+   */
+  calls: { ctx?: ToolCallContext; name: string; args: unknown }[] = [];
   /** Every read-only `github.preflight` call, in order. */
   preflights: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  /** Every `git.store_branch` call (a run's last step, RFC 0015 M7: a factory-repo ref, nothing on the forge), in order. */
+  stores: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
+  private stored = 0;
+  /** Whether a stored branch must still reach a forge (the GitHub broker) or is the change itself (the local one). */
+  toForge = true;
   /**
    * Scripted results per tool name, used in order before the default. A function gets the call's args, so a
-   * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
+   * test can fail a store of one branch only (e.g. the wip branch, not the PR branch); null falls through.
    */
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
   /** The GitHub broker's tools, flagged as it flags them: only the preflight is read-only. */
@@ -731,15 +816,13 @@ export class FakeBroker implements ToolBroker {
   allTools(): readonly ToolDescriptor[] {
     return this.tools;
   }
-  /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
-  remote = new Map<string, string>();
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
+    (name === "github.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
-    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
+    // A stored branch must still reach the forge: outbound pushes it. Each store names a new sha.
+    if (name === STORE_BRANCH && !scripted) return { ok: true, content: { sha: (++this.stored).toString(16).padStart(40, "0"), forge: this.toForge } };
     if (scripted) return scripted;
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
 }
@@ -811,9 +894,9 @@ export async function pipeline(opts: {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
     implement: opts.implement ?? (() => ({ output: { summary: "the summary", next_steps: "the next steps" } })),
@@ -821,14 +904,14 @@ export async function pipeline(opts: {
   });
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, forge, auth: new FakeAuth(), clock, config: cfg, log, scanner, repeated_failure_rule: false,
     ...(opts.network_probe ? { network_probe: opts.network_probe } : {}),
   });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
-      clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+      clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
     });
   const w1 = worker("w1");
   const w2 = worker("w2");

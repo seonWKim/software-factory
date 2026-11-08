@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cliUserConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   CLI_COMMANDS, CLI_TOP_WORDS, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, parseLocalCliArgs,
   runLocalCli,
@@ -198,7 +198,7 @@ describe("a local resolve command at the controller", () => {
   async function local(blocked_reason: string) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const controller = new Controller({
+    const controller = new ControllerRole({
       store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
       repeated_failure_rule: false,
     });

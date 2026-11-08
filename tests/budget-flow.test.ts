@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Budgets } from "../src/core/budget.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { Worker } from "../src/worker/index.js";
 import type { UserId, WorkItem, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -45,8 +45,8 @@ async function factory(opts: {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const forge = new FakeForge(source);
   const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
   const runner = new FakeRunner({
     triage: opts.triage ?? (() => used(100, triageSpec)),
     implement: opts.implement ?? (() => used(100, done)),
@@ -54,7 +54,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const controllerFor = (c: FactoryConfig) =>
-    new Controller({ store, source, forge, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
+    new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: c, log, scanner: cleanScanner , repeated_failure_rule: false });
   const controller = controllerFor(config);
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(),
@@ -102,8 +102,9 @@ describe("the checkpoint", () => {
 
     const rows = (await f.store.listStateChanges(it0.id)).filter((c) => c.reason === "budget_checkpoint");
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.changes).toMatchObject({ stage: { from: "RUNNING", to: "REVIEW" }, blocked_on: { from: "none", to: "budget" } });
-    expect(rows[0]!.detail).toMatchObject({ held_reason: "implemented", held_run_kind: "review", tokens_spent: 1000, budget: 1000 });
+    // The review is queued when outbound delivered the PR (RFC 0015 M7): the checkpoint holds it there.
+    expect(rows[0]!.changes).toMatchObject({ stage: { from: "RUNNING", to: "REVIEW" }, blocked_on: { from: "outbound", to: "budget" } });
+    expect(rows[0]!.detail).toMatchObject({ held_reason: "pr_delivered", held_run_kind: "review", tokens_spent: 1000, budget: 1000 });
 
     const [cp, ...more] = await f.store.listBudgetCheckpoints(it0.id);
     expect(more).toEqual([]);
@@ -131,7 +132,8 @@ describe("the checkpoint", () => {
         await f.controller.tickRuns();
         continue;
       }
-      // The implement run pushed and opened the PR. Snapshot, then let the controller hit the checkpoint.
+      // The implement run stored its branch and its push and PR intents. Snapshot, then let the controller hit the
+      // checkpoint.
       const it0 = (await f.store.getWorkItemBySource("github_issue", f.src.id))!;
       const handoffs = await f.store.listHandoffs(it0.id);
       const before = await f.store.listRuns(it0.id);
@@ -142,8 +144,8 @@ describe("the checkpoint", () => {
       expect(handoffs.length).toBeGreaterThan(0);
       const after = await f.store.listRuns(it0.id);
       expect(after.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r)).toEqual(before.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r));
-      // No push, no PR call: the branch and the PR are untouched.
-      expect(f.broker.calls.length).toBe(brokerCalls);
+      // Only the run's own push and PR, which outbound delivers before the review the checkpoint holds.
+      expect(f.broker.calls.slice(brokerCalls).map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
       expect((await f.item(it0)).pr_number).toBe(42);
       checked = true;
     }
@@ -156,7 +158,7 @@ describe("the checkpoint", () => {
     const it0 = await f.submit();
     const runs = await f.store.listRuns(it0.id);
     expect(runs.find((r) => r.kind === "implement")).toMatchObject({ status: "succeeded" });
-    expect(await f.reasons(it0)).toEqual(["intake", "triaged_auto_approved", "budget_checkpoint"]);
+    expect(await f.reasons(it0)).toEqual(["intake", "triaged_auto_approved", "implemented", "budget_checkpoint"]);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 50_100, blocked_on: "budget" });
   });
 

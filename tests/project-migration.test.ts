@@ -7,7 +7,7 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import {
   PROJECT_TABLES, type ProjectKeyDb, type ResolveRepo, applyProjectKeys, countLegacyProjectRows, planProjectKeys, runProjectKeyStep,
 } from "../src/impl/store/project-keys.js";
-import type { SqlDriver } from "../src/impl/store/sql/driver.js";
+import type { SqlDriver } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";
@@ -48,7 +48,7 @@ const sqlite: Backend = {
       projectColumns: async () => {
         const tables = (await driver.all("SELECT name FROM sqlite_master WHERE type = 'table'")).map((r) => String(r.name));
         const out: string[] = [];
-        for (const t of tables) if ((await driver.all(`PRAGMA table_info(${t})`)).some((c) => c.name === "project")) out.push(t);
+        for (const t of tables) if (!t.startsWith("legacy_") && (await driver.all(`PRAGMA table_info(${t})`)).some((c) => c.name === "project")) out.push(t);
         return out.sort();
       },
     };
@@ -66,7 +66,7 @@ const mysqlBackend: Backend = {
       driver,
       reopen: () => new SqlFactoryStore(driver, new FakeClock()),
       projectColumns: async () =>
-        (await driver.all("SELECT table_name AS t FROM information_schema.columns WHERE table_schema = DATABASE() AND column_name = 'project'"))
+        (await driver.all("SELECT table_name AS t FROM information_schema.columns WHERE table_schema = DATABASE() AND column_name = 'project' AND table_name NOT LIKE 'legacy\\_%'"))
           .map((r) => String(r.t))
           .sort(),
     };
@@ -88,9 +88,9 @@ async function seedLegacy(b: Backend) {
     for (const t of PROJECT_TABLES) await driver.run(`UPDATE ${t} SET project = ? WHERE project = ?`, [ownerName, ref.key]);
   }
   const snapshot = async () => ({
-    work_items: await driver.all("SELECT * FROM work_items ORDER BY id"),
-    unreviewed_merges: await driver.all("SELECT * FROM unreviewed_merges ORDER BY id"),
-    cursors: await driver.all("SELECT * FROM cursors ORDER BY name"),
+    work_items: await driver.all("SELECT * FROM controller_work_items ORDER BY id"),
+    unreviewed_merges: await driver.all("SELECT * FROM controller_unreviewed_merges ORDER BY id"),
+    cursors: await driver.all("SELECT * FROM inbound_cursors ORDER BY name"),
   });
   return { ...opened, ids: [a.item.id, c.item.id, d.item.id], snapshot };
 }
@@ -116,7 +116,7 @@ for (const b of BACKENDS) {
       expect(await countLegacyProjectRows(f.driver)).toBe(4);
       expect(lines[0]).toBe("-- project keys: 4 rows would change");
       for (const id of f.ids) expect(lines.some((l) => l.includes(id))).toBe(true);
-      expect(lines.filter((l) => l.includes('"table":"unreviewed_merges"'))).toHaveLength(1);
+      expect(lines.filter((l) => l.includes('"table":"controller_unreviewed_merges"'))).toHaveLength(1);
       expect(lines.at(-1)).toBe("dry run: nothing was changed");
     });
 
@@ -125,11 +125,11 @@ for (const b of BACKENDS) {
       const lines: string[] = [];
       expect(await runProjectKeyStep(f.driver, resolver().factory, "apply", (l) => lines.push(l))).toBe(0);
       expect(lines.at(-1)).toContain("rewrote 4 rows");
-      const projects = (await f.driver.all("SELECT id, project FROM work_items ORDER BY id")).map((r) => [r.id, r.project]);
+      const projects = (await f.driver.all("SELECT id, project FROM controller_work_items ORDER BY id")).map((r) => [r.id, r.project]);
       expect(projects).toEqual(
         [[f.ids[0], KEYS["o/r"]!.key], [f.ids[1], KEYS["o/r"]!.key], [f.ids[2], KEYS["x/y"]!.key]].sort((x, y) => String(x[0]).localeCompare(String(y[0]))),
       );
-      expect((await f.driver.all("SELECT project FROM unreviewed_merges")).map((r) => r.project)).toEqual([KEYS["o/r"]!.key]);
+      expect((await f.driver.all("SELECT project FROM controller_unreviewed_merges")).map((r) => r.project)).toEqual([KEYS["o/r"]!.key]);
       const store = f.reopen();
       await store.migrate();
       expect(await store.getCursor(projectLabelCursor(KEYS["x/y"]!.key))).toBe("github.com/x/y-renamed");

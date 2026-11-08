@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
@@ -44,7 +45,7 @@ async function setup() {
   const broker = new LocalToolBroker({ store, scanner: new PatternEgressScanner(async () => [SECRET]), branchPrefix: "factory/", repoPath: repo });
   const remoteRefs = () => git(origin, "for-each-ref");
   const localRef = (branch: string) => git(repo, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`);
-  return { repo, workdir, broker, ctx, remoteRefs, localRef, push: (branch = BRANCH) => broker.call(ctx, "github.push_branch", { workdir, branch, base_ref: "main" }) };
+  return { repo, workdir, broker, ctx, remoteRefs, localRef, push: (branch = BRANCH) => broker.call(ctx, STORE_BRANCH, { workdir, branch, base_ref: "main" }) };
 }
 
 describe("local broker", { timeout: 30_000 }, () => {
@@ -54,16 +55,17 @@ describe("local broker", { timeout: 30_000 }, () => {
     const before = f.remoteRefs();
     const r = await f.push();
     const head = git(f.workdir, "rev-parse", "HEAD");
-    expect(r).toEqual({ ok: true, content: { sha: head } });
+    // `forge: false`: the factory repo's branch is the change; the worker records no push for outbound.
+    expect(r).toEqual({ ok: true, content: { sha: head, forge: false } });
     expect(f.localRef(BRANCH)).toBe(head);
     expect(f.remoteRefs()).toBe(before);
     expect(git(f.repo, "rev-parse", "refs/remotes/origin/main")).toBe(git(f.repo, "rev-parse", "main"));
   });
 
-  it("serves the push only: no PR, preflight or comment tool, so nothing can reach a forge", async () => {
+  it("serves the branch store only: no PR, preflight or comment tool, so nothing can reach a forge", async () => {
     const f = await setup();
-    expect(f.broker.allTools().map((t) => t.name)).toEqual(["github.push_branch"]);
-    for (const name of ["github.open_pr", "github.preflight", "github.comment"]) {
+    expect(f.broker.allTools().map((t) => t.name)).toEqual([STORE_BRANCH]);
+    for (const name of ["github.push_branch", "github.open_pr", "github.preflight"]) {
       expect(await f.broker.call(f.ctx, name, {})).toMatchObject({ ok: false, error_code: "unknown_tool" });
     }
   });

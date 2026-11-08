@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { repeatsFastInfraFailure } from "../src/core/policy.js";
 import type { Run, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -11,7 +11,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { badgesOf, levelOf } from "../src/ui/priority.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 
 // Design §5 Restarts (issue #216): an infra failure that repeats the step's previous run (same infra code, same
@@ -39,7 +39,7 @@ async function factory(implement: (n: number) => Partial<AgentRunResult>, opts: 
     },
     review: () => pass,
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: opts.scanner ?? cleanScanner });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: opts.scanner ?? cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config, prompts,
     log: silent, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
