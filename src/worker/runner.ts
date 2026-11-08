@@ -1018,14 +1018,14 @@ export class Worker {
   }
 
   /**
-   * The "Notes from the approver" section: the note on the item's latest approval (`spec_approved` or
-   * `floor_tier_approved`) that has one, labelled untrusted and fenced so it cannot close its block. The
+   * The "Notes from the approver" section: the note on the item's latest approval (`spec_approved`,
+   * `floor_tier_approved` or `rule_of_two_approved`) that has one, labelled untrusted and fenced so it cannot close its block. The
    * controller scanned and capped it before storing it. No such note: empty, so the section is absent.
    */
   async approverNotes(item: WorkItem): Promise<string> {
     const noted = (await this.d.store.listStateChanges(item.id))
       .filter((c) => typeof c.detail?.note === "string" && c.detail.note.trim() !== "");
-    const approval = noted.filter((c) => c.reason === "spec_approved" || c.reason === "floor_tier_approved").at(-1);
+    const approval = noted.filter((c) => ["spec_approved", "floor_tier_approved", "rule_of_two_approved"].includes(c.reason)).at(-1);
     // A `/retry` note (issue #280) goes in the same section, after the approval's.
     const retried = noted.filter((c) => c.reason === "retry_requested").at(-1);
     if (!approval && !retried) return "";

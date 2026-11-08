@@ -104,6 +104,12 @@ async function autoFactory(opts: Opts = {}) {
   const cli = (user: UserId, a: CliAction) =>
     runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
+  /** A person's `/approve` of the implement run the Rule of Two held after auto mode's approval, then a step. */
+  const approveRun = async (id: WorkItemId) => {
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" });
+    expect((await cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
+    await step();
+  };
   /** `factory mode <mode> [--project o/r]` as `who`, with the local auth plugin's approve_merge check. */
   const mode = async (m: string, who: UserId = ME, ...rest: string[]) => {
     const action = parseModeArgs([m, ...rest]);
@@ -120,7 +126,7 @@ async function autoFactory(opts: Opts = {}) {
   const messages = async (id: WorkItemId, prefix: string) => (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   const changes = async (id: WorkItemId) => store.listStateChanges(id);
   const modeRows = async () => (await store.listSettingChanges(50)).filter((c) => c.key === "mode");
-  return { repo, store, controller, step, cli, create, mode, setting, messages, changes, modeRows, project, clock };
+  return { repo, store, controller, step, cli, create, approveRun, mode, setting, messages, changes, modeRows, project, clock };
 }
 
 const AUTO = { kind: "system", id: AUTO_ACTOR };
@@ -134,7 +140,7 @@ describe("auto mode: specs", { timeout: 60_000 }, () => {
     expect(await f.modeRows()).toEqual([]);
   });
 
-  it("a spec below tier 4 with no decisions starts implementation with no /approve, actor system:auto, naming the mode change", async () => {
+  it("a spec below tier 4 with no decisions is approved with no /approve, actor system:auto, naming the mode change", async () => {
     const f = await autoFactory();
     expect((await f.mode("auto")).ok).toBe(true);
     const [flip] = await f.modeRows();
@@ -143,6 +149,31 @@ describe("auto mode: specs", { timeout: 60_000 }, () => {
     const approved = (await f.changes(id)).find((c) => c.reason === "spec_approved")!;
     expect(approved.actor).toEqual(AUTO);
     expect(approved.detail).toMatchObject({ approved_by: AUTO_ACTOR, mode_change: flip!.seq });
+  });
+
+  it("Rule of Two: the implement run auto mode approved is not started; the item waits for a person, and the reply says why", async () => {
+    const f = await autoFactory();
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" });
+    expect((await f.store.listRuns(id)).map((r) => r.kind)).toEqual(["triage"]);
+    const approved = (await f.changes(id)).find((c) => c.reason === "spec_approved")!;
+    expect(approved.detail).toMatchObject({ held_by: "rule_of_two", held_run_kind: "implement" });
+    const [reply] = await f.messages(id, "<!-- factory:rule-of-two:");
+    expect(reply).toContain("a person must approve before it runs");
+    expect(reply).toContain("Reply `/approve` to start it");
+  });
+
+  it("Rule of Two: a person's /approve starts the held implement run, with the person as actor", async () => {
+    const f = await autoFactory();
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    const approved = (await f.changes(id)).find((c) => c.reason === "rule_of_two_approved")!;
+    expect(approved.actor).toEqual({ kind: "user", id: ME });
+    expect((await f.store.listRuns(id)).map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect((await f.changes(id)).map((c) => c.reason)).toContain("implemented");
   });
 
@@ -193,6 +224,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     const mainBefore = git(f.repo, "rev-parse", "main");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     const done = (await f.store.getWorkItem(id))!;
     expect(done).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
     expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
@@ -210,6 +242,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     await f.mode("auto");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect((await f.messages(id, "<!-- factory:auto-merge-held:")).join("")).toContain("above auto_merge_max_tier (0)");
   });
@@ -225,10 +258,9 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
       const mainBefore = git(f.repo, "rev-parse", "main");
       const id = await f.create();
       await f.step();
-      if ((await f.store.getWorkItem(id))!.stage === "READY") {
-        await f.cli(ME, { action: "command", command: "approve", id, text: "" });
-        await f.step();
-      }
+      // A spec auto mode may not approve waits for /approve; one it approved waits for a person under the Rule of Two.
+      await f.cli(ME, { action: "command", command: "approve", id, text: "" });
+      await f.step();
       await f.step();
       expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
       expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
@@ -244,6 +276,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     const mainBefore = git(f.repo, "rev-parse", "main");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
@@ -286,6 +319,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await f.mode("auto");
     const first = await f.create();
     await f.step();
+    await f.approveRun(first);
     expect(await f.store.getWorkItem(first)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     await stopped(f, "red_main");
     // Manual again: the next spec waits.
@@ -320,13 +354,15 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
       }
       return write(o);
     };
-    await f.create();
-    await f.step().catch(() => undefined);
+    const first = await f.create();
+    await f.step();
+    await f.approveRun(first).catch(() => undefined);
     expect(failed).toBe(true);
     expect(await f.modeRows()).toHaveLength(1);
     // The alert is recorded and deduped for 6 h; a second checkpoint's stop finds the mode still auto and sets it.
-    await f.create();
+    const second = await f.create();
     await f.step();
+    await f.approveRun(second);
     await stopped(f, "budget_checkpoint");
   });
 
@@ -336,6 +372,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await f.mode("auto");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "budget", blocked_reason: "budget_checkpoint" });
     await stopped(f, "budget_checkpoint");
   });

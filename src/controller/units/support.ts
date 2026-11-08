@@ -41,6 +41,11 @@ export const MAX_FEEDBACK_CHARS = 8000;
 /** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
 export const FLOOR_TIER = "floor_tier";
 /**
+ * blocked_reason of an item whose next run's role holds all three Rule of Two facts while no person approved it (auto
+ * mode approved its spec, RFC 0015 §8): the run is held until a person's `/approve` (design 10-event-driven).
+ */
+export const RULE_OF_TWO = "rule_of_two";
+/**
  * blocked_reason of a PR whose base no longer merges cleanly and whose automatic resolve runs are used up (or
  * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
  */
