@@ -3,9 +3,9 @@
 // for it before. No live model and no remote service: the worker has no LLM and GitHub is a recording client.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, fileReport, issueMarker, patternKey, systemSource } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
@@ -66,7 +66,7 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[]) {
   const storage = new MemoryStorage();
   const scanner = new RecordingScanner();
   const sources = sourcesOf(store);
-  const controller = new Controller({ store, sources, auth: new FakeAuth(), clock, config, log: silent, scanner });
+  const controller = new ControllerRole({ store, sources, auth: new FakeAuth(), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage,
     clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -226,7 +226,7 @@ describe("improve filing: solo, the local source", () => {
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "skipped", reason: "no_source" }]);
-    expect((await w.store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await w.store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
   });
 });
 

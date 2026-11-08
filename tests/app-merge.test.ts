@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
@@ -7,9 +7,10 @@ import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import { FakeAuth, FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
-// The Merge button (design §9, issue #451): an app `merge` request merges a GitHub item's PR through the forge at
-// the head the review passed, and a local item through the one local merge `factory merge` uses. Both are
-// authorized as approve_merge by the local auth plugin, and a refusal moves nothing.
+// The Merge button (design §9, issue #451): an app `merge` request merges a GitHub item's PR at the head the review
+// passed, as a keyed `merge_pr` action outbound delivers through the forge (RFC 0015 M7). It is authorized as
+// approve_merge by the local auth plugin, and a refusal moves nothing. The local item's Merge, the one local merge
+// `factory merge` uses, is in tests/local-merge-flow.test.ts.
 
 const OWNER = "local:owner" as UserId;
 const REQUESTER = "local:requester" as UserId;
@@ -45,8 +46,8 @@ async function harness(opts: { forge?: boolean } = {}) {
   const forge = new FakeForge();
   const sandbox = new MergingSandbox();
   const roles = new LocalRoles();
-  const controller = new Controller({
-    store, source, forge: opts.forge === false ? null : forge, sandbox, auth: new FakeAuth(), local_auth: roles,
+  const controller = new ControllerRole({
+    store, sources: [source], forge: opts.forge === false ? null : forge, sandbox, auth: new FakeAuth(), local_auth: roles,
     clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
@@ -59,11 +60,12 @@ async function harness(opts: { forge?: boolean } = {}) {
   };
   /** A GitHub item waiting for its merge: PR #42 (or `pr`), reviewed at head `h1`. */
   const githubReady = (n = 1, pr = "42") => itemIn(issueRef(n), { ...READY, change_ref: pr }, "h1");
-  const localReady = (n = 1) => itemIn(localRef(n), READY);
   let keys = 0;
   const merge = async (it: WorkItem, who: UserId = OWNER): Promise<AppCommandRequest> => {
     const { request } = await store.recordAppCommandRequest({ key: `k${++keys}`, actor: who, command: "merge", args: { work_item_id: it.id } });
     await controller.tickCommands();
+    // Outbound merges the PR; its DeliveryCompleted closes the item and posts the reply.
+    await controller.tickOutbox();
     return (await store.getAppCommandRequest(request.seq))!;
   };
   /** The item's thread entries for request `r`: its refusal and its merge reply. */
@@ -72,7 +74,7 @@ async function harness(opts: { forge?: boolean } = {}) {
   const closes = async (it: WorkItem) => (await store.listStateChanges(it.id)).filter((c) => c.changes.stage?.to === "CLOSED");
   /** Every sandbox call: a local merge, a created folder or a git command. */
   const sandboxCalls = () => sandbox.merges.length + sandbox.created.length + sandbox.gitCalls.length;
-  return { store, source, forge, sandbox, roles, controller, itemIn, githubReady, localReady, merge, replies, closes, sandboxCalls };
+  return { store, clock, source, forge, sandbox, roles, controller, itemIn, githubReady, merge, replies, closes, sandboxCalls };
 }
 
 describe("Merge on a GitHub item (the forge's mergePr)", () => {
@@ -101,9 +103,9 @@ describe("Merge on a GitHub item (the forge's mergePr)", () => {
 
     expect(h.forge.mergeCalls).toHaveLength(1);
     expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
-    const said = await h.replies(it1, r);
-    expect(said).toEqual([expect.stringContaining("head moved")]);
-    expect(r.refusal).toBe(said[0]);
+    // The request was applied (the merge was asked for); the forge's refusal comes back as one reply.
+    expect(r.refusal).toBeNull();
+    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("head moved")]);
   });
 
   it("a principal without approve_merge is refused, with no forge call", async () => {
@@ -126,15 +128,20 @@ describe("Merge on a GitHub item (the forge's mergePr)", () => {
     expect(r.refusal).toContain("no forge is selected");
   });
 
-  it("a forge failure is a refusal that moves nothing, so the commands after it still apply", async () => {
+  it("a forge failure moves nothing and outbound retries the merge after its backoff, once", async () => {
     const h = await harness();
     const it1 = await h.githubReady();
     h.forge.mergeError = new Error("network down");
     const r = await h.merge(it1);
 
     expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
-    expect(r.refusal).toContain("press Merge again");
-    expect(r.refusal).not.toContain("network down");
+    expect(r.refusal).toBeNull();
+    h.forge.mergeError = null;
+    h.clock.advance(config.retry_max_ms);
+    await h.controller.tickOutbox();
+    expect(h.forge.mergeCalls).toHaveLength(2);
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", merge_sha: "merge-42" });
+    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("Merged PR #42")]);
   });
 
   it("twice is safe: a second request after the merge is refused as not waiting, with no second merge", async () => {
@@ -166,47 +173,8 @@ describe("Merge on a GitHub item (the forge's mergePr)", () => {
   });
 });
 
-describe("Merge releases the items waiting on the merged one", () => {
-  for (const kind of ["github", "local"] as const) {
-    it(`${kind}: an item held on the merged item's dependency is released`, async () => {
-      const h = await harness();
-      const it1 = kind === "github" ? await h.githubReady(1) : await h.localReady(1);
-      const ref = kind === "github" ? issueRef(2) : localRef(2);
-      const waiting = await h.itemIn(ref, { stage: "RUNNING", blocked_on: "dependency", blocked_reason: `waiting for ${it1.source.id}` });
-      await h.store.replaceDependencyEdges(waiting.id, [{ depends_on: it1.source.id, kind: "depends_on" }]);
-      await h.merge(it1);
-
-      expect(await h.store.getWorkItem(waiting.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
-    });
-  }
-});
-
-describe("Merge on a local item (the one local merge of `factory merge`)", () => {
-  it("runs Controller.mergeLocal through the sandbox: the item closes with the merge sha and the reply is posted, with no forge call", async () => {
-    const h = await harness();
-    const it1 = await h.localReady();
-    const r = await h.merge(it1);
-
-    expect(h.sandbox.merges).toHaveLength(1);
-    expect(h.sandbox.merges[0]).toMatchObject({ branch: `factory/${it1.id}`, base_ref: config.repo.base_branch });
-    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "localmerge1" });
-    expect((await h.closes(it1))[0]).toMatchObject({ reason: "local_merged", actor: { kind: "user", id: OWNER } });
-    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("Merged `factory/")]);
-    expect(h.forge.mergeCalls).toEqual([]);
-    expect(h.roles.asked).toEqual(["approve_merge"]);
-  });
-
-  it("a principal without approve_merge is refused, with no sandbox call", async () => {
-    const h = await harness();
-    const it1 = await h.localReady();
-    const r = await h.merge(it1, REQUESTER);
-
-    expect(h.sandboxCalls()).toBe(0);
-    expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
-    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("has no role that allows it")]);
-  });
-
-  it("a local item that already has a PR merges its PR through the forge, with no local merge", async () => {
+describe("Merge on a local item that already has a PR", () => {
+  it("merges its PR through the forge, with no local merge", async () => {
     const h = await harness();
     const it1 = await h.itemIn(localRef(1), { ...READY, change_ref: "42" }, "h1");
     const r = await h.merge(it1);
@@ -216,15 +184,17 @@ describe("Merge on a local item (the one local merge of `factory merge`)", () =>
     expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "merge-42" });
     expect(r.refusal).toBeNull();
   });
+});
 
-  it("a refusal from the merge (a conflict) leaves the item merge_pending with one reply", async () => {
+describe("Merge releases the items waiting on the merged one", () => {
+  it("an item held on the merged item's dependency is released", async () => {
     const h = await harness();
-    const it1 = await h.localReady();
-    h.sandbox.result = { merged: false, conflicts: ["src/a.ts"] };
-    const r = await h.merge(it1);
+    const it1 = await h.githubReady(1);
+    const waiting = await h.itemIn(issueRef(2), { stage: "RUNNING", blocked_on: "dependency", blocked_reason: `waiting for ${it1.source.id}` });
+    await h.store.replaceDependencyEdges(waiting.id, [{ depends_on: it1.source.id, kind: "depends_on" }]);
+    await h.merge(it1);
 
-    expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
-    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("`src/a.ts`")]);
+    expect(await h.store.getWorkItem(waiting.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
   });
 });
 

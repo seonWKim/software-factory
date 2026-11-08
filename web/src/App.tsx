@@ -111,17 +111,17 @@ export function App() {
               href={BASE}
               data-testid="needs-you"
               className={cn(
-                "rounded-md px-2 py-1 text-sm font-medium tabular-nums",
+                "shrink-0 rounded-md px-2 py-1 text-sm font-medium whitespace-nowrap tabular-nums",
                 needs ? "bg-red-100 text-red-900 dark:bg-red-950 dark:text-red-100" : "bg-zinc-100 dark:bg-zinc-800",
               )}
             >
               Needs you ({needs ?? "…"})
             </Link>
-            <ModeSwitch />
-            <Link href={`${BASE}settings`} className={cn("text-sm", LINK_CLASS)}>
+            <ModeSwitch floating />
+            <Link href={`${BASE}settings`} className={cn("shrink-0 text-sm whitespace-nowrap", LINK_CLASS)}>
               Settings
             </Link>
-            <span className="ml-auto text-sm text-zinc-600 tabular-nums dark:text-zinc-400" aria-live="polite">
+            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-zinc-600 tabular-nums dark:text-zinc-400" aria-live="polite">
               {overview.isError ? "update failed" : ago}
             </span>
             <Button aria-label="Refresh" onClick={() => void client.invalidateQueries()}>

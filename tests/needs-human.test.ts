@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, REVIEW_SCHEMA, parseImplement, parseReview } from "../src/core/outputs.js";
 import { blockingRunKind, failureLine, repeatsLastFailure } from "../src/core/policy.js";
 import { type Run, type WorkerId, type WorkItem, outcomeTokens } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 
 // The agent's needs_human answer and the repeated-failure rule (issue #167, decided 2026-11-07).
@@ -27,8 +27,8 @@ async function factory(runner: FakeRunner, opts: { repeated?: boolean } = {}) {
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
   const scanner = new PatternEgressScanner(async () => []);
-  const controller = new Controller({
-    store, source, auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
+  const controller = new ControllerRole({
+    store, source, forge: new FakeForge(null, broker.calls), auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
   });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent, scanner,

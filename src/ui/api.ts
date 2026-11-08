@@ -30,6 +30,7 @@ import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
+import { displayName } from "./names.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -92,39 +93,32 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
-    let name: string;
-    try {
-      name = decodeURIComponent(t[1]!);
-    } catch {
-      return apiError(404, "No such table.");
-    }
-    return data(await dataTable(c.data(), name, url.searchParams));
+    const [name] = decoded(t.slice(1));
+    return name === undefined ? apiError(404, "No such table.") : data(await dataTable(c.data(), name, url.searchParams));
   }
   const tr = /^\/items\/([^/]+)\/runs\/([^/]+)\/transcript$/.exec(path);
   if (tr) {
-    let id: string;
-    let run: string;
-    try {
-      id = decodeURIComponent(tr[1]!);
-      run = decodeURIComponent(tr[2]!);
-    } catch {
-      return apiError(404, "No such run for this work item.");
-    }
+    const [id, run] = decoded(tr.slice(1));
+    if (id === undefined || run === undefined) return apiError(404, "No such run for this work item.");
     const r = await transcript(d, id as WorkItemId, run, url.searchParams);
     return { status: r.status, value: r.value };
   }
   const m = /^\/items\/([^/]+)$/.exec(path);
   if (m) {
-    let id: string;
-    try {
-      id = decodeURIComponent(m[1]!);
-    } catch {
-      return apiError(404, "No such work item.");
-    }
-    const body = await item(c, id as WorkItemId);
+    const [id] = decoded(m.slice(1));
+    const body = id === undefined ? null : await item(c, id as WorkItemId);
     return body === null ? apiError(404, "No such work item.") : ok(body);
   }
   return apiError(404, "Not found.");
+}
+
+/** A route's path segments, URL-decoded; none when one is malformed (a stray `%`). */
+function decoded(parts: readonly (string | undefined)[]): string[] {
+  try {
+    return parts.map((p) => decodeURIComponent(p!));
+  } catch {
+    return [];
+  }
 }
 
 /** GET /api/v1/pauses with, for a model stall, when it began (`since`): one more store read, no forge call. */
@@ -317,6 +311,7 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
       change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
+      merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
       recorded_at: m.at,
     });
   }
@@ -518,7 +513,7 @@ async function stateChange(c: ApiCtx, sc: StateChange) {
     detail = {};
     for (const [k, v] of Object.entries(sc.detail)) detail[k] = await c.text(String(v));
   }
-  return { version: sc.version, at: sc.at, actor: { kind: sc.actor.kind, id: await c.text(sc.actor.id) }, reason: await c.text(sc.reason), changes, detail };
+  return { version: sc.version, at: sc.at, actor: { kind: sc.actor.kind, id: await c.text(sc.actor.id), name: await c.text(await displayName(c.d.displayNames, sc.actor.id)) }, reason: await c.text(sc.reason), changes, detail };
 }
 
 /** One claim of a run: the worker id and error code pass the Withholder; the fencing token is not in the record. */

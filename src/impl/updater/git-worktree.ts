@@ -8,6 +8,7 @@ import type { Clock } from "../../interfaces/clock.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
 import {
   CODE_ROOT_ENV,
+  CODE_VERSION_ENV,
   CONFIG_ENV,
   type ChildHandle,
   type ChildRestart,
@@ -532,7 +533,7 @@ export class GitWorktreeUpdater implements Updater {
       args: this.o.childArgs ?? ["dev"],
       cwd: repoPath,
       env: {
-        [CODE_ROOT_ENV]: dir, [SUPERVISED_ENV]: "1", [WORKER_INDEX_BASE_ENV]: String(base),
+        [CODE_ROOT_ENV]: dir, [SUPERVISED_ENV]: "1", [WORKER_INDEX_BASE_ENV]: String(base), [CODE_VERSION_ENV]: rev,
         ...(this.o.configFile ? { [CONFIG_ENV]: this.o.configFile } : {}),
       },
     });

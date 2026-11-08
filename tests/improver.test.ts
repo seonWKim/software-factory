@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, systemSource, utcDay,
 } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { Run, RunId, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -53,8 +53,8 @@ describe("improve: grouping", () => {
 });
 
 /** A controller with no source: the daily improve step needs only the store. */
-function controller(store: FactoryStore, clock: FakeClock): Controller {
-  return new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+function controller(store: FactoryStore, clock: FakeClock): ControllerRole {
+  return new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
 }
 
 async function improveRuns(store: FactoryStore): Promise<Run[]> {
@@ -142,7 +142,7 @@ describe("improve: the run", () => {
     // After the window (the improve day itself): not counted either.
     await failRun(store, 5, "checks_failed", "npm test exited 1: 4 failing tests");
 
-    const c = new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm: noLlm });
+    const c = new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm: noLlm });
     await c.tickImprove();
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoSandbox(), runner: noRunner, broker: new FakeBroker(), storage: new MemoryStorage(),
@@ -163,7 +163,7 @@ describe("improve: the run", () => {
     expect(report.groups[0]!.work_item_ids).toHaveLength(2);
     expect(report.patterns.map((g) => [g.error_code, g.run_ids])).toEqual([["agent_timed_out", [in3]]]);
     expect(run!.outcome).toMatchObject({ status: "succeeded", data: { report_id: report.id, groups: 1, patterns: 1, tokens: 0 } });
-    expect((await store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
 
     // The controller acknowledges it and leaves the system item as it was.
     const before = (await store.getWorkItem(run!.work_item_id))!;

@@ -1,16 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, SPLIT_FILING_STALE_MS, phaseMarker } from "../src/core/split.js";
+import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker } from "../src/core/split.js";
+import { REFUSED_ATTEMPTS } from "../src/outbound/outbound.js";
 import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
-// Split specs (design 2026-11-01): a large estimate gives a split spec; /approve files one sub-issue per phase,
-// in order; each later phase is held until the one before it closes as completed; the parent closes last.
+// Split specs (design 2026-11-01): a large estimate gives a split spec; /approve queues one sub-issue per phase,
+// filed by outbound in order (RFC 0015 M7); each later phase is held until the one before it closes as completed;
+// the parent closes last.
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -33,7 +35,7 @@ async function setup(cfg: FactoryConfig = config) {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
   /** `factory settings set <key> <value>`: a stored override the controller reads on its next tick. */
   const set = (key: string, value: unknown) => store.setSettingOverride({ key, project: "", value: JSON.stringify(value), actor: "local:test" });
   let comment = 10_000_000;
@@ -64,7 +66,7 @@ async function setup(cfg: FactoryConfig = config) {
   const bySource = async (src: SourceRef) => (await store.getWorkItemBySource("github_issue", src.id))!;
   const runsOf = async (it: WorkItem) => store.listRuns(it.id);
   /** A second controller on the same store and source: another replica, or an old process still draining. */
-  const replica = () => new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+  const replica = () => new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
   return { clock, store, source, controller, replica, intake, finish, triaged, approve, closeSource, get, bySource, runsOf, set };
 }
 
@@ -192,31 +194,78 @@ describe("split spec flow", () => {
     expect(changes.at(-1)).toMatchObject({ reason: "run_retry_scheduled", detail: { error_code: "invalid_output" } });
   });
 
-  it("/approve again after a partial failure files no duplicates", async () => {
+  it("phase N+1 is filed only after phase N's delivery; a failed filing is outbound's retry and files each phase once", async () => {
     const f = await setup();
     const parent = await f.intake(73);
     await f.finish("triage", f.triaged(bigSpec(3)));
-    f.source.subIssueFailAt = 2;
+    f.source.subIssueFailAt = 2; // phase 2's first call files the issue, then fails before linking it
     await f.approve(issueRef(73));
 
-    // The second phase was filed but not linked; the approval was refused and the spec still waits.
-    expect(f.source.subIssues).toHaveLength(2);
-    expect(f.source.subIssues[1]!.linked).toBe(false);
-    expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect(f.source.comments.at(-1)!.body).toContain("`/approve` was not applied");
-    expect(f.source.comments.at(-1)!.body).toContain("1 of 3");
+    // `/approve` says the filing is queued; it is not refused.
+    expect(f.source.comments.some((c) => c.body.includes("is filing the 3 phases of this split"))).toBe(true);
+    expect(f.source.comments.some((c) => c.body.includes("was not applied"))).toBe(false);
+    // Phase 1 is filed and taken in; phase 2 waits for its retry, and phase 3 (whose body names phase 2) is not
+    // even recorded yet.
+    expect(f.source.subIssueCalls).toBe(2);
+    expect((await f.store.listPhases(parent.id)).map((p) => p.phase)).toEqual([1]);
+    const filings = async () => (await f.store.db.all("SELECT args FROM outbound_actions WHERE action = 'file_sub_issue' ORDER BY seq"))
+      .map((r) => (JSON.parse(String(r.args)) as { phase: number }).phase);
+    expect(await filings()).toEqual([1, 2]);
+    expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: SPLIT_FILING });
+    // Before the backoff, neither a phase tick nor an outbox step files anything.
+    await f.controller.tickPhases();
+    await f.controller.tickOutbox();
+    expect(f.source.subIssueCalls).toBe(2);
 
-    await f.approve(issueRef(73));
+    f.clock.advance(config.retry_max_ms);
+    await f.controller.tickOutbox();
     expect(f.source.subIssues.map((s) => s.title)).toEqual(["Phase 1/3: Part 1", "Phase 2/3: Part 2", "Phase 3/3: Part 3"]);
     expect(f.source.subIssues.every((s) => s.linked)).toBe(true);
+    expect(f.source.subIssueCalls).toBe(4); // 1, 2 (failed), 2 again (found by its marker), 3
+    expect(await filings()).toEqual([1, 2, 3]);
     expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
     const p1 = await f.bySource(f.source.subIssues[0]!.ref);
     expect(await f.runsOf(p1)).toHaveLength(1);
     expect((await f.store.listWorkItems(100)).length).toBe(4);
 
-    // Once split, a third /approve is refused and files nothing.
+    // Once split, another /approve is refused and files nothing.
     await f.approve(issueRef(73));
-    expect(f.source.subIssues).toHaveLength(3);
+    expect(f.source.subIssueCalls).toBe(4);
+  });
+
+  it("a filing the source refuses for good is given up: the split waits for a person with an alarm, and /approve again files the rest once", async () => {
+    const f = await setup();
+    const parent = await f.intake(77);
+    await f.finish("triage", f.triaged(bigSpec(3)));
+    const file = f.source.fileSubIssue.bind(f.source);
+    let locked = true;
+    f.source.fileSubIssue = async (input) => {
+      if (locked && input.marker === phaseMarker(parent.id, 2)) throw Object.assign(new Error("Validation Failed: the parent issue is locked"), { status: 422 });
+      return file(input);
+    };
+    await f.approve(issueRef(77));
+    for (let i = 1; i < REFUSED_ATTEMPTS; i++) {
+      f.clock.advance(config.retry_max_ms);
+      await f.controller.tickOutbox();
+    }
+    expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "delivery_failed" });
+    expect((await f.store.listStateChanges(parent.id)).at(-1)).toMatchObject({ reason: "delivery_failed", detail: { action: "file_sub_issue", phase: 2 } });
+    expect(await f.store.listAlerts({ limit: 10 })).toEqual([
+      expect.objectContaining({ pattern: "dead_letter", error_code: "non_retryable", detail: expect.stringContaining("the parent issue is locked") }),
+    ]);
+    // The reply is a thread entry the next outbox step sends.
+    await f.controller.tickOutbox();
+    expect(f.source.comments.some((c) => c.body.includes("stopped after 1 of 3"))).toBe(true);
+    const first = await f.store.listPhases(parent.id);
+    expect(first.map((p) => p.phase)).toEqual([1]);
+
+    locked = false;
+    await f.approve(issueRef(77));
+    expect(f.source.subIssues.map((s) => s.title)).toEqual(["Phase 1/3: Part 1", "Phase 2/3: Part 2", "Phase 3/3: Part 3"]);
+    const again = await f.store.listPhases(parent.id);
+    expect(again.map((p) => p.phase)).toEqual([1, 2, 3]);
+    expect(again[0]!.id).toBe(first[0]!.id);
+    expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
   });
 
   it("one /approve applied by two controllers at once files one set of phases, even when the marker lookup misses", async () => {
@@ -237,14 +286,29 @@ describe("split spec flow", () => {
     expect(reasons.filter((r) => r === "split_approved")).toHaveLength(1);
     // One split comment, and no refusal: the losing pass of the same command stays quiet.
     expect(f.source.comments.filter((c) => c.marker.includes(`split:${parent.id}`))).toHaveLength(1);
-    expect(f.source.comments.some((c) => c.body.includes("was not applied"))).toBe(false);
+    expect(f.source.comments.some((c) => c.body.includes("already approved"))).toBe(false);
   });
 
-  it("a claim left by a stopped process is refused while fresh and taken over once stale", async () => {
+  it("a phase whose text the egress scan flags is filed with the withheld notice only, under its marker (G5)", async () => {
+    const f = await setup();
+    const parent = await f.intake(76);
+    const token = `ghp_${"a".repeat(36)}`;
+    const spec = bigSpec(2);
+    await f.finish("triage", f.triaged({ ...spec, phases: [{ ...spec.phases[0]!, problem: `Rotate ${token}` }, spec.phases[1]!] }));
+    await f.approve(issueRef(76));
+    const [s1, s2] = f.source.subIssues;
+    expect(s1!.body).not.toContain(token);
+    expect(s1!.body).toContain("withheld by the leak scanner (github_token)");
+    expect(s1!.marker).toBe(phaseMarker(parent.id, 1));
+    expect(s2!.body).toContain("Problem of part 2");
+    expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
+  });
+
+  it("a filing whose process stopped right after the claim goes on at the next phase tick; /approve meanwhile is refused", async () => {
     const f = await setup();
     const parent = await f.intake(79);
     await f.finish("triage", f.triaged(bigSpec(2)));
-    // The process stopped right after claiming the filing.
+    // The process stopped right after claiming the filing: no filing was recorded.
     const it0 = await f.get(parent);
     const claimed = await f.store.transition({
       id: it0.id, expected_version: it0.version, patch: { blocked_on: "upstream", blocked_reason: SPLIT_FILING },
@@ -252,14 +316,17 @@ describe("split spec flow", () => {
     });
     expect(claimed.ok).toBe(true);
 
-    await f.approve(issueRef(79));
+    // The phase tick (each poll runs it) records phase 1's filing; outbound has not sent it yet.
+    await f.controller.tickPhases();
     expect(f.source.subIssues).toHaveLength(0);
-    expect(f.source.comments.at(-1)!.body).toContain("is filing this split's phases");
+    expect(await f.get(parent)).toMatchObject({ blocked_reason: SPLIT_FILING });
 
-    f.clock.advance(SPLIT_FILING_STALE_MS);
+    // Another /approve meanwhile is refused; the poll that reads it sends the filings.
     await f.approve(issueRef(79));
+    expect(f.source.comments.some((c) => c.body.includes("queued this split's phases for filing"))).toBe(true);
     expect(f.source.subIssues.map((s) => s.title)).toEqual(["Phase 1/2: Part 1", "Phase 2/2: Part 2"]);
     expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
+    expect((await f.store.listPhases(parent.id))[0]).toMatchObject({ requester_id: "github:1" });
   });
 
   it("a phase closed as not planned keeps the next phase held and the parent open", async () => {
@@ -336,7 +403,7 @@ describe("split spec flow", () => {
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 } };
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(76), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();
     const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;

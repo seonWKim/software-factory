@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId } from "../src/core/types.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource, commentBackoffMs } from "../src/impl/github/github-issue-source.js";
@@ -18,7 +18,7 @@ function controllerOn(store: FactoryStore, clock: FakeClock) {
   const source = new GitHubIssueSource(github, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
   // The outbox's own backoff (retry_base_ms) set to the tick, so the source's stored schedule is what is measured.
   const outbox = { ...config, retry_base_ms: 500, retry_max_ms: 500 };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: outbox, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: outbox, log: silent, scanner: cleanScanner });
   return { github, controller };
 }
 

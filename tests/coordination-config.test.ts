@@ -9,7 +9,7 @@ import { coordinationConfig } from "../src/core/config.js";
 import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { runSettings } from "../src/settings-cmd.js";
 import type { RunKind, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -17,7 +17,7 @@ import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, confi
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 type ClaimInput = Parameters<FactoryStore["claimRun"]>[0];
-const HOTSPOT = "src/core/worker.ts";
+const HOTSPOT = "src/worker/runner.ts";
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
 
 /** The claim input one worker tick sends, with `coordination` set from the config or left out. */

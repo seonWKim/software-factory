@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -59,7 +59,7 @@ function githubBroker(store: FactoryStore, clock: FakeClock) {
   } as unknown as GitHubClient;
   const broker = new RecordingBroker(new GitHubToolBroker({
     client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    credentials: { token: async () => null }, scanner: cleanScanner,
+    scanner: cleanScanner,
   }));
   return { broker, remote };
 }
@@ -74,7 +74,7 @@ async function factory(
   const forge = new FakeForge(source);
   const log = recordingLog();
   const workerLog = recordingLog();
-  const makeController = () => new Controller({ store, source, forge, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
+  const makeController = () => new ControllerRole({ store, source, forge, auth: new PartialAuth(), clock, config, log, scanner: cleanScanner });
   const controller = makeController();
   const broker = makeBroker(store, clock);
   const worker = new Worker({
@@ -390,26 +390,30 @@ describe("closing the source issue: close reason and the open PR", () => {
     }
   });
 
-  it("a failed PR close or comment leaves the item CLOSED, is logged, and a later tick retries it", async () => {
+  it("a failed PR close or comment leaves the item CLOSED and pending; outbound retries it after its backoff, once", async () => {
     for (const fail of ["close", "comment"] as const) {
       const f = await factory();
       await withPr(f);
       if (fail === "close") f.forge.prCloseError = new Error("boom");
       else f.forge.prCommentError = new Error("boom");
       await intake(f, closed(bob, "completed"));
-      expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+      expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", blocked_reason: "pr_close_pending" });
       expect(f.forge.prStates.get(42) ?? "open").toBe("open");
-      expect(f.log.lines.filter((l) => l.level === "warn").map((l) => l.msg))
-        .toContain("closing the PR after the source closed failed; retried on a later tick");
+      expect(f.log.lines.filter((l) => l.level === "warn").map((l) => l.msg)).toContain("close_pr failed; retried later");
 
       f.forge.prCloseError = null;
       f.forge.prCommentError = null;
+      // A source-close tick before the backoff records the same keyed intent again: nothing new is sent.
       await f.controller.tickSourceCloses();
+      expect(f.forge.prStates.get(42) ?? "open").toBe("open");
+      f.clock.advance(config.retry_max_ms);
+      await f.controller.tickOutbox();
       expect(f.forge.prStates.get(42)).toBe("closed");
       expect(f.forge.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed by @bob."]);
       expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null });
       const calls = f.forge.prCloseCalls.length;
       await f.controller.tickSourceCloses();
+      await f.controller.tickOutbox();
       expect(f.forge.prCloseCalls).toHaveLength(calls);
     }
   });

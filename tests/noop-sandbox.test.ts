@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { WRITE_TOOLS } from "../src/core/worker.js";
+import { WRITE_TOOLS } from "../src/worker/index.js";
 import { buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
@@ -91,6 +91,28 @@ describe("NoOpSandbox", { timeout: 30_000 }, () => {
     const h = await sbx.create({ repo, branch: "factory/wi_2", base_ref: "main" });
     expect(existsSync(join(h.workdir, "work.txt"))).toBe(true);
     await sbx.destroy(h);
+  });
+
+  it("a local merge whose base moves while its checks run moves nothing and reports base_moved, so the merge is checked again", async () => {
+    const { root, repo } = repoWithOrigin();
+    git(repo, "checkout", "--quiet", "-b", "feature");
+    writeFileSync(join(repo, "f.txt"), "f\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "feature");
+    git(repo, "checkout", "--quiet", "-b", "other", "main");
+    writeFileSync(join(repo, "o.txt"), "o\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "a person's commit on main");
+    const theirs = git(repo, "rev-parse", "HEAD").trim();
+    git(repo, "checkout", "--quiet", "--detach");
+    const sbx = new NoOpSandbox(join(root, "worktrees"), undefined, undefined, { local: true });
+    // The check stands in for a person's commit landing on main while the merge is being checked.
+    const r = await sbx.mergeLocal({
+      repo, base_ref: "main", branch: "feature", message: "Merge feature", identity: { name: "f", email: "f@example.com" },
+      checks: [["git", "-C", repo, "update-ref", "refs/heads/main", theirs]], timeout_ms: 30_000,
+    });
+    expect(r).toEqual({ merged: false, base_moved: theirs });
+    expect(git(repo, "rev-parse", "main").trim()).toBe(theirs);
   });
 
   describe("updateBase", () => {

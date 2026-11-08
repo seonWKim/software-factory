@@ -63,7 +63,16 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const detail = useApi<ItemDetail>(API.item(id)).data?.item;
   const merge = detail?.merge;
   const showMerge = showsMerge(merge);
-  if (commands.length === 0 && !showMerge) return null;
+  // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
+  if (commands.length === 0 && !showMerge) {
+    return (
+      <Section title="Commands">
+        <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+        </p>
+      </Section>
+    );
+  }
   const token = session.data?.csrf_token;
   const enabled = !!token && session.data?.commands_enabled === true;
   const off = session.isError || session.data?.commands_enabled === false;

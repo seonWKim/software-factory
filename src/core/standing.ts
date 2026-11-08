@@ -205,18 +205,27 @@ function runStart(events: readonly GateEvent[], gate: StandingGate, tier: Tier):
  */
 export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
   gates: [
-    "src/core/controller.ts", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
-    "src/core/merge-check.ts", "src/core/standing.ts",
+    "src/controller/", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
+    "src/core/merge-check.ts", "src/core/standing.ts", "src/runtime/hooks/",
+    // The G1 toolchain check and the PassportToolBroker around every broker; G5 and the passport before a delivery.
+    "src/compose.ts", "src/outbound/outbound.ts",
+    // The architecture ratchets and their known-violations lists (owner decision 2026-11-09): a folder that holds
+    // them (`tests/`) touches the gate list too, so a spec allowing all of `tests/` always needs the owner.
+    "tests/architecture/",
   ],
-  prompts: ["prompts/"],
+  prompts: ["prompts/", "golden/"],
   permissions: [
     "src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/",
     "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
+    "src/worker/roles/", "src/shared/role.ts", "src/identity/",
   ],
-  tools: ["src/core/tools/", "src/impl/broker/"],
+  tools: ["src/core/tools/", "src/impl/broker/", "src/impl/github/github-tool-broker.ts", "src/impl/github/broker.plugin.ts"],
   guard_settings: [
     "factory.config.json", "src/core/config.ts", "src/core/settings.ts", "src/config-keys.ts", "src/plugins.ts",
     "src/impl/egress/", "src/impl/secrets/",
+    // Setting descriptors (RFC 0015 M10): tests/architecture/settings-monotonic.test.ts fails on one outside these.
+    "src/controller/settings/", "src/guards/settings/", "src/inbound/settings/",
+    "src/outbound/settings/", "src/runtime/settings/", "src/state/settings/", "src/worker/settings/",
   ],
 };
 

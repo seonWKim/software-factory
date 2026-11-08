@@ -5,7 +5,6 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { type Loaded, Plugins } from "./compose.js";
 import { runCanary } from "./canary.js";
 import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
@@ -305,22 +304,35 @@ export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Prom
 
 // setup
 
-export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Promise<number> {
-  if (!process.stdin.isTTY) {
-    console.error("setup is interactive: run it in a terminal");
-    return 1;
-  }
+/**
+ * One `factory setup` run (owner decision 2026-11-08: a guided flow; src/cli/handlers/setup/ asks the shared
+ * questions first). `ask` is the terminal, or every default under `--yes`: then nothing is read from the terminal and
+ * a missing secret is reported, never asked. `step` prints the next numbered step.
+ */
+export interface SetupRun {
+  loaded: Loaded;
+  rotate: readonly SecretName[];
+  ask: { readonly interactive: boolean; yesNo(question: string, dflt: boolean): Promise<boolean> };
+  step(title: string): void;
+}
+
+/** What a step prints under `--yes` instead of asking for a missing secret. */
+const NOT_ASKED = "   missing: not asked under --yes; run `npm run setup` in a terminal to paste it";
+
+/** The secret file, the model credential, the GitHub token and the database. False: stop (the database failed). */
+export async function setupSecrets(run: SetupRun): Promise<boolean> {
+  const { loaded, rotate } = run;
   const file = loaded.secretsFile;
   const repo = loaded.config.repo;
   const declared = declaredSecrets(loaded.registry, loaded.plugins);
   const isDeclared = (name: SecretName) => declared.some((d) => d.name === name);
-  step(1, "Secret file");
+  run.step("Secret file");
   await ensureSecretFile(file, join(loaded.root, ".env.example"), declared.map((d) => d.name));
   console.log(`   ${file} (dir 700, file 600, outside the repository)`);
   console.log("   Secrets the selected plugins declare:");
   for (const d of declared) console.log(`     ${d.name}${d.oneOf ? ` (${d.oneOf}, one of)` : ""}: ${d.purpose}`);
 
-  step(2, "Model credential");
+  run.step("Model credential");
   if (process.env.ANTHROPIC_API_KEY) {
     console.log("   ! ANTHROPIC_API_KEY is set in this shell. It overrides the subscription token: unset it.");
   }
@@ -330,9 +342,9 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
   const hasModel = (await secrets.get(CLAUDE_CODE_OAUTH_TOKEN)) ?? (await secrets.get(ANTHROPIC_API_KEY));
   if (!isDeclared(CLAUDE_CODE_OAUTH_TOKEN)) {
     console.log("   not needed by the selected plugins");
-  } else if (hasModel && !opts.rotate.includes(CLAUDE_CODE_OAUTH_TOKEN)) {
+  } else if (hasModel && !rotate.includes(CLAUDE_CODE_OAUTH_TOKEN)) {
     console.log(`   already set (${hasModel.name})`);
-  } else {
+  } else if (run.ask.interactive) {
     console.log(
       [
         "   In a separate, plain terminal run:  claude setup-token",
@@ -340,15 +352,15 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
       ].join("\n"),
     );
     await setSecret(file, CLAUDE_CODE_OAUTH_TOKEN, await askSecret("   Paste the token (hidden): "));
-  }
+  } else console.log(NOT_ASKED);
 
-  step(3, "GitHub token");
+  run.step("GitHub token");
   secrets = await plugins.secrets();
   if (!isDeclared(GITHUB_TOKEN)) {
     console.log("   not needed by the selected plugins");
-  } else if ((await secrets.get(GITHUB_TOKEN)) && !opts.rotate.includes(GITHUB_TOKEN)) {
+  } else if ((await secrets.get(GITHUB_TOKEN)) && !rotate.includes(GITHUB_TOKEN)) {
     console.log("   already set");
-  } else {
+  } else if (run.ask.interactive) {
     const url = "https://github.com/settings/personal-access-tokens/new";
     console.log(
       [
@@ -365,23 +377,28 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     );
     await openBrowser(url);
     await setSecret(file, GITHUB_TOKEN, await askSecret("   Paste the token (hidden): "));
-  }
+  } else console.log(NOT_ASKED);
 
-  step(4, "Database");
-  if (!(await provisionDatabase(loaded, opts.rotate.includes(MYSQL_PASSWORD)))) return 1;
+  run.step("Database");
+  return provisionDatabase(loaded, rotate.includes(MYSQL_PASSWORD), run.ask.interactive);
+}
 
-  step(5, "Other secrets of the selected plugins");
-  const other = await secretsToPrompt(declared, await plugins.secrets(), opts.rotate);
+/** The other declared secrets, the plugins' setup hooks, doctor's checks and the canary. The exit code. */
+export async function setupFinish(run: SetupRun): Promise<number> {
+  const { loaded } = run;
+  run.step("Other secrets of the selected plugins");
+  const other = await secretsToPrompt(declaredSecrets(loaded.registry, loaded.plugins), await new Plugins(loaded).secrets(), run.rotate);
   if (other.length === 0) console.log("   nothing to do");
   for (const d of other) {
     console.log(`   ${d.name}: ${d.purpose}`);
-    await setSecret(file, d.name, await askSecret(`   Paste ${d.name} (hidden): `));
+    if (run.ask.interactive) await setSecret(loaded.secretsFile, d.name, await askSecret(`   Paste ${d.name} (hidden): `));
+    else console.log(NOT_ASKED);
   }
 
-  step(6, "Setup of the selected plugins (github-issues: the intake and status labels)");
+  run.step("Setup of the selected plugins (github-issues: the intake and status labels)");
   await runSetupHooks(loaded, new Plugins(loaded));
 
-  step(7, "Checks");
+  run.step("Checks");
   const code = await doctor(loaded);
   if (code !== 0) {
     if (loaded.store.type === "mysql") console.log("\nA new or upgraded MySQL database needs `npm run migrate` once (back it up first).");
@@ -389,9 +406,9 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     return code;
   }
 
-  step(8, "Canary (G6)");
+  run.step("Canary (G6)");
   console.log("   A real agent tries to find a planted fake secret. It must fail. Takes a few minutes, uses your plan.");
-  if (await confirm("   Run it now? [Y/n] ")) {
+  if (await run.ask.yesNo("   Run it now?", true)) {
     const report = await runCanary(loaded);
     console.log(JSON.stringify(report, null, 2).replace(/^/gm, "   "));
     if (!report.passed) {
@@ -430,7 +447,7 @@ async function runSetupHooks(loaded: Loaded, plugins: Plugins): Promise<void> {
  * straight to the secret file. The admin login is the mysql client's (~/.my.cnf, else it asks for the
  * root password itself), so the factory never sees an admin credential. SQL goes over stdin, never argv.
  */
-async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boolean> {
+async function provisionDatabase(loaded: Loaded, rotate: boolean, interactive: boolean): Promise<boolean> {
   const db = loaded.store;
   if (db.type !== "mysql") {
     console.log("   SQLite: nothing to do");
@@ -452,6 +469,10 @@ async function provisionDatabase(loaded: Loaded, rotate: boolean): Promise<boole
   console.log(`   Creating database ${db.database} and user ${db.user}@localhost (generated password, never shown).`);
   const server = ["--host", db.host, "--port", String(db.port)];
   if (!(await mysqlClient(server, sql, true))) {
+    if (!interactive) {
+      console.log("   ~/.my.cnf did not log in as an admin; under --yes the root password is not asked. Run `npm run setup` in a terminal.");
+      return false;
+    }
     console.log("   ~/.my.cnf did not log in as an admin. The mysql client asks for the MySQL root password:");
     if (!(await mysqlClient(["-u", "root", "-p", ...server], sql, false))) {
       console.log("   could not create it. Fix the MySQL login, then run `npm run setup` again.");
@@ -472,9 +493,6 @@ function mysqlClient(args: string[], sql: string, quiet: boolean): Promise<boole
   });
 }
 
-function step(n: number, title: string): void {
-  console.log(`\n${n}. ${title}`);
-}
 
 /**
  * Creates the secret file from the template, then appends, empty, any template key and any `declared`
@@ -551,12 +569,6 @@ function askSecret(prompt: string): Promise<string> {
   });
 }
 
-async function confirm(prompt: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question(prompt)).trim().toLowerCase();
-  rl.close();
-  return answer === "" || answer === "y" || answer === "yes";
-}
 
 async function openBrowser(url: string): Promise<void> {
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";

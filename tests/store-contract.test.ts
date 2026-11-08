@@ -10,9 +10,12 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import { recordAction } from "../src/outbound/intents.js";
+import type { SqlDriver } from "../src/state/index.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
@@ -646,7 +649,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("verdicts", () => {
+  describe("controller_verdicts", () => {
     const user = { kind: "user" as const, id: "github:1" as UserId };
     const verdict = (id: WorkItemId, expected_version: number, comment_id = "c1") => ({
       id, expected_version, actor: user, verdict: "changes" as const, severity: "minor" as const,
@@ -849,7 +852,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
     });
 
-    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
     const later = (clock: { now(): Date }, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
 
     it.each(["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const)(
@@ -1074,9 +1077,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const labelled = (await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
       const unlabelled = (await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
       const plain = (await store.createWorkItem(issue(7), system)).item;
-      expect(await raw(store, "work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
-      expect(await raw(store, "work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
-      expect(await raw(store, "work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
+      expect(await raw(store, "controller_work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await raw(store, "controller_work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
+      expect(await raw(store, "controller_work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
       expect((await store.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe(labelled.id);
       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, "6"))!.id).toBe(unlabelled.id);
     });
@@ -1088,12 +1091,12 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34" }, actor: system, reason: "x" });
       await store.transition({ id: b.id, expected_version: 1, patch: { change_ref: "35" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: prUrl(LABEL, 34) });
-      expect(await raw(store, "work_items", b.id)).toMatchObject({ pr_number: 35, change_ref: "35", change_url: null });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "controller_work_items", b.id)).toMatchObject({ pr_number: 35, change_ref: "35", change_url: null });
       expect(await store.getWorkItem(a.id)).toMatchObject({ pr_number: 34, change_ref: "34" });
       // A patch without change_ref leaves the change columns alone.
       await store.transition({ id: a.id, expected_version: 2, patch: { blocked_on: "human" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
       // pr_number and change_url are not part of the state change: only the patched field is.
       const [, set] = await store.listStateChanges(a.id);
       expect(set!.changes).toEqual({ change_ref: { from: null, to: "34" } });
@@ -1107,7 +1110,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const a = (await store.createWorkItem(issue(1), system)).item;
       const opened = "https://github.example/o/r/pull/34";
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34", change_url: opened }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
       expect(await store.getWorkItem(a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
     });
 
@@ -1120,7 +1123,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       // Another URL, and a new change_ref with no URL (which would derive one), both keep the stored URL.
       await store.transition({ id: a.id, expected_version: 2, patch: { change_ref: "35", change_url: "https://other/pull/35" }, actor: system, reason: "x" });
       await store.transition({ id: a.id, expected_version: 3, patch: { change_ref: "36" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 36, change_ref: "36", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 36, change_ref: "36", change_url: opened });
     });
 
     it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
@@ -1160,7 +1163,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     it("an unreviewed merge insert writes change_ref", async () => {
       const { store } = await make();
       const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "7", merge_sha: "m7", merger_id: null });
-      expect(await raw(store, "unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
+      expect(await raw(store, "controller_unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
     });
   });
 
@@ -1580,7 +1583,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("cursors", () => {
+  describe("inbound_cursors", () => {
     it("advances only from the expected value", async () => {
       const { store } = await make();
       expect(await store.advanceCursor("intake", null, "a")).toBe(true);
@@ -1593,7 +1596,43 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
 
   describe("raw table reads (design §9 Data page)", () => {
     // Every table the schema creates on both backends (MySQL adds its own step bookkeeping tables).
-    const DOMAIN_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
+    // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
+    const BASELINE_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
+    const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
+    // RFC 0015 M4 (D7): inbound_app_requests merged into inbound_commands; both old tables are kept as legacy_*.
+    const merged = ["inbound_app_requests"];
+    const DOMAIN_TABLES = [
+      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t)),
+      "legacy_inbound_app_requests",
+      "legacy_inbound_commands",
+      ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
+      "runtime_schema_migrations",
+      // Tables of timestamped component migrations (RFC 0015 §6.3).
+      "authz_audit",
+      "identity_passports",
+      "identity_profiles", // display names by user id (owner decision 2026-11-08)
+      "identity_revocations",
+      "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
+      "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
+      "controller_merge_queue_entries",
+      // The sql bus's own tables (RFC 0015 M3).
+      "bus_scheduler",
+      "bus_topics",
+      // Outbox and inbox of the components on the bus (RFC 0015 M4).
+      "controller_inbox",
+      "controller_outbox",
+      "inbound_inbox",
+      "inbound_outbox",
+      "inbound_sequence_locks", // src/inbound/migrations/20261109T1015-inbound-sequence-locks
+      // Outbound's delivery tables (RFC 0015 M7).
+      "outbound_actions",
+      "outbound_batch_intents",
+      "outbound_batches",
+      "outbound_inbox",
+      "outbound_outbox",
+      "outbound_requests",
+      "runtime_hook_decisions",
+    ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {
       const { store, clock } = await make();
@@ -1606,18 +1645,17 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(names).toEqual([...names].sort());
       for (const t of DOMAIN_TABLES) expect(names, t).toContain(t);
       // The item thread and the command inbox (migration 24, issue #281).
-      for (const t of ["item_thread", "command_inbox"]) expect(DOMAIN_TABLES, t).toContain(t);
       if (name === "sqlite") expect(names).toEqual([...DOMAIN_TABLES, "schema_migrations"].sort());
       else expect(names).toContain("schema_migrations");
       const byName = new Map(tables.map((t) => [t.name, t]));
-      expect(byName.get("work_items")).toMatchObject({ rows: 2, primary_key: ["id"], order_by: ["created_at", "id"] });
-      expect(byName.get("work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at", "updated_at"]));
-      expect(byName.get("runs")).toMatchObject({ rows: 1 });
-      expect(byName.get("state_changes")).toMatchObject({ rows: 2, order_by: ["at", "id"] });
-      expect(byName.get("file_conflicts")).toMatchObject({ rows: 2, primary_key: ["project_key", "path", "event_key"], order_by: ["at", "project_key", "path", "event_key"] });
-      expect(byName.get("run_attempts")).toMatchObject({ rows: 0, primary_key: ["run_id", "attempt"], order_by: ["started_at", "run_id", "attempt"] });
-      expect(byName.get("cursors")).toMatchObject({ primary_key: ["name"], order_by: ["name"] });
-      expect(byName.get("claim_decisions")).toMatchObject({ rows: 0 });
+      expect(byName.get("controller_work_items")).toMatchObject({ rows: 2, primary_key: ["id"], order_by: ["created_at", "id"] });
+      expect(byName.get("controller_work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at", "updated_at"]));
+      expect(byName.get("worker_runs")).toMatchObject({ rows: 1 });
+      expect(byName.get("controller_state_changes")).toMatchObject({ rows: 2, order_by: ["at", "id"] });
+      expect(byName.get("controller_file_conflicts")).toMatchObject({ rows: 2, primary_key: ["project_key", "path", "event_key"], order_by: ["at", "project_key", "path", "event_key"] });
+      expect(byName.get("worker_run_attempts")).toMatchObject({ rows: 0, primary_key: ["run_id", "attempt"], order_by: ["started_at", "run_id", "attempt"] });
+      expect(byName.get("inbound_cursors")).toMatchObject({ primary_key: ["name"], order_by: ["name"] });
+      expect(byName.get("controller_claim_decisions")).toMatchObject({ rows: 0 });
       expect(a.id).toMatch(/^wi_/);
     });
 
@@ -1629,15 +1667,15 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         clock.advance(1000);
       }
       const newest = [...ids].reverse();
-      const p1 = (await store.listTableRows({ table: "work_items", limit: 3 }))!;
+      const p1 = (await store.listTableRows({ table: "controller_work_items", limit: 3 }))!;
       expect(p1).toMatchObject({ total: 7, limit: 3, offset: 0 });
       expect(p1.rows.map((r) => r.id)).toEqual(newest.slice(0, 3));
-      const p3 = (await store.listTableRows({ table: "work_items", limit: 3, offset: 6 }))!;
+      const p3 = (await store.listTableRows({ table: "controller_work_items", limit: 3, offset: 6 }))!;
       expect(p3.rows.map((r) => r.id)).toEqual(newest.slice(6));
       expect(p3.total).toBe(7);
       // Without a time column the primary key orders, descending.
       for (const c of ["b", "c", "a"]) await store.advanceCursor(c, null, "v");
-      expect((await store.listTableRows({ table: "cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
+      expect((await store.listTableRows({ table: "inbound_cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
       // Every column comes back, numbers as numbers.
       expect(p1.rows[0]).toMatchObject({ version: 1, title: null });
     });
@@ -1650,10 +1688,10 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         Array.from({ length: 205 }, (_, n) => store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v")),
       );
       expect(created.every(Boolean)).toBe(true);
-      const def = (await store.listTableRows({ table: "cursors" }))!;
+      const def = (await store.listTableRows({ table: "inbound_cursors" }))!;
       expect(def.rows).toHaveLength(50);
       expect(def).toMatchObject({ limit: 50, total: 205 });
-      const big = (await store.listTableRows({ table: "cursors", limit: 1000 }))!;
+      const big = (await store.listTableRows({ table: "inbound_cursors", limit: 1000 }))!;
       expect(big.rows).toHaveLength(200);
       expect(big.limit).toBe(200);
     }, 30_000);
@@ -1664,24 +1702,24 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const q = (await store.createWorkItem({ ...issue(1), problem: quoted }, system)).item;
       await store.createWorkItem(issue(2), system);
       await store.createWorkItem({ ...issue(3), problem: "problem 2" }, system);
-      const hit = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: quoted } }))!;
+      const hit = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: quoted } }))!;
       expect(hit.total).toBe(1);
       expect(hit.rows.map((r) => r.id)).toEqual([q.id]);
-      const two = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "problem 2" } }))!;
+      const two = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: "problem 2" } }))!;
       expect(two.total).toBe(2);
       expect(two.rows.every((r) => r.problem === "problem 2")).toBe(true);
-      const inject = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
+      const inject = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
       expect(inject).toMatchObject({ total: 0, rows: [] });
       // A number column matches its text form.
-      expect((await store.listTableRows({ table: "work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
+      expect((await store.listTableRows({ table: "controller_work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
     });
 
     it("an unknown table or filter column is refused with null", async () => {
       const { store } = await make();
       expect(await store.listTableRows({ table: "nope" })).toBeNull();
-      expect(await store.listTableRows({ table: "work_items; DROP TABLE runs" })).toBeNull();
-      expect(await store.listTableRows({ table: "work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
-      expect((await store.listTables()).map((t) => t.name)).toContain("runs");
+      expect(await store.listTableRows({ table: "work_items; DROP TABLE worker_runs" })).toBeNull();
+      expect(await store.listTableRows({ table: "controller_work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
+      expect((await store.listTables()).map((t) => t.name)).toContain("worker_runs");
     });
   });
 
@@ -1745,32 +1783,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
       expect(await store.listInboxAfter(slack, 0, 10)).toEqual([]);
       expect((await store.appendInbox({ source_type: slack, dedupe_key: "k1", event: ev(1), lease_token: b.lease.token })).ok).toBe(true);
-    });
-
-    it("prune deletes only rows both older than the retention and at or below the cursor", async () => {
-      const { store, clock } = await make();
-      const token = await leased(store);
-      const append = async (k: string) => {
-        const r = await store.appendInbox({ source_type: slack, dedupe_key: k, event: ev(1), lease_token: token });
-        if (!r.ok) throw new Error(r.reason);
-        return r.row.seq;
-      };
-      const oldA = await append("old-a");
-      const oldB = await append("old-b");
-      clock.advance(10_000);
-      const fresh = await append("fresh");
-      clock.advance(5_000);
-      // Retention 8s: old-a and old-b are older, fresh is not. Cursor at old-a: old-b is still ahead of it.
-      expect(await store.pruneInbox(slack, oldA, 8_000)).toBe(1);
-      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["old-b", "fresh"]);
-      // Cursor past everything: fresh stays because it is newer than the retention.
-      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
-      expect((await store.listInboxAfter(slack, 0, 10)).map((r) => r.dedupe_key)).toEqual(["fresh"]);
-      expect(oldB).toBeGreaterThan(oldA);
-      // Sequence numbers keep growing after the newest rows are deleted.
-      clock.advance(10_000);
-      expect(await store.pruneInbox(slack, fresh, 8_000)).toBe(1);
-      expect(await append("next")).toBeGreaterThan(fresh);
     });
   });
 
@@ -1861,8 +1873,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.renewSyncLease(NAME, a.lease.token, LEASE)).toMatchObject({ ok: false, reason: "lease_lost", holder: { owner: "replica-b" } });
       await store.releaseSyncLease(NAME, a.lease.token);
       expect((await store.acquireSyncLease(NAME, "replica-c", LEASE)).ok).toBe(false);
-      expect(await store.advanceSyncCursor({ name: NAME, token: a.lease.token }, "intake:github_issue", null, "c1")).toBe(false);
-      expect(await store.getCursor("intake:github_issue")).toBeNull();
     });
 
     it("release lets another owner take it at once", async () => {
@@ -1871,18 +1881,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       if (!a.ok) throw new Error(a.reason);
       await store.releaseSyncLease(NAME, a.lease.token);
       expect(await store.acquireSyncLease(NAME, "replica-b", LEASE)).toMatchObject({ ok: true, lease: { owner: "replica-b" } });
-    });
-
-    it("a fenced cursor write lands once: the same write again, or from a cursor value already passed, writes nothing", async () => {
-      const { store } = await make();
-      const a = await store.acquireSyncLease(NAME, "replica-a", LEASE);
-      if (!a.ok) throw new Error(a.reason);
-      const fence = { name: NAME, token: a.lease.token };
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(true);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", null, "c1")).toBe(false);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(true);
-      expect(await store.advanceSyncCursor(fence, "intake:github_issue", "c1", "c2")).toBe(false);
-      expect(await store.getCursor("intake:github_issue")).toBe("c2");
     });
 
     it("a delivery claim fenced with a stale token claims nothing; the current token claims it once", async () => {
@@ -1924,50 +1922,35 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("base pushes (migration 41): one row per local merge, claimed by one replica", () => {
-    /** An item closed by a local merge that queued its base push in the same transition. */
-    const merged = async (store: FactoryStore, n: number, base_push?: { base_ref: string; merge_sha: string }) => {
-      const { item } = await store.createWorkItem(issue(n), system);
-      const r = await store.transition({
-        id: item.id, expected_version: item.version, actor: system, reason: "local_merged",
-        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: base_push?.merge_sha ?? "m" },
-        ...(base_push ? { base_push } : {}),
-      });
-      if (!r.ok) throw new Error("transition failed");
-      return item.id;
-    };
-
-    it("the close transition writes the row; a transition without one writes none", async () => {
-      const { store } = await make();
-      const pushed = await merged(store, 1, { base_ref: "main", merge_sha: "a".repeat(40) });
-      const plain = await merged(store, 2);
-      expect(await store.getBasePush(pushed)).toMatchObject({
-        work_item_id: pushed, base_ref: "main", merge_sha: "a".repeat(40), attempts: 0, finished_at: null, outcome: null,
-      });
-      expect(await store.getBasePush(plain)).toBeNull();
-      expect((await store.listPendingBasePushes(10)).map((p) => p.work_item_id)).toContain(pushed);
-    });
-
-    it("a second claim of the same row gets nothing while the first holds it; a stale token finishes nothing", async () => {
+  describe("base pushes (RFC 0015 M8): the item's newest push_base action, as the status page reads it", () => {
+    it("pending with its batch's failed tries, then pushed or a conflict once delivered; none when the merge stored none", async () => {
       const { store, clock } = await make();
-      const id = await merged(store, 3, { base_ref: "main", merge_sha: "b".repeat(40) });
-      const { seq } = (await store.getBasePush(id))!;
-      const [a, b] = await Promise.all([store.claimBasePush(seq, LEASE), store.claimBasePush(seq, LEASE)]);
-      expect([a, b].filter((t) => t !== null)).toHaveLength(1);
-      const token = (a ?? b)!;
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
-      // A failed try: one attempt, the error kept, the claim released, the next try later.
-      expect(await store.failBasePush(seq, token, "rate limited", 5_000)).toBe(true);
-      expect(await store.getBasePush(id)).toMatchObject({ attempts: 1, last_error: "rate limited", finished_at: null });
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
-      clock.advance(5_000);
-      const again = (await store.claimBasePush(seq, LEASE))!;
-      expect(again).not.toBeNull();
-      expect(await store.finishBasePush(seq, token, { outcome: "pushed", pushed_sha: "c" })).toBe(false);
-      expect(await store.finishBasePush(seq, again, { outcome: "pushed", pushed_sha: "c".repeat(40) })).toBe(true);
-      expect(await store.getBasePush(id)).toMatchObject({ outcome: "pushed", pushed_sha: "c".repeat(40) });
-      expect(await store.claimBasePush(seq, LEASE)).toBeNull();
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
+      const db = (store as unknown as { db: SqlDriver }).db;
+      const { item } = await store.createWorkItem(issue(1), system);
+      const { item: plain } = await store.createWorkItem(issue(2), system);
+      const now = clock.now().toISOString();
+      const push = (sha: string) => recordAction(db, {
+        action: "push_base", target: { type: "git", id: "h:main", link: "" }, work_item_id: item.id, key: `push_base:${item.id}:${sha}`,
+        args: { base_ref: "main", merge_sha: sha, message: "m" },
+      }, now);
+      await push("a".repeat(40));
+      expect(await store.getBasePush(plain.id)).toBeNull();
+      expect(await store.getBasePush(item.id)).toEqual({ base_ref: "main", merge_sha: "a".repeat(40), attempts: 0, last_error: null, outcome: null, pushed_sha: null });
+
+      const [row] = await db.all("SELECT seq FROM outbound_actions WHERE work_item_id = ?", [item.id]);
+      await db.run(
+        "INSERT INTO outbound_batches (id, destination, idempotency_key, state, intent_count, attempts, last_error, opened_at, flush_at) VALUES ('b1', 'git:h:main', 'b1', 'failed', 1, 2, 'rate limited', ?, ?)",
+        [now, now],
+      );
+      await db.run("INSERT INTO outbound_batch_intents (intent_id, batch_id, commit_id, commit_count) VALUES (?, 'b1', 'c1', 1)", [`act_${Number(row!.seq)}`]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ attempts: 2, last_error: "rate limited", outcome: null });
+
+      await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE seq = ?", [now, JSON.stringify({ pushed: "c".repeat(40) }), Number(row!.seq)]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ outcome: "pushed", pushed_sha: "c".repeat(40) });
+      // A later merge's push is the newest: a conflict once delivered.
+      await push("d".repeat(40));
+      await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify({ conflicts: ["x"] }), `push_base:${item.id}:${"d".repeat(40)}`]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ merge_sha: "d".repeat(40), outcome: "conflict", pushed_sha: null, attempts: 0 });
     });
   });
 
@@ -2428,7 +2411,7 @@ describe("migration 19 on an existing SQLite database", () => {
     raw.close();
 
     const clock = new FakeClock();
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), clock);
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
@@ -2544,7 +2527,7 @@ describe("migration 28 on an existing SQLite database", () => {
     raw.close();
 
     const clock = new FakeClock();
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), clock);
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
@@ -2612,7 +2595,7 @@ describe("migration 32 on an existing SQLite database", () => {
     raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
     raw.close();
 
-    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), new FakeClock());
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
@@ -2666,75 +2649,6 @@ describe("migration 35 (change fields) on an existing SQLite database", () => {
     }
   });
 
-  it("an item without a PR inserts as before: the change columns are listed only with a PR number", async () => {
-    // A schema from before the migration, as tests of older steps build (tests/session-migration.test.ts on MySQL).
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
-    const raw = new DatabaseSync(path);
-    for (const m of MIGRATIONS.slice(0, CHANGE_MIGRATION - 1)) raw.exec(m);
-    raw.close();
-    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
-    try {
-      const { item } = await store.createWorkItem(issue(1), system);
-      expect((await store.getWorkItem(item.id))!).toMatchObject({ id: item.id, pr_number: null });
-    } finally {
-      await store.close();
-    }
-  });
-
-  it("backfills change_ref and change_url from pr_number and the label, adds the indexes; pr_number-only rows still resolve", async () => {
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await seed.migrate();
-    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
-    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
-    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
-    const patched = (await seed.createWorkItem(issue(7), system)).item;
-    await seed.transition({ id: patched.id, expected_version: 1, patch: { change_ref: "9" }, actor: system, reason: "x" });
-    const plain = (await seed.createWorkItem(issue(8), system)).item;
-    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "11", merge_sha: "m", merger_id: null });
-    await seed.close();
-    // Back to the state before the migration: no change columns or indexes, every row as it was.
-    const db = new DatabaseSync(path);
-    db.exec(`
-      DROP INDEX work_items_change; DROP INDEX unreviewed_merges_change;
-      ALTER TABLE work_items DROP COLUMN change_ref; ALTER TABLE work_items DROP COLUMN change_url;
-      ALTER TABLE unreviewed_merges DROP COLUMN change_ref;
-      DELETE FROM schema_migrations WHERE version >= ${CHANGE_MIGRATION};
-    `);
-    db.close();
-
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
-    try {
-      await store.migrate();
-      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-      const row = async (table: string, id: string) => (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
-      expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: prUrl(LABEL, 5) });
-      expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
-      expect(await row("work_items", patched.id)).toMatchObject({ change_ref: "9", change_url: prUrl(LABEL, 9) });
-      expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
-      expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
-    } finally {
-      await store.close();
-    }
-
-    const check = new DatabaseSync(path);
-    const index = (name: string) => check.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) as { sql: string } | undefined;
-    expect(index("work_items_change")?.sql).toMatch(/ON work_items \(project, change_ref\)/);
-    expect(index("unreviewed_merges_change")?.sql).toMatch(/UNIQUE INDEX .* ON unreviewed_merges \(project, change_ref\)/);
-    // A row an older controller wrote: pr_number only, change_ref NULL. The lookup falls back to pr_number.
-    check.prepare("UPDATE work_items SET pr_number = 12 WHERE id = ?").run(plain.id);
-    check.close();
-    const reopened = new SqlFactoryStore(new SqliteDriver(path), clock);
-    try {
-      // The read returns the pr_number as change_ref, so the core, which reads change_ref, sees the PR.
-      expect((await reopened.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: plain.id, pr_number: 12, change_ref: "12" });
-      expect((await reopened.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe(labelled.id);
-      expect(await reopened.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
-    } finally {
-      await reopened.close();
-    }
-  });
 });
 
 describe("MySQL step 35 (change-fields)", () => {
@@ -2752,7 +2666,7 @@ describe("MySQL step 35 (change-fields)", () => {
     db.onCleanup(() => store.close());
     await store.migrate();
     const { item } = await store.createWorkItem(issue(1), system);
-    await conn.query("UPDATE work_items SET pr_number = 12 WHERE id = ?", [item.id]);
+    await conn.query("UPDATE controller_work_items SET pr_number = 12 WHERE id = ?", [item.id]);
     expect((await store.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: item.id, pr_number: 12 });
     expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
   });

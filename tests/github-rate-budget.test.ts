@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { DependencyState, SourceRef } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
@@ -123,7 +123,7 @@ class BudgetSource extends FakeSource implements DependencySource {
 async function controller(source: BudgetSource) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const c = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const c = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   return { clock, store, c };
 }
 

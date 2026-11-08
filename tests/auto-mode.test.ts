@@ -5,12 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
@@ -40,8 +40,8 @@ const commitIn = (dir: string, files: Record<string, string>, msg: string) => {
   git(dir, "add", "-A");
   git(dir, ...ident, "commit", "--quiet", "-m", msg);
 };
-/** A check that passes everywhere except on a merge commit (the local merge's `.merge-*` worktree). */
-const FAILS_ON_MERGE = ["sh", "-c", 'case "$PWD" in */.merge-*) exit 1;; esac; exit 0'];
+/** A check that passes everywhere except on a merge commit (the merge queue's merge-check run checks one). */
+const FAILS_ON_MERGE = ["sh", "-c", "git rev-parse -q --verify HEAD^2 >/dev/null && exit 1; exit 0"];
 const OK = ["sh", "-c", "exit 0"];
 
 interface Opts {
@@ -77,7 +77,7 @@ async function autoFactory(opts: Opts = {}) {
   const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: opts.controllerSandbox ? opts.controllerSandbox(sandbox) : sandbox, repeated_failure_rule: false, settings,
     check_env: { PATH: process.env.PATH ?? "" },
@@ -104,6 +104,12 @@ async function autoFactory(opts: Opts = {}) {
   const cli = (user: UserId, a: CliAction) =>
     runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
+  /** A person's `/approve` of the implement run the Rule of Two held after auto mode's approval, then a step. */
+  const approveRun = async (id: WorkItemId) => {
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" });
+    expect((await cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
+    await step();
+  };
   /** `factory mode <mode> [--project o/r]` as `who`, with the local auth plugin's approve_merge check. */
   const mode = async (m: string, who: UserId = ME, ...rest: string[]) => {
     const action = parseModeArgs([m, ...rest]);
@@ -120,7 +126,7 @@ async function autoFactory(opts: Opts = {}) {
   const messages = async (id: WorkItemId, prefix: string) => (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   const changes = async (id: WorkItemId) => store.listStateChanges(id);
   const modeRows = async () => (await store.listSettingChanges(50)).filter((c) => c.key === "mode");
-  return { repo, store, controller, step, cli, create, mode, setting, messages, changes, modeRows, project, clock };
+  return { repo, store, controller, step, cli, create, approveRun, mode, setting, messages, changes, modeRows, project, clock };
 }
 
 const AUTO = { kind: "system", id: AUTO_ACTOR };
@@ -134,7 +140,7 @@ describe("auto mode: specs", { timeout: 60_000 }, () => {
     expect(await f.modeRows()).toEqual([]);
   });
 
-  it("a spec below tier 4 with no decisions starts implementation with no /approve, actor system:auto, naming the mode change", async () => {
+  it("a spec below tier 4 with no decisions is approved with no /approve, actor system:auto, naming the mode change", async () => {
     const f = await autoFactory();
     expect((await f.mode("auto")).ok).toBe(true);
     const [flip] = await f.modeRows();
@@ -143,6 +149,31 @@ describe("auto mode: specs", { timeout: 60_000 }, () => {
     const approved = (await f.changes(id)).find((c) => c.reason === "spec_approved")!;
     expect(approved.actor).toEqual(AUTO);
     expect(approved.detail).toMatchObject({ approved_by: AUTO_ACTOR, mode_change: flip!.seq });
+  });
+
+  it("Rule of Two: the implement run auto mode approved is not started; the item waits for a person, and the reply says why", async () => {
+    const f = await autoFactory();
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" });
+    expect((await f.store.listRuns(id)).map((r) => r.kind)).toEqual(["triage"]);
+    const approved = (await f.changes(id)).find((c) => c.reason === "spec_approved")!;
+    expect(approved.detail).toMatchObject({ held_by: "rule_of_two", held_run_kind: "implement" });
+    const [reply] = await f.messages(id, "<!-- factory:rule-of-two:");
+    expect(reply).toContain("a person must approve before it runs");
+    expect(reply).toContain("Reply `/approve` to start it");
+  });
+
+  it("Rule of Two: a person's /approve starts the held implement run, with the person as actor", async () => {
+    const f = await autoFactory();
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    await f.approveRun(id);
+    const approved = (await f.changes(id)).find((c) => c.reason === "rule_of_two_approved")!;
+    expect(approved.actor).toEqual({ kind: "user", id: ME });
+    expect((await f.store.listRuns(id)).map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect((await f.changes(id)).map((c) => c.reason)).toContain("implemented");
   });
 
@@ -193,6 +224,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     const mainBefore = git(f.repo, "rev-parse", "main");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     const done = (await f.store.getWorkItem(id))!;
     expect(done).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
     expect(git(f.repo, "rev-parse", "main")).not.toBe(mainBefore);
@@ -210,6 +242,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     await f.mode("auto");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect((await f.messages(id, "<!-- factory:auto-merge-held:")).join("")).toContain("above auto_merge_max_tier (0)");
   });
@@ -225,10 +258,9 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
       const mainBefore = git(f.repo, "rev-parse", "main");
       const id = await f.create();
       await f.step();
-      if ((await f.store.getWorkItem(id))!.stage === "READY") {
-        await f.cli(ME, { action: "command", command: "approve", id, text: "" });
-        await f.step();
-      }
+      // A spec auto mode may not approve waits for /approve; one it approved waits for a person under the Rule of Two.
+      await f.cli(ME, { action: "command", command: "approve", id, text: "" });
+      await f.step();
       await f.step();
       expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
       expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
@@ -244,6 +276,7 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
     const mainBefore = git(f.repo, "rev-parse", "main");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
@@ -286,6 +319,7 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await f.mode("auto");
     const first = await f.create();
     await f.step();
+    await f.approveRun(first);
     expect(await f.store.getWorkItem(first)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     await stopped(f, "red_main");
     // Manual again: the next spec waits.
@@ -307,12 +341,38 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "failure_alert");
   });
 
+  it("a stop whose settings write failed after its alert: the next stop sets manual, not one 6 h later", async () => {
+    const budgets = { 2: 20 };
+    const f = await autoFactory({ config: { settings: { ...config.settings, defaults: { ...config.settings.defaults, budgets } } } });
+    await f.mode("auto");
+    const write = f.store.setSettingOverride.bind(f.store);
+    let failed = false;
+    f.store.setSettingOverride = async (o) => {
+      if (o.actor === AUTO_ACTOR && !failed) {
+        failed = true;
+        throw new Error("store down");
+      }
+      return write(o);
+    };
+    const first = await f.create();
+    await f.step();
+    await f.approveRun(first).catch(() => undefined);
+    expect(failed).toBe(true);
+    expect(await f.modeRows()).toHaveLength(1);
+    // The alert is recorded and deduped for 6 h; a second checkpoint's stop finds the mode still auto and sets it.
+    const second = await f.create();
+    await f.step();
+    await f.approveRun(second);
+    await stopped(f, "budget_checkpoint");
+  });
+
   it("a budget checkpoint sets the mode to manual", async () => {
     const budgets = { 2: 20 };
     const f = await autoFactory({ config: { settings: { ...config.settings, defaults: { ...config.settings.defaults, budgets } } } });
     await f.mode("auto");
     const id = await f.create();
     await f.step();
+    await f.approveRun(id);
     expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "budget", blocked_reason: "budget_checkpoint" });
     await stopped(f, "budget_checkpoint");
   });

@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FORBIDDEN_ENV, Read } from "../src/core/tools/index.js";
 import type { Run, RunId, WorkItemId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner, buildAgentEnv, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
@@ -59,7 +59,7 @@ async function triageWith(steps: ScriptStep[], notes: Record<string, string>, cf
   const sandbox = new FakeSandbox();
   const runner = new ScriptedRunner(sandbox, llm, { broker, scanner: cleanScanner });
   const storage = new MemoryStorage();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage, clock, config: cfg, prompts, log: silent,
     scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -189,7 +189,7 @@ describe("ToolGate (the worker side of the bridge)", () => {
     const broker = new FakeNoteBroker({ a: "x" });
     const gate = new ToolGate({ broker, scanner: cleanScanner }, gateSpec());
     expect(await answerBridgeRequest(gate, { op: "call", name: "test.write_note", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
-    expect(await answerBridgeRequest(gate, { op: "call", name: "github.comment", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
+    expect(await answerBridgeRequest(gate, { op: "call", name: "github.open_pr", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
     expect(await answerBridgeRequest(gate, { op: "exec", cmd: "env" })).toEqual({ error: "unknown request" });
     expect(await answerBridgeRequest(gate, null)).toEqual({ error: "unknown request" });
     expect(broker.calls).toEqual([]);

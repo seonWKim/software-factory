@@ -12,7 +12,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { commandText, runChecks } from "../../core/checks.js";
 import { diffStat, overSizeLimit, sizeDetail } from "../../core/diff-gate.js";
 import { isCovered } from "../../core/policy.js";
-import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../core/worker.js";
+import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../worker/index.js";
 import type { AgentRunSpec, GateBlock, GateHooks } from "../../interfaces/agent-runner.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";

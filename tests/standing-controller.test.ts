@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
 import type { Tier, WorkItem, WorkerId } from "../src/core/types.js";
@@ -23,7 +23,7 @@ async function factory() {
   const source = new FakeSource();
   const forge = new FakeForge(source);
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, forge, auth: new FakeAuth(), clock, config: cfg, settings, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   let n = 0;
@@ -91,7 +91,7 @@ describe("standing approvals: the proposal", () => {
     const later = await f.approvals(2);
     expect(later.flatMap((it) => f.posts("standing-proposal", it))).toEqual([]);
     // The check run again for the tenth item (another replica, a repeat) finds the same proposal and posts nothing.
-    await (f.controller as unknown as { proposeStanding(it: WorkItem): Promise<void> }).proposeStanding(await f.get(tenth));
+    await (await f.controller.unit("standing")).proposeStanding(await f.get(tenth));
     await f.controller.tickOutbox();
     expect(f.posts("standing-proposal")).toHaveLength(1);
   });
@@ -205,6 +205,7 @@ describe("standing approvals: the rule at the spec gate", () => {
 
   const protectedCases: [string, string][] = [
     ["gates", "src/core/policy.ts"],
+    ["gates", "tests/architecture/known-violations/unit-purity.json"],
     ["prompts", "prompts/triage.md"],
     ["permissions", "src/impl/grant/github-grant.ts"],
     ["permissions", ".claude/settings.json"],

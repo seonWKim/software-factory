@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { stallConfig } from "../src/compose.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AGENT_STALLED, failureClass, retryKey } from "../src/core/policy.js";
 import type { RunKind, RunOutcome, Timestamp } from "../src/core/types.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
@@ -44,7 +44,7 @@ async function stalled(answers: (boolean | "throw")[] = [], error = "no model ou
     },
   });
   const llm = probeLLM(answers);
-  const prober = new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
+  const prober = new ControllerRole({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
   const a = await f.submit();
   await f.w1.tick(); // triage
   await f.controller.tickRuns();
@@ -93,7 +93,7 @@ describe("stalled runs", () => {
   it("many stalls never reach max_attempts or max_restart", async () => {
     const f = await pipeline({ implement: () => ({ status: "stalled", output: null, error: "silent" }) });
     const llm = probeLLM([]);
-    const prober = new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
+    const prober = new ControllerRole({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
     const a = await f.submit();
     await f.step();
     for (let i = 0; i < 5; i++) {
@@ -183,7 +183,7 @@ describe("stalled runs", () => {
 
 describe("who probes a due stall pause", () => {
   const controllerWith = (f: Awaited<ReturnType<typeof stalled>>, llm: ReturnType<typeof probeLLM>) =>
-    new Controller({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
+    new ControllerRole({ store: f.store, source: f.source, auth: new FakeAuth(), clock: f.clock, config: f.config, log: f.log, scanner: cleanScanner, llm });
 
   it("a controller that did not set the pause ends it once the first one stopped ticking", async () => {
     const f = await stalled([true]);
@@ -215,7 +215,7 @@ describe("who probes a due stall pause", () => {
     const f = await stalled([true]);
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
-    const rows = (await f.store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const rows = (await f.store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
     expect(rows.find((r) => r.name === "model_answered")).toBeDefined();
     // The stalled run's retry waits on no time of its own (not_before = the stall), so nothing holds it.
     const [, retry] = await f.runs(f.a, "implement");

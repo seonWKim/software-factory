@@ -18,6 +18,7 @@ import type { Forge } from "./interfaces/forge.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { NetworkProbe } from "./interfaces/network-probe.js";
+import type { ExecutionEngines } from "./worker/engine/index.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
@@ -26,6 +27,8 @@ import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
+import type { BusPlugin } from "./bus/index.js";
+import type { TickSource } from "./shared/ticks/tick-generator.js";
 
 /** What each interface's plugins produce. The key is the interface's short name, used in config and errors. */
 export interface Instances {
@@ -48,6 +51,12 @@ export interface Instances {
   test_database: TestDatabase;
   forge: Forge;
   network_probe: NetworkProbe;
+  /** Builds each component's EventBus and the retry scheduler (docs/plugins/event-bus.md). */
+  bus: BusPlugin;
+  /** Makes each component's TickGenerator (docs/plugins/tick-generator.md). */
+  ticks: TickSource;
+  /** One ExecutionEngine per worker loop (docs/plugins/execution-engine.md). */
+  engine: ExecutionEngines;
 }
 
 export type PluginKind = keyof Instances;
@@ -97,9 +106,15 @@ export interface Contexts {
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
   /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
   test_database: BaseContext & { secrets: SecretStore };
-  forge: BaseContext & { github: GitHubApi };
+  /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
+  forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
   /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */
   network_probe: BaseContext;
+  /** The database comes later, per component, from the role that runs it. */
+  bus: BaseContext;
+  ticks: BaseContext;
+  /** The journal keeps its steps in the store's database. */
+  engine: BaseContext & { store: FactoryStore };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

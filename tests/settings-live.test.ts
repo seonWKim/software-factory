@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { DEFAULT_MODEL_TABLE } from "../src/core/model-choice.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
-import { WorkerPool } from "../src/core/worker-pool.js";
+import { Worker } from "../src/worker/index.js";
+import { WorkerPool } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { PROJECT_KEY, issue, newStore, system, w2 } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, issueRef, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
@@ -36,7 +36,7 @@ async function harness(opts: { triage?: Fn; implement?: Fn; review?: Fn; config?
   });
   const log = recordingLog();
   const settings = new LiveSettings({ config, base: baseFromConfig(config, { table: DEFAULT_MODEL_TABLE, names: NAMES }), source: store, log });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
   const w1 = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,
@@ -242,7 +242,6 @@ describe("poll, tick, heartbeat and lease keys apply at the next tick or lease r
       await new Promise<void>((r) => (release = r));
       return { output: triageSpec };
     };
-    const beats = vi.spyOn(h.store, "heartbeat");
     const it0 = await h.submit();
     const tick = h.w1.tick();
     await waitFor(async () => (await h.runs(it0))[0]?.status === "running", "run claimed");
@@ -253,14 +252,12 @@ describe("poll, tick, heartbeat and lease keys apply at the next tick or lease r
     await h.set("heartbeat_ms", 2_000);
     // The renewal at the old heartbeat_ms extends by the new lease_ms.
     h.clock.advance(h.config.heartbeat_ms);
-    await waitFor(() => beats.mock.calls.length === 1, "renewal");
-    expect(beats.mock.calls[0]![2]).toBe(40_000);
     const renewedAt = h.clock.now().getTime();
     await waitFor(async () => (await h.runs(it0))[0]!.lease?.expires_at === iso(renewedAt + 40_000), "renewal stored");
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     // The next renewal comes after the new heartbeat_ms, not the old one.
     h.clock.advance(2_000);
-    await waitFor(() => beats.mock.calls.length === 2, "renewal at the new heartbeat_ms");
+    await waitFor(async () => (await h.runs(it0))[0]!.lease?.expires_at === iso(renewedAt + 2_000 + 40_000), "renewal at the new heartbeat_ms");
     release();
     await tick;
   });
@@ -363,7 +360,7 @@ describe("workers: the pool grows and shrinks with no restart", () => {
     const ids = [];
     for (const n of [1, 2, 3]) {
       const { item } = await store.createWorkItem(issue(n), system);
-      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/core/worker.ts"] } });
+      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/worker/runner.ts"] } });
       await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}` } });
       ids.push(item.id);
       clock.advance(1_000);

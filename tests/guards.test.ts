@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { Worker } from "../src/worker/index.js";
 import { Edit, Glob, Grep, Read, type ToolContext, Write, guardPolicy } from "../src/core/tools/index.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { WorkerId } from "../src/core/types.js";
@@ -22,7 +22,7 @@ import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
 } from "./helpers/fakes.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 
 const cred = { name: "CLAUDE_CODE_OAUTH_TOKEN" as const, value: "oauth-value-123456" };
 const paths = { home: "/tmp/h", claudeConfigDir: "/tmp/c", path: "/usr/bin" };
@@ -304,7 +304,7 @@ describe("G6 (unit): an agent that leaks a canary is stopped before anything lea
     const storage = new MemoryStorage();
     const broker = new FakeBroker();
     const runner = new FakeRunner({ triage: () => ({ output: { problem: canary }, transcript: `found ${canary}` }) });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage, clock, config, prompts, log: silent,
       scanner: new PatternEgressScanner(async () => [canary]), toolEnv: {}, awake: new NoKeepAwake(),
@@ -331,63 +331,55 @@ describe("Tool broker", () => {
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
     const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const posted: string[] = [];
+    const requests: string[] = [];
     const client = {
-      commentOnce: async (_r: unknown, _n: number, body: string) => {
-        posted.push(body);
-        return { created: true };
+      request: async (method: string, path: string) => {
+        requests.push(`${method} ${path}`);
+        return path.includes("/pulls") ? [] : { permissions: { push: true } };
       },
     } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
       client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      credentials: { token: async () => null },
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
-    return { clock, store, broker, ctx, posted };
+    return { clock, store, broker, ctx, requests };
   }
-  const comment = { number: 1, body: "x", marker: "m" };
+  const preflight = { branch: "factory/x", base_ref: "main" };
 
   it("rejects calls from a run that lost its lease (fencing)", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.comment", comment);
+    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.preflight", preflight);
     expect(r).toMatchObject({ ok: false, error_code: "lease_lost" });
   });
 
   it("host sleep: accepts the current token after lease expiry while the run is still running", async () => {
-    const { broker, ctx, clock, posted } = await setup();
+    const { broker, ctx, clock, requests } = await setup();
     clock.advance(60_001 * 5);
-    expect(await broker.call(ctx, "github.comment", comment)).toEqual({ ok: true, content: { created: true } });
-    expect(posted).toEqual(["x"]);
+    expect(await broker.call(ctx, "github.preflight", preflight)).toEqual({ ok: true, content: { push: true, open_prs: 0 } });
+    expect(requests).toHaveLength(2);
   });
 
   it("rejects the old token after the reaper requeued the run, and after a reclaim", async () => {
     const { broker, ctx, clock, store } = await setup();
     clock.advance(60_001);
     expect(await store.expireLeases(3)).toEqual([ctx.run_id]);
-    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
 
     const again = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
     expect(again.lease!.token).toBe(ctx.lease_token + 1);
-    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
-    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.comment", comment)).toMatchObject({ ok: true });
+    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.preflight", preflight)).toMatchObject({ ok: true });
   });
 
-  it("pushes only factory branches", async () => {
+  it("stores only factory branches", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call(ctx, "github.push_branch", { workdir: "/x", branch: "main", base_ref: "main" });
+    const r = await broker.call(ctx, STORE_BRANCH, { workdir: "/x", branch: "main", base_ref: "main" });
     expect(r).toMatchObject({ ok: false, error_code: "branch_not_allowed" });
-  });
-
-  it("egress-scans comments before posting", async () => {
-    const { broker, ctx, posted } = await setup();
-    const r = await broker.call(ctx, "github.comment", { number: 1, body: "leaky-secret-value", marker: "m" });
-    expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
-    expect(posted).toHaveLength(0);
   });
 });
 
-describe("Tool broker push: .env.example at HEAD must hold no values", () => {
+describe("Tool broker store: .env.example at HEAD must hold no values", () => {
   const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
   const commit = (dir: string, files: Record<string, string>, msg: string) => {
@@ -421,22 +413,22 @@ describe("Tool broker push: .env.example at HEAD must hold no values", () => {
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
     const broker = new GitHubToolBroker({
       client: {} as GitHubClient, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/", repoPath: repo,
-      credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) } as unknown as GitHubCredentials,
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
-    const push = () => broker.call(ctx, "github.push_branch", { workdir, branch: "factory/wi_env", base_ref: "main" });
-    const pushed = () => git(origin, "for-each-ref", "refs/heads/factory/wi_env") !== "";
+    // The run's last step: the branch stored in the factory repo, for outbound to push (RFC 0015 M7).
+    const push = () => broker.call(ctx, STORE_BRANCH, { workdir, branch: "factory/wi_env", base_ref: "main" });
+    const pushed = () => git(repo, "for-each-ref", "refs/factory/outbound/factory/wi_env") !== "";
     return { workdir, push, pushed };
   }
 
-  it("pushes when .env.example has names and blank values only", async () => {
+  it("stores when .env.example has names and blank values only", async () => {
     const { workdir, push, pushed } = await setup();
     commit(workdir, { ".env.example": "# names only\nGITHUB_TOKEN=\nexport MYSQL_PASSWORD=\nSLACK_BOT_TOKEN=\"\"\n" }, "add a name");
     expect(await push()).toMatchObject({ ok: true });
     expect(pushed()).toBe(true);
   });
 
-  it("refuses with egress_blocked, and runs no git push, when .env.example assigns a value", async () => {
+  it("refuses with egress_blocked, and writes no ref, when .env.example assigns a value", async () => {
     for (const line of [`GITHUB_TOKEN=${VALUE}`, `export GITHUB_TOKEN=${VALUE}`, `GITHUB_TOKEN="${VALUE}"`]) {
       const { workdir, push, pushed } = await setup();
       commit(workdir, { ".env.example": `# names only\n${line}\n` }, "leak");

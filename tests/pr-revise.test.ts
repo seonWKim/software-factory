@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
 import type { SourceRef, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -94,7 +94,7 @@ describe("/revise on a factory PR", () => {
     expect(reviews.map((r) => r.idempotency_key)).toEqual([`${f.it.id}:review:l0:r0`, `${f.it.id}:review:l1:r0`]);
     expect(await f.item(f.it)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 1, pr_number: PR });
     const reasons = (await f.store.listStateChanges(f.it.id)).map((c) => c.reason);
-    expect(reasons.slice(reasons.indexOf("pr_revise_requested"))).toEqual(["pr_revise_requested", "implemented", "review_passed"]);
+    expect(reasons.slice(reasons.indexOf("pr_revise_requested"))).toEqual(["pr_revise_requested", "implemented", "pr_delivered", "review_passed"]);
   });
 
   it("the implementer's prompt holds the feedback under an untrusted label, in a fence the feedback cannot close", async () => {
@@ -314,7 +314,7 @@ describe("feedback on an adopted PR", () => {
     const source = new FakeSource();
     const forge = new FakeForge(source);
     forge.prFileMap[50] = ["src/x.ts"];
-    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const bob: ExternalIdentity = { provider: "github", subject: "2", login: "bob" };
     forge.queue.push({
       kind: "change_open", source: prRef(50), change_ref: "50", head_branch: "feature/x", head_sha: "h1",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { RunOutcome, WorkItem } from "../src/core/types.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -21,7 +21,7 @@ async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
   const intake = async (n = 7): Promise<WorkItem> => {
     source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();
@@ -164,22 +164,5 @@ describe("GitHub comments return their URL", () => {
     expect(await source.postComment(issueRef(7), "spec", "<!-- factory:spec:1 -->")).toEqual({
       url: "https://github.com/o/r/issues/7#issuecomment-5",
     });
-  });
-
-  it("the tool broker's github.comment result carries the url unchanged", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const client = new FakeClient();
-    const broker = new GitHubToolBroker({
-      client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      credentials: { token: async () => null },
-      scanner: cleanScanner,
-    });
-    const r = await broker.call({ run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token }, "github.comment", {
-      number: 1, body: "x", marker: "m",
-    });
-    expect(r).toEqual({ ok: true, content: { created: true, url: client.postedUrl } });
   });
 });

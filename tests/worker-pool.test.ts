@@ -3,12 +3,13 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WORKER_INDEX_BASE_ENV, build, loadConfig, maxWorkers, workerCount, workerIndexBase } from "../src/compose.js";
+import { CODE_VERSION_ENV } from "../src/interfaces/updater.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { Logger } from "../src/core/log.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { type RunKind, usageTokens } from "../src/core/types.js";
-import { CountedKeepAwake, WorkerPool } from "../src/core/worker-pool.js";
-import { testWorkerShare } from "../src/core/worker.js";
+import { CountedKeepAwake, WorkerPool } from "../src/worker/index.js";
+import { testWorkerShare } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
@@ -133,6 +134,23 @@ describe("workers config", () => {
       expect(built.worker.workers.map((w) => w.id)).toEqual([6, 7, 8].map((n) => `${hostname()}:${process.pid}:${n}`));
     } finally {
       await built.close();
+    }
+  });
+
+  it("build() hands its workers the revision in SF_CODE_VERSION (set by the supervisor), and none when it is unset", async () => {
+    vi.stubEnv(CODE_VERSION_ENV, " 3590fae ");
+    const built = await build(await loadConfig(root({ workers: 2 })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+    try {
+      expect(built.worker.workers.map((w) => w.d.code_version)).toEqual(["3590fae", "3590fae"]);
+    } finally {
+      await built.close();
+    }
+    vi.stubEnv(CODE_VERSION_ENV, "");
+    const dev = await build(await loadConfig(root({ workers: 1 })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+    try {
+      expect(dev.worker.workers[0]!.d.code_version).toBeUndefined();
+    } finally {
+      await dev.close();
     }
   });
 

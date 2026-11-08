@@ -4,22 +4,22 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Read } from "../src/core/tools/index.js";
 import type { RunId, RunKind, RunOutcome, RunUsage, WorkItemId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
-import type { ToolCallContext, ToolResult } from "../src/interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { NO_FILTERS } from "../src/ui/filters.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { renderIndex } from "../src/ui/pages.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, issueRef, prompts, silent, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
@@ -165,11 +165,12 @@ const usage = (n: number, cost: number | null = null, model = "m"): AgentRunResu
 const full = (n: number) => n * 14;
 const done = { summary: "s", next_steps: "n" };
 
-class FailingPrBroker extends FakeBroker {
+/** The run's last step (storing its branch, RFC 0015 M7) fails, after the agent call. */
+class FailingStoreBroker extends FakeBroker {
   override async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (name === "github.open_pr") {
+    if (name === STORE_BRANCH) {
       this.calls.push({ ctx, name, args });
-      return { ok: false, error_code: "forge_error", message: "open_pr failed" };
+      return { ok: false, error_code: "forge_error", message: "store failed" };
     }
     return super.call(ctx, name, args);
   }
@@ -195,7 +196,7 @@ async function factory(opts: {
     implement: opts.implement ?? (() => ({ output: done, usage: usage(100, 0.5) })),
     review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" }, usage: usage(1) }),
   });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: opts.broker ?? new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -224,8 +225,8 @@ describe("worker: usage on every outcome", () => {
     expect((await f.store.getWorkItem(it0.id))!.token_cost).toBe(full(10) + full(100) + full(1));
   });
 
-  it("a run that fails after an agent call (opening the PR fails) still stores that call's usage", async () => {
-    const f = await factory({ broker: new FailingPrBroker() });
+  it("a run that fails after an agent call (storing its branch fails) still stores that call's usage", async () => {
+    const f = await factory({ broker: new FailingStoreBroker() });
     const it0 = await f.submit();
     const impl = (await f.store.listRuns(it0.id)).filter((r) => r.kind === "implement" && r.outcome !== null);
     expect(impl.length).toBeGreaterThan(0);
@@ -261,12 +262,12 @@ describe("worker: usage on every outcome", () => {
 
 describe("controller: failed runs add their usage once, in the ack transaction", () => {
   it("applying the same failed outcome twice adds it once, and the add lands with the ack", async () => {
-    const f = await factory({ broker: new FailingPrBroker() });
+    const f = await factory({ broker: new FailingStoreBroker() });
     f.source.queue.push({ kind: "item_requested", source: issueRef(1), requester: alice, title: "t", body: "b" });
     await f.controller.tickIntake();
     await f.worker.tick(); // triage
     await f.controller.tickRuns();
-    await f.worker.tick(); // implement fails at open_pr
+    await f.worker.tick(); // implement fails at its branch store
     const [run] = await f.store.listUnacknowledgedRuns(1);
     expect(run).toMatchObject({ kind: "implement", status: "failed" });
     const before = (await f.store.getWorkItem(run!.work_item_id))!.token_cost;
@@ -283,7 +284,7 @@ describe("controller: failed runs add their usage once, in the ack transaction",
 
   it("a failed run's usage is checked against the token budget: its retry is held at a checkpoint", async () => {
     // Triage 140 + the failed implement 1400 is over a 1000 budget: the retry is not queued.
-    const f = await factory({ broker: new FailingPrBroker(), budgets: { 2: 1000 } });
+    const f = await factory({ broker: new FailingStoreBroker(), budgets: { 2: 1000 } });
     const it0 = await f.submit();
     const it1 = (await f.store.getWorkItem(it0.id))!;
     expect(it1).toMatchObject({ token_cost: full(10) + full(100), blocked_on: "budget", blocked_reason: "budget_checkpoint" });
@@ -299,7 +300,7 @@ describe("controller: a succeeded run the item no longer expects still adds its 
     it(`${kind}: ignored on a closed item, its full count is added to token_cost in the ack transition`, async () => {
       const clock = new FakeClock();
       const { store } = await newStore(clock);
-      const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: baseConfig, log: silent, scanner: cleanScanner });
+      const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: baseConfig, log: silent, scanner: cleanScanner });
       const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind, idempotency_key: `ignored:${kind}` } });
       const run = (await store.claimRun({ worker_id: w1, kinds: [kind], lease_ms: 60_000 }))!;
       expect(run.kind).toBe(kind);
@@ -369,7 +370,7 @@ describe("worker: a run with several agent calls stores the sum", () => {
       review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" }, usage: usage(1) }),
     });
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker: new FakeBroker(),
       storage: new MemoryStorage(), clock, config: cfg, prompts: { ...prompts, resolve: "S" }, log: silent, scanner: cleanScanner,

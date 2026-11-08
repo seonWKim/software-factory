@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { isCovered } from "../src/core/policy.js";
 import { sizeDetail } from "../src/core/diff-gate.js";
-import { NO_COMMITS_DETAIL } from "../src/core/worker.js";
+import { NO_COMMITS_DETAIL } from "../src/worker/index.js";
 import type { RunKind } from "../src/core/types.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ClaudeCodeRunner, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";

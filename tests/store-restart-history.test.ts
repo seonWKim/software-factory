@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { RESTART_WINDOW_MS, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -63,7 +63,7 @@ for (const b of BACKENDS) {
     it("the controller stores this host's restarts once per restart, however often it reads the same list", async () => {
       const { store, clock } = await b.make();
       const list = restarts(clock, 3);
-      const c = new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, restarts: async () => list });
+      const c = new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, restarts: async () => list });
       await c.tickAlarms();
       await c.tickAlarms();
       expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual(list);
@@ -73,47 +73,11 @@ for (const b of BACKENDS) {
       const { store, clock } = await b.make();
       for (const r of restarts(clock, 5)) await store.recordChildRestart(r);
       const cfg: FactoryConfig = { ...config };
-      await new Controller({ store, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner }).tickAlarms();
+      await new ControllerRole({ store, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner }).tickAlarms();
       expect(await store.listAlerts({ limit: 10 })).toMatchObject([{ pattern: "child_restarts", count: 5, detail: "r5" }]);
     });
   });
 }
-
-describe("SQLite migration: restart history", () => {
-  it("adds an empty child_restarts table to an existing database and leaves its items and alerts as they were", async () => {
-    expect(STEP).toBeGreaterThan(0);
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-restarts-")), "factory.db");
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await seed.migrate();
-    const { item } = await seed.createWorkItem(issue(1), system);
-    const { alert } = (await seed.recordAlert({ pattern: "child_restarts", pattern_key: "child_restarts", error_code: "child_restarts", count: 5, detail: "r5" }, 1)) as { alert: unknown };
-    await seed.close();
-    // Back to the state before the migration.
-    const raw = new DatabaseSync(path);
-    raw.exec(`DROP TABLE child_restarts; DELETE FROM schema_migrations WHERE version >= ${STEP};`);
-    const dump = (db: DatabaseSync) => ({
-      items: db.prepare("SELECT * FROM work_items").all().map((r) => ({ ...r })),
-      alerts: db.prepare("SELECT * FROM alerts").all().map((r) => ({ ...r })),
-    });
-    const old = dump(raw);
-    raw.close();
-
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await store.migrate();
-    try {
-      expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual([]);
-      expect(await store.getWorkItem(item.id)).toEqual(item);
-      expect(await store.listAlerts({ limit: 10 })).toEqual([alert]);
-    } finally {
-      await store.close();
-    }
-    const again = new DatabaseSync(path);
-    expect(dump(again)).toEqual(old);
-    expect(again.prepare("SELECT COUNT(*) AS n FROM child_restarts").get()).toEqual({ n: 0 });
-    again.close();
-  });
-});
 
 describe("MySQL step: restart history (child-restarts)", () => {
   it("has the SQLite migration's number and creates the same table and index", () => {

@@ -6,7 +6,7 @@
 import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { ENV_EXAMPLE } from "../../core/tools/guard.js";
-import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../core/worker.js";
+import { TRUSTED_GIT_ENV, untrustedGitConfig } from "../../worker/index.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { ExecResult } from "../../interfaces/sandbox.js";
@@ -35,8 +35,8 @@ export function branchAllowed(branch: string, prefix: string): ToolFailure | nul
 }
 
 /** Git in the factory repo itself (trusted: the owner's config), with no prompt. */
-export function factoryGit(repo: string, args: string[]): Promise<ExecResult> {
-  return runProcess(["git", "-C", repo, ...args], { cwd: repo, env: baseEnv({ GIT_TERMINAL_PROMPT: "0" }) });
+export function factoryGit(repo: string, args: string[], extra: Record<string, string> = {}): Promise<ExecResult> {
+  return runProcess(["git", "-C", repo, ...args], { cwd: repo, env: baseEnv({ GIT_TERMINAL_PROMPT: "0", ...extra }) });
 }
 
 /** The commit `ref` names in the factory repo (e.g. `origin/main`, `refs/heads/main`), or a git_failed result. */
@@ -87,6 +87,36 @@ export async function trustedRunFolder(workdir: string): Promise<{ git: RunFolde
   const untrusted = untrustedGitConfig(names.stdout);
   if (untrusted.length > 0) return { ok: false, error_code: "untrusted_git_config", message: untrusted.join(", ").slice(0, 500) };
   return { git, gitDir };
+}
+
+/** Where `storeBranch` writes a run's branch in the factory repo, and the trusted base its scan diffs from. */
+export interface StoreTarget {
+  readonly repo: string;
+  /** The base the branch's scan starts from, as the factory repo names it (`refs/heads/main`, `origin/main`). */
+  readonly base: string;
+  /** The ref written: `refs/heads/<branch>` (a local item's final branch) or outbound's staging ref. */
+  readonly ref: string;
+  /** Moves the ref wherever it was: only for a staging ref no person writes. */
+  readonly force: boolean;
+}
+
+/**
+ * Writes the run folder's HEAD to `to.ref` of the factory repo with a push to the repo's own path (git's local
+ * transport: the factory repo receives with its own config, the run folder's is never read there), after the
+ * trusted-git checks and the G5 branch scan. Never a remote, never a credential. Unforced, a ref that moved
+ * elsewhere is refused (`push_failed`). Returns the stored sha.
+ */
+export async function storeBranch(workdir: string, to: StoreTarget, scanner: EgressScanner): Promise<{ sha: string } | ToolFailure> {
+  const base = await factoryCommit(to.repo, to.base);
+  if (!("sha" in base)) return base;
+  const folder = await trustedRunFolder(workdir);
+  if (!("git" in folder)) return folder;
+  const blocked = await scanBranch(folder.git, base.sha, scanner);
+  if (blocked) return blocked;
+  const r = await folder.git(["-c", "credential.helper=", "push", "--quiet", "--no-verify", to.repo, `${to.force ? "+" : ""}HEAD:${to.ref}`]);
+  if (r.exit_code !== 0) return { ok: false, error_code: "push_failed", message: r.stderr.trim().slice(0, 500) };
+  const head = await folder.git(["rev-parse", "HEAD"]);
+  return { sha: head.stdout.trim() };
 }
 
 /**

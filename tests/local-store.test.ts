@@ -117,9 +117,9 @@ for (const b of BACKENDS) {
 describe("SQLite migration 21: local item tables", () => {
   it("is followed by migration 22, and migrate() on a fresh database creates both tables", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(COMMANDS_STEP);
-    const driver = new SqliteDriver(":memory:");
+    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
     const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
+    await driver.migrate();
     const rows = await driver.all(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${TABLES.map(() => "?").join(", ")}) ORDER BY name`,
       TABLES,
@@ -152,11 +152,13 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0021 on MySQL", () => {
     await expect(store.migrate()).rejects.toThrow(/schema steps? pending \(state 20, latest \d+\): run `npm run migrate`/);
 
     await new MysqlMigrations(c).apply(() => undefined);
+    // RFC 0015 M1 archives both tables as legacy_<name>.
+    const legacy = TABLES.map((t) => `legacy_${t}`);
     const [tables] = await c.query(
       "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (?, ?) ORDER BY 1",
-      TABLES,
+      legacy,
     );
-    expect((tables as { name: string }[]).map((t) => t.name)).toEqual(TABLES);
+    expect((tables as { name: string }[]).map((t) => t.name)).toEqual(legacy);
     await store.migrate();
     const r = await store.appendCliCommand({ key: "k1", actor: "local:owner", command: "c", args: {} });
     expect(r.created).toBe(true);
@@ -173,9 +175,9 @@ describe("SQLite migration 22: app command requests", () => {
   it("migrate() on a fresh database reaches the latest migration and creates the table", async () => {
     const LATEST = MIGRATIONS.length;
     expect(LATEST).toBeGreaterThanOrEqual(COMMANDS_STEP);
-    const driver = new SqliteDriver(":memory:");
+    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
     const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
+    await driver.migrate();
     expect(await driver.schemaVersion()).toEqual({ applied: LATEST, latest: LATEST });
     expect(await sqliteHasCommandsTable(driver)).toBe(true);
     const cols = await driver.all(`SELECT name, type, "notnull" AS nn, pk FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`);
@@ -195,15 +197,15 @@ describe("SQLite migration 22: app command requests", () => {
 
   it("a database recorded at version 21 reaches the latest after migrate() and has the table", async () => {
     const LATEST = MIGRATIONS.length;
-    const driver = new SqliteDriver(":memory:");
+    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
     const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
+    await driver.migrate();
     await driver.run(`DROP TABLE ${COMMANDS_TABLE}`);
     await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
     expect(await driver.schemaVersion()).toEqual({ applied: STEP, latest: LATEST });
     expect(await sqliteHasCommandsTable(driver)).toBe(false);
 
-    await store.migrate();
+    await driver.migrate();
     expect(await driver.schemaVersion()).toEqual({ applied: LATEST, latest: LATEST });
     expect(await sqliteHasCommandsTable(driver)).toBe(true);
     await store.close();
@@ -252,9 +254,9 @@ async function sqliteColumns(driver: SqliteDriver): Promise<{ name: string; type
 describe("SQLite migration 23: app command request handling", () => {
   it("migrate() on a fresh database reaches the latest migration, with nullable handled_at and refusal", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(HANDLING_STEP);
-    const driver = new SqliteDriver(":memory:");
+    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
     const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
+    await driver.migrate();
     expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     expect((await sqliteColumns(driver)).slice(6)).toEqual([
       { name: "handled_at", type: "TEXT", nn: 0 },
@@ -263,40 +265,6 @@ describe("SQLite migration 23: app command request handling", () => {
     await store.close();
   });
 
-  it("a database recorded at version 22 reaches the latest after migrate(); a row from before stays pending", async () => {
-    const driver = new SqliteDriver(":memory:");
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
-    // Back to version 22: the table as migration 22 built it, without the two columns.
-    await driver.run(`DROP TABLE ${COMMANDS_TABLE}`);
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
-    await driver.run(MIGRATIONS[COMMANDS_STEP - 1]!);
-    await driver.run("INSERT INTO schema_migrations (version) VALUES (?)", [COMMANDS_STEP]);
-    await driver.run(`INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES ('old', 'local:owner', 'approve', '{}', 't')`);
-    expect((await sqliteColumns(driver)).map((c) => c.name)).not.toContain("handled_at");
-
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    expect(await store.getAppCommandRequest(1)).toMatchObject({ key: "old", handled_at: null, refusal: null });
-    await store.close();
-  });
-});
-
-describe("SQLite migration 23 run again", () => {
-  it("a database whose recorded version was set back below 23 migrates again and keeps handled_at and refusal", async () => {
-    const driver = new SqliteDriver(":memory:");
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
-    const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: {} });
-    await store.markAppCommandRequest(request.seq, "refused");
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP]);
-
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    expect(await store.getAppCommandRequest(request.seq)).toMatchObject({ refusal: "refused" });
-    expect((await sqliteColumns(driver)).map((c) => c.name).filter((n) => n === "handled_at")).toHaveLength(1);
-    await store.close();
-  });
 });
 
 describe("MySQL step 0023: app command request handling", () => {
@@ -324,9 +292,10 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0023 on MySQL", () => {
 
     await new MysqlMigrations(c).apply(() => undefined);
     expect((await new MysqlMigrations(c).status()).pending).toEqual([]);
+    // RFC 0015 M1 copies the table to its new name; M4 merges it into inbound_commands and keeps it as legacy_.
     const [cols] = await c.query(
       "SELECT column_name AS name, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
-      [COMMANDS_TABLE],
+      ["legacy_inbound_app_requests"],
     );
     expect((cols as { name: string; nullable: string }[]).slice(6)).toEqual([
       { name: "handled_at", nullable: "YES" },

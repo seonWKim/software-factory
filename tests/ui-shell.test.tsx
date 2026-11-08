@@ -381,6 +381,13 @@ describe("item commands", () => {
     expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["retry", "approve", "budget"]);
   });
 
+  it("with no command that applies (a running item), says so and offers no note box or button", () => {
+    mountCommands([]);
+    expect(document.querySelector("[data-commands-none]")?.textContent).toContain("No command applies now");
+    expect(document.querySelectorAll("[data-command] > button")).toHaveLength(0);
+    expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
+  });
+
   it("the item page shows the buttons from the item API's commands list", async () => {
     RESPONSES["/api/v1/session"] = SESSION;
     (detail as Record<string, unknown>).commands = [cmd("approve"), cmd("reject")];

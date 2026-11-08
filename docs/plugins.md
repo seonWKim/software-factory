@@ -31,4 +31,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
 | TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
 | NetworkProbe | `http` | [network-probe.md](plugins/network-probe.md) |
+| EventBus | `sql` | [event-bus.md](plugins/event-bus.md) |
+| TickGenerator | `time-based`, `manual` | [tick-generator.md](plugins/tick-generator.md) |
+| ExecutionEngine | `journal` | [execution-engine.md](plugins/execution-engine.md) |
 | Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github` | [forge.md](plugins/forge.md) |

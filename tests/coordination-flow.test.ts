@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
-import { Controller, DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
+import { DEPENDENCY_STATE_TTL_MS } from "../src/controller/units/coordination/coordination.unit.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { statusOf } from "../src/core/status-label.js";
 import type { DependencyState, RunKind, SourceRef, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -18,7 +19,7 @@ import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pi
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
-const WORKER = "src/core/worker.ts";
+const WORKER = "src/worker/runner.ts";
 
 /** FakeSource that also offers dependency links and states, as the GitHub source does. */
 class DepSource extends FakeSource implements DependencySource {
@@ -35,7 +36,7 @@ class DepSource extends FakeSource implements DependencySource {
 async function setup(source: SourceAdapter = new DepSource()) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   /** Issue `n` approved and implementing, with a queued implement run (or set up with `patch` and `kinds`). */
   const item = async (n: number, patch: WorkItemPatch = {}, kinds: RunKind[] = ["implement"]) => {
     const { item } = await store.createWorkItem(issue(n), system);
@@ -230,7 +231,7 @@ describe("coordination-cost holds (design §5, 2026-11-03)", () => {
     const comments = f.source.comments.filter((c) => c.marker === `<!-- factory:coordination-hold:${run!.id}:#92 -->`);
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain(
-      "waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5",
+      "waiting for #92 to merge: both change src/worker/runner.ts (conflicted 6 times), cost 4.0 > 2.5",
     );
     expect(comments[0]!.body).toContain("`/approve`");
     const it0 = await f.get(f.waiting);
@@ -643,7 +644,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const it = await f.submit();
     await f.step();
     expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     const unmergeable = async () => {
       f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
       await f.controller.tickIntake();
@@ -750,7 +751,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
     // By the time the resolve run merges, the branch's side only appends too.
     stages["docs/design.md"] = APPENDED;
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     const record = vi.spyOn(f.store, "recordConflicts");
     expect(await f.w1.tick()).toBe(true);
     await f.controller.tickRuns();
@@ -823,7 +824,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(await f.w1.tick()).toBe(true);
     await f.controller.tickRuns();
     expect((await f.runs(f.it, "resolve")).map((r) => r.status)).toEqual(["queued"]);
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
   }
   const resolveOnce = async (f: Awaited<ReturnType<typeof withPr>>) => {
     expect(await f.w1.tick()).toBe(true);

@@ -211,14 +211,28 @@ export class NoOpSandbox implements Sandbox {
     const head = await this.localCommit(spec.repo, spec.branch);
     if (head === null) return { merged: false, refused: `the factory repo has no local branch \`${spec.branch}\`` };
     if (await this.isAncestor(spec.repo, head, base)) return { merged: true, sha: base, already: true, not_updated: [] };
+    if (spec.expected_base !== undefined && base !== spec.expected_base) return { merged: false, base_moved: base };
+    if (spec.expected_head !== undefined && head !== spec.expected_head) return { merged: false, head_moved: head };
     const tree = await this.mergeTree(spec.repo, base, head);
     if (tree.conflicts.length > 0) return { merged: false, conflicts: tree.conflicts };
     const sha = await this.commitMerge(spec.repo, tree.tree, [base, head], spec.message, spec.identity);
     const failed = await this.checkMerge(spec, sha);
     if (failed) return { merged: false, refused: failed };
     const moved = await this.moveBase(spec.repo, spec.base_ref, base, sha, spec.message);
-    if (!moved) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
+    // The base moved during the merge (a commit on it, another merge): nothing moved, and the caller checks again.
+    if (!moved) return { merged: false, base_moved: (await this.localCommit(spec.repo, spec.base_ref)) ?? base };
     return { merged: true, sha, already: false, not_updated: moved.not_updated };
+  }
+
+  /** The conflicting paths of `branch` merged into the local `base_ref`, from merge-tree (objects only); null: a branch is missing. */
+  async localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null> {
+    for (const b of [spec.base_ref, spec.branch]) {
+      if (!SAFE_BRANCH.test(b) || b.includes("..")) throw new Error(`refusing to check branch ${JSON.stringify(b)}`);
+    }
+    const base = await this.localCommit(spec.repo, spec.base_ref);
+    const head = await this.localCommit(spec.repo, spec.branch);
+    if (base === null || head === null) return null;
+    return (await this.mergeTree(spec.repo, base, head)).conflicts;
   }
 
   /**

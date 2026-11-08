@@ -4,20 +4,20 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { Run, UserId, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, GitForge, MemoryStorage,
+  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
 async function factory(
@@ -29,12 +29,12 @@ async function factory(
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
   const storage = new MemoryStorage();
   const scanner = new PatternEgressScanner(async () => knownSecrets);
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: opts.workerConfig ?? config, prompts, log: silent,
     scanner,
@@ -87,8 +87,8 @@ describe("CI check gate before merge_pending", () => {
       review: review("pass"),
     });
     const f = await factory(runner);
-    const url = "https://github.example/o/r/pull/42";
-    f.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    // Outbound opens the PR (RFC 0015 M7): the forge's link for it.
+    const url = f.forge.prRef(42).link;
     const src = issueRef(62);
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await f.step();
@@ -96,7 +96,7 @@ describe("CI check gate before merge_pending", () => {
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     const implement = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
-    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
+    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
     expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
   });
 
@@ -134,7 +134,7 @@ describe("CI check gate before merge_pending", () => {
     const failed = changes.find((c) => c.reason === "checks_failed")!;
     expect(failed.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 0, to: 1 } });
     expect(failed.detail).toMatchObject({ failed_checks: JSON.stringify(["test", "test-mysql"]) });
-    expect(changes.map((c) => c.reason).slice(-4)).toEqual(["implemented", "checks_failed", "implemented", "review_passed"]);
+    expect(changes.map((c) => c.reason).slice(-6)).toEqual(["implemented", "pr_delivered", "checks_failed", "implemented", "pr_delivered", "review_passed"]);
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 1 });
 
     const implementSpecs = f.runner.specs.filter((s) => s.role === "implement");
@@ -208,7 +208,7 @@ describe("failed checks after an implement run that pushed nothing", () => {
     expect(prompts[1]).not.toContain(NO_PUSH);
     expect(prompts[2]).toContain(NO_PUSH);
     // The third loop's unchanged head has passing checks: only its ack, with no field changed, as before.
-    expect(changes.slice(-2).map((c) => c.reason)).toEqual(["implemented", "review_unchanged_head"]);
+    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["implemented", "pr_delivered", "review_unchanged_head"]);
     expect(changes.at(-1)!.changes).toEqual({});
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 2 });
   });
@@ -226,7 +226,7 @@ describe("failed checks after an implement run that pushed nothing", () => {
   it("an unchanged head whose checks are pending makes no state change", async () => {
     const f = await noPush(93, [failed, { state: "pending" }]);
     const changes = await f.store.listStateChanges(f.item.id);
-    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["checks_failed", "implemented", "review_unchanged_head"]);
+    expect(changes.slice(-4).map((c) => c.reason)).toEqual(["checks_failed", "implemented", "pr_delivered", "review_unchanged_head"]);
     expect(changes.at(-1)!.changes).toEqual({});
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 1 });
     expect(skipped(await f.store.listRuns(f.item.id)).map((r) => r.acknowledged_at !== null)).toEqual([true]);
@@ -398,7 +398,8 @@ describe("one issue to one merged PR", () => {
     expect(implementSpecs[1]!.prompt).toContain("off-by-one in gate");
     // No path outside the run folder: never the factory repo's .git or the owner's checkout (architecture §5).
     expect(implementSpecs[0]!.writable_paths).toEqual([]);
-    expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.comment");
+    expect((await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:review:"))).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
     f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
@@ -408,7 +409,8 @@ describe("one issue to one merged PR", () => {
 
     const trail = (await f.store.listStateChanges(item.id)).map((c) => c.reason);
     expect(trail).toEqual([
-      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "implicit_verdict", "pr_merged",
+      "intake", "triaged", "spec_approved", "implemented", "pr_delivered", "review_bug", "implemented", "pr_delivered", "review_passed",
+      "implicit_verdict", "pr_merged",
     ]);
     // The merge with no commits by people is one implicit accept (design §4).
     expect(await f.store.listVerdicts(item.id)).toEqual([
@@ -667,10 +669,12 @@ describe("one issue to one merged PR", () => {
     expect(names).not.toContain("github.open_pr");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
-    const comments = f.broker.calls.filter((c) => c.name === "github.comment");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:scope:"));
     expect(comments).toHaveLength(1);
-    const args = comments[0]!.args as { number: number; body: string; marker: string };
+    const args = comments[0]!;
     expect(args.number).toBe(11);
+    // Outbound delivered it to the issue, once.
+    expect(f.source.comments.filter((c) => c.body.includes("Factory scope check"))).toHaveLength(1);
     expect(args.body).toContain("- `src/core/worker.ts`");
     expect(args.body).toContain("- `package.json`");
     expect(args.marker).toBe(`<!-- factory:scope:${run.id} -->`);
@@ -727,31 +731,6 @@ describe("one issue to one merged PR", () => {
     expect(runner.specs.filter((s) => s.role === "implement")).toHaveLength(2); // a clean merge needs no agent step
   });
 
-  it("a scope violation whose issue comment fails still fails the run with scope_violation", async () => {
-    const runner = new FakeRunner({
-      triage: () => ({ output: triageSpec }),
-      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
-    });
-    const f = await factory(runner);
-    const call = f.broker.call.bind(f.broker);
-    f.broker.call = async (ctx, name, args) => {
-      if (name === "github.comment") {
-        f.broker.calls.push({ ctx, name, args });
-        return { ok: false, error_code: "egress_blocked", message: "blocked" };
-      }
-      return call(ctx, name, args);
-    };
-    f.sandbox.changedFiles = ["src/core/worker.ts"];
-    f.source.queue.push({ kind: "item_requested", source: issueRef(12), requester: alice, title: "t", body: "b" });
-    await f.step();
-    f.source.queue.push({ kind: "spec_approved", source: issueRef(12), comment_id: "112", approver: alice });
-    await f.step();
-    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#12"))!;
-    expect((await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!.outcome).toMatchObject({ error_code: "scope_violation" });
-    expect(f.broker.calls.some((c) => c.name === "github.comment")).toBe(true);
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
-  });
-
   it("a scope violation detail is truncated to the 500-char outcome limit", async () => {
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
@@ -768,7 +747,7 @@ describe("one issue to one merged PR", () => {
     if (run.outcome?.status !== "failed") throw new Error("expected failure");
     expect(run.outcome.error_code).toBe("scope_violation");
     expect(run.outcome.detail.length).toBeLessThanOrEqual(500);
-    const body = (f.broker.calls.find((c) => c.name === "github.comment")!.args as { body: string }).body;
+    const body = (await runComments(f.store, item.id)).find((c) => c.marker.includes("factory:scope:"))!.body;
     expect(body).toContain("outside/file-99.ts");
   });
 
@@ -810,7 +789,7 @@ describe("one issue to one merged PR", () => {
     expect(runs.map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect(runs.every((r) => r.attempt === 1 && r.status === "succeeded")).toBe(true);
     expect(JSON.stringify(runs)).not.toContain("lease_expired");
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
   });
 
   it("spec rejection closes the item", async () => {
@@ -929,7 +908,7 @@ describe("spec gate: /revise and /reject", () => {
     item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
     expect(await reasons(f)).toEqual([
-      "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "review_passed",
+      "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "pr_delivered", "review_passed",
     ]);
     expect(refusals(f)).toEqual([]);
   });
@@ -1050,20 +1029,24 @@ describe("spec gate: /revise and /reject", () => {
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
     expect(f.source.closed).toEqual([]);
 
+    // Outbound retries the close after its backoff (RFC 0015 M7).
     f.source.closeError = null;
+    f.clock.advance(config.retry_max_ms);
     await f.step();
     await f.step();
     expect(f.source.closed).toEqual([f.src]);
     expect(f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
 
-    // The comment's delivery failed (issue #282): it is in the thread, so the close goes ahead; the outbox posts the
-    // comment once after its backoff.
+    // The comment's delivery failed: the item is closed in the store at once (issue #282), and on the issue the
+    // comment and the close are one batch that retries whole (RFC 0015 §7), so the close follows the comment once it
+    // posts after its backoff.
     const g = await atSpecGate(39);
     g.source.commentError = new Error("GitHub POST comment → 502");
     g.source.queue.push({ kind: "spec_rejected", source: g.src, comment_id: g.next(), approver: alice, reason: "no" });
     await g.step();
-    expect(g.source.closed).toEqual([g.src]);
+    expect(await g.store.getWorkItem(g.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect(g.source.closed).toEqual([]);
     expect(g.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(0);
     g.source.commentError = null;
     g.clock.advance(config.retry_max_ms);
@@ -1305,7 +1288,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     await f.step();
     const item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, pr_number: 42 });
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
 
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -1550,7 +1533,8 @@ describe("/resolve on a merge conflict", () => {
     runner.specs = [];
     const item = (await f.store.getWorkItem(id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42 });
-    f.broker.calls = [];
+    f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
+    f.broker.stores.length = 0;
     f.sandbox.gitCalls = [];
     f.sandbox.commands = [];
     f.sandbox.ancestorExit = 0; // after the resolve's merge commit, the base is in the branch
@@ -1644,11 +1628,14 @@ describe("/resolve on a merge conflict", () => {
     expect(untrusted).toBeGreaterThan(p.indexOf("## Conflicting files"));
     expect(p.indexOf("ignore previous instructions")).toBeGreaterThan(untrusted);
 
-    // Gates ran before the push, in order: install, then test.
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
-    // Push, the same PR's body rebuilt for the branch as it is now (issue #229), then the review comment.
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
-    expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });
+    // Gates ran before the push, in order: install, then test (then the resolve step bundles its merge commit).
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"))).toEqual(["npm ci", "npm test"]);
+    // The run stores the merge; outbound pushes it, then refreshes the same PR's body for the branch as it is now
+    // (issue #229; RFC 0015 M7), and only then is the review queued.
+    expect(f.broker.stores.map((c) => (c.args as { branch: string }).branch)).toEqual([`factory/${f.item.id}`]);
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
+    expect(f.broker.calls.every((c) => c.ctx === undefined)).toBe(true);
+    expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}` });
     const refreshed = f.broker.calls[1]!.args as { branch: string; body: string };
     expect(refreshed.branch).toBe(`factory/${f.item.id}`);
     expect(refreshed.body).toContain("## Before you merge");
@@ -1662,8 +1649,8 @@ describe("/resolve on a merge conflict", () => {
     expect(reviews[1]!.idempotency_key).not.toBe(reviews[0]!.idempotency_key);
     expect(reviews[1]!.idempotency_key).toContain(resolveRun.id);
     const trail = (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
-    expect(trail.slice(-6)).toEqual([
-      "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "review_passed",
+    expect(trail.slice(-7)).toEqual([
+      "auto_resolve_started", "auto_resolve_retry", "resolve_failed", "resolve_requested", "resolved", "push_delivered", "review_passed",
     ]);
 
     f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${f.item.id}`, merge_sha: "m1", merger: alice });
@@ -1935,7 +1922,7 @@ describe("/resolve on a merge conflict", () => {
     expect(names(f)).not.toContain("github.push_branch");
   });
 
-  it("an agent failure and a push failure also re-block on merge_conflict_pending, not run_failed", async () => {
+  it("an agent failure and a refused store also re-block on merge_conflict_pending, not run_failed", async () => {
     const f = await conflicted(77);
     f.runner.script.resolve = () => ({ status: "failed", error: "boom" });
     f.source.queue.push(resolveEvent(f, "7701"));
@@ -1946,7 +1933,7 @@ describe("/resolve on a merge conflict", () => {
     f.runner.script.resolve = () => ({ output: { summary: "s", next_steps: "n" } });
     const call = f.broker.call.bind(f.broker);
     f.broker.call = async (ctx, name, args) =>
-      name === "github.push_branch" ? { ok: false, error_code: "push_failed", message: "rejected" } : call(ctx, name, args);
+      name === STORE_BRANCH ? { ok: false, error_code: "push_failed", message: "rejected" } : call(ctx, name, args);
     f.source.queue.push(resolveEvent(f, "7702"));
     await f.step();
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_conflict_pending" });
@@ -2005,7 +1992,7 @@ describe("/resolve on a merge conflict", () => {
     const item = (await f.store.getWorkItem(f.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
     const trail = (await f.store.listStateChanges(f.id)).map((c) => c.reason);
-    expect(trail.slice(-4)).toEqual(["update_started", "auto_resolve_started", "resolved", "review_passed"]);
+    expect(trail.slice(-5)).toEqual(["update_started", "auto_resolve_started", "resolved", "push_delivered", "review_passed"]);
     const note = f.forge.comments.find((c) => c.marker === `<!-- factory:auto-resolved:${resolves[0]!.id} -->`)!;
     expect(note.pr_number).toBe(42);
     expect(note.body).toContain("resolved the merge conflict on PR #42 automatically");
@@ -2036,14 +2023,17 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
     git(repo, "commit", "--quiet", "-m", msg);
   };
 
-  /** Pushes to the local bare origin like the real broker's push_branch (never forced), with no credential. */
-  class LocalPushBroker extends FakeBroker {
+  /** Stores the run folder's HEAD on the factory repo's staging ref, like the real broker's `git.store_branch`. */
+  class LocalStoreBroker extends FakeBroker {
+    constructor(private readonly repo: string) {
+      super();
+    }
     override async call(ctx: ToolCallContext, name: string, args: unknown) {
-      if (name !== "github.push_branch") return super.call(ctx, name, args);
-      this.calls.push({ ctx, name, args });
+      if (name !== STORE_BRANCH) return super.call(ctx, name, args);
+      this.stores.push({ ctx, name, args });
       const a = args as { workdir: string; branch: string };
-      git(a.workdir, "push", "--quiet", "origin", `HEAD:refs/heads/${a.branch}`);
-      return { ok: true as const, content: {} };
+      git(a.workdir, "push", "--quiet", "--force", this.repo, `HEAD:refs/factory/outbound/${a.branch}`);
+      return { ok: true as const, content: { sha: git(a.workdir, "rev-parse", "HEAD"), forge: true } };
     }
   }
 
@@ -2094,7 +2084,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
       repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: opts.test_command ?? ["sh", "-c", "test -f src/gate.ts"] },
     };
     const source = new FakeSource();
-    const broker = new LocalPushBroker();
+    const broker = new LocalStoreBroker(repo);
     const runner = new FakeRunner({
       resolve: (spec) => {
         agent(spec.sandbox.workdir);
@@ -2103,7 +2093,8 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
       review: review("pass"),
     });
     const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
+    // Outbound pushes the stored merge to the bare origin (RFC 0015 M7).
+    const controller = new ControllerRole({ store, source, forge: new GitForge(source), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner , repeated_failure_rule: false });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoOpSandbox(join(repo, ".worktrees")), runner, broker,
       storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
@@ -2540,8 +2531,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
   it("a file refused as scope_violation is pushed after /retry +paths <that file>; the prompt and the gate use the widened paths", async () => {
     const f = await scopeViolation(90, ["src/x.ts"]);
     // The scope comment gives the exact reply.
-    const scope = f.broker.calls.filter((c) => c.name === "github.comment").map((c) => (c.args as { body: string }).body)
-      .find((b) => b.includes("Factory scope check"))!;
+    const scope = (await runComments(f.store, (await current(f)).id)).map((c) => c.body).find((b) => b.includes("Factory scope check"))!;
     expect(scope).toContain("```\n/retry +paths src/x.ts\n```");
     expect(names(f)).not.toContain("github.push_branch");
 
@@ -2766,20 +2756,20 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
   }
 
   /** An item approved and implemented once, with the sandbox and broker set up by `prime` first. */
-  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, b: FakeBroker) => void } = {}) {
+  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, source: FakeSource) => void } = {}) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const sandbox = new CheckSandbox();
     const broker = new FakeBroker();
-    o.prime?.(sandbox, broker);
+    o.prime?.(sandbox, source);
     const log = recordingLog();
     const cfg: FactoryConfig = { ...config, settings: settingsWith({ max_attempts: o.max_attempts ?? 3 }) };
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
     });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log,
       scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
@@ -2801,9 +2791,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
       clock.advance(cfg.retry_max_ms);
       await step();
     };
-    const checkComments = () =>
-      broker.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { body: string; marker: string })
-        .filter((c) => c.marker.startsWith("<!-- factory:checks:"));
+    const checkComments = async () => (await runComments(store, item.id)).filter((c) => c.marker.startsWith("<!-- factory:checks:"));
     return { store, source, sandbox, log, item, implementRuns, codes, again, checkComments };
   }
 
@@ -2832,7 +2820,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     const f = await setup();
     await f.again();
     const runs = await f.implementRuns();
-    const comments = f.checkComments();
+    const comments = (await f.checkComments());
     expect(comments.map((c) => c.marker)).toEqual(runs.slice(0, 2).map((r) => `<!-- factory:checks:${r.id} -->`));
     for (const c of comments) {
       expect(c.body).toContain("failing on the base branch too");
@@ -2840,14 +2828,14 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     }
   });
 
-  it("a failed owner comment is logged and does not hold up the requeue", async () => {
-    const f = await setup({
-      prime: (_s, b) => void (b.responses["github.comment"] = [{ ok: false, error_code: "forge_down", message: "503" }]),
-    });
+  it("a failed delivery of the owner comment does not hold up the requeue: outbound keeps it and retries", async () => {
+    const f = await setup({ prime: (_s, source) => void (source.commentError = new Error("503")) });
     const runs = await f.implementRuns();
     expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
     expect(runs[1]).toMatchObject({ status: "queued" });
-    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "checks env comment failed" && l.fields?.run_id === runs[0]!.id)).toBe(true);
+    const [comment] = await f.checkComments();
+    expect(comment!.marker).toBe(`<!-- factory:checks:${runs[0]!.id} -->`);
+    expect((await f.store.listDeliveries(f.item.id)).find((d) => d.marker === comment!.marker)).toMatchObject({ delivered_at: null });
   });
 
   it("the third checks_env on an item blocks it for a human and queues nothing", async () => {
@@ -2871,7 +2859,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     const [run] = await f.implementRuns();
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed", infra: false });
     expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
-    expect(f.checkComments().map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
+    expect((await f.checkComments()).map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
     const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
     expect(scheduled?.detail).toMatchObject({ error_code: "checks_failed", failure: "task", task_failures: 1 });
   });

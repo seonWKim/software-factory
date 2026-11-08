@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceRef, WorkItem } from "../src/core/types.js";
 import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
@@ -41,7 +41,7 @@ async function setup() {
   const source = new FakeSource();
   const forge = new FakeForge(source);
   const log = recordingLog();
-  const controller = new Controller({ store, source, forge, auth: new StrangerAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new StrangerAuth(), clock, config, log, scanner: cleanScanner });
   return { store, source, forge, log, controller };
 }
 type F = Awaited<ReturnType<typeof setup>>;

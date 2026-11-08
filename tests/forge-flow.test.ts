@@ -2,9 +2,9 @@
 // guard, no forge means no PR read, and the forge takes over the GitHub source's old cursor.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkerId, WorkItem } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
@@ -35,7 +35,7 @@ async function slackWithForge() {
     resolve: () => ({ output: { summary: "kept both gates", next_steps: "none" } }),
   });
   const sandbox = new FakeSandbox();
-  const controller = new Controller({ store, sources: [slack], forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, sources: [slack], forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config, prompts,
     log: silent, scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
@@ -99,7 +99,7 @@ describe("a non-GitHub source alone with a forge (issue #273)", () => {
     f.slack.queue.push({ kind: "item_requested", source: slackRef(2), requester: { provider: "slack", subject: "666" }, title: "t", body: "b" });
     const auth = new FakeAuth();
     auth.authorize = async () => ({ allow: false, reason: "no_role" });
-    const refusing = new Controller({ store: f.store, sources: [f.slack], forge: f.forge, auth, clock: f.clock, config, log: silent, scanner: cleanScanner });
+    const refusing = new ControllerRole({ store: f.store, sources: [f.slack], forge: f.forge, auth, clock: f.clock, config, log: silent, scanner: cleanScanner });
     await refusing.tickIntake();
     expect(f.slack.comments.filter((c) => c.marker.startsWith("<!-- factory:refused-intake:"))).toHaveLength(1);
     expect(new GitHubIssueSource(new RecordingGitHubClient(), { owner: "o", name: "r" }, "factory", "factory/", "main").silent_intake_refusal).toBe(true);
@@ -130,7 +130,7 @@ async function github(o: { withForge: boolean }) {
   const ctx = { clock, history_since: null, log };
   const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
   const forge = o.withForge ? new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", source, ctx) : null;
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   /** An item whose PR 42 waits for a human merge. */
   const waiting = async () => {
     const { item } = await store.createWorkItem(

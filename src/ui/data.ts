@@ -8,11 +8,16 @@ import type { RunId } from "../core/types.js";
 import { type FactoryStore, type StoreTable, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX, type TableCell } from "../interfaces/factory-store.js";
 
 /** Columns whose values never leave the server: fencing tokens and the stored link-code hash. */
+/** Each table appears twice until the contract migration: the legacy copy keeps its old name (RFC 0015 §12). */
 export const HIDDEN_COLUMNS: Readonly<Record<string, readonly string[]>> = {
-  runs: ["lease_token"],
-  listener_leases: ["token"],
-  run_attempts: ["lease_token"],
-  link_codes: ["code_hash"],
+  worker_runs: ["lease_token"],
+  inbound_listener_leases: ["token"],
+  worker_run_attempts: ["lease_token"],
+  identity_link_codes: ["code_hash"],
+  legacy_runs: ["lease_token"],
+  legacy_listener_leases: ["token"],
+  legacy_run_attempts: ["lease_token"],
+  legacy_link_codes: ["code_hash"],
 };
 
 /** What a hidden cell shows. */

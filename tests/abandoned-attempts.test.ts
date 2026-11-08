@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -15,7 +15,7 @@ async function setup(max_attempts = 3) {
   const source = new FakeSource();
   const log = recordingLog();
   const cfg = { ...config, settings: settingsWith({ max_attempts }) };
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: new PatternEgressScanner(async () => []),
   });
   source.queue.push({ kind: "item_requested", source: issueRef(1), requester: alice, title: "t", body: "b" });
@@ -92,7 +92,7 @@ describe("abandoned attempts", () => {
     const seen: AbandonedAttempt[] = [];
     // A row with no started_at (older rows): the line is still written, duration null.
     const db = (f.store as unknown as { db: { run(sql: string, p: unknown[]): Promise<number> } }).db;
-    await db.run("UPDATE runs SET started_at = NULL WHERE id = ?", [run.id]);
+    await db.run("UPDATE worker_runs SET started_at = NULL WHERE id = ?", [run.id]);
     expect(await f.store.expireLeases(3, undefined, (a) => seen.push(a))).toEqual([run.id]);
     expect(await f.store.expireLeases(3, undefined, (a) => seen.push(a))).toEqual([]);
     expect(seen).toHaveLength(1);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { GATE_PATHS, MAX_DRAFT_CALLS, enqueueImprove, isGatePath, runImprove, systemSource } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, Run, RunId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -207,13 +207,13 @@ describe("improve: drafts", () => {
     const source = record("source", new FakeSource());
     const slack = record("slack", new FakeSlackPollSource());
     const forge = record("forge", new FakeForge());
-    const c = new Controller({ store: w.store, sources: [source, slack], forge, auth: new FakeAuth(), clock: w.clock, config, log: silent, scanner: cleanScanner });
+    const c = new ControllerRole({ store: w.store, sources: [source, slack], forge, auth: new FakeAuth(), clock: w.clock, config, log: silent, scanner: cleanScanner });
     calls.length = 0;
     await worker(w, new CountingLLM()).tick();
     await c.tickRuns();
     expect((await w.store.getRun(w.run.id))!.acknowledged_at).not.toBeNull();
     expect(calls).toEqual([]);
-    expect((await w.store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await w.store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
     expect(await w.store.getWorkItemBySource("local", systemSource(PROJECT.key).id)).toMatchObject({ stage: "NEW" });
   });
 });

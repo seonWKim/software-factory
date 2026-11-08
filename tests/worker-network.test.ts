@@ -4,8 +4,7 @@ import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
 import { NETWORK_UNAVAILABLE, classifyNetwork, unreachableHost } from "../src/core/policy.js";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
-import { NETWORK_PAUSED_BY } from "../src/core/worker.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
+import { NETWORK_PAUSED_BY } from "../src/worker/index.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { FakeNetworkProbe, cleanScanner, pipeline } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
@@ -80,6 +79,29 @@ describe("a run that cannot reach its host", () => {
     await f.step();
     expect((await f.runs(a, "implement"))[0]).toMatchObject({ status: "queued", attempt: 1, outcome: null });
     expect(pauseLines(f)[0]?.fields).toMatchObject({ host: "api.example.com" });
+  });
+
+  it("a run requeued mid-agent gets a new folder, so the retry starts a new session instead of resuming the old one", async () => {
+    let first = true;
+    const f = await pipeline({
+      implement: () => {
+        if (!first) return { output: { summary: "s", next_steps: "n" } };
+        first = false;
+        return { status: "failed", output: null, error: "network_unavailable: could not reach api.example.com" };
+      },
+    });
+    // This host's runner still has every session it started.
+    Object.assign(f.runner, { hasSession: async () => true });
+    const a = await f.submit();
+    await f.step();
+    f.clock.advance(30_000);
+    await f.controller.tickModelProbe();
+    await f.step();
+    const [before, after] = f.runner.specs.filter((s) => s.role === "implement");
+    expect(after!.sandbox.id).not.toBe(before!.sandbox.id);
+    expect(after!.session).toMatchObject({ resume: false });
+    expect(after!.prompt).not.toContain("same session and folder");
+    expect((await f.runs(a, "implement"))[0]).toMatchObject({ status: "succeeded" });
   });
 
   it("logs one warn line when the pause starts and one info line when claims resume, naming the host only", async () => {
@@ -188,7 +210,7 @@ describe("the GitHub preflight in the broker", () => {
     const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
     const client = { request: async () => { throw err; } } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
+      client, store, scanner: cleanScanner,
       clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };

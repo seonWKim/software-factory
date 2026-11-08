@@ -32,6 +32,8 @@ export interface UiCommands {
    * (a page with no auth wired) means false: Merge is disabled.
    */
   mergeAllowed?: () => Promise<boolean>;
+  /** The actor's edge passport (Identity, RFC 0015 §8), stored on each request row. Absent: none. */
+  passport?: () => Promise<string>;
   /** Whether a forge is selected (`plugins.forge`), for a PR's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
@@ -134,7 +136,8 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   if (!item) return err(404, "No such work item.");
   const key = `app:${randomUUID()}`;
   const args: Record<string, unknown> = { work_item_id: item.id, ...(parsed.note === undefined ? {} : { note: parsed.note }) };
-  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args });
+  const passport_id = await c.passport?.();
+  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args, ...(passport_id ? { passport_id } : {}) });
   return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
 }
 
@@ -144,10 +147,15 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
   return { as_of: now.toISOString(), csrf_token: d.commands.token, commands_enabled: d.commands.actor !== null, actor: d.commands.actor, actor_source: d.commands.source };
 }
 
-/** The item API's `commands`: what applies in the item's state, from the comment footer's table, `/help` last. */
+/**
+ * The item API's `commands`: what the page may send in the item's state, from the comment footer's table. Not `/help`:
+ * it answers a comment and the page cannot send it (APP_COMMANDS), so a button for it could only be refused.
+ */
 export function itemCommands(it: WorkItem, runs: readonly Run[]) {
   const askedBy = it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined;
-  return commandsFor(commandState(it, askedBy)).map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+  return commandsFor(commandState(it, askedBy))
+    .filter((c) => APP_COMMANDS.includes(c.name))
+    .map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
 }
 
 /** The item API's `replies`: the item's app requests; the refusal and command pass `text`, the note never leaves. */
