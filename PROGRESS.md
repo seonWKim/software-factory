@@ -33,7 +33,8 @@ minutes; past that the main session takes over from their WIP commit.
 | 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
 | –23:30 | M8 merge queue (depth 1); M7 outbound, controller half; M5 follow-up: pure units on ticks | agents + main | merged 23:30 (bf0e449, 39bcb41, 0964cd6), SQLite green; M7 fixes by main: flush starvation, G5 retry loop |
 | 23:35–01:05 | M7 worker half; M6 leftovers + M10 roles/hooks in the worker; M8 leftovers + router findings; pure units 2 + M9 command auth | 4 agents | running |
-| 23:45–00:45 | M11 contract migrations (main, done 23:50, e28aab9); review of bus, inbound, identity, state, runtime (read-only agent) | main + agent | running |
+| 23:45–00:45 | M11 contract migrations (main, done 23:50, e28aab9); review of bus, inbound, identity, state, runtime (read-only agent) | main + agent | review done 00:00: 10 findings. Fixed by main: contract drop order (cf1af90), forged passport links, consumer emits on a retried transaction, concurrent revoke, key-file race (0115682). Bus ordering, leases, new-group start, INSERT IGNORE: agent (bus-fixes) |
+| 00:20 | M8 leftovers merged: unit messages + MergeCheckTimedOut, speculative depth (`merge_queue.depth`), before_merge hooks, router and run-kind startup checks | agent + main | merged, SQLite green (3710) |
 | 01:05–03:00 | Merge the four branches; finish what an agent left; full MySQL suite with no agents running | main | |
 | 03:00–05:00 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
 | 05:00–07:30 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
