@@ -13,13 +13,14 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
 /**
  * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post`, `close_pr` (a PR closed with
  * a comment, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
- * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8) and `push_base` (the local
- * base pushed to its remote after a merge) retry until delivered.
+ * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
+ * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
+ * delivered ref names the filed item) retry until delivered.
  */
-export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "push" | "pr" | "merge" | "push_base";
+export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
-export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "push", "pr", "merge", "push_base"];
+export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "push", "pr", "merge", "push_base", "file_sub_issue"];
 
 /**
  * Where a run's push and PR go (RFC 0015 M7): the host whose factory repo holds the commit, and the branch, so
@@ -57,7 +58,7 @@ export interface ActionRow extends NewAction {
   readonly seq: number;
   readonly source_type: string;
   readonly delivered_at: string | null;
-  /** What the delivery made, when it names one (a PR's number), and its link. */
+  /** What the delivery made, when it names one (a PR's number, a filed sub-issue's source id), and its link. */
   readonly delivered_ref: string | null;
   readonly delivered_url: string | null;
   /** `sent`, or `failed`: a best-effort action that failed, or a retried one given up (refused for good). */

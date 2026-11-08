@@ -96,7 +96,6 @@
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/local-cli.ts",
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/local-merge.ts",
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/policy.ts",
-  "component-imports-legacy|controller/units/commands/commands.unit.ts|core/split.ts",
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/standing.ts",
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/suggest.ts",
   "component-imports-legacy|controller/units/commands/commands.unit.ts|core/types.ts",

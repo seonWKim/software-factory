@@ -278,7 +278,7 @@ export class Outbound {
       made = await target.deliver({ ...d, row: await this.scannedAction(row) });
     } catch (err) {
       error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
-      // A close, a post, a PR close, a push or a PR retries with its batch, which holds its destination meanwhile
+      // A close, a post, a PR close, a push, a PR or a filing retries with its batch, which holds its destination meanwhile
       // (later batches of it wait), until it is given up; a status label or a 👀 is best effort: a warning, never a hold.
       if (RETRIED_ACTIONS.includes(row.action)) {
         if (!this.givesUp(err, attempts, i, target, error, gaveUp)) {
@@ -297,9 +297,17 @@ export class Outbound {
     );
   }
 
-  /** G5 on an action's text: a post's body, a PR's title and body (a flagged PR text goes out as the notice only). */
+  /**
+   * G5 on an action's text: a post's body, a PR's or a filed sub-issue's title and body (a flagged one goes out as
+   * the notice only; a sub-issue keeps its marker, so a retry finds it).
+   */
   private async scannedAction(row: ActionRow): Promise<ActionRow> {
     if (row.action === "post") return { ...row, args: { ...row.args, body: await this.scanned(String(row.args.body), row.target.id) } };
+    if (row.action === "file_sub_issue") {
+      const text = `${String(row.args.title)}\n${String(row.args.body)}`;
+      const notice = await this.scanned(text, row.target.id);
+      return notice === text ? row : { ...row, args: { ...row.args, title: `Factory split phase ${String(row.args.phase)}`, body: notice } };
+    }
     if (row.action !== "pr") return row;
     const text = [row.args.title, row.args.body, ...Object.keys(row.args.labels ? (JSON.parse(String(row.args.labels)) as object) : {})].join("\n");
     const notice = await this.scanned(text, row.target.id);

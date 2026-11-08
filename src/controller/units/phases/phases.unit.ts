@@ -1,12 +1,13 @@
-// Split specs: the approval that files one phase per sub-issue, phase holds and releases, closing a finished split.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Split specs: the approval that files one phase per sub-issue through outbound, phase holds and releases, closing a
+// finished split. Moved out of the legacy controller (RFC 0015 M5); its store I/O is still inline (unit-purity ratchet).
 
 import { type TriagePhase, parseTriage } from "../../../core/outputs.js";
 import { runKey } from "../../../core/policy.js";
 import { specDecisionDetail } from "../../../core/standing.js";
 import { PHASE_HOLD, PHASES_OPEN, SPLIT_APPROVED, SPLIT_FILING, parseSubIssues, phaseIssueBody, phaseLinkDetail, phaseMarker, phaseTitle } from "../../../core/split.js";
 import { type Actor, type SourceRef, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import { type Decision, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
+import type { ActionRow } from "../../../outbound/index.js";
+import { type Decision, DELIVERY_FAILED, type Refusal, SYSTEM, completed, splitFiling, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -46,16 +47,13 @@ export class PhasesUnit {
   }
 
   /**
-   * `/approve` on a split spec (design 2026-11-01): one sub-issue per phase, in order, each with the intake label
-   * and linked to the parent, and one work item per phase, requested by the approver. The first phase is queued
-   * for triage; each later one starts held (`phase_hold`) until the phase before it closes as completed
-   * (tickPhases). The approval first claims the filing with a conditional transition to `split_filing`, so of
-   * two passes at once (two replicas, an old process still draining) only one files (2026-11-07). A phase that
-   * already has a work item under this parent is not filed again; the rest are filed by marker (the parent's
-   * sub-issues, then the newest labelled issues) and taken in keyed on the source. A failure refuses the
-   * approval and puts the spec back at the gate, so `/approve` again files the rest. On success the parent
-   * waits on its phases (`phases_open`); it is never implemented itself. Returns null once applied: the
-   * transitions are its own, conditional on the claim.
+   * `/approve` on a split spec (design 04-split-specs; through outbound since RFC 0015 M7). The approval claims the
+   * filing with a conditional transition to `split_filing` (detail: the command, its note and tag), so of two
+   * passes at once (two replicas, an old process still draining) only one files; the pass that loses to the same
+   * command answers nothing, one that loses to another command is refused. The winner replies that the filing is
+   * queued and records phase 1's keyed `file_sub_issue` action (`advanceSplit`); outbound files it, retrying a
+   * failure, and each phase's DeliveryCompleted records the next, whose body names it. Returns null once applied:
+   * the transitions are its own, conditional on the claim.
    */
   async approveSplit(
     it: WorkItem,
@@ -69,13 +67,14 @@ export class PhasesUnit {
     if (!adapter?.fileSubIssue) {
       return { refuse: "this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases" };
     }
+    const patch = { blocked_on: "upstream" as const, blocked_reason: SPLIT_FILING };
     const claim = await this.c.k.d.store.transition({
       id: it.id,
       expected_version: it.version,
-      patch: { blocked_on: "upstream", blocked_reason: SPLIT_FILING },
+      patch,
       actor,
       reason: SPLIT_FILING,
-      detail: { phases: phases.length, comment_id: commentId },
+      detail: { phases: phases.length, comment_id: commentId, note, tag: tag ? JSON.stringify(tag) : null },
     });
     if (!claim.ok) {
       if (claim.reason !== "version_conflict") return null;
@@ -85,56 +84,43 @@ export class PhasesUnit {
       if ((await this.splitClaim(it.id))?.detail?.comment_id === commentId) return null;
       return { refuse: "another `/approve` already approved this split" };
     }
-    const requester = actor.kind === "user" ? actor.id : it.requester_id;
-    const known = new Map((await this.c.k.d.store.listPhases(it.id)).map((p) => [p.phase, p.source]));
-    const refs: SourceRef[] = [];
-    try {
-      for (const [i, phase] of phases.entries()) {
-        const index = i + 1;
-        const prev = refs[i - 1] ?? null;
-        const title = phaseTitle(index, phases.length, phase.title);
-        const body = phaseIssueBody({ parent: it.source, phase, index, total: phases.length, depends_on: prev });
-        const ref = known.get(index) ?? await adapter.fileSubIssue({ parent: it.source, title, body, marker: phaseMarker(it.id, index) });
-        const { item, created } = await this.c.k.d.store.createWorkItem(
-          {
-            source: ref,
-            title,
-            requester_id: requester,
-            project: it.project,
-            problem: `${title}\n\n${body}`,
-            resources: [ref.link, it.source.link],
-            parent: { id: it.id, phase: index },
-            ...(prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {}),
-          },
-          actor,
-          {
-            detail: phaseLinkDetail({ parent_work_item_id: it.id, phase: index, phases: phases.length, depends_on: prev?.id ?? null }),
-            // The intake key, so a later delivery of the same issue is a no-op.
-            ...(prev ? {} : { enqueue: { kind: "triage" as const, idempotency_key: `${ref.type}:${ref.id}:triage` } }),
-          },
-        );
-        refs.push(ref);
-        if (created) {
-          this.c.k.d.log.info("phase filed", { work_item_id: item.id, parent_work_item_id: it.id, phase: index, held: prev !== null });
-          await this.c.unit("outbox").showStatus(item);
-        }
-      }
-    } catch (err) {
-      this.c.k.d.log.warn("filing split phases failed; /approve again files the rest", {
-        work_item_id: it.id,
-        filed: refs.length,
-        phases: phases.length,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-      });
-      // Back at the gate, so `/approve` again is accepted at once.
-      const back = splitFiling(it)
-        ? { blocked_on: "human" as const, blocked_reason: "spec_pending" }
-        : { blocked_on: it.blocked_on, blocked_reason: it.blocked_reason };
-      await this.settleSplit(claim.item, { patch: back, actor, reason: "split_filing_failed", detail: { filed: refs.length, phases: phases.length } });
-      return {
-        refuse: `filing the phase sub-issues stopped after ${refs.length} of ${phases.length}; reply \`/approve\` again to file the rest (none is filed twice)`,
-      };
+    this.c.k.d.log.info("transition", { work_item_id: it.id, reason: SPLIT_FILING, version: claim.item.version });
+    await this.c.unit("outbox").comment(it, `split-queued:${it.id}:${commentId}`, [
+      `\`/approve\` was applied: the factory is filing the ${phases.length} phases of this split as sub-issues of this issue, one at a time (each names the phase before it, so it is filed once that one is). This issue lists them once all are filed.`,
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    await this.advanceSplit(it.id);
+    return null;
+  }
+
+  /**
+   * Files a split's phases one at a time through outbound (RFC 0015 M7), from what the store holds, so it is safe
+   * to run again on any replica: on the claim, on each filing's DeliveryCompleted, and on the phase tick, which
+   * resumes a filing whose step was lost. A phase's ref is its work item's (an earlier approval took it in) or its
+   * delivered `file_sub_issue` action's, taken in now as a work item (held after the first). The first phase with
+   * neither gets its keyed action and the pass stops: the key names the phase and the approval, so it is recorded
+   * once, and `/approve` after a give-up records the rest again. A given-up filing stops the split for a person
+   * (`delivery_failed`). With every phase taken in, the parent gets one comment listing them and waits on them.
+   */
+  async advanceSplit(id: WorkItemId): Promise<void> {
+    const it = await this.c.k.d.store.getWorkItem(id);
+    if (!it || !splitFiling(it)) return;
+    const claim = await this.splitClaim(id);
+    const phases = await this.specPhases(it);
+    if (!claim || !phases) {
+      this.c.k.d.log.warn("split filing has no claim or no phases; left as it is", { work_item_id: id });
+      return;
     }
+    const known = new Map((await this.c.k.d.store.listPhases(id)).map((p) => [p.phase, p.source]));
+    const refs: SourceRef[] = [];
+    for (const [i, phase] of phases.entries()) {
+      const ref = known.get(i + 1) ?? (await this.filed(it, claim, { index: i + 1, phase, total: phases.length, prev: refs[i - 1] ?? null }));
+      if (!ref) return;
+      refs.push(ref);
+    }
+    const d = claim.detail ?? {};
+    const tag = typeof d.tag === "string" ? (JSON.parse(d.tag) as StateChangeDetail) : null;
     const patch = { blocked_on: "upstream" as const, blocked_reason: PHASES_OPEN };
     await this.c.unit("outbox").comment(it, `split:${it.id}`, [
       `The split spec was approved, so the factory filed ${phases.length} phases as sub-issues of this issue:`,
@@ -147,22 +133,89 @@ export class PhasesUnit {
       "",
       footerAfter(it, patch),
     ].join("\n"));
-    await this.settleSplit(claim.item, {
+    await this.settleSplit(it, {
       patch,
-      actor,
+      actor: claim.actor,
       reason: SPLIT_APPROVED,
       detail: {
         phases: phases.length,
         sub_issues: JSON.stringify(refs.map((r) => r.id)),
-        ...(note ? { note } : {}),
-        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor }),
+        ...(typeof d.note === "string" ? { note: d.note } : {}),
+        ...specDecisionDetail({ tier: it.tier, kind: "split", outcome: "approved", spec_changed: false, actor: claim.actor }),
         ...tag,
       },
     });
-    return null;
   }
 
-  /** The claim's end (`split_approved` or `split_filing_failed`), conditional on the claim being the item's last change. */
+  /**
+   * Phase `f.index`'s ref once outbound filed it, taken in as a work item now; null while its action is being
+   * filed, or just recorded (and announced), or given up.
+   */
+  private async filed(it: WorkItem, claim: StateChange, f: { index: number; phase: TriagePhase; total: number; prev: SourceRef | null }): Promise<SourceRef | null> {
+    const title = phaseTitle(f.index, f.total, f.phase.title);
+    const body = phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
+    const key = `file_sub_issue:${it.id}:${f.index}:${String(claim.detail?.comment_id)}`;
+    const a = await this.c.k.actionByKey(key);
+    if (!a) {
+      const args = { title, body, marker: phaseMarker(it.id, f.index), phase: f.index, phases: f.total };
+      await this.c.k.commit({ writes: [{ kind: "intent", action: { action: "file_sub_issue", target: it.source, work_item_id: it.id, args, key } }] });
+      await this.c.k.announce();
+      return null;
+    }
+    if (a.delivered_at === null) return null;
+    if (a.outcome !== "sent" || !a.delivered_ref) {
+      await this.filingGaveUp(it, f, a);
+      return null;
+    }
+    // The source files under its own type: the ref is the parent's type with the delivered id.
+    const ref: SourceRef = { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" };
+    const requester = claim.actor.kind === "user" ? claim.actor.id : it.requester_id;
+    const { item, created } = await this.c.k.d.store.createWorkItem(
+      {
+        source: ref,
+        title,
+        requester_id: requester,
+        project: it.project,
+        problem: `${title}\n\n${body}`,
+        resources: [ref.link, it.source.link],
+        parent: { id: it.id, phase: f.index },
+        ...(f.prev ? { hold: { blocked_on: "upstream" as const, blocked_reason: PHASE_HOLD } } : {}),
+      },
+      claim.actor,
+      {
+        detail: phaseLinkDetail({ parent_work_item_id: it.id, phase: f.index, phases: f.total, depends_on: f.prev?.id ?? null }),
+        // The intake key, so a later delivery of the same issue is a no-op.
+        ...(f.prev ? {} : { enqueue: { kind: "triage" as const, idempotency_key: `${ref.type}:${ref.id}:triage` } }),
+      },
+    );
+    if (created) {
+      this.c.k.d.log.info("phase filed", { work_item_id: item.id, parent_work_item_id: it.id, phase: f.index, held: f.prev !== null });
+      await this.c.unit("outbox").showStatus(item);
+    }
+    return ref;
+  }
+
+  /**
+   * Outbound gave up filing phase `f.index` (the source refused it for good; its dead-letter alarm is raised): the
+   * parent stops for a person (`delivery_failed`), and `/approve` again files the rest, none twice.
+   */
+  private async filingGaveUp(it: WorkItem, f: { index: number; total: number }, a: ActionRow): Promise<void> {
+    const error = a.last_error ?? "unknown";
+    const patch = { blocked_on: "human" as const, blocked_reason: DELIVERY_FAILED };
+    await this.c.unit("outbox").comment(it, `split-failed:${it.id}:${a.seq}`, [
+      `Filing phase ${f.index} of ${f.total} as a sub-issue was refused (${error}), so the split stopped after ${f.index - 1} of ${f.total}. ` +
+        "Reply `/approve` again to file the rest (none is filed twice).",
+      "",
+      footerAfter(it, patch),
+    ].join("\n"));
+    await this.c.unit("transitions").decide(it.id, (cur) =>
+      splitFiling(cur)
+        ? { patch, actor: SYSTEM, reason: DELIVERY_FAILED, detail: { action: "file_sub_issue", phase: f.index, phases: f.total, error } }
+        : null,
+    );
+  }
+
+  /** The claim's end (`split_approved`), conditional on the claim being the item's last change. */
   async settleSplit(claimed: WorkItem, d: NonNullable<Decision>): Promise<void> {
     if (!this.c.unit("transitions").inTable(claimed, d.patch)) return;
     const r = await this.c.k.d.store.transition({ ...d, id: claimed.id, expected_version: claimed.version });
@@ -180,8 +233,8 @@ export class PhasesUnit {
   }
 
   /**
-   * Moves split specs along (design 2026-11-01). A held phase whose previous phase is CLOSED / completed is
-   * released into triage. A split parent whose phases are all CLOSED / completed gets one comment, is closed as
+   * Moves split specs along (design 2026-11-01). A split whose phases are being filed goes on (`advanceSplit`). A
+   * held phase whose previous phase is CLOSED / completed is released into triage. A split parent whose phases are all CLOSED / completed gets one comment, is closed as
    * completed on its source, then CLOSED / completed in the store. A phase closed any other way keeps the next
    * phase held and the parent open. Safe on any replica and safe to repeat: every step re-reads the store, the
    * comment is keyed, closing a closed issue changes nothing, and each transition is conditional.
@@ -191,7 +244,11 @@ export class PhasesUnit {
     const held = await this.c.k.d.store.listWorkItemsWhere({ stage: "NEW", blocked_on: "upstream", limit: PHASE_BATCH });
     for (const h of held) if (phaseHeld(h)) await this.c.k.guard("phase release", () => this.releasePhase(h.id));
     const parents = await this.c.k.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "upstream", limit: PHASE_BATCH });
-    for (const p of parents) if (splitOpen(p)) await this.c.k.guard("split close", () => this.closeSplitIfDone(p.id));
+    for (const p of parents) {
+      if (splitOpen(p)) await this.c.k.guard("split close", () => this.closeSplitIfDone(p.id));
+      // A filing whose step was lost (a crash after the claim, a lost DeliveryCompleted) goes on.
+      else if (splitFiling(p)) await this.c.k.guard("split filing", () => this.advanceSplit(p.id));
+    }
     if (this.c.k.cfg.phases_auto_approve !== true) return;
     // A phase spec that waited at the gate before phases_auto_approve was turned on.
     const waiting = await this.c.k.d.store.listWorkItemsWhere({ stage: "READY", blocked_on: "human", limit: PHASE_BATCH });

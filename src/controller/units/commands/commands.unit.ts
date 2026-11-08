@@ -9,13 +9,12 @@ import { commandEvent, commandIdentity, syncedCommand } from "../../../core/comm
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { SPLIT_FILING_STALE_MS } from "../../../core/split.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitOpen, footerAfter } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -561,13 +560,14 @@ export class CommandsUnit {
     if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
       // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
       if ((await this.c.unit("phases").splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
-      if (splitFiling(it) && paths.length > 0) return { refuse: SPLIT_PATHS };
-      if (splitFiling(it)) {
-        const stale = this.c.k.d.clock.now().getTime() - Date.parse(it.updated_at) >= SPLIT_FILING_STALE_MS;
-        const phases = stale ? await this.c.unit("phases").specPhases(it) : null;
-        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
-        return { refuse: "an earlier `/approve` is filing this split's phases; if it stopped, reply `/approve` again in 10 minutes" };
-      }
+      // Outbound files them and retries a failure; a stopped process leaves nothing for a person to take over.
+      if (splitFiling(it)) return { refuse: "an earlier `/approve` queued this split's phases for filing; this issue lists them once all are filed" };
+    }
+    if (e.kind === "spec_approved" && splitFilingFailed(it)) {
+      // Outbound gave up filing a phase: `/approve` again files the rest under new keys; none is filed twice.
+      const phases = await this.c.unit("phases").specPhases(it);
+      if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
+      if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
     }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {

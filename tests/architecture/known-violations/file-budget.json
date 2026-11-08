@@ -1,7 +1,7 @@
 {
   "compose.ts": 1408,
   "controller/units/commands/commands.unit.ts": 752,
-  "controller/units/run-results/run-results.unit.ts": 1180,
+  "controller/units/run-results/run-results.unit.ts": 1175,
   "core/settings.ts": 777,
   "core/types.ts": 735,
   "golden.ts": 690,

@@ -31,8 +31,12 @@ export interface TargetDeps {
   readonly git?: LocalGit | null;
 }
 
-/** An action on `adapter`: the status label, the 👀, the close, or a post with no thread entry. */
-export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url: string | null }> {
+/**
+ * An action on `adapter`: the status label, the 👀, the close, a post with no thread entry, or a split's phase filed
+ * under its parent (the adapter finds one already filed by its marker first, so a retry after a lost response
+ * files no second one; the filed item's source id is the delivery's `ref`).
+ */
+export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url: string | null; ref?: string }> {
   const a = row.args;
   switch (row.action) {
     case "status":
@@ -46,6 +50,11 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
       return { url: null };
     case "post":
       return adapter.postComment(row.target, String(a.body), String(a.marker));
+    case "file_sub_issue": {
+      if (!adapter.fileSubIssue) throw new Error(`the ${adapter.type} source cannot file sub-issues`);
+      const ref = await adapter.fileSubIssue({ parent: row.target, title: String(a.title), body: String(a.body), marker: String(a.marker) });
+      return { url: ref.link, ref: ref.id };
+    }
     case "close_pr":
     case "push":
     case "pr":
