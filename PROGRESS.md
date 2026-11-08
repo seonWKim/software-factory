@@ -61,6 +61,7 @@ src/
                             check, revoke, audit; its clock is the `revocations` tick), keys.ts (keyring over a
                             secret provider), store.ts. plugins/local/ (local identity, OwnerGrant).
                             migrations/20261108T2000-identity-passports: identity_passports, _revocations, authz_audit
+                            profiles/ (ProfileStore: display names by user id), migrations/20261108T2345-identity-profiles
   worker/engine/       NEW  ExecutionEngine (index.ts) and the journal engine (plugins/journal/): named steps journaled
                             in worker_run_steps (a stored result wins), lease fencing by token, heartbeat and reaper
                             ticks, named timeouts, code_version pinning. Not wired into the legacy worker yet
@@ -92,7 +93,7 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 | file-budget | see `known-violations/file-budget.json` | src files over 600 lines |
 | no-clock | see `known-violations/no-clock.json` | legacy clock reads and timers |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| dependency-direction | 66 | `component-imports-legacy` from cli/ (commands still call compose/core) and `controller/settings/floors.setting.ts` (reuses the legacy floors order); they go as legacy code goes |
+| dependency-direction | 74 | `component-imports-legacy` from cli/ (commands still call compose/core; the guided setup) and `controller/settings/floors.setting.ts`; they go as legacy code goes |
 
 ## Decisions taken while implementing
 
@@ -130,6 +131,11 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
   Retries, delayed messages and claim leases are due against it, so consumers never read a clock.
 - 2026-11-08 (M3): a delayed message on a partitioned topic is parked (retries row, attempt 0) and the cursor
   moves past it, so a timer never holds up its partition; it is delivered when due, outside partition order.
+- 2026-11-08 (M9 setup, owner decision): `factory setup` is a guided flow (store, plugins, mode, then the secret
+  steps; `--yes`, `--me`), in `src/cli/handlers/setup/`. Display names live once in `identity_profiles` (migration
+  20261108T2345), a table of its own rather than a column on `identity_local_users`, because a person with no role
+  and an enterprise user have no local row (design 08-permissions). `narrow` is called only from worker/ and
+  identity/ (`tests/architecture/passport.test.ts`).
 
 - 2026-11-08 (M10): settings live in their owner component (`src/<owner>/settings/<key>.setting.ts`); the legacy
   resolver keeps its key lists (it types values by them) and `tests/settings-catalog.test.ts` holds both equal.
@@ -156,7 +162,9 @@ Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; t
 M4 inbound on the bus. M3 leftovers: each component's migration creates its outbox and inbox
 (`ensureComponentTables`); the runtime builds the sql bus as a plugin, ensures discovered topics at start and in
 `npm run migrate`, and runs the bus schedules; `requires` on competing topics (worker filtering) and dead-letter
-alerts on `system.alerts`. M9 follow-up: guided `factory setup` that registers the user's display name against
-their ID (owner decision 2026-11-08); `narrow` callable only from worker/ and identity/ (architecture rule).
+alerts on `system.alerts`.
 M10 wiring follows its call sites: hooks at the merge queue (M8), run start (M6) and delivery (M7); roles
 drive the worker's prompts and tools (M6); a stored setting to enable hooks.
+M9 follow-up: the UI does not show display names yet (the CLI's `users list` does); an
+OIDC or GitHub provider implementing `AuthProvider.displayName`; components get their SQL driver from the runtime
+(today `storeSql` takes it from the legacy store).

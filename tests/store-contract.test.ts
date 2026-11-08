@@ -1604,6 +1604,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       // Tables of timestamped component migrations (RFC 0015 §6.3).
       "authz_audit",
       "identity_passports",
+      "identity_profiles", // display names by user id (owner decision 2026-11-08)
       "identity_revocations",
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
       // The sql bus's own tables (RFC 0015 M3).

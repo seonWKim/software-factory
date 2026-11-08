@@ -166,13 +166,13 @@ import {
 } from "./rows.js";
 
 /**
- * FactoryStore over any SqlDriver (SQLite, MySQL). Every write is one driver transaction. Correctness
+ * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
  * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there".
  */
 export class SqlFactoryStore implements FactoryStore {
   constructor(
-    private readonly db: SqlDriver,
+    readonly db: SqlDriver,
     private readonly clock: Clock,
   ) {}
 

@@ -25,18 +25,25 @@ export async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "work
 
 /** What the environment says about the operator (issue #318): git's user.email in the repo, then the OS user. */
 export async function cliEnvironment(root: string): Promise<CliEnvironment> {
-  let gitEmail: string | null = null;
-  try {
-    const r = await promisify(execFile)("git", ["config", "user.email"], { cwd: root, timeout: 5000 });
-    gitEmail = r.stdout.trim() || null;
-  } catch {
-    gitEmail = null;
-  }
   let osUser: string | null = null;
   try {
     osUser = userInfo().username || null;
   } catch {
     osUser = process.env.USER || process.env.USERNAME || null;
   }
-  return { gitEmail, osUser };
+  return { gitEmail: await gitConfig(root, "user.email"), osUser };
+}
+
+/** git's user.name in the repo: a display name, only the default of setup's name question, never an ID. */
+export function gitUserName(root: string): Promise<string | null> {
+  return gitConfig(root, "user.name");
+}
+
+async function gitConfig(root: string, key: string): Promise<string | null> {
+  try {
+    const r = await promisify(execFile)("git", ["config", key], { cwd: root, timeout: 5000 });
+    return r.stdout.trim() || null;
+  } catch {
+    return null;
+  }
 }
