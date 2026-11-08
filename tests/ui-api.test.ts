@@ -801,9 +801,11 @@ describe("ui api: item commands POST (issue #227)", () => {
     ]);
   });
 
-  it("merge is accepted with no note, and a 400 with one", async () => {
+  it("merge is accepted with no note, and a 400 with one; a 403 without the token and a 404 for no item, as every command", async () => {
     const { d, store, items } = await setup();
     await refused(await post(d, items.merge.id, { command: "merge", note: "now" }), 400, "note");
+    await refused(await post(d, items.merge.id, { command: "merge" }, { token: "wrong" }), 403, "token");
+    await refused(await post(d, "wi_none", { command: "merge" }), 404, "item");
     await nothingWritten(store);
     const r = await post(d, items.merge.id, { command: "merge" });
     expect(r.status).toBe(202);
