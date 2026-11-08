@@ -4,7 +4,7 @@
 // through the outbox only, once per marker.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
@@ -121,7 +121,7 @@ async function factory(o: { store?: FactoryStore; clock?: FakeClock } = {}) {
   const auth = new GitHubAuthProvider(store, grants);
   const local_auth = spied(new LocalAuthProvider(store, grants));
   const log = recordingLog();
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: [source, new LocalSource(store)], auth, local_auth, clock, config, log, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
@@ -384,7 +384,7 @@ describe("GitHub comments in the local store (issue #284)", () => {
     const f = await factory();
     const item = await f.specced();
     const log = recordingLog();
-    const localOnly = new Controller({
+    const localOnly = new ControllerRole({
       store: f.store, sources: [new LocalSource(f.store)], auth: new GitHubAuthProvider(f.store, []), clock: f.clock, config, log,
       scanner: cleanScanner, repeated_failure_rule: false,
     });

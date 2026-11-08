@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Sessions, parseTarget } from "../src/core/session.js";
 import type { Run, RunKind, Tier, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -37,7 +37,7 @@ async function harness() {
   const sessions = new Sessions({
     store, sandbox, broker, scanner: cleanScanner, auth: new FakeAuth(), clock, config: cfg, log: silent, files, issues, toolEnv: {}, owner: "session:host:1",
   });
-  const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   /** A RUNNING item with an approved spec on `paths` and no run, as after `/approve` once its run ended. */
   const running = async (n: number, paths = ["src/a/"], tier: Tier = 2, extra: Partial<WorkItem> = {}) => {
     const { item } = await store.createWorkItem({ ...issue(n), title: `Item ${n}` }, system);

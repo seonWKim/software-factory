@@ -5,7 +5,7 @@ import {
   commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, retryPathsReply,
   unknownCommandReply,
 } from "../src/core/commands.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { CLI_COMMANDS, cliHelpLine } from "../src/core/local-cli.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -290,7 +290,7 @@ describe("footers match what the controller accepts", () => {
   async function harness() {
     const { store, clock } = await newStore();
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const actor = { kind: "system" as const, id: "test" };
     /** A new work item on issue `n`, put in `phase`, with or without a PR. */
     const itemIn = async (phase: CommandPhase, pr: number | null, n: number) => {

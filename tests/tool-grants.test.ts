@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { build, loadConfig } from "../src/compose.js";
 import { type FactoryConfig, GRANT_RUN_KINDS, toolGrantsConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { LiveSettings } from "../src/core/settings.js";
 import type { WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
@@ -158,7 +158,7 @@ async function flow(cfg: FactoryConfig, runner: AgentRunner & { specs?: unknown[
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),

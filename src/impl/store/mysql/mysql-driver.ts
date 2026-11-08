@@ -25,6 +25,7 @@ const TX_ATTEMPTS = 5;
  */
 export class MysqlDriver implements SqlDriver {
   readonly dialect: SqlDialect = {
+    name: "mysql",
     seq: "seq",
     forUpdate: " FOR UPDATE",
     forUpdateSkipLocked: " FOR UPDATE SKIP LOCKED",

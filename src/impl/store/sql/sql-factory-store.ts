@@ -172,7 +172,7 @@ import {
  */
 export class SqlFactoryStore implements FactoryStore {
   constructor(
-    private readonly db: SqlDriver,
+    readonly db: SqlDriver,
     private readonly clock: Clock,
   ) {}
 
@@ -1621,14 +1621,6 @@ export class SqlFactoryStore implements FactoryStore {
     return rows.map(rowToInbox);
   }
 
-  async pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number> {
-    return this.db.transaction((tx) =>
-      tx.run("DELETE FROM inbound_raw_records WHERE source_type = ? AND seq <= ? AND received_at < ?", [
-        source_type, through_seq, this.after(-older_than_ms),
-      ]),
-    );
-  }
-
   async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
     return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
       const expires_at = this.after(lease_ms);
@@ -1699,15 +1691,6 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
-  }
-
-  async advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      if (!(await this.fenceHeld(tx, fence))) return false;
-      return expected === null
-        ? this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [cursor, next])
-        : (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, cursor, expected])) === 1;
-    });
   }
 
   // Forge budget (design 05-sources, call budget)

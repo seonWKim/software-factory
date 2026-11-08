@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
@@ -77,7 +77,7 @@ async function autoFactory(opts: Opts = {}) {
   const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: opts.controllerSandbox ? opts.controllerSandbox(sandbox) : sandbox, repeated_failure_rule: false, settings,
     check_env: { PATH: process.env.PATH ?? "" },

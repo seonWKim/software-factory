@@ -9,7 +9,7 @@ import { TokenCredentials } from "../src/impl/github/token-credentials.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { newStore } from "./helpers/store.js";
@@ -209,7 +209,7 @@ describe("forge: a setup without GitHub makes no GitHub call (issue #273)", () =
     for (const name of selectedSources(loaded.plugins)) {
       sources.push(await createPlugin(loaded.registry, "source", name, { ...p.base, github: client, store, secrets: new MapSecrets(), scanner: cleanScanner, log: silent, clock }));
     }
-    const controller = new Controller({ store, sources, forge: null, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, sources, forge: null, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     await controller.tickIntake();
     await controller.tickIntake();
     expect(client.calls).toEqual([]);

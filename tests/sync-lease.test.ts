@@ -3,7 +3,7 @@
 // lease_ms of the holder's last renew, and the token fences every cursor write and delivery claim.
 
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { syncLeaseName } from "../src/core/lease.js";
 import type { WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -59,7 +59,7 @@ async function replicas(n: number) {
     const client = new GitHubClient(credentials, "https://gh.test", { fetch: gh.fetchFor(`host:${i}`), clock, etag_entries: 0 });
     client.shareBudget({ store, project: PROJECT_KEY, refresh_ms: config.tick_ms });
     const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
-    return new Controller({
+    return new ControllerRole({
       store, sources: [source], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, replica_id: `host:${i}`,
       refresh_forge_budget: () => client.refreshSharedBudget(), github_budget: () => client.status(),
     });
@@ -111,7 +111,7 @@ describe("one GitHub sync per project", () => {
     const clock = new FakeClock("2026-11-08T09:00:00Z");
     const { store } = await newStore(clock);
     const source = new FakeSource("slack_thread");
-    const controller = new Controller({ store, sources: [source], auth: new FakeAuth(), clock, config, log: recordingLog(), scanner: cleanScanner });
+    const controller = new ControllerRole({ store, sources: [source], auth: new FakeAuth(), clock, config, log: recordingLog(), scanner: cleanScanner });
     await controller.tickIntake();
     await controller.tickOutbox();
     await controller.catchUpStatus();
@@ -130,7 +130,7 @@ describe("sync lease takeover", () => {
     const { item } = await store.createWorkItem(issue(1), system);
     const make = (id: string) => {
       const source = new FakeSource("github_issue");
-      const controller = new Controller({ store, sources: [source], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, replica_id: id });
+      const controller = new ControllerRole({ store, sources: [source], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, replica_id: id });
       return { source, controller };
     };
     let n = 0;
@@ -189,7 +189,6 @@ describe("sync lease takeover", () => {
     expect(await store.getSyncLease(LEASE)).toMatchObject({ owner: "host:b", token: 2 });
     const moved = await store.getCursor("intake:github_issue");
     expect(moved).not.toBe(cursor);
-    expect(await store.advanceSyncCursor({ name: LEASE, token: 1 }, "intake:github_issue", moved, "stale")).toBe(false);
     expect(await store.getCursor("intake:github_issue")).toBe(moved);
   });
 

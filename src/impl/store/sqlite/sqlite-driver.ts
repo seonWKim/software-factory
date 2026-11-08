@@ -14,7 +14,7 @@ const ADD_COLUMN = /^[ \t]*ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)[^;]*;/gi
  * reads run one at a time on the single connection. No row locks are needed, so the lock suffixes are empty.
  */
 export class SqliteDriver implements SqlDriver {
-  readonly dialect: SqlDialect = { seq: "rowid", forUpdate: "", forUpdateSkipLocked: "", forShare: "" };
+  readonly dialect: SqlDialect = { name: "sqlite", seq: "rowid", forUpdate: "", forUpdateSkipLocked: "", forShare: "" };
   private readonly db: DatabaseSync;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly exec: SqlExecutor = {

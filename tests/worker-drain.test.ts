@@ -1,6 +1,6 @@
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { describe, expect, it, vi } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/core/worker.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -135,8 +135,8 @@ describe("dev child: two children through a swap", () => {
     for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
   };
   /** Counts each controller step a pass runs, so a test sees whether a pass started. */
-  function countSteps(c: Controller) {
-    const steps = ["intake", "reaperStep", "checksStep", "coordinationStep", "commandsStep", "runsStep", "probeStep", "outboxStep"] as const;
+  function countSteps(c: ControllerRole) {
+    const steps = ["afterPoll", "reaperStep", "checksStep", "coordinationStep", "mirrorStep", "runsStep", "probeStep", "outboxStep"] as const;
     const spies = steps.map((s) => vi.spyOn(c as unknown as Record<string, () => Promise<void>>, s));
     return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<(typeof steps)[number], number>;
   }
@@ -144,7 +144,7 @@ describe("dev child: two children through a swap", () => {
   it("the old controller makes no pass after the drain; its run completes; the new controller applies the outcome", async () => {
     const { clock, store, worker: oldWorker, release, started, completeRun } = await setup();
     const controllerOf = (log = silent) =>
-      new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, repeated_failure_rule: false });
+      new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, repeated_failure_rule: false });
     const oldLog = recordingLog();
     const oldController = controllerOf(oldLog);
     const oldSteps = countSteps(oldController);

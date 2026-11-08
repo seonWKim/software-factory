@@ -26,8 +26,7 @@ import {
   shortRef,
 } from "./coordination.js";
 import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, modeOf, settingValues } from "./settings.js";
-import { Listener } from "./listener.js";
-import { type SyncState, TickLease, syncLeaseName, syncLeaseOps } from "./lease.js";
+import type { SyncState, TickLease } from "./lease.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import {
@@ -61,7 +60,6 @@ import {
   retryDelayMs,
   retryKey,
   retryNotBefore,
-  GITHUB_RATE_LIMIT,
   GITHUB_RATE_LIMITED,
   runKey,
   sameStep,
@@ -117,7 +115,7 @@ import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { ChildRestart } from "../interfaces/updater.js";
 import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
-import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
+import type { SourceAdapter, SourceEvent } from "../interfaces/source-adapter.js";
 
 /**
  * The forge's core rate limit as one process sees it (design §5 Sources, call budget): the forge's limit,
@@ -135,9 +133,6 @@ export interface GitHubBudgetStatus {
   state: "ok" | "low" | "waiting";
   as_of: string;
 }
-
-/** The store cursor the controller writes its forge budget to after each poll, for the status page. */
-export const GITHUB_BUDGET_CURSOR = "github:budget";
 
 /** The reset time a call refused for a used-up rate limit waits for (its `wait_until`), else null. */
 export function rateLimitWait(err: unknown): string | null {
@@ -173,10 +168,7 @@ export interface ControllerDeps {
   log: Logger;
   /** G5: the last-attempt comment carries run output, so it is scanned before it is posted. */
   scanner: EgressScanner;
-  /**
-   * This replica's id, the owner of a stream source's listener lease and of the sync lease while it holds them.
-   * Absent: a random id per Controller for the listener lease, and SYNC_OWNER for the sync lease.
-   */
+  /** This replica's id, recorded where this replica acts (the sync lease is the role's, src/runtime/roles). */
   replica_id?: string;
   /**
    * Suggests a command for a plain-language comment (design §4). Absent: plain comments get no reply. The
@@ -213,10 +205,10 @@ export interface ControllerDeps {
    */
   restarts?: () => Promise<readonly ChildRestart[]>;
   /**
-   * The forge client's budget (`GitHubClient.status`): written to GITHUB_BUDGET_CURSOR after each poll, so the
-   * status page shows remaining calls, the reset and this process's count. Absent: nothing is written.
+   * The sync lease (design 05-coordination), shared with inbound, which polls under it: only its holder delivers
+   * the synced type's outbox rows. Absent or null: nothing is leased.
    */
-  github_budget?: () => GitHubBudgetStatus | null;
+  sync?: TickLease | null;
   /**
    * Reads the shared forge budget (`forge_budget`) into the forge client, at most once per tick (design 05-sources,
    * call budget), so every replica's optional reads see the last response any replica got. Called before each
@@ -262,8 +254,6 @@ type StandingEvent = Extract<SourceEvent, { kind: "standing_requested" }>;
 type PlainCommentEvent = Extract<SourceEvent, { kind: "plain_comment" }>;
 type PrOpenEvent = Extract<ForgeEvent, { kind: "change_open" }>;
 type PrFinishedEvent = Extract<ForgeEvent, { kind: "change_merged" | "change_closed" }>;
-/** One poll of a poll source, read but not handled yet: its events wait for the forge's (see intake). */
-type Polled = { source: PollSource; cursor: string | null; result: PollResult };
 
 const COMMAND: Record<CommandEvent["kind"], string> = {
   spec_approved: "/approve",
@@ -366,11 +356,6 @@ const PHASE_BATCH = 50;
 const COORDINATION_BATCH = 50;
 /** blocked_reason prefix (with `blocked_on: human`) of a dependency cycle; DEPENDENCY_CLOSED is in commands.ts. */
 const DEPENDENCY_CYCLE = "dependency_cycle";
-/** Commands read from the command inbox per tick (issue #282). */
-const COMMAND_BATCH = 100;
-/** The command inbox's cursor, and the `local` source's cursor it starts from (issue #282). */
-const COMMANDS_CURSOR = "commands";
-const LEGACY_LOCAL_CURSOR = "intake:local";
 /** CLI commands mirrored to their issue per tick at most (design 05-sources, CLI intake). */
 const MIRROR_BATCH = 50;
 /** Outbox rows delivered per tick at most (issue #282). */
@@ -381,9 +366,6 @@ const BASE_PUSH_BATCH = 5;
 const APP_REQUEST = "app_request";
 /** A command name safe to quote in a reply: anything else is called "the command". */
 const QUOTABLE_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/;
-/** Inbox rows a stream intake step reads at most per tick. */
-const INBOX_BATCH = 100;
-const DAY_MS = 86_400_000;
 /** Newest items whose spec decisions the standing-approval run check reads (design 05-standing-approvals). */
 const STANDING_WINDOW = 200;
 /** The settable key of the run length that proposes a standing rule. */
@@ -391,17 +373,6 @@ const STANDING_THRESHOLD = "standing_approvals.threshold";
 
 /** The forge's source type: its source and forge do not poll while the `github_rate_limit` pause holds. */
 const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
-/**
- * The sync lease owner of a controller with no replica_id (tests, a solo process): one id, so such controllers in
- * one process act as one replica and always hold the lease between them.
- */
-const SYNC_OWNER = "controller";
-
-/** The forge's cursor, per PR ref type; while it is empty the forge's handover cursor is read (issue #273). */
-function forgeCursorName(forge: Forge): string {
-  return `forge:${forge.ref_type}`;
-}
-
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
  * so no source type is required (issue #273). Errors name `plugins.source`, the config key that lists them.
@@ -418,11 +389,6 @@ function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly S
     seen.add(s.type);
   }
   return sources;
-}
-
-/** The cursor a stream source's inbox is read through (one per source type, shared by every replica). */
-export function inboxCursorName(type: SourceAdapter["type"]): string {
-  return `inbox:${type}`;
 }
 
 /**
@@ -464,8 +430,8 @@ export class Controller {
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   private improveDay: string | null = null;
   /**
-   * The sync lease (design 05-coordination): only its holder polls the forge's source and the forge and delivers
-   * their outbox rows. Null when config selects neither, so nothing is leased. Its in-process state is the token.
+   * The sync lease (design 05-coordination): only its holder delivers the synced type's outbox rows; inbound polls
+   * under the same lease. Null when config selects neither, so nothing is leased. Its in-process state is the token.
    */
   private readonly sync: TickLease | null;
 
@@ -475,13 +441,7 @@ export class Controller {
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
     this.live = d.settings ?? LiveSettings.fixed(d.config);
-    const live = this.live;
-    const usesGithub = this.byType.has(GITHUB_SOURCE_TYPE) || this.forge?.ref_type === GITHUB_SOURCE_TYPE;
-    const name = syncLeaseName(GITHUB_SOURCE_TYPE, live.config().project.key);
-    this.sync = usesGithub
-      // Getters: a lease_ms or heartbeat_ms change applies at the next renew, as for the listener.
-      ? new TickLease(name, syncLeaseOps(d.store, name), d.clock, leaseTimings(live), d.replica_id ?? SYNC_OWNER, d.log, GITHUB_SOURCE_TYPE)
-      : null;
+    this.sync = d.sync ?? null;
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */
@@ -489,12 +449,18 @@ export class Controller {
     return this.live.config();
   }
 
+  /** Now, in ms, for the role's manual ticks (src/runtime/roles): the role reads no clock itself. */
+  protected nowMs(): number {
+    return this.d.clock.now().getTime();
+  }
+
+  /**
+   * The decision loop. Inbound polls the sources and the forge and the bus delivers their records and the command
+   * rows (consumeEvent, consumeCommand); this loop runs everything else on the tick and the poll interval.
+   */
   async run(signal: AbortSignal): Promise<void> {
     // The label, never the key: log lines and comments name a project by its readable path.
     this.d.log.info("controller started", { project: this.cfg.project.label });
-    const streams = this.sources.filter((s): s is StreamSource => s.intake === "stream");
-    // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
-    const listening = Promise.all(streams.map((s) => this.listener(s).run(signal)));
     let lastPoll = -Infinity;
     while (!signal.aborted) {
       await this.live.refresh();
@@ -505,9 +471,7 @@ export class Controller {
       const now = this.d.clock.now().getTime();
       const due = now - lastPoll >= this.cfg.poll_interval_ms;
       if (due) lastPoll = now;
-      // A poll source is asked on its interval; an inbox is a store read, so it is read every tick.
-      if (due || streams.length > 0) await this.guard("intake", () => this.intake(due));
-      if (due && streams.length > 0) await this.guard("inbox cleanup", () => this.cleanupInbox());
+      if (due) await this.afterPoll();
       // PR checks are read from the forge, so on the poll interval like a poll source.
       if (due) await this.guard("checks", () => this.checksStep());
       // Dependency states are read from the forge too, so on the poll interval (design §5, 2026-11-03).
@@ -516,8 +480,6 @@ export class Controller {
       if (due) await this.guard("merge check", () => this.mergeCheckStep());
       // Store reads and the restart list, on the poll interval like the steps it looks across (design 05-alarms).
       if (due) await this.guard("alarms", () => this.alarmsStep());
-      // The command inbox (CLI and app commands) is a store read, so every tick, like an inbox.
-      await this.guard("commands", () => this.commandsStep());
       await this.guard("cli mirror", () => this.mirrorStep());
       await this.guard("runs", () => this.runsStep());
       await this.guard("reaper", () => this.reaperStep());
@@ -528,30 +490,13 @@ export class Controller {
       await this.guard("outbox", () => this.outboxStep());
       await this.d.clock.sleep(this.cfg.tick_ms, signal).catch(() => undefined);
     }
-    // Shutting down: hand the sync lease over now instead of after lease_ms.
-    await this.sync?.release();
-    await listening;
   }
 
-  /** The listener for a stream source, owned by this replica. */
-  listener(source: StreamSource): Listener {
-    const live = this.live;
-    return new Listener({
-      store: this.d.store,
-      source,
-      clock: this.d.clock,
-      // Getters: the listener's renewal reads the live values, so a lease change applies at its next renewal.
-      config: leaseTimings(live),
-      log: this.d.log,
-      owner: this.d.replica_id ?? `controller:${Math.random().toString(36).slice(2, 12)}`,
-    });
-  }
-
-  /** One intake step of every source: each poll source is polled, each stream source's inbox is read. */
+  /** The steps after a poll: the role polls and delivers the records first (src/runtime/roles). */
   async tickIntake(): Promise<void> {
     await this.live.refresh();
-    await this.intake(true);
-    await this.commandsStep();
+    await this.guard("sync", () => this.syncStep());
+    await this.afterPoll();
     await this.outboxStep();
   }
 
@@ -564,57 +509,48 @@ export class Controller {
     await this.outboxStep();
   }
 
-  /** One command inbox step: the CLI and app commands after the cursor (issue #282), then their mirrors. */
+  /** The steps after the command rows were delivered (the role delivers them first): their mirrors and replies. */
   async tickCommands(): Promise<void> {
     await this.live.refresh();
-    await this.commandsStep();
     await this.mirrorStep();
     await this.outboxStep();
   }
 
   /**
-   * Each source's step and the forge's run on their own guard, so one failing (a poll that throws, a bad cursor)
-   * never stops the others in the same tick. Poll sources and the forge run only when `pollDue`, and the
-   * matching source and forge not while the `github_rate_limit` pause holds (design §5 Restarts): a skipped poll writes
-   * no log line, the next due one after the reset polls. The poll sources are read first and the forge after them,
-   * and the forge's events are handled first (issue #273): a merge that closed an issue happened before the close,
-   * so the forge's read already sees it and the merge is applied before the source's close. Unfinished rejects are
-   * retried once per tick that polled.
+   * One event a source or the forge reported, delivered by the bus (RFC 0015 M4). A failure is logged and passed,
+   * as a polled event's always was: the next poll or the person's next comment brings it again.
    */
-  private async intake(pollDue: boolean): Promise<void> {
-    const polled: Polled[] = [];
-    if (pollDue) await this.guard("sync", () => this.syncStep());
-    const usesGithub = this.sync !== null;
-    const githubPaused = pollDue && usesGithub && (await this.d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null;
-    // Another replica holds the sync lease: it polls the forge's source and the forge, this one does not.
-    const skip = (type: SourceType) => type === GITHUB_SOURCE_TYPE && (githubPaused || this.syncedElsewhere());
-    for (const s of this.sources) {
-      if (s.intake === "stream") await this.guard(`intake:${s.type}`, () => this.tickInbox(s));
-      else if (pollDue && !skip(s.type)) {
-        await this.guard(`intake:${s.type}`, async () => void polled.push(await this.readPoll(s)));
-      }
+  async consumeEvent(e: SourceEvent | ForgeEvent): Promise<void> {
+    await this.guard(`event:${e.kind}`, () => this.handle(e));
+  }
+
+  /**
+   * One command row (issue #282), delivered by the bus in its stream's order. A CLI command for an item of any
+   * source becomes the event the same comment gives on the source (the same parser) and goes through handle, so
+   * it gets the same authorize check and replies; an app request is applied through applyAppRequest; a forge
+   * comment command the forge poll wrote (key `github:<comment id>`, issue #284) becomes its comment's event with
+   * provider `github`, so that provider's auth plugin judges it. Throws when its handling failed (a store error):
+   * the bus retries it, and the commands after it in its stream wait. Handling it twice is safe.
+   */
+  async consumeCommand(c: CliCommand): Promise<void> {
+    try {
+      await this.handleInboxCommand(c);
+    } catch (err) {
+      this.d.log.error("command failed; retried next tick", { command_seq: c.seq, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      throw err;
     }
-    const forge = this.forge;
-    if (pollDue && forge && !skip(forge.ref_type)) await this.guard("forge", () => this.tickForge(forge));
-    for (const p of polled) await this.guard(`intake:${p.source.type}`, () => this.applyPoll(p));
-    if (pollDue && !this.syncedElsewhere()) await this.guard("forge budget", () => this.recordGitHubBudget());
-    if (!pollDue || (!forge && !this.sources.some((s) => s.intake === "poll"))) return;
-    // The closes and phases write to the forge's source too: the sync holder finishes them.
+  }
+
+  /**
+   * After a poll, with a poll source or a forge configured: unfinished rejects and source closes, then phases. The
+   * closes and phases write to the synced type's source too, so the sync holder finishes them.
+   */
+  private async afterPoll(): Promise<void> {
+    if (!this.forge && !this.sources.some((s) => s.intake === "poll")) return;
     if (this.syncedElsewhere()) return;
     await this.guard("source closes", () => this.tickSourceCloses());
     // Phases are sub-issues on their source, so their holds and parents move once per poll, after its closes are applied.
     await this.guard("phases", () => this.tickPhases());
-  }
-
-  /** One poll of one source, through its own cursor `intake:<type>`; applyPoll handles it. */
-  private async readPoll(source: PollSource): Promise<Polled> {
-    const cursor = await this.d.store.getCursor(`intake:${source.type}`);
-    return { source, cursor, result: await source.poll(cursor) };
-  }
-
-  private async applyPoll({ source, cursor, result }: Polled): Promise<void> {
-    for (const e of result.events) await this.guard(`event:${e.kind}`, () => this.handle(e));
-    await this.moveCursor(source.type, `intake:${source.type}`, cursor, result.next_cursor);
   }
 
   /**
@@ -643,42 +579,13 @@ export class Controller {
     return type === GITHUB_SOURCE_TYPE && st?.kind === "held" ? st.fence : null;
   }
 
-  /** Moves cursor `name`, fenced with the sync lease token for the synced type: a stale token moves nothing. */
-  private async moveCursor(type: SourceType, name: string, expected: string | null, next: string): Promise<void> {
-    if (type === GITHUB_SOURCE_TYPE && this.syncedElsewhere()) return;
-    const fence = this.fenceFor(type);
-    if (!fence) await this.d.store.advanceCursor(name, expected, next);
-    else if (!(await this.d.store.advanceSyncCursor(fence, name, expected, next))) await this.fenceRefused(fence);
-  }
-
   /**
    * A write fenced with `fence` was refused. When the lease's token moved on, another replica took it: the lease is
-   * dropped now rather than at the next heartbeat. A refusal under the current token (the cursor or the delivery
-   * moved elsewhere) keeps it.
+   * dropped now rather than at the next heartbeat. A refusal under the current token (the delivery moved elsewhere)
+   * keeps it.
    */
   private async fenceRefused(fence: SyncFence): Promise<void> {
     if ((await this.d.store.getSyncLease(fence.name))?.token !== fence.token) this.sync?.lost();
-  }
-
-  /** This process's forge budget, stored for the status page; the stored value is replaced, never merged. */
-  private async recordGitHubBudget(): Promise<void> {
-    const status = this.d.github_budget?.();
-    if (!status) return;
-    const current = await this.d.store.getCursor(GITHUB_BUDGET_CURSOR);
-    await this.d.store.advanceCursor(GITHUB_BUDGET_CURSOR, current, JSON.stringify({ ...status, replica_id: this.d.replica_id ?? null }));
-  }
-
-  /**
-   * One poll of the forge, through its cursor `forge:<ref type>`. While that is empty, the forge's handover cursor
-   * (the position it was kept under before) is its first cursor, so an upgrade neither misses nor repeats a merge.
-   */
-  private async tickForge(forge: Forge): Promise<void> {
-    const name = forgeCursorName(forge);
-    const cursor = await this.d.store.getCursor(name);
-    const first = cursor ?? (forge.handover_cursor ? await this.d.store.getCursor(forge.handover_cursor) : null);
-    const { events, next_cursor } = await forge.poll(first);
-    for (const e of events) await this.guard(`event:${e.kind}`, () => this.handle(e));
-    await this.moveCursor(forge.ref_type, name, cursor, next_cursor);
   }
 
   /**
@@ -695,73 +602,10 @@ export class Controller {
     }
   }
 
-  /**
-   * Stream intake, controller side: the inbox rows after the cursor, each handled like a polled event, then
-   * the cursor moves to the last one. Any replica may run it; handling is idempotent and the cursor moves
-   * only from the value read, so two replicas at once at worst handle a row twice.
-   */
-  private async tickInbox(source: StreamSource): Promise<void> {
-    const name = inboxCursorName(source.type);
-    const cursor = await this.d.store.getCursor(name);
-    const rows = await this.d.store.listInboxAfter(source.type, inboxSeq(cursor), INBOX_BATCH);
-    if (rows.length === 0) return;
-    for (const row of rows) await this.guard(`event:${row.event.kind}`, () => this.handle(row.event));
-    await this.d.store.advanceCursor(name, cursor, String(rows.at(-1)!.seq));
-  }
-
-  /**
-   * Deletes inbox rows older than inbox_retention_days that the cursor has passed. A source with no cursor
-   * yet keeps every row.
-   */
-  async cleanupInbox(): Promise<void> {
-    for (const s of this.sources) {
-      if (s.intake === "stream") await this.guard(`inbox cleanup:${s.type}`, () => this.cleanupInboxOf(s));
-    }
-  }
-
-  private async cleanupInboxOf(source: StreamSource): Promise<void> {
-    const cursor = await this.d.store.getCursor(inboxCursorName(source.type));
-    if (cursor === null) return;
-    const deleted = await this.d.store.pruneInbox(source.type, inboxSeq(cursor), this.cfg.inbox_retention_days * DAY_MS);
-    if (deleted > 0) this.d.log.info("inbox cleanup", { source_type: source.type, deleted });
-  }
-
   async tickRuns(): Promise<void> {
     await this.live.refresh();
     await this.runsStep();
     await this.outboxStep();
-  }
-
-  /**
-   * The command inbox (issue #282): every command after the cursor `commands`, in seq order. A CLI command for an
-   * item of any source becomes the event the same comment gives on the source (the same parser) and goes through handleEvent,
-   * so it gets the same authorize check and replies; an app request (args.app_request) is applied through
-   * applyAppRequest. A forge comment command the forge poll wrote (key `github:<comment id>`, issue #284) becomes
-   * its comment's event with provider `github`, so that provider's auth plugin judges it. The cursor starts where the `local` source's `intake:local` cursor stopped. A command whose
-   * handling throws (a store error) holds the cursor before it, so it is tried again next tick, the ones after it
-   * then. Any replica may run it: handling is idempotent and the cursor moves only from the value read.
-   */
-  private async commandsStep(): Promise<void> {
-    const cursor = await this.d.store.getCursor(COMMANDS_CURSOR);
-    const start = cursor ?? (await this.d.store.getCursor(LEGACY_LOCAL_CURSOR));
-    const after = start ? Number(start) : 0;
-    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(start)}`);
-    const commands = await this.d.store.listCliCommandsAfter(after, COMMAND_BATCH);
-    let last: number | null = null;
-    for (const c of commands) {
-      try {
-        await this.handleInboxCommand(c);
-      } catch (err) {
-        // Held, not skipped: the cursor stops before it, so the next tick tries it again (and the ones after it).
-        this.d.log.error("command failed; retried next tick", {
-          command_seq: c.seq,
-          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-        });
-        break;
-      }
-      last = c.seq;
-    }
-    if (last !== null) await this.d.store.advanceCursor(COMMANDS_CURSOR, cursor, String(last));
   }
 
   private async handleInboxCommand(c: CliCommand): Promise<void> {
@@ -4916,19 +4760,6 @@ function parseFloorHits(v: unknown): { path: string; tier: number }[] {
       typeof h === "object" && h !== null && typeof h.path === "string" && Number.isInteger(h.tier) && h.tier >= 1 && h.tier <= 5,
   );
   return hits.length === v.length ? hits : [];
-}
-
-/** lease_ms and heartbeat_ms as getters over the live settings, so a change applies at the next renew. */
-function leaseTimings(live: LiveSettings): Pick<FactoryConfig, "lease_ms" | "heartbeat_ms"> {
-  return { get lease_ms() { return live.config().lease_ms; }, get heartbeat_ms() { return live.config().heartbeat_ms; } };
-}
-
-/** The seq an inbox cursor holds; no cursor means before the first row. */
-function inboxSeq(cursor: string | null): number {
-  if (cursor === null) return 0;
-  const n = Number(cursor);
-  if (!Number.isSafeInteger(n) || n < 0) throw new Error(`inbox cursor is not a sequence number: ${cursor.slice(0, 40)}`);
-  return n;
 }
 
 function iso(ms: number): Timestamp {

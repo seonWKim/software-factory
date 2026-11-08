@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { uiCommandsActor } from "../src/compose.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
@@ -20,11 +20,14 @@ const READER = "github:666" as UserId;
 const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" };
 const IMPLEMENTING: WorkItemPatch = { stage: "RUNNING" };
 
-async function harness(opts: { localAuth?: boolean } = {}) {
+/** Past the first retry of a failed command on controller.commands. */
+const RETRY_MS = 1_000;
+
+async function harness(opts: { localAuth?: boolean; tick_ms?: number } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const auth = opts.localAuth ? new LocalAuthProvider(store) : new FakeAuth();
-  const controller = new Controller({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth, clock, config: { ...config, tick_ms: opts.tick_ms ?? config.tick_ms }, log: silent, scanner: cleanScanner });
   const actor = { kind: "system" as const, id: "system:test" };
   /** A work item on issue `n`, put in the state `patch` describes. */
   const itemIn = async (patch: WorkItemPatch, n: number): Promise<WorkItem> => {
@@ -118,6 +121,8 @@ describe("app command requests: approve", () => {
     };
     await h.controller.tickCommands();
     expect(await h.pending(r)).toEqual([r.seq]);
+    // The bus retries a failed command after its topic's backoff (RFC 0015 M4), the first time after a second.
+    h.clock.advance(RETRY_MS);
     await h.controller.tickCommands();
 
     const s = await h.shape(it1);
@@ -252,6 +257,7 @@ describe("app command requests: refusals", () => {
     await h.controller.tickCommands();
     expect(await h.pending(ra, rb)).toEqual([ra.seq, rb.seq]);
     h.store.getWorkItem = get;
+    h.clock.advance(RETRY_MS);
     await h.controller.tickCommands();
     expect((await h.store.getWorkItem(a.id))!.stage).toBe("RUNNING");
     expect((await h.store.getWorkItem(b.id))!.stage).toBe("RUNNING");
@@ -261,7 +267,9 @@ describe("app command requests: refusals", () => {
 
 describe("app command requests: the controller loop", () => {
   it("each tick reads pending requests, without waiting for the poll interval", async () => {
-    const h = await harness();
+    // Inbound's intake tick runs on its TickGenerator (RFC 0015 M4), in real time: a short tick keeps the test short.
+    const tick_ms = 20;
+    const h = await harness({ tick_ms });
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const ac = new AbortController();
     const running = h.controller.run(ac.signal);
@@ -269,13 +277,10 @@ describe("app command requests: the controller loop", () => {
     await waitFor(() => h.source.polls.length > 0, "first poll");
     const polls = h.source.polls.length;
     const r = await h.request("k1", WRITER, "approve", { work_item_id: it1.id });
-    for (let i = 0; i < 20 && (await h.store.getAppCommandRequest(r.seq))!.handled_at === null; i++) {
-      h.clock.advance(config.tick_ms);
-      await new Promise((res) => setTimeout(res, 5));
-    }
+    await waitFor(async () => (await h.store.getAppCommandRequest(r.seq))!.handled_at !== null, "handled");
     ac.abort();
     await running;
-    expect(config.tick_ms * 20).toBeLessThan(config.poll_interval_ms);
+    expect(tick_ms * 20).toBeLessThan(config.poll_interval_ms);
     expect(h.source.polls.length).toBe(polls);
     expect((await h.store.getAppCommandRequest(r.seq))!.handled_at).not.toBeNull();
     expect((await h.store.getWorkItem(it1.id))!.stage).toBe("RUNNING");

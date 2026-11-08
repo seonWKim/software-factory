@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -198,7 +198,7 @@ async function setup(opts: {
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
     prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log, scanner, toolEnv, awake: new NoKeepAwake(),

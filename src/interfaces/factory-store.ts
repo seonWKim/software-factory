@@ -726,11 +726,6 @@ export interface FactoryStore {
   /** Rows of `source_type` with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]>;
   /**
-   * Deletes rows of `source_type` that are both at or below `through_seq` and received more than
-   * `older_than_ms` ago (store clock). Returns how many went.
-   */
-  pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number>;
-  /**
    * Takes `source_type`'s listener lease for `owner` if nobody holds it or the holder's lease expired;
    * the token goes up by one on every take. Otherwise reports the current holder.
    */
@@ -755,12 +750,6 @@ export interface FactoryStore {
   releaseSyncLease(name: string, token: number): Promise<void>;
   /** The lease row, expired or not; null when it was never taken. Read-only. */
   getSyncLease(name: string): Promise<SyncLease | null>;
-  /**
-   * advanceCursor fenced by a sync lease: sets cursor `cursor` to `next` only if it still equals `expected` and
-   * `fence.token` is still the token of lease `fence.name`, in one transaction. False changes nothing.
-   */
-  advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean>;
-
   // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
   // one row per (project, plugin), shared by every replica.
 

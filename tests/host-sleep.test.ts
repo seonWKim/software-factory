@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HOST_SLEEP_MS, Worker } from "../src/core/worker.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -54,7 +54,7 @@ describe("host sleep: controller reaper grace", () => {
   async function setup() {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t" } });
     const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms }))!;
     const status = async (id: RunId = run.id) => (await store.getRun(id))!.status;

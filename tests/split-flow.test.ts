@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, SPLIT_FILING_STALE_MS, phaseMarker } from "../src/core/split.js";
 import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.js";
@@ -33,7 +33,7 @@ async function setup(cfg: FactoryConfig = config) {
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
   /** `factory settings set <key> <value>`: a stored override the controller reads on its next tick. */
   const set = (key: string, value: unknown) => store.setSettingOverride({ key, project: "", value: JSON.stringify(value), actor: "local:test" });
   let comment = 10_000_000;
@@ -64,7 +64,7 @@ async function setup(cfg: FactoryConfig = config) {
   const bySource = async (src: SourceRef) => (await store.getWorkItemBySource("github_issue", src.id))!;
   const runsOf = async (it: WorkItem) => store.listRuns(it.id);
   /** A second controller on the same store and source: another replica, or an old process still draining. */
-  const replica = () => new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+  const replica = () => new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
   return { clock, store, source, controller, replica, intake, finish, triaged, approve, closeSource, get, bySource, runsOf, set };
 }
 
@@ -336,7 +336,7 @@ describe("split spec flow", () => {
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const cfg: FactoryConfig = { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 } };
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(76), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();
     const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;

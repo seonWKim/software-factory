@@ -19,7 +19,7 @@ import type { CliIdentity } from "./core/local-cli.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
-import { Controller } from "./core/controller.js";
+import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
@@ -638,7 +638,7 @@ export interface Built {
   secrets: SecretStore;
   /** The configured repo, from the store, or from GitHub on a first start (startupProject). */
   project: ProjectRef;
-  controller: Controller;
+  controller: ControllerRole;
   /** `config.max_workers` worker slots, `workers` of them claiming; `run(signal)` runs them all. */
   worker: WorkerPool;
   close(): Promise<void>;
@@ -820,7 +820,7 @@ export async function build(
   });
   await settings.refresh();
 
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store,
     sources,
     forge,

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { Controller, GITHUB_BUDGET_CURSOR } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { GITHUB_BUDGET_CURSOR } from "../src/inbound/index.js";
 import { GitHubClient, GitHubError, githubBudgetShare, githubMinRemaining } from "../src/impl/github/github-client.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import { secretName } from "../src/interfaces/secret-store.js";
@@ -360,9 +361,10 @@ describe("no calls left: a wait, not an error", () => {
     const { store } = await newStore(clock);
     const other = new FakeSource("slack_thread");
     const log = recordingLog();
-    const controller = new Controller({
-      store, sources: [source, other], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner,
-      replica_id: "host:1", github_budget: () => client.status(),
+    // Inbound polls on its TickGenerator (RFC 0015 M4), in real time: short intervals keep the test short.
+    const controller = new ControllerRole({
+      store, sources: [source, other], auth: new FakeAuth(), clock, config: { ...config, tick_ms: 10, poll_interval_ms: 20 }, log,
+      scanner: cleanScanner, replica_id: "host:1", github_budget: () => client.status(),
     });
     gh.state.remaining = 0;
     await client.request("GET", "/repos/o/r/pulls/200");
@@ -373,8 +375,8 @@ describe("no calls left: a wait, not an error", () => {
     const stop = new AbortController();
     const running = controller.run(stop.signal);
     await waitFor(() => other.polls.length >= 1, "first poll");
-    clock.advance(config.poll_interval_ms);
     await waitFor(() => other.polls.length >= 2, "second poll: the loop goes on");
+    await waitFor(async () => (await store.getWorkItemBySource("slack_thread", slackRef(1).id)) !== null, "other source's item taken in");
     stop.abort();
     await running;
 

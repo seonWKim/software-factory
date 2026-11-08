@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, systemSource, utcDay,
 } from "../src/core/improver.js";
@@ -53,8 +53,8 @@ describe("improve: grouping", () => {
 });
 
 /** A controller with no source: the daily improve step needs only the store. */
-function controller(store: FactoryStore, clock: FakeClock): Controller {
-  return new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+function controller(store: FactoryStore, clock: FakeClock): ControllerRole {
+  return new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
 }
 
 async function improveRuns(store: FactoryStore): Promise<Run[]> {
@@ -142,7 +142,7 @@ describe("improve: the run", () => {
     // After the window (the improve day itself): not counted either.
     await failRun(store, 5, "checks_failed", "npm test exited 1: 4 failing tests");
 
-    const c = new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm: noLlm });
+    const c = new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm: noLlm });
     await c.tickImprove();
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new NoSandbox(), runner: noRunner, broker: new FakeBroker(), storage: new MemoryStorage(),

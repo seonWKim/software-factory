@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_INBOX_RETENTION_DAYS, inboxRetentionDays, loadConfig } from "../src/compose.js";
-import { Controller, inboxCursorName } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { inboxCursorName } from "../src/inbound/index.js";
 import { Listener } from "../src/core/listener.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -57,8 +58,8 @@ function startListener(store: FactoryStore, clock: FakeClock, source: FakeStream
   return r;
 }
 
-function controller(store: FactoryStore, clock: FakeClock, source: FakeStreamSource, replica_id: string): Controller {
-  return new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, replica_id });
+function controller(store: FactoryStore, clock: FakeClock, source: FakeStreamSource, replica_id: string): ControllerRole {
+  return new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, replica_id });
 }
 
 /** `store` with some methods replaced, e.g. to make the inbox write fail. */
@@ -316,7 +317,7 @@ describe("stream intake: controller", () => {
     source.push(slackEvent(1), "ev-1");
     await waitFor(() => source.acks.length === 1, "ack 1");
     clock.advance(30 * DAY);
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-1"]);
 
     source.push(slackEvent(2), "ev-2");
@@ -329,11 +330,11 @@ describe("stream intake: controller", () => {
     await waitFor(() => source.acks.length === 4, "ack 4");
     clock.advance(DAY + 1);
     // ev-1, ev-2: old and behind the cursor → gone. ev-3: old but ahead of the cursor. ev-4: too new.
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-3", "ev-4"]);
 
     await c.tickIntake(); // cursor now at ev-4
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-4"]);
     expect(await stateChangeCount(store, 3)).toBe(1);
   });

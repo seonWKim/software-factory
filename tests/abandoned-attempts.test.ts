@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -15,7 +15,7 @@ async function setup(max_attempts = 3) {
   const source = new FakeSource();
   const log = recordingLog();
   const cfg = { ...config, settings: settingsWith({ max_attempts }) };
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner: new PatternEgressScanner(async () => []),
   });
   source.queue.push({ kind: "item_requested", source: issueRef(1), requester: alice, title: "t", body: "b" });

@@ -7,7 +7,7 @@ import { runCanary } from "../src/canary.js";
 import { Plugins, loadConfig } from "../src/compose.js";
 import { FallbackLLM } from "../src/core/fallback-llm.js";
 import { FallbackRunner } from "../src/core/fallback-runner.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import { Bash, Edit, Glob, Grep, Read, type ToolSpec, Write } from "../src/core/tools/index.js";
 import type { RunId, WorkItemId, WorkerId } from "../src/core/types.js";
@@ -516,7 +516,7 @@ async function factoryWith(script: ScriptedResponse[]) {
   // Specs auto-approved (tier 2 < 3), so implement and review follow triage.
   const cfg = { ...fakeConfig, dials: { spec_gate_min_tier: 3 as const, auto_merge_max_tier: 0 as const } };
   const runner = new OpenAICompatibleRunner({ sandbox, secrets: new MapSecrets({ OPENAI_COMPATIBLE_API_KEY: KEY }), config: { base_url: s.baseUrl, models: MODELS } });
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config: cfg, prompts,
     log: silent, scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),

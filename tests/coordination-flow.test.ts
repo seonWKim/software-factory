@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
-import { Controller, DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
+import { DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { statusOf } from "../src/core/status-label.js";
 import type { DependencyState, RunKind, SourceRef, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -35,7 +36,7 @@ class DepSource extends FakeSource implements DependencySource {
 async function setup(source: SourceAdapter = new DepSource()) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   /** Issue `n` approved and implementing, with a queued implement run (or set up with `patch` and `kinds`). */
   const item = async (n: number, patch: WorkItemPatch = {}, kinds: RunKind[] = ["implement"]) => {
     const { item } = await store.createWorkItem(issue(n), system);

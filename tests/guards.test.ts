@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/core/worker.js";
 import { Edit, Glob, Grep, Read, type ToolContext, Write, guardPolicy } from "../src/core/tools/index.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
@@ -304,7 +304,7 @@ describe("G6 (unit): an agent that leaks a canary is stopped before anything lea
     const storage = new MemoryStorage();
     const broker = new FakeBroker();
     const runner = new FakeRunner({ triage: () => ({ output: { problem: canary }, transcript: `found ${canary}` }) });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage, clock, config, prompts, log: silent,
       scanner: new PatternEgressScanner(async () => [canary]), toolEnv: {}, awake: new NoKeepAwake(),

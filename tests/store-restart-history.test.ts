@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { RESTART_WINDOW_MS, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -63,7 +63,7 @@ for (const b of BACKENDS) {
     it("the controller stores this host's restarts once per restart, however often it reads the same list", async () => {
       const { store, clock } = await b.make();
       const list = restarts(clock, 3);
-      const c = new Controller({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, restarts: async () => list });
+      const c = new ControllerRole({ store, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, restarts: async () => list });
       await c.tickAlarms();
       await c.tickAlarms();
       expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual(list);
@@ -73,7 +73,7 @@ for (const b of BACKENDS) {
       const { store, clock } = await b.make();
       for (const r of restarts(clock, 5)) await store.recordChildRestart(r);
       const cfg: FactoryConfig = { ...config };
-      await new Controller({ store, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner }).tickAlarms();
+      await new ControllerRole({ store, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner }).tickAlarms();
       expect(await store.listAlerts({ limit: 10 })).toMatchObject([{ pattern: "child_restarts", count: 5, detail: "r5" }]);
     });
   });
