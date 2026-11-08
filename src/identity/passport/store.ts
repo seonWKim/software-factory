@@ -97,12 +97,17 @@ export class PassportStore {
 
   /** Records a revocation; a second one of the same passport changes nothing. */
   async revoke(passport_id: string, revoked_by: string, reason: string, revoked_at: string, expires_at: string): Promise<void> {
-    const [has] = await this.db.all("SELECT 1 AS x FROM identity_revocations WHERE passport_id = ?", [passport_id]);
-    if (has) return;
-    await this.db.run(
-      "INSERT INTO identity_revocations (passport_id, revoked_by, reason, revoked_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-      [passport_id, revoked_by, reason, revoked_at, expires_at],
-    );
+    const revoked = async () => (await this.db.all("SELECT 1 AS x FROM identity_revocations WHERE passport_id = ?", [passport_id])).length > 0;
+    if (await revoked()) return;
+    try {
+      await this.db.run(
+        "INSERT INTO identity_revocations (passport_id, revoked_by, reason, revoked_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+        [passport_id, revoked_by, reason, revoked_at, expires_at],
+      );
+    } catch (err) {
+      // A concurrent revoke of the same passport inserted first: it is revoked, which is all this asks.
+      if (!(await revoked())) throw err;
+    }
   }
 
   /** Revocations still in force at `now`; ones past their passport's expiry are pruned first. */

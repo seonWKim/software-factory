@@ -170,6 +170,31 @@ for (const [name, enabled, open] of BACKENDS) {
       expect(token).not.toBe(run.token);
     });
 
+    it("refuses an appended link whose expiry is not a time, or that turns a run into a person or moves its origin", async () => {
+      // Anyone holding a token can append a link without the key; with `expires_at: null` every string comparison
+      // is false, so the token would neither count as widened nor ever expire.
+      const { svc, owner, at } = await setup();
+      const { passport } = await owner();
+      const run = await svc.narrow(passport.id, { kind: "run", tools: ["git.push"] });
+      const [prefix, body, sig] = run.token.split(".");
+      const links = JSON.parse(Buffer.from(body!, "base64url").toString()) as Link[];
+      const append = (patch: Record<string, unknown>) => {
+        const l = { ...links[1]!, id: "pp_forged", parent_id: links[1]!.id, ...patch } as Link;
+        const canonical = JSON.stringify([l.id, l.parent_id, l.principal, l.provider, l.origin, l.kind, l.key_id, l.issued_at, l.expires_at, l.restrictions]);
+        const next = createHmac("sha256", Buffer.from(sig!, "hex")).update(canonical).digest("hex");
+        return `${prefix}.${Buffer.from(JSON.stringify([...links, l])).toString("base64url")}.${next}`;
+      };
+      const tool = { ...P, tool: "git.push" };
+      expect(await svc.check(append({}), "use_tool", tool)).toMatchObject({ allow: true });
+      await at(2 * 3_600_000); // the run passport expired with its parent
+      for (const patch of [{ expires_at: null }, { expires_at: 4102444800000 }, { expires_at: "2099-01-01" }]) {
+        expect(await svc.check(append(patch), "use_tool", tool)).toMatchObject({ allow: false, reason: "malformed" });
+      }
+      await at(0);
+      expect(await svc.check(append({ kind: "person" }), "use_tool", tool)).toMatchObject({ allow: false, reason: "malformed" });
+      expect(await svc.check(append({ origin: "github" }), "use_tool", tool)).toMatchObject({ allow: false, reason: "malformed" });
+    });
+
     it("narrowing never widens (property)", async () => {
       const { svc, owner } = await setup();
       const { passport } = await owner();
@@ -208,7 +233,8 @@ for (const [name, enabled, open] of BACKENDS) {
       const replica = await setup({ db });
       expect(await replica.svc.check(run.token, "use_tool", { ...P, tool: "git.push" })).toMatchObject({ allow: true });
 
-      await svc.revoke(passport.id, OWNER, "laptop lost");
+      // Two at once (two replicas, or a double click): both succeed, one row.
+      await Promise.all([svc.revoke(passport.id, OWNER, "laptop lost"), svc.revoke(passport.id, OWNER, "laptop lost")]);
       await svc.revoke(passport.id, OWNER, "again");
       expect(await db.all("SELECT passport_id, revoked_by, reason FROM identity_revocations")).toEqual([{ passport_id: passport.id, revoked_by: OWNER, reason: "laptop lost" }]);
       expect(await svc.authorize(passport.id, "approve_spec", P)).toMatchObject({ allow: false, reason: "revoked" });

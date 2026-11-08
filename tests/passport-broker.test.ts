@@ -8,7 +8,7 @@ import type { ToolBroker, ToolCallContext } from "../src/interfaces/tool-broker.
 import type { RunId, WorkItemId } from "../src/core/types.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import { RunPassports } from "../src/worker/passports/run-passports.js";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -162,5 +162,16 @@ describe("local passport key", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(await localKeyFile(path, "K").get("OTHER")).toBeNull();
     expect((await readFile(path, "utf8")).trim()).toBe(a!.reveal());
+  });
+
+  it("processes that start together on a fresh state folder all read the same whole key", async () => {
+    // Create-then-write let a loser read an empty file (timing-dependent, not forced here); every start agrees on one
+    // key and the temporary files are gone.
+    const dir = await mkdtemp(join(tmpdir(), "sf-key-"));
+    const path = join(dir, "passport.key");
+    const keys = await Promise.all(Array.from({ length: 8 }, () => localKeyFile(path, "K").get("K")));
+    expect(new Set(keys.map((k) => k!.reveal())).size).toBe(1);
+    expect(keys[0]!.reveal()).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readdir(dir)).toEqual(["passport.key"]);
   });
 });

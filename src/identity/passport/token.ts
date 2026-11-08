@@ -106,10 +106,33 @@ export function attenuateToken(token: string, link: Link): string {
   return encode([...links, l], chainSig(sig, [l]));
 }
 
+/** A time as the factory writes it: ISO 8601 in UTC with milliseconds, so string order is time order. */
+const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+const KINDS: readonly string[] = ["person", "run", "service", "call"] satisfies readonly PassportKind[];
+const ORIGINS: readonly string[] = ["cli", "ui", "github", "slack", "run", "service"] satisfies readonly Origin[];
+
+/**
+ * A link from untrusted JSON with a field of the wrong type. Every comparison below is a string comparison, so a
+ * `null` or numeric expiry would never count as widened or expired.
+ */
+function shapeProblem(l: Link): string | null {
+  const strings = [l.id, l.principal, l.provider, l.key_id];
+  if (strings.some((v) => typeof v !== "string") || (l.parent_id !== null && typeof l.parent_id !== "string")) return "bad field";
+  if (typeof l.issued_at !== "string" || !ISO.test(l.issued_at) || typeof l.expires_at !== "string" || !ISO.test(l.expires_at)) return "bad time";
+  if (!KINDS.includes(l.kind) || !ORIGINS.includes(l.origin)) return "bad kind or origin";
+  if (typeof l.restrictions !== "object" || l.restrictions === null) return "bad restrictions";
+  return null;
+}
+
 function linkProblem(chain: readonly Link[], link: Link, parent: Link): string | null {
+  const shape = shapeProblem(link);
+  if (shape) return shape;
   if (link.parent_id !== parent.id) return "parent mismatch";
   if (link.principal !== parent.principal || link.provider !== parent.provider || link.key_id !== parent.key_id) return "principal changed";
   if (link.expires_at > parent.expires_at) return "expiry widened";
+  // Narrowing makes a run or a call passport; it never becomes a person or a service, nor claims another edge.
+  if (link.kind !== "run" && link.kind !== "call") return "kind widened";
+  if (link.origin !== parent.origin && link.origin !== "run") return "origin changed";
   try {
     checkRestrictions(link.restrictions);
   } catch (err) {
@@ -142,7 +165,7 @@ export async function verifyToken(keys: PassportKeyring, token: string, now: str
   }
   const { links, sig } = decoded;
   const root = links[0]!;
-  if (root.parent_id !== null) return { ok: false, reason: "malformed", links };
+  if (root.parent_id !== null || shapeProblem(root)) return { ok: false, reason: "malformed", links };
   for (let i = 1; i < links.length; i++) if (linkProblem(links.slice(0, i), links[i]!, links[i - 1]!)) return { ok: false, reason: "malformed", links };
   const key = await keys.get(root.key_id);
   if (!key) return { ok: false, reason: "unknown_key", links };

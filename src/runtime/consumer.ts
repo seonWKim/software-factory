@@ -61,6 +61,8 @@ export class ComponentConsumer<C extends HandlerContext> {
           const publish = (tx: SqlExecutor, msg: Envelope) => this.o.bus.publish(tx, drafts.map((d) => envelope(d, causeOf(msg), h.name)));
           if (this.o.transactional) {
             await deliver(this.o.db, this.o.bus, this.o.bus, h.name, c, async (tx, msg) => {
+              // The driver may run this again after a rollback (a MySQL deadlock): drop what that attempt emitted.
+              drafts.length = 0;
               await h.handle(msg, this.o.context(tx, emit));
               await publish(tx, msg);
             });
