@@ -62,7 +62,6 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: 300_000,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
     ...(opts.wired === false ? {} : { pauses }),
   };

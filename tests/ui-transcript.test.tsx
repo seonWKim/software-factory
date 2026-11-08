@@ -34,7 +34,7 @@ function run(id: string, status: string, extra: Record<string, unknown> = {}) {
 }
 const detail = {
   as_of: AT,
-  item: { id: ITEM, source: { type: "github", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, title: "Port", stage: "RUNNING", close_reason: null, blocked_on: "none", blocked_reason: null, tier: 1, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null, pr_url: null, version: 1, created_at: AT, updated_at: AT },
+  item: { id: ITEM, source: { type: "github", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, title: "Port", stage: "RUNNING", close_reason: null, blocked_on: "none", blocked_reason: null, tier: 1, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null, version: 1, created_at: AT, updated_at: AT },
   timeline: [],
   runs: [run(FAILED, "failed"), run(LEAKY, "succeeded"), run(PLAIN, "succeeded"), run("run_none", "succeeded")],
   transcripts: { [FAILED]: [""], [LEAKY]: [""], [PLAIN]: [""] },

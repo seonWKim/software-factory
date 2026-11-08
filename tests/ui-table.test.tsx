@@ -72,7 +72,7 @@ describe("Table", () => {
 describe("Needs you at 390px", () => {
   const row = (n: number, level: string, title: string, why: string) => ({
     id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level, badges: [], stage: "READY", tier: 2,
-    kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 1,
+    kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1,
     dependents: 0, conflicts: { automatic: 0, person: 0 }, why: { code: "x", text: why, next_actor: "human", refs: [], ref_url: null },
   });
 
@@ -83,7 +83,7 @@ describe("Needs you at 390px", () => {
         label="Needs you"
         now={NOW}
         empty="none"
-        plugins={{ issues: "github", prs: "github" }}
+        plugins={{ issues: "github" }}
         items={[row(1, "needs_approval", "A rather long title that must wrap on a phone", "Waits for your /approve on the spec."), row(2, "ready_to_merge", "Merge me", "Ready for your merge.")]}
       />,
     );

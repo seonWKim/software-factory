@@ -272,7 +272,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
 
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): UiDeps {
     return {
-      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, prUrl: (l, n) => `https://${l}/pull/${n}`,
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
       health: new HealthMonitor(async () => [], h.clock), commands: { actor, token: TOKEN },
     };
   }

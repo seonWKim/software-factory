@@ -324,7 +324,7 @@ export function ItemsPage() {
       </div>
       {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
         nodes.length === 0 ? <Empty>No work item matches this filter.</Empty> : (
-          <ItemsTree nodes={nodes} rows={rows} now={now} plugins={overview.data?.plugins?.prs === "github"} expanded={expanded} onExpanded={setExpanded} />
+          <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
         )
       ) : (
         <ItemsTable items={items.data.items} now={now} label="Work items" plugins={overview.data?.plugins} empty="No work item matches this filter." />
@@ -369,7 +369,7 @@ export function ItemPage({ id }: { id: string }) {
         {([
           ["Stage", item.stage + (item.close_reason ? ` (${item.close_reason})` : "")],
           ["Tier", item.tier ?? "–"],
-          ["PR", item.pr_number === null ? "–" : <UrlOrText url={item.pr_url} text={`#${item.pr_number}`} />],
+          ["PR", item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
           ["Spec comment", item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text="spec comment" /> : "–"],
           ["Review loops", item.loop_count],
           ["Restarts", item.restart_count],
@@ -689,9 +689,9 @@ export function HealthPage() {
           ) : (
             <Table label="Merged without review" head={["PR", "Merged by", "Merge commit", "When"]}>
               {merges.data.merges.map((m) => (
-                <Tr key={`${m.project}#${m.pr_number}`}>
+                <Tr key={`${m.project}#${m.change_ref}`}>
                   <Td className="tabular-nums">
-                    {m.pr_url ? <a href={m.pr_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.pr_number}</a> : `#${m.pr_number}`}
+                    {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
                   </Td>
                   <Td className="text-xs break-words">{m.merged_by}</Td>
                   <Td className="font-mono text-xs">{m.merge_sha}</Td>

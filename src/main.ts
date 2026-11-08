@@ -287,11 +287,7 @@ async function main(argv: readonly string[]): Promise<number> {
           scanner: parts.scanner,
           clock: parts.clock,
           lease_ms: loaded.config.lease_ms,
-          plugins: selectedSources(loaded.plugins).includes("github-issues")
-            ? { issues: "github", prs: "github" }
-            : { issues: null, prs: null },
-          // `label` is the stored project label (github.com/owner/name), never the key.
-          prUrl: (label, n) => `https://${label}/pull/${n}`,
+          plugins: { issues: selectedSources(loaded.plugins).includes("github-issues") ? "github" : null },
           // The same checks as `factory doctor` (without --llm: opening the page makes no model call).
           // A stall pause (design §5 Restarts) shows first, as a failing row: `agents paused: model not answering since …`.
           // A first start waiting for GitHub to resolve the project key (design 2026-11-07) shows as a warn.
