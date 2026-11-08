@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel } from "../api.js";
+import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel, showsMerge } from "../api.js";
 import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { MergeButton } from "./item-commands.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -83,9 +84,10 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 
 /**
  * Needs you and Work items. The title links to the item's page; the Item cell has no link out. The Issue column
- * exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows.
+ * exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows. `merge`
+ * (Needs you): an item waiting for its merge gets the Merge button beside its reason.
  */
-export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
+export function ItemsTable({ items, now, label, empty, plugins, merge = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; merge?: boolean }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
   const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), "PR"];
@@ -102,7 +104,14 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
-          <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
+          <Td className="text-zinc-600 dark:text-zinc-400">
+            {it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
+            {merge && showsMerge(it.merge) && (
+              <span className="ml-2">
+                <MergeButton id={it.id} source={it.source.type} merge={it.merge} />
+              </span>
+            )}
+          </Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
           {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
           <Td className="tabular-nums">

@@ -116,7 +116,7 @@ import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { ChildRestart } from "../interfaces/updater.js";
-import type { Forge, ForgeEvent, PrChecks } from "../interfaces/forge.js";
+import type { Forge, ForgeEvent, PrChecks, PrMergeResult } from "../interfaces/forge.js";
 import type { PollResult, PollSource, SourceAdapter, SourceEvent, StreamSource } from "../interfaces/source-adapter.js";
 
 /**
@@ -947,6 +947,54 @@ export class Controller {
   }
 
   /**
+   * The PR merge (design §9, the Merge button): an app `merge` request on an item that is not local. Authorized by
+   * the local auth plugin for `approve_merge`, as mergeLocal is; refused before any forge call for an item not
+   * waiting for a merge, with no PR, with no forge selected or with no recorded head. The forge merges the PR with a
+   * merge commit only at the head the review passed (`last_head_sha`), so a moved head is refused there and nothing
+   * moves. A merge closes the item (completed, the forge's merge sha) with `who` as the approver of record (the
+   * forge's merger is the token account), posts one reply and releases the items waiting on it. Safe to run twice: a
+   * PR the forge already merged closes the item with its merge sha and no second merge commit. Returns the refusal
+   * (the caller posts it), or null when the item merged.
+   */
+  private async mergePr(id: WorkItemId, who: UserId, key: string, detail: Record<string, unknown>): Promise<string | null> {
+    const item = await this.d.store.getWorkItem(id);
+    if (!item) return "the work item was not found";
+    const principal = await this.allowed({ user_id: who, attributes: {} }, "approve_merge", item.id, true);
+    if ("refuse" in principal) return principal.refuse;
+    const pr = prNumber(item);
+    if (!awaitingMerge(item) || pr === null) {
+      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
+      return `${item.id} is not waiting for a merge (${at}); Merge applies once its PR passed review (merge_pending)`;
+    }
+    if (!this.forge) return `no forge is selected (\`plugins.forge\`), so the factory cannot merge PR #${pr}`;
+    const head = item.last_head_sha;
+    if (head === null) return `no reviewed head is recorded for PR #${pr}`;
+    let r: PrMergeResult;
+    try {
+      r = await this.forge.mergePr(pr, head, "merge");
+    } catch (err) {
+      this.d.log.warn("PR merge failed", { work_item_id: item.id, pr_number: pr, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      return `the forge could not be reached to merge PR #${pr}, so nothing moved; press Merge again`;
+    }
+    if (!r.merged) return r.refused;
+    const actor: Actor = { kind: "user", id: principal.user_id };
+    await this.mergeVerdict(item, { change_ref: item.change_ref!, merge_sha: r.sha }, actor);
+    const lost = await this.decide(item.id, (it) => (it.stage === "CLOSED" || it.change_ref !== item.change_ref
+      ? null
+      : {
+          patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
+          actor,
+          reason: "pr_merged",
+          detail: { ...detail, head_sha: head, ...(r.already ? { already_merged: true } : {}) },
+        }));
+    if (lost !== null) return lost;
+    this.d.log.info("PR merged", { work_item_id: item.id, pr_number: pr, merge_sha: r.sha, user_id: principal.user_id });
+    await this.post(item, item.source, `Merged PR #${pr} at its reviewed head \`${head.slice(0, 12)}\` as \`${r.sha.slice(0, 12)}\` (a merge commit). The item is closed.`, `<!-- factory:pr-merged:${key} -->`);
+    await this.guard("dependents", () => this.releaseDependents(item.source.id));
+    return null;
+  }
+
+  /**
    * Auto mode's merge (design 03-risk): each local item waiting for a merge, in a project in auto mode, merges
    * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
    * the merge check runs on the merge commit first, so a failing check or a conflict moves nothing. One try per item
@@ -1081,8 +1129,8 @@ export class Controller {
 
   /**
    * One app command request (design §4, app requests): `approve` goes through the comment command path and gets
-   * the `/approve` permission check, note scan and transition; `merge` on a local item goes to mergeLocal, the
-   * same local merge as `factory merge` (design §9, the item page's Merge button). Both put the request's seq on
+   * the `/approve` permission check, note scan and transition; `merge` on a local item with no PR goes to
+   * mergeLocal, the same local merge as `factory merge`, and on any item with a PR to mergePr (design §9, the Merge button). Both put the request's seq on
    * the state change. Any other command is refused. A refusal is posted once on the item's source, keyed on the request, then stored on the
    * row by the conditional mark. A failed post leaves the request pending for the next tick. Safe to run twice:
    * a request whose transition is already stored (an earlier try, another replica) is marked applied.
@@ -1100,10 +1148,13 @@ export class Controller {
 
     let refusal: string | null;
     if (r.command === MERGE_COMMAND) {
-      // mergeLocal posts its own reply, under the same marker as finishAppRequest's, so the thread gets it once.
-      refusal = item.source.type === LOCAL_SOURCE
-        ? await this.mergeLocal(item.id, r.actor, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
-        : `${item.id} is not a local item: merge its PR instead`;
+      // A local item with no PR takes the local merge; an item with a PR (a local item from the PR era too) its
+      // PR's merge on the forge (design 05-sources). mergeLocal posts its own refusal under the same marker as
+      // finishAppRequest's, so the thread gets it once.
+      const key = `app-${r.seq}`;
+      refusal = item.source.type === LOCAL_SOURCE && item.change_ref === null
+        ? await this.mergeLocal(item.id, r.actor, key, { [APP_REQUEST]: r.seq })
+        : await this.mergePr(item.id, r.actor, key, { [APP_REQUEST]: r.seq });
     } else if (r.command !== "approve") {
       refusal = "only `approve` and `merge` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
@@ -1510,7 +1561,7 @@ export class Controller {
    * item open and the next delivery merges it; a delivery after the merge records nothing more. None when the
    * merger does not resolve to a user.
    */
-  private async mergeVerdict(it: WorkItem, e: Extract<PrFinishedEvent, { kind: "change_merged" }>, merger: Actor | null): Promise<void> {
+  private async mergeVerdict(it: WorkItem, e: { change_ref: string; merge_sha: string }, merger: Actor | null): Promise<void> {
     if (it.origin !== "factory" || it.stage === "CLOSED" || it.change_ref !== e.change_ref) return;
     const id = it.id;
     const log = { work_item_id: id, pr_number: prNumber(e) };

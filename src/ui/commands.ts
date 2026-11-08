@@ -7,9 +7,9 @@
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
-// same Host guard. The item API's `commands`, `replies` and `can_merge` fields are built here too.
-// `merge` (design §9, the Merge button) is an app command beside the item commands: the local merge of
-// `factory merge`, with no note, shown only for a local item waiting for its merge.
+// same Host guard. The item API's `commands`, `replies` and `merge` fields are built here too.
+// `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
+// of `factory merge` for a local item, the PR's merge on the forge for any other.
 
 import { randomUUID } from "node:crypto";
 import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor } from "../core/commands.js";
@@ -29,9 +29,13 @@ export interface UiCommands {
   token: string;
   /**
    * Whether `actor` is allowed approve_merge on the project, over the local grants only (no forge call). Absent
-   * (a page with no auth wired) means false: no Merge button.
+   * (a page with no auth wired) means false: Merge is disabled.
    */
   mergeAllowed?: () => Promise<boolean>;
+  /** Whether a forge is selected (`plugins.forge`), for a PR's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
+  forge?: boolean;
+  /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
+  localMerge?: boolean;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -155,11 +159,48 @@ export async function itemReplies(d: UiDeps, id: WorkItemId, text: (v: string | 
   return out;
 }
 
+/** The item API's `merge` (design §9, the Merge button): enabled, or disabled with the reason in plain words. */
+export type MergeReadiness = { enabled: true; reason: null } | { enabled: false; reason: string };
+
+/** The reason of an item that is not waiting for a merge: the app shows no Merge button for it. */
+export const NOT_WAITING = "not waiting for a merge";
+
+/** What mergeReadiness reads of the item's merge check (the item API's `merge_check`). */
+export interface MergeCheckState {
+  state: "mergeable" | "checking" | "conflicts";
+  conflicts: readonly unknown[];
+}
+
 /**
- * The item API's `can_merge`: a local item waiting for its merge with no PR, and the page's user allowed
- * approve_merge. The controller checks both again when it applies the request.
+ * Whether the page's user, `actor`, is allowed approve_merge, asked at most once per call of the result, so a list
+ * asks once however many rows it has.
  */
-export async function canMerge(d: UiDeps, it: WorkItem): Promise<boolean> {
-  if (commandPhase(it) !== "merge_pending" || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) return false;
-  return d.commands?.actor != null && (await d.commands.mergeAllowed?.()) === true;
+export function mergeAllowedOnce(d: UiDeps): () => Promise<boolean> {
+  let asked: Promise<boolean> | null = null;
+  return () => (asked ??= d.commands?.actor != null && d.commands.mergeAllowed ? d.commands.mergeAllowed() : Promise.resolve(false));
+}
+
+const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
+
+/**
+ * The item API's `merge`, from stored state only (no forge call): enabled for an item waiting for its merge that
+ * the page's user may merge. A local item with no PR merges through the local merge, any item with a PR through
+ * its PR on the forge (design 05-sources). The merge check applies to a factory PR, the one item it runs for. The
+ * controller checks everything again when it applies the request; GitHub checks the head at merge time.
+ */
+export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<boolean>): Promise<MergeReadiness> {
+  if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
+  // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
+  const local = it.source.type === LOCAL_SOURCE && it.change_ref === null;
+  if (!local && it.change_ref === null) return off("no PR to merge");
+  if (!local && d.commands?.forge === false) return off("no forge selected");
+  if (local && d.commands?.localMerge === false) return off("no sandbox that can merge");
+  if (!local && it.head_branch === null && check) {
+    if (check.state === "checking") return off("merge check running");
+    const n = check.conflicts.length;
+    if (check.state === "conflicts") return off(`${n} conflicting ${n === 1 ? "file" : "files"}`);
+  }
+  if (d.commands?.actor == null) return off("commands are off");
+  if (!(await allowed())) return off("not allowed to merge (approve_merge)");
+  return { enabled: true, reason: null };
 }

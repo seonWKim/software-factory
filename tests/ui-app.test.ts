@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { type ItemDetail, type ItemRow, type MergeCheckView, API, mergeBlocked, mergeCheckLabel, postCommand } from "../web/src/api.js";
+import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness, API, mergeCheckLabel, postCommand } from "../web/src/api.js";
 // TS6142: tsconfig.test.json has no JSX, so these .tsx views stay untyped here; web/tsconfig.json checks them.
 // @ts-expect-error -- see above
 import { ItemsTable } from "../web/src/views/common.js";
@@ -234,12 +234,8 @@ describe("ui app: merge check labels", () => {
     expect(cell("1").indexOf("Ready to merge")).toBeLessThan(cell("1").indexOf("Mergeable"));
   });
 
-  it("labels count files and the Merge button is disabled while conflicts or checking", () => {
+  it("labels count files", () => {
     expect(mergeCheckLabel(check("conflicts", ["x"]))).toBe("Conflicts: 1 file");
-    expect(mergeBlocked(check("conflicts", ["x"]))).toBe(true);
-    expect(mergeBlocked(check("checking"))).toBe(true);
-    expect(mergeBlocked(check("mergeable"))).toBe(false);
-    expect(mergeBlocked(null)).toBe(false);
   });
 
   it("the item page shows the conflicting files, the base sha it was checked against and when", () => {
@@ -298,22 +294,22 @@ describe("ui app: item commands markup", () => {
   });
 });
 
-// The item page's Merge button (design §9): only where the item API says can_merge, its refusal beside it.
+// The Merge button (design §9): on the item page and in Needs you, enabled or disabled with the item API's reason.
 describe("ui app: the Merge button", () => {
   const AT = "2026-11-07T00:00:00.000Z";
-  const page = (source: string, canMerge: boolean | undefined, refusal: string | null = null) => {
+  const ENABLED: MergeReadiness = { enabled: true, reason: null };
+  const page = (source: string, merge: MergeReadiness | undefined, refusal: string | null = null) => {
     const detail: ItemDetail = {
       as_of: AT,
       item: {
         id: "wi_1", source: { type: source, id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
         blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: null,
+        version: 1, created_at: AT, updated_at: AT, merge_check: null, ...(merge === undefined ? {} : { merge }),
       },
       timeline: [],
       runs: [],
       commands: [{ name: "retry", usage: "/retry", description: "retry" }],
       replies: refusal === null ? [] : [{ seq: 3, command: "merge", created_at: AT, handled_at: AT, refusal }],
-      ...(canMerge === undefined ? {} : { can_merge: canMerge }),
     };
     const client = new QueryClient();
     client.setQueryData([API.item("wi_1")], detail);
@@ -322,17 +318,49 @@ describe("ui app: the Merge button", () => {
   };
   const mergeRow = (html: string) => html.match(/<li data-command="merge"[^>]*>.*?<\/li>/)?.[0] ?? null;
 
-  it("shows Merge when can_merge is true, and nowhere else", () => {
-    const row = mergeRow(page("local", true));
-    expect(row).toMatch(/<button[^>]*>Merge<\/button>/);
-    expect(row).not.toContain(" disabled=\"\"");
-    expect(mergeRow(page("local", false))).toBeNull();
+  it("shows Merge for a local or a GitHub item the API enables, and nothing for one not waiting for a merge", () => {
+    for (const source of ["local", "github_issue"]) {
+      const row = mergeRow(page(source, ENABLED));
+      expect(row, source).toMatch(/<button[^>]*>Merge<\/button>/);
+      expect(row, source).not.toContain(" disabled=\"\"");
+    }
+    expect(mergeRow(page("github_issue", { enabled: false, reason: "not waiting for a merge" }))).toBeNull();
     expect(mergeRow(page("local", undefined))).toBeNull();
-    expect(mergeRow(page("github_issue", false))).toBeNull();
+  });
+
+  it("a disabled Merge shows its reason beside it", () => {
+    for (const reason of ["merge check running", "2 conflicting files", "no forge selected", "no sandbox that can merge"]) {
+      const row = mergeRow(page("github_issue", { enabled: false, reason }))!;
+      expect(row, reason).toMatch(/<button[^>]*disabled=""[^>]*>Merge<\/button>/);
+      expect(row, reason).toContain(reason);
+    }
+  });
+
+  it("Needs you shows the Merge button or its reason beside a ready-to-merge row, and no `merge the PR` text", () => {
+    const client = new QueryClient();
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    const row = (id: string, merge: MergeReadiness): ItemRow => ({
+      id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
+      stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: id,
+      change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge,
+      need: { reason: "mergeable", command: null, anchor: null },
+    });
+    const table = (merge: boolean) => renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemsTable, {
+      items: [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })], now: Date.parse(AT), label: "Needs you", empty: "none", merge,
+    })));
+    const html = table(true);
+    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));
+    expect(cell("1")).toMatch(/<span data-merge="enabled"[^>]*><button[^>]*>Merge<\/button>/);
+    expect(cell("1")).not.toContain("disabled=\"\"");
+    expect(cell("2")).toMatch(/<span data-merge="disabled"[^>]*><button[^>]*disabled=""[^>]*>Merge<\/button>/);
+    expect(cell("2")).toContain("1 conflicting file");
+    expect(html).not.toContain("merge the PR");
+    // Work items uses the same table with no Merge button.
+    expect(table(false)).not.toContain("data-merge=");
   });
 
   it("shows the latest merge refusal beside the button", () => {
-    const row = mergeRow(page("local", true, "`merge` was not applied: `factory/wi_1` does not merge cleanly."))!;
+    const row = mergeRow(page("local", ENABLED, "`merge` was not applied: `factory/wi_1` does not merge cleanly."))!;
     expect(row).toContain('role="alert"');
     expect(row).toContain("does not merge cleanly");
   });

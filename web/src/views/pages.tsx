@@ -175,7 +175,7 @@ export function FloorPage() {
       <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
         <SystemActions actions={actions} />
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
-          <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
+          <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} merge empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
       </Section>
       <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>

@@ -13,7 +13,7 @@ import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
+import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrMergeMethod, PrMergeResult } from "../../src/interfaces/forge.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { Controller } from "../../src/core/controller.js";
 import { Worker } from "../../src/core/worker.js";
@@ -335,6 +335,26 @@ export class FakeForge implements Forge {
   async commitsBetween(from_sha: string, to_sha: string): Promise<number | null> {
     this.betweenCalls.push(`${from_sha}..${to_sha}`);
     return this.commitCounts[`${from_sha}..${to_sha}`] ?? null;
+  }
+  /** Each PR's head as the forge sees it, by number (absent: the head the merge names, so it merges). */
+  prHeads: Record<number, string> = {};
+  /** Each merged PR's merge commit, by number: mergePr sets it; a test sets it for a PR merged outside the factory. */
+  mergeShas: Record<number, string> = {};
+  /** Every mergePr call, failed ones included, in order. */
+  mergeCalls: { pr: number; head_sha: string; method: string }[] = [];
+  /** When set, mergePr records the call, then throws this. */
+  mergeError: Error | null = null;
+  /** As GitHub's merge endpoint: a merged PR answers its sha (`already`), a moved head is refused, else it merges. */
+  async mergePr(pr: number, head_sha: string, method: PrMergeMethod): Promise<PrMergeResult> {
+    this.mergeCalls.push({ pr, head_sha, method });
+    if (this.mergeError) throw this.mergeError;
+    const done = this.mergeShas[pr];
+    if (done !== undefined) return { merged: true, sha: done, already: true };
+    if ((this.prHeads[pr] ?? head_sha) !== head_sha) return { merged: false, refused: "GitHub refused the merge: the PR head moved since the review passed" };
+    const sha = `merge-${pr}`;
+    this.mergeShas[pr] = sha;
+    this.prStates.set(pr, "merged");
+    return { merged: true, sha, already: false };
   }
 }
 
