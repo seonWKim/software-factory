@@ -231,3 +231,63 @@ describe("triage in_short", () => {
     if (r.ok) expect(r.value.in_short).toBe(IN_SHORT);
   });
 });
+
+describe("triage tool-call markup (issue #454)", () => {
+  const { scope: _s, ...noScope } = spec;
+  const current = { ...noScope, in_scope: ["The CI check."], out_of_scope: ["The review agent."], decisions: [] };
+  const PARAM = '<parameter name="decisions">';
+  const NS_TAG = `<${"antml"}:invoke name="x">`;
+  const phase = (n: number) => ({ title: `Phase ${n}`, problem: "A problem.", done_criteria: ["It holds."], allowed_paths: ["docs/"] });
+  const split = { ...current, phases: [phase(1), phase(2)] };
+
+  function refused(answer: unknown, field: string): void {
+    const r = parseTriage(answer);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.startsWith(`${field}:`)).toBe(true);
+  }
+
+  it("refuses decisions sent as a JSON string, naming decisions", () => {
+    refused({ ...current, decisions: JSON.stringify(["Ship it?"]) }, "decisions");
+  });
+
+  it("refuses a decisions entry that holds parameter markup, naming decisions", () => {
+    refused({ ...current, decisions: [`Ship it?</problem>\n${PARAM}["x"]`] }, "decisions");
+  });
+
+  it("refuses markup in every other text field, naming the field", () => {
+    const bad = `Text ${PARAM} more`;
+    refused({ ...current, in_short: bad }, "in_short");
+    refused({ ...current, problem: `x</problem>\n${NS_TAG}` }, "problem");
+    refused({ ...current, desired_output: "<invoke name=\"Write\">" }, "desired_output");
+    refused({ ...current, tier_reason: "</function_calls>" }, "tier_reason");
+    refused({ ...spec, scope: bad }, "scope");
+    refused({ ...current, in_scope: ["ok", bad] }, "in_scope");
+    refused({ ...current, out_of_scope: [bad] }, "out_of_scope");
+    refused({ ...current, done_criteria: [bad] }, "done_criteria");
+    refused({ ...current, applied_defaults: [bad] }, "applied_defaults");
+    refused({ ...split, phases: [phase(1), { ...phase(2), title: bad }] }, "phases[1].title");
+    refused({ ...split, phases: [{ ...phase(1), problem: bad }, phase(2)] }, "phases[0].problem");
+    refused({ ...split, phases: [phase(1), { ...phase(2), done_criteria: [bad] }] }, "phases[1].done_criteria");
+    expect(parseTriage(split).ok).toBe(true);
+  });
+
+  it("accepts markup quoted in backticks", () => {
+    const r = parseTriage({ ...current, problem: `The parser lets \`${PARAM}\` through.`, decisions: [`Must \`${NS_TAG}\` pass?`] });
+    expect(r.ok).toBe(true);
+  });
+
+  it("accepts markup inside a fenced code block, and refuses bare markup after the fence", () => {
+    const fenced = `Issue #446 showed:\n\n\`\`\`\n</problem>\n${PARAM}["x"]\n\`\`\`\n`;
+    expect(parseTriage({ ...current, problem: fenced }).ok).toBe(true);
+    refused({ ...current, problem: `${fenced}and then ${PARAM}` }, "problem");
+  });
+
+  it("renders a valid decisions list as a plain bullet list with no markup", () => {
+    const r = parseTriage({ ...current, decisions: ["Fail the job, or only warn?", "Ship behind a flag?"] });
+    if (!r.ok) throw new Error(r.error);
+    const body = renderSpec(r.value, r.value.tier);
+    expect(body).toContain("### Decisions for you\n- Fail the job, or only warn?\n- Ship behind a flag?\n");
+    expect(body).not.toMatch(/<\/?(parameter|invoke|function_calls)\b/);
+    expect(body).not.toContain(`${"antml"}:`);
+  });
+});

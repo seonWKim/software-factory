@@ -297,6 +297,23 @@ function isSafePath(p: string): boolean {
   return p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
 }
 
+/**
+ * Tool-call markup (issue #454): an opening or closing parameter, invoke or function_calls tag, or any tag in the
+ * runner's antml namespace. Text in backticks or a fenced code block is not checked, so a spec can quote markup.
+ */
+const TOOL_MARKUP = /<\/?(?:antml:[\w-]+|parameter|invoke|function_calls)\b/i;
+/** A code span or fenced block: a run of backticks up to the next run of the same length. */
+const CODE = /(`+)[\s\S]*?\1/g;
+
+/** The first field whose text holds tool-call markup outside code, as an error naming it; null when none does. */
+function markupError(fields: Record<string, string | readonly string[] | undefined>): string | null {
+  for (const [name, value] of Object.entries(fields)) {
+    const texts = value === undefined ? [] : typeof value === "string" ? [value] : value;
+    if (texts.some((t) => TOOL_MARKUP.test(t.replace(CODE, "")))) return `${name}: tool-call markup outside code`;
+  }
+  return null;
+}
+
 /** A phase list: absent or empty is no split; otherwise 2 to 4 phases, each with every field filled in. */
 function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   if (v === undefined || (Array.isArray(v) && v.length === 0)) return { ok: true, value: undefined };
@@ -312,6 +329,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
     if (!isStr(p.problem) || p.problem.trim() === "") return bad("problem");
     if (!isStrs(p.done_criteria) || p.done_criteria.length === 0) return bad("done_criteria");
     if (!isStrs(p.allowed_paths) || p.allowed_paths.length === 0 || !p.allowed_paths.every(isSafePath)) return bad("allowed_paths");
+    const markup = markupError({ title: p.title, problem: p.problem, done_criteria: p.done_criteria });
+    if (markup) return { ok: false, error: `phases[${i}].${markup}` };
     phases.push({ title: p.title, problem: p.problem, done_criteria: p.done_criteria, allowed_paths: p.allowed_paths });
   }
   return { ok: true, value: phases };
@@ -328,21 +347,28 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     estimated_files,
   } = v;
   if (!isStr(in_short) || !isStr(problem) || !isStr(desired_output) || !isStr(tier_reason)) {
-    return { ok: false, error: "missing text field" };
+    const name = (["in_short", "problem", "desired_output", "tier_reason"] as const).find((k) => !isStr(v[k]));
+    return { ok: false, error: `${name}: must be a string` };
   }
   // Separate lists (issue #229) when both are given; an older output's `scope` text otherwise.
   const lists = v.in_scope !== undefined || v.out_of_scope !== undefined;
   if (lists && (!isStrs(v.in_scope) || !isStrs(v.out_of_scope))) return { ok: false, error: "in_scope/out_of_scope" };
-  if (!lists && !isStr(scope)) return { ok: false, error: "missing text field" };
+  if (!lists && !isStr(scope)) return { ok: false, error: "scope: must be a string, or in_scope and out_of_scope lists" };
   const scoped = lists
     ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
     : { scope: scope as string };
   // Optional: a triage output without `decisions` means none (the schema does not require it).
   const decisions = v.decisions ?? [];
-  if (!isStrs(decisions)) return { ok: false, error: "decisions" };
+  if (!isStrs(decisions)) return { ok: false, error: "decisions: must be a list of strings" };
   const applied_defaults = v.applied_defaults ?? [];
-  if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults" };
+  if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults: must be a list of strings" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
+  // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
+  const markup = markupError({
+    in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
+    done_criteria, decisions, applied_defaults,
+  });
+  if (markup) return { ok: false, error: markup };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
     return { ok: false, error: "allowed_paths" };
   }
