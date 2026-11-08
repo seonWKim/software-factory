@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { WRITE_TOOLS } from "../src/core/worker.js";
+import { WRITE_TOOLS } from "../src/worker/index.js";
 import { buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";

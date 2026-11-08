@@ -3,7 +3,7 @@ import { commandState, commandsFor } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { repeatsFastInfraFailure } from "../src/core/policy.js";
 import type { Run, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";

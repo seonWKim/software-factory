@@ -4,7 +4,7 @@ import type { Logger } from "../src/core/log.js";
 import { SKIP_LABEL } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import type { SourceRef, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";

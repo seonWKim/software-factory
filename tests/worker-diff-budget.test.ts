@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DIFF_CHECK_MS } from "../src/core/worker.js";
+import { DIFF_CHECK_MS } from "../src/worker/index.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import { PROJECT, config, pipeline, waitFor } from "./helpers/fakes.js";

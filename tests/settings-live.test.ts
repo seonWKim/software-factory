@@ -4,8 +4,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { DEFAULT_MODEL_TABLE } from "../src/core/model-choice.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
-import { WorkerPool } from "../src/core/worker-pool.js";
+import { Worker } from "../src/worker/index.js";
+import { WorkerPool } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
@@ -242,7 +242,6 @@ describe("poll, tick, heartbeat and lease keys apply at the next tick or lease r
       await new Promise<void>((r) => (release = r));
       return { output: triageSpec };
     };
-    const beats = vi.spyOn(h.store, "heartbeat");
     const it0 = await h.submit();
     const tick = h.w1.tick();
     await waitFor(async () => (await h.runs(it0))[0]?.status === "running", "run claimed");
@@ -253,14 +252,12 @@ describe("poll, tick, heartbeat and lease keys apply at the next tick or lease r
     await h.set("heartbeat_ms", 2_000);
     // The renewal at the old heartbeat_ms extends by the new lease_ms.
     h.clock.advance(h.config.heartbeat_ms);
-    await waitFor(() => beats.mock.calls.length === 1, "renewal");
-    expect(beats.mock.calls[0]![2]).toBe(40_000);
     const renewedAt = h.clock.now().getTime();
     await waitFor(async () => (await h.runs(it0))[0]!.lease?.expires_at === iso(renewedAt + 40_000), "renewal stored");
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
     // The next renewal comes after the new heartbeat_ms, not the old one.
     h.clock.advance(2_000);
-    await waitFor(() => beats.mock.calls.length === 2, "renewal at the new heartbeat_ms");
+    await waitFor(async () => (await h.runs(it0))[0]!.lease?.expires_at === iso(renewedAt + 2_000 + 40_000), "renewal at the new heartbeat_ms");
     release();
     await tick;
   });

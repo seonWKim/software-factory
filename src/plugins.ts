@@ -87,6 +87,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   network_probe: { interface: "NetworkProbe", configKey: "plugins.network_probe", guard: false, optional: false },
   bus: { interface: "EventBus", configKey: "plugins.bus", guard: false, optional: false },
   ticks: { interface: "TickGenerator", configKey: "plugins.ticks", guard: false, optional: false },
+  engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

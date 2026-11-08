@@ -8,7 +8,7 @@
   "core/listener.ts": 1,
   "core/merge-check.ts": 1,
   "core/session.ts": 1,
-  "core/worker.ts": 1,
+  "core/worker-deps.ts": 1,
   "golden.ts": 1,
   "impl/clock/fake-clock.ts": 1,
   "impl/clock/system-clock.ts": 3,

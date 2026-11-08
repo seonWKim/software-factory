@@ -18,6 +18,7 @@ import type { Forge } from "./interfaces/forge.js";
 import type { KeepAwake } from "./interfaces/keep-awake.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { NetworkProbe } from "./interfaces/network-probe.js";
+import type { ExecutionEngines } from "./worker/engine/index.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
@@ -54,6 +55,8 @@ export interface Instances {
   bus: BusPlugin;
   /** Makes each component's TickGenerator (docs/plugins/tick-generator.md). */
   ticks: TickSource;
+  /** One ExecutionEngine per worker loop (docs/plugins/execution-engine.md). */
+  engine: ExecutionEngines;
 }
 
 export type PluginKind = keyof Instances;
@@ -109,6 +112,8 @@ export interface Contexts {
   /** The database comes later, per component, from the role that runs it. */
   bus: BaseContext;
   ticks: BaseContext;
+  /** The journal keeps its steps in the store's database. */
+  engine: BaseContext & { store: FactoryStore };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */

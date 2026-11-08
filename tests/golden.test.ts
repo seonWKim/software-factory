@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REVIEW_SCHEMA } from "../src/core/outputs.js";
 import type { Actor, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import {
   type CaseResult,
   type GoldenRunDeps,

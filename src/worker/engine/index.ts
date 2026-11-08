@@ -52,6 +52,15 @@ export interface ExecutionEngine {
   /** Claims a queued run for this worker. Null when another worker has it, it is not due, or its code can't resume it. */
   claim(runId: string): Promise<RunRef | null>;
   /**
+   * Holds a run another claim path already leased to this worker under `run.lease_token` (the legacy store's
+   * claimRun, until runs arrive as RunRequested), stamping code_version and deadline_at as `claim` does. `now` is
+   * the claiming tick. False when the lease is not that token's, or the run was journaled by code this worker
+   * cannot resume.
+   */
+  adopt(run: RunRef, now: Tick): Promise<boolean>;
+  /** Forgets a held run whose end another path stored (the legacy store's completeRun or pauseRun). */
+  release(run: RunRef): void;
+  /**
    * Runs one step of a held run, or returns its stored result when an earlier attempt finished it. Results must
    * be JSON values. Rejects with StepTimeoutError, RunDeadlineError or LeaseLostError, or with `fn`'s error.
    */
@@ -64,6 +73,25 @@ export interface ExecutionEngine {
   heartbeat(tick: Tick): Promise<void>;
   /** Fails runs past their deadline and takes over runs whose lease expired. The `reaper` tick; public for tests. */
   reap(tick: Tick): Promise<RunRef[]>;
+}
+
+/** What a worker gives its engine: who it is, the code it runs, its run kinds, and how it hears of a lost run. */
+export interface EngineOptions {
+  /** This worker's id, stored as the lease owner. */
+  readonly workerId: string;
+  /** The revision this process runs (`worker_runs.code_version`). */
+  readonly codeVersion: string;
+  /** The run kinds this worker executes, with their named timeouts. */
+  readonly kinds: Readonly<Record<string, RunTimeouts>>;
+  /** Lease length at each renewal; default: the kind's `heartbeat_ms`. */
+  readonly leaseMs?: (run: RunRef) => number;
+  /** Called when the worker loses a held run (taken over, finished elsewhere, or past its deadline). */
+  readonly onLost?: (run: RunRef, reason: Error) => void;
+}
+
+/** The `engine` plugin (`plugins.engine`, default `journal`): one ExecutionEngine per worker loop. */
+export interface ExecutionEngines {
+  create(o: EngineOptions): ExecutionEngine;
 }
 
 export interface TickPeriods {
