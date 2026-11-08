@@ -83,7 +83,12 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
     <Section title="Commands">
       {off && (
         <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-          Commands are off: set ui.user_id in factory.config.json and restart factory ui.
+          Commands are off: this server is not on loopback, so set ui.user_id in factory.config.json and restart factory ui.
+        </p>
+      )}
+      {enabled && session.data?.actor && (
+        <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+          Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
         </p>
       )}
       <textarea

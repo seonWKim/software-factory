@@ -356,7 +356,7 @@ describe("Running now and Queue", () => {
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it` });
 const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
-const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true };
+const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true, actor: "local:me", actor_source: "environment" as const };
 
 function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(cmd), replies: ReturnType<typeof reply>[] = [], session: object | null = SESSION) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -471,8 +471,13 @@ describe("item commands", () => {
     expect(commandOutcome(replies, "retry", { error: "boom" })).toEqual({ tone: "error", text: "boom" });
   });
 
+  it("with commands on the page says who it acts as and where that came from", () => {
+    mountCommands(undefined, [], SESSION);
+    expect(screen.getByText("Acting as local:me (from environment)")).toBeTruthy();
+  });
+
   it("with commands off every button is disabled and the page says so", () => {
-    mountCommands(undefined, [], { ...SESSION, commands_enabled: false });
+    mountCommands(undefined, [], { ...SESSION, commands_enabled: false, actor: null, actor_source: null });
     typeNote("some text");
     for (const b of document.querySelectorAll("[data-command] > button")) expect((b as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Commands are off/)).toBeTruthy();

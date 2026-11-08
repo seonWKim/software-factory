@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildUiParts, loadConfig, uiUserId } from "../src/compose.js";
+import type { CliIdentity } from "../src/core/local-cli.js";
+import type { UserId } from "../src/core/types.js";
 import {
   ConfigKeyError,
   STORE_KEYS,
@@ -120,11 +122,22 @@ describe("config keys: unknown keys fail at load", () => {
   });
 });
 
+const ME: CliIdentity = { user: "local:me@example.com" as UserId, from: "git user.email" };
+
 describe("config keys: ui.user_id (issue #227)", () => {
   it("is optional: the checked-in config does not set it, and without it the page's commands have no actor", async () => {
     expect(REAL.ui === undefined || !Object.hasOwn(REAL.ui as object, "user_id")).toBe(true);
     expect(uiUserId(undefined)).toBeNull();
     expect(uiUserId({ port: 4310 })).toBeNull();
+  });
+
+  it("absent, the loopback page's commands act as the CLI identity from the environment", async () => {
+    const parts = await buildUiParts(await loadConfig(root(SQLITE)), { identity: ME });
+    try {
+      expect(parts.commands).toMatchObject({ actor: ME.user, source: "environment" });
+    } finally {
+      await parts.close();
+    }
   });
 
   it("a non-empty string loads and is the commands actor", async () => {
@@ -142,13 +155,14 @@ describe("config keys: ui.user_id (issue #227)", () => {
   it("each UI process makes its own random token, shared by both write routes and not in the store or on disk", async () => {
     const dir = root({ ...SQLITE, ui: { user_id: "github:7" } });
     const loaded = await loadConfig(dir);
-    const first = await buildUiParts(loaded, { actor: "local:me" });
+    const first = await buildUiParts(loaded, { identity: ME });
     let second: Awaited<ReturnType<typeof buildUiParts>> | undefined;
     try {
-      expect(first.commands.actor).toBe("github:7");
+      // ui.user_id overrides the environment's identity.
+      expect(first.commands).toMatchObject({ actor: "github:7", source: "config" });
       expect(first.commands.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
       expect(first.commands.token).toBe(first.settings.csrfToken);
-      second = await buildUiParts(loaded, { actor: "local:me" });
+      second = await buildUiParts(loaded, { identity: ME });
       expect(second.commands.token).not.toBe(first.commands.token);
       const tables = await first.store.listTables();
       for (const t of tables) {

@@ -60,7 +60,7 @@ export interface UiDeps {
    */
   storage?: SharedStorage;
   /**
-   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): ui.user_id
+   * The item commands route (POST /api/v1/items/:id/commands and GET /api/v1/session; issue #227): the actor
    * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
    */
   commands?: UiCommands;

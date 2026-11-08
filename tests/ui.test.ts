@@ -826,7 +826,7 @@ describe("ui: item commands over the real socket (issue #227)", () => {
       const ui = await startUi(
         {
           store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: LEASE, prUrl: (l, n) => `https://${l}/pull/${n}`,
-          health: new HealthMonitor(async () => HEALTHY, clock), commands: { actor: "github:7" as UserId, token },
+          health: new HealthMonitor(async () => HEALTHY, clock), commands: { actor: "github:7" as UserId, source: "config", token },
         },
         0,
       );
