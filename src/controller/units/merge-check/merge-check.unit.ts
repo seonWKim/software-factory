@@ -18,7 +18,7 @@ export class MergeCheckUnit {
 
   async mergeCheckStep(): Promise<void> {
     if (!this.merges) return;
-    const waiting = await this.c.k.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: MERGE_CHECK_BATCH });
+    const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: MERGE_CHECK_BATCH });
     // Factory branches only: an adopted PR's branch is a person's, which the factory never updates.
     const ready = waiting.filter((it) => awaitingMerge(it) && it.change_ref !== null && it.head_branch === null);
     const { repo, branch_prefix, poll_interval_ms } = this.c.k.cfg;

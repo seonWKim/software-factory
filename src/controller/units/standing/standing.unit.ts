@@ -25,7 +25,7 @@ export class StandingUnit {
    * alone with no reply, so a second accept or a redelivery posts nothing new. The user ID is recorded as `set_by`.
    */
   async handleStanding(e: StandingEvent): Promise<void> {
-    const item = await this.c.k.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     const principal = await this.c.unit("auth").authorize(e.requester, "approve_spec", item.id);
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
@@ -37,7 +37,7 @@ export class StandingUnit {
     if ("refuse" in principal) return refuse(principal.refuse);
     const asked = parseStanding(e.args);
     if ("refuse" in asked) return refuse(asked.refuse);
-    const rules = await this.c.k.d.store.listStandingRules();
+    const rules = await this.c.k.reader.listStandingRules();
     const id = ruleId(SPEC_GATE, STANDING_TIER);
     if (asked.action === "show") {
       const rule = findRule(rules, SPEC_GATE, STANDING_TIER);
@@ -57,7 +57,7 @@ export class StandingUnit {
     const enabled = asked.action === "accept";
     const rule = findRule(rules, asked.gate, asked.tier);
     if (rule && rule.enabled === enabled) return;
-    await this.c.k.d.store.putStandingRule({ gate: asked.gate, tier: asked.tier, enabled, set_by: principal.user_id });
+    await this.c.k.commit({ writes: [{ kind: "standing_rule", rule: { gate: asked.gate, tier: asked.tier, enabled, set_by: principal.user_id } }] });
     this.c.k.d.log.info(enabled ? "standing rule on" : "standing rule off", { rule: id, user_id: principal.user_id });
     await this.c.unit("outbox").post(item, item.source, enabled
       ? `The standing rule \`${id}\` is on: the next tier ${asked.tier} specs that wait at the spec gate are approved without a reply, as \`standing:${id}\`. ` +
@@ -73,7 +73,7 @@ export class StandingUnit {
    * that rule off, with one reply. Both are keyed, so running this twice posts once.
    */
   async afterSpecCommand(id: WorkItemId, e: CommandEvent, user: UserId): Promise<void> {
-    const it = await this.c.k.d.store.getWorkItem(id);
+    const it = await this.c.k.reader.getWorkItem(id);
     if (!it) return;
     if (e.kind === "spec_approved") return this.proposeStanding(it);
     if (e.kind === "spec_rejected" || e.kind === "revise_requested") return this.turnOffStanding(it, e.kind, e.comment_id, user);
@@ -82,14 +82,14 @@ export class StandingUnit {
   /** One proposal comment when this item's approval brought the run of tier 1 approvals to the threshold. */
   async proposeStanding(it: WorkItem): Promise<void> {
     const threshold = this.c.k.live.values()[STANDING_THRESHOLD];
-    const own = gateEvents(await this.c.k.d.store.listStateChanges(it.id));
-    const items = await this.c.k.d.store.listWorkItems(Math.max(STANDING_WINDOW, threshold * 4));
+    const own = gateEvents(await this.c.k.reader.listStateChanges(it.id));
+    const items = await this.c.k.reader.listWorkItems(Math.max(STANDING_WINDOW, threshold * 4));
     const events = own.slice();
-    for (const x of items) if (x.id !== it.id) events.push(...gateEvents(await this.c.k.d.store.listStateChanges(x.id)));
-    const rule = findRule(await this.c.k.d.store.listStandingRules(), SPEC_GATE, STANDING_TIER);
+    for (const x of items) if (x.id !== it.id) events.push(...gateEvents(await this.c.k.reader.listStateChanges(x.id)));
+    const rule = findRule(await this.c.k.reader.listStandingRules(), SPEC_GATE, STANDING_TIER);
     const due = dueProposal(events, own, threshold, rule);
     if (!due) return;
-    await this.c.k.d.store.recordStandingProposal({ gate: due.gate, tier: due.tier, run_length: due.run_length, threshold });
+    await this.c.k.commit({ writes: [{ kind: "standing_proposal", proposal: { gate: due.gate, tier: due.tier, run_length: due.run_length, threshold } }] });
     const id = ruleId(due.gate, due.tier);
     await this.c.unit("outbox").comment(it, `standing-proposal:${id}:${it.id}:${own.at(-1)!.at}`, [
       `## Standing approval proposed: \`${id}\``,
@@ -107,12 +107,12 @@ export class StandingUnit {
 
   /** A `/revise` or `/reject` on an item a rule approved turns that rule off, if it is still on; one reply. */
   async turnOffStanding(it: WorkItem, kind: "spec_rejected" | "revise_requested", commentId: string, user: UserId): Promise<void> {
-    const approved = (await this.c.k.d.store.listStateChanges(it.id)).filter((c) => c.reason === STANDING_APPROVED).at(-1);
+    const approved = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.reason === STANDING_APPROVED).at(-1);
     const named = typeof approved?.detail?.standing_rule === "string" ? parseRuleId(approved.detail.standing_rule) : null;
     if (!named) return;
-    const rule = findRule(await this.c.k.d.store.listStandingRules(), named.gate, named.tier);
+    const rule = findRule(await this.c.k.reader.listStandingRules(), named.gate, named.tier);
     if (!rule?.enabled) return;
-    await this.c.k.d.store.putStandingRule({ gate: named.gate, tier: named.tier, enabled: false, set_by: user });
+    await this.c.k.commit({ writes: [{ kind: "standing_rule", rule: { gate: named.gate, tier: named.tier, enabled: false, set_by: user } }] });
     const id = ruleId(named.gate, named.tier);
     this.c.k.d.log.info("standing rule off", { rule: id, user_id: user, work_item_id: it.id });
     await this.c.unit("outbox").post(it, it.source, [
@@ -124,7 +124,7 @@ export class StandingUnit {
   /** The rule that approves this spec at the gate: on, for its tier, and none of its allowed paths protected. */
   async standingRule(it: WorkItem, tier: Tier, paths: readonly string[]) {
     if (tier !== STANDING_TIER) return null;
-    const rule = findRule(await this.c.k.d.store.listStandingRules(), SPEC_GATE, tier);
+    const rule = findRule(await this.c.k.reader.listStandingRules(), SPEC_GATE, tier);
     if (!rule?.enabled) return null;
     const category = protectedCategory(paths, this.c.k.settings(it.project).floors);
     if (category === null) return rule;

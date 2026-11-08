@@ -34,7 +34,8 @@ type LogFields = NonNullable<Parameters<ControllerDeps["log"]["warn"]>[1]>;
 const READS = [
   "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
-  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listPendingBasePushes", "listSettingChanges",
+  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listPendingBasePushes", "listSettingChanges", "getWorkItemByMergeSha",
+  "listVerdicts", "listStandingRules",
 ] as const;
 
 /**
@@ -64,6 +65,12 @@ export type ControllerWrite =
   | { kind: "thread_entry"; entry: Parameters<Store["recordItemMessage"]>[0] }
   /** A delivered thread entry's URL onto its item's link field (DeliveryCompleted). */
   | { kind: "link_delivery"; seq: number }
+  /** An app request (the status page) handled: applied, or refused with `refusal`. Conditional on it being unhandled. */
+  | { kind: "app_request_handled"; seq: number; refusal: string | null }
+  /** A standing rule turned on or off (`/standing`), keyed on its gate and tier. */
+  | { kind: "standing_rule"; rule: Parameters<Store["putStandingRule"]>[0] }
+  /** A standing approval proposed, keyed on its gate, tier and run. */
+  | { kind: "standing_proposal"; proposal: Parameters<Store["recordStandingProposal"]>[0] }
   /** A CLI command whose mirror on its item's issue was delivered (or that has nothing to mirror). */
   | { kind: "cli_mirrored"; key: string }
   /**
@@ -106,6 +113,8 @@ interface ItemWrites {
   budget_answer: Store["answerBudgetCheckpoint"];
   /** A person's approval of an implement run held by coordination cost. */
   claim_approval: Store["approveClaimHold"];
+  /** A verdict on the item's change (`/verdict`, or an implicit one). */
+  verdict: Store["recordVerdict"];
 }
 
 /** An item decision's one conditional write, at the version it was decided on. */
@@ -162,6 +171,9 @@ export class Kernel {
       else if (w.kind === "link_delivery") await store.linkDelivery(w.seq);
       else if (w.kind === "cli_mirrored") await store.markCliCommandMirrored(w.key);
       else if (w.kind === "stop_auto") await this.stopAuto(w);
+      else if (w.kind === "app_request_handled") await store.markAppCommandRequest(w.seq, w.refusal);
+      else if (w.kind === "standing_rule") await store.putStandingRule(w.rule);
+      else if (w.kind === "standing_proposal") await store.recordStandingProposal(w.proposal);
       else await this.expireLeases(w);
     }
   }
@@ -173,7 +185,7 @@ export class Kernel {
   async commitItem<W extends ItemWrite>(before: readonly ControllerWrite[], w: W): Promise<ItemCommitted<W>> {
     await this.commit({ writes: before });
     const store = this.d.store;
-    const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold }[w.kind];
+    const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold, verdict: store.recordVerdict }[w.kind];
     return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, w.input);
   }
 
