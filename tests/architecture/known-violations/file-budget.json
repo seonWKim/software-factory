@@ -1,15 +1,1 @@
-{
-  "compose.ts": 1290,
-  "core/controller.ts": 4960,
-  "core/settings.ts": 849,
-  "core/types.ts": 731,
-  "core/worker.ts": 3099,
-  "golden.ts": 690,
-  "impl/github/github-issue-source.ts": 720,
-  "impl/runner/claude-code-runner.ts": 663,
-  "impl/store/sql/sql-factory-store.ts": 3051,
-  "impl/store/sqlite/schema.ts": 721,
-  "impl/updater/git-worktree.ts": 924,
-  "interfaces/factory-store.ts": 1371,
-  "ui/api.ts": 642
-}
+{}

@@ -2,6 +2,7 @@
 // code, this is the only place allowed to read the clock or set a timer (no-clock test).
 
 import { tickAt, type TickGenerator, type TickHandler } from "../../tick-generator.js";
+import { systemTimer } from "./timer.js";
 
 interface Entry {
   name: string;
@@ -30,20 +31,7 @@ export class TimeBasedTickGenerator implements TickGenerator {
       } catch (err) {
         this.onError(e.name, err);
       }
-      await sleep(e.periodMs, signal);
+      await systemTimer.after(e.periodMs, signal);
     }
   }
-}
-
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) return resolve();
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-    function done(): void {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-  });
 }

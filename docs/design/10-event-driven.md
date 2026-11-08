@@ -63,6 +63,26 @@ force.
   dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
   at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
   MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
+- **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
+  `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
+  prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
+  `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
+  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous, so
+  `ruleOfTwoRefusal` refuses them unless a person approved their input. No role approves what it proposes, and no
+  principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
+  means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
+  (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
+  ratchet). Not wired into the run path yet: the worker still picks prompts and tools itself (M6), and auto mode does
+  not call `ruleOfTwoRefusal` (owner decision pending).
+- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10). A hook is
+  `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
+  `before_run`, `before_delivery`) with a budget of at most 10 s. `runHooks` (`src/runtime/hooks/`, on the gate list)
+  runs only after the guards allowed the action: a guard's refusal stands and no hook runs. Each enabled hook of the
+  point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
+  refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
+  text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
+  until the owner enables it; the caller passes the enabled names. Not wired yet: no call site (merge queue M8, run
+  start M6, outbound M7) and no stored enable setting; no hook ships.
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 

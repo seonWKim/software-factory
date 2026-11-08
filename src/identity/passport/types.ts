@@ -24,6 +24,12 @@ export interface AuthProvider {
   readonly provider: Provider;
   /** null: the proof names no factory user (refused at the edge). */
   resolve(identity: ExternalIdentity): Promise<Principal | null>;
+  /**
+   * Enterprise hook (owner decision 2026-11-08): a provider that knows the person's name (an OIDC `name` claim, a
+   * GitHub profile) returns it, and `authenticate` stores it once in identity_profiles against the principal. A
+   * name the person set in `factory setup` is kept. Not implemented by any provider yet; the local one has none.
+   */
+  displayName?(identity: ExternalIdentity): Promise<string | null>;
 }
 
 export type Action = "submit_work" | "approve_spec" | "approve_merge" | "record_verdict" | "use_tool";

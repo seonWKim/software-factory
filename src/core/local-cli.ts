@@ -181,6 +181,8 @@ export interface LocalCliDeps {
   read: (path: string) => Promise<string>;
   /** A new random ID: a local item's source ID, a command's idempotency key. */
   newId: () => string;
+  /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
+  displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
 }
 
 export interface CliResult {
@@ -240,12 +242,14 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
     }
     case "users_list": {
       const users = await d.store.listLocalUsers();
+      const names = (await d.displayNames?.([user, ...users.map((u) => u.user_id)])) ?? new Map<string, string>();
+      const shown = (id: string) => (names.has(id) ? `${id} (${names.get(id)})` : id);
       return {
         code: 0,
         lines: [
-          `you are ${user} (from ${d.identity.from})`,
+          `you are ${shown(user)} (from ${d.identity.from})`,
           ...(users.length === 0 ? ["no local users yet: the first identity to run a writing command becomes the owner"] : []),
-          ...users.map((u) => [u.user_id, u.role, `added by ${u.added_by}`].join("\t")),
+          ...users.map((u) => [shown(u.user_id), u.role, `added by ${u.added_by}`].join("\t")),
         ],
       };
     }

@@ -30,3 +30,4 @@ export type { PassportKeyring, SigningKey } from "./passport/token.js";
 export { secretKeyring, type SecretProvider } from "./passport/keys.js";
 export { ANONYMOUS_USER, LocalAuthProvider, OwnerGrant, localIdentity, type LocalEnvironment } from "./plugins/local/local-identity.js";
 export { readLocalEnvironment } from "./plugins/local/local-environment.js";
+export { DISPLAY_NAME_MAX, ProfileStore, checkDisplayName, type Profile, type ProfileSource } from "./profiles/profiles.js";

@@ -21,6 +21,7 @@
   "component-imports-legacy|cli/handlers/local/local.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/local/local.command.ts|core/config.ts",
   "component-imports-legacy|cli/handlers/local/local.command.ts|core/local-cli.ts",
+  "component-imports-legacy|cli/handlers/local/local.command.ts|impl/store/sql/store-sql.ts",
   "component-imports-legacy|cli/handlers/local/local.command.ts|ui/settings-api.ts",
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|impl/store/mysql/migrate-command.ts",
@@ -41,8 +42,15 @@
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|core/local-cli.ts",
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|settings-cmd.ts",
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|ui/settings-api.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|compose.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|core/config.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|core/local-cli.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|core/settings.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|impl/store/sql/store-sql.ts",
+  "component-imports-legacy|cli/handlers/setup/guided.ts|setup.ts",
+  "component-imports-legacy|cli/handlers/setup/me.ts|core/local-cli.ts",
+  "component-imports-legacy|cli/handlers/setup/me.ts|interfaces/factory-store.ts",
   "component-imports-legacy|cli/handlers/setup/setup.command.ts|interfaces/secret-store.ts",
-  "component-imports-legacy|cli/handlers/setup/setup.command.ts|setup.ts",
   "component-imports-legacy|cli/handlers/stats/stats.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/stats/stats.command.ts|core/stats.ts",
   "component-imports-legacy|cli/handlers/status/status.command.ts|compose.ts",
@@ -63,5 +71,6 @@
   "component-imports-legacy|cli/handlers/workers/workers.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/workers/workers.command.ts|core/worker-pool.ts",
   "component-imports-legacy|cli/support.ts|compose.ts",
-  "component-imports-legacy|cli/support.ts|core/local-cli.ts"
+  "component-imports-legacy|cli/support.ts|core/local-cli.ts",
+  "component-imports-legacy|controller/settings/floors.setting.ts|core/settings.ts"
 ]
