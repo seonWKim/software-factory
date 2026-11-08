@@ -213,7 +213,7 @@ describe("improve: drafts", () => {
     await c.tickRuns();
     expect((await w.store.getRun(w.run.id))!.acknowledged_at).not.toBeNull();
     expect(calls).toEqual([]);
-    expect((await w.store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await w.store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
     expect(await w.store.getWorkItemBySource("local", systemSource(PROJECT.key).id)).toMatchObject({ stage: "NEW" });
   });
 });

@@ -42,7 +42,7 @@
   - **Turn-off.** A `/revise` or `/reject` applied, by a user who may approve specs, on an item a rule approved writes
     that rule off with the user's ID and posts one reply saying so; a rule already off is left alone.
   - **Threshold.** `standing_approvals.threshold` is a `factory settings set` key (global, live, audited in
-    `settings_changes`), default 10, read at each approval with no restart; anything but a positive whole number is
+    `runtime_settings_changes`), default 10, read at each approval with no restart; anything but a positive whole number is
     refused on set and ignored when the stored overrides load. It is not a config file key. See `08-settings.md`.
   - **Solo and enterprise.** The same code path: solo, the local user is the owner and the threshold is 10; a team gets
     the same permission check, with user IDs in `set_by` and `owner_id`. No new schema, migration or store method.
@@ -61,8 +61,8 @@
   - **Retries and backfill** (`gateEvents`). A retry is read from the `retry_requested` rows already written, at the
     item's tier; no new row. A row written before the detail existed is backfilled from its reason, its field changes
     and the item's tier at that row (the latest `tier` change before it); a row whose tier is not known is skipped.
-  - **Rules and proposals.** `standing_rules`: one row per (gate, tier) with `enabled`, `set_by` (a user ID),
-    `created_at`, `updated_at`. `standing_proposals`: one row per (gate, tier, run_length) with `threshold`; storing the
+  - **Rules and proposals.** `controller_standing_rules`: one row per (gate, tier) with `enabled`, `set_by` (a user ID),
+    `created_at`, `updated_at`. `controller_standing_proposals`: one row per (gate, tier, run_length) with `threshold`; storing the
     same proposal again writes nothing and returns the stored one, so two replicas finding the same run leave one row.
     Store methods on `FactoryStore` (`putStandingRule`, `listStandingRules`, `recordStandingProposal`,
     `listStandingProposals`), implemented once in the shared SQL store for SQLite and MySQL.

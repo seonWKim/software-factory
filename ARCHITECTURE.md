@@ -11,14 +11,14 @@ The factory has **no message broker**. Every asynchronous, pub-sub-like flow is 
 | Kind | Arrow label | What it is | Examples |
 |---|---|---|---|
 | **Call** | `call` | In-process TypeScript call through an interface | Controller → `SourceAdapter.poll()`, worker → `Sandbox.create()` |
-| **Queue** | `queue` | Store table used as a work queue: insert, then claim with a lease (conditional update), heartbeat, release | `runs` (controller enqueues, workers claim; `run_attempts` records each claim) |
-| **Outbox / inbox** | `outbox`, `inbox` | Store tables as pub-sub: append-only rows, read by cursor, delivered at least once, made idempotent by a stable key | thread outbox (`item_thread` → `thread_outbox`), command inbox (`command_inbox`, fed by the CLI and by `app_command_requests`), pushed events (`source_inbox`) |
-| **Lease** | `lease` | One holder at a time across replicas, by conditional update with expiry | run leases, `listener_leases` (one Slack socket per source), `sync_leases` (one GitHub sync per project), outbox delivery claims |
+| **Queue** | `queue` | Store table used as a work queue: insert, then claim with a lease (conditional update), heartbeat, release | `worker_runs` (controller enqueues, workers claim; `worker_run_attempts` records each claim) |
+| **Outbox / inbox** | `outbox`, `inbox` | Store tables as pub-sub: append-only rows, read by cursor, delivered at least once, made idempotent by a stable key | thread outbox (`controller_item_thread` → `outbound_intents`), command inbox (`inbound_commands`, fed by the CLI and by `inbound_app_requests`), pushed events (`inbound_raw_records`) |
+| **Lease** | `lease` | One holder at a time across replicas, by conditional update with expiry | run leases, `inbound_listener_leases` (one Slack socket per source), `inbound_sync_leases` (one GitHub sync per project), outbox delivery claims |
 | **HTTP** | `HTTP` | Local JSON API, 127.0.0.1 only | `factory ui` on port 4310: `/app`, `/api/v1/*`, `/api/health` |
 | **Tool RPC** | `tool RPC` | MCP over a per-run local socket from the agent to the worker's `ToolGate` | only the read-only broker tools `tool_grants` names (e.g. `github.preflight`) |
 | **Subprocess** | `exec` | A child process with a fixed argv and environment | `claude -p` (runner), `git`, install and check commands, `caffeinate` |
 | **IPC** | `IPC` | Node fork channel between supervisor and child | supervisor → child: `factory:drain`; child → supervisor: `factory:drained`, `factory:error` |
-| **Remote** | `REST`, `WS` | Calls to an external service, only inside one implementation | GitHub REST (conditional GETs, shared `forge_budget`), Slack Socket Mode (WebSocket), model APIs |
+| **Remote** | `REST`, `WS` | Calls to an external service, only inside one implementation | GitHub REST (conditional GETs, shared `outbound_forge_budget`), Slack Socket Mode (WebSocket), model APIs |
 | **File** | `file` | A file one process writes and another reads | `.factory/supervisor.json` (status, restarts), `supervisor-request.json` (`npm run migrate`), transcripts in `SharedStorage`, `golden/cases/` |
 
 ## 1. Processes
@@ -71,10 +71,10 @@ graph LR
 ```
 
 - **Supervisor** (`src/supervisor.ts`, `Updater` plugin): under `git-worktree` it builds each new base commit into `.factory/versions/<rev>` (from `origin/<base>`, or the local `refs/heads/<base>` when no GitHub plugin is selected), forks a child from it, then asks the old child to drain over IPC (start-then-drain). It also runs `factory ui` as a child and swaps it on each revision. It writes `supervisor.json` (revision, `migration_pending`, restarts) and reads `supervisor-request.json` from `npm run migrate`; with `updater.auto_migrate` it applies pending steps itself. Under `none` it runs controller and worker in-process.
-- **Controller** (`src/core/controller.ts`): deterministic, one tick of steps: commands, intake and sync (GitHub steps only on the `sync_leases` holder), outbox, runs, coordination, checks, merge check, phases, alarms, improve, reaper, model and network probes. Never runs an agent.
+- **Controller** (`src/core/controller.ts`): deterministic, one tick of steps: commands, intake and sync (GitHub steps only on the `inbound_sync_leases` holder), outbox, runs, coordination, checks, merge check, phases, alarms, improve, reaper, model and network probes. Never runs an agent.
 - **Worker pool** (`src/core/worker-pool.ts`, `worker.ts`): claims runs, builds a sandbox, runs the agent, runs the pre-push checks, pushes through the broker, writes the outcome. Picks the route per item (`routeFor`): local items take the local broker and sandbox. Never decides a transition.
 - **UI server** (`src/ui/`): reads the store; its writes are app command requests (applied by the controller like any command), settings (through the same `runSettings` as the CLI), pause resumes and standing rules, each audited.
-- **CLI** (`src/main.ts`, `src/core/local-cli.ts`): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `command_inbox` rows for any item, local or GitHub; the controller applies them like comments.
+- **CLI** (`src/main.ts`, `src/core/local-cli.ts`): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows for any item, local or GitHub; the controller applies them like comments.
 
 ## 2. Components and interfaces
 
@@ -232,21 +232,21 @@ graph LR
 - **Every state change** is a conditional update with a version check, so two controllers can't apply the same transition twice.
 - **Runs** are the only work queue (kinds: triage, implement, review, update, resolve, manual, interactive, improve). A worker claims with a lease token, renews it on each heartbeat, and every tool call fences on that token. An expired lease is reaped and the run requeued.
 - **Commands** from every origin (GitHub comment, Slack, CLI, app) become the same comment event and pass the same `authorize` check. A CLI command on a GitHub item is mirrored to the issue (`command_inbox.mirror`).
-- **Thread messages** go into `item_thread` first. A local item's thread is its record; for a sync-source item each configured plugin delivers its own `thread_outbox` rows, and an outage or a rate limit only delays the outbox (local first).
-- **One GitHub sync per project**: only the `sync_leases` holder polls GitHub, delivers GitHub outbox rows and stores the shared `forge_budget`; other replicas skip those steps.
-- **Coordination**: before a claim, the controller records why a run is held (`claim_decisions`: which PR or running item holds it, the cost, `held_since` for `hold_policy`) or that claims are paused (`claim_pauses`: `rate_limit`, `forge_auth`, `preflight_access`, `github_rate_limit`, `model_stall`, `network`).
+- **Thread messages** go into `controller_item_thread` first. A local item's thread is its record; for a sync-source item each configured plugin delivers its own `outbound_intents` rows, and an outage or a rate limit only delays the outbox (local first).
+- **One GitHub sync per project**: only the `inbound_sync_leases` holder polls GitHub, delivers GitHub outbox rows and stores the shared `outbound_forge_budget`; other replicas skip those steps.
+- **Coordination**: before a claim, the controller records why a run is held (`controller_claim_decisions`: which PR or running item holds it, the cost, `held_since` for `hold_policy`) or that claims are paused (`worker_claim_pauses`: `rate_limit`, `forge_auth`, `preflight_access`, `github_rate_limit`, `model_stall`, `network`).
 
 The other tables, by role:
 
 | Role | Tables |
 |---|---|
-| Items and history | `work_items`, `state_changes`, `verdicts`, `handoffs`, `dependency_edges`, `file_conflicts`, `unreviewed_merges` |
-| Runs and workers | `runs`, `run_attempts`, `budget_checkpoints`, `claim_locks`, `worker_processes`, `worker_pauses`, `host_sleeps` |
-| Sync records (GitHub) | `posted_comments`, `label_states`, `forge_budget`, `sync_leases`, `cursors` |
-| Identity | `local_users`, `user_links`, `link_codes` |
-| Settings and gates | `settings_overrides`, `settings_changes`, `standing_rules`, `standing_proposals` |
-| Operations | `alerts`, `alert_patterns`, `child_restarts`, `improve_reports`, `filed_patterns`, `merge_checks`, `schema_migrations` |
-| Legacy, no reader or writer | `cli_commands`, `item_messages` (copied into `command_inbox` and `item_thread` by migration 24) |
+| Items and history | `controller_work_items`, `controller_state_changes`, `controller_verdicts`, `controller_handoffs`, `controller_dependency_edges`, `controller_file_conflicts`, `controller_unreviewed_merges` |
+| Runs and workers | `worker_runs`, `worker_run_attempts`, `controller_budget_checkpoints`, `worker_claim_locks`, `worker_processes`, `worker_pauses`, `worker_host_sleeps` |
+| Sync records (GitHub) | `outbound_deliveries`, `outbound_label_states`, `outbound_forge_budget`, `inbound_sync_leases`, `inbound_cursors` |
+| Identity | `identity_local_users`, `identity_user_links`, `identity_link_codes` |
+| Settings and gates | `runtime_settings_overrides`, `runtime_settings_changes`, `controller_standing_rules`, `controller_standing_proposals` |
+| Operations | `controller_alerts`, `controller_alert_patterns`, `runtime_child_restarts`, `controller_improve_reports`, `controller_filed_patterns`, `controller_merge_checks`, `schema_migrations` |
+| Legacy, no reader or writer | `cli_commands`, `item_messages` (copied into `inbound_commands` and `controller_item_thread` by migration 24) |
 
 ## 4. A GitHub item, end to end
 

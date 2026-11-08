@@ -57,6 +57,9 @@ the `05-*` files.
 - [09-dashboard-app.md](design/09-dashboard-app.md): the client dashboard app, its read-only JSON API and how `/app/` is served.
 - [09-status-banner.md](design/09-status-banner.md): the banner that shows what the update supervisor is doing.
 
+## 10. Event-driven factory
+- [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, prefixed tables, timestamped migrations with backups and verified copies, and architecture tests.
+
 ## Plans
 - [phase-2-backlog.md](design/phase-2-backlog.md): the design-side order of the Phase 2 work.
 - [first-build.md](design/first-build.md): the suggested build order for the first local version.

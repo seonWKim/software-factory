@@ -1,29 +1,32 @@
-// `factory migrate` (npm run migrate): status, dry-run and apply over one MySQL connection.
+// `factory migrate` (npm run migrate): status, dry-run, rehearse and apply over one MySQL connection.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import mysql from "mysql2/promise";
+import { fingerprintTables, lostRows, type Row } from "../../../state/index.js";
 import type { MysqlOptions } from "./mysql-driver.js";
-import { type MigrationStatus, MysqlMigrations, type Queryable } from "./migrations.js";
+import { type MigrationStatus, MysqlMigrations, mysqlMigrationDb, type Queryable } from "./migrations.js";
 
-export type MigrateMode = "apply" | "status" | "dry-run";
+export type MigrateMode = "apply" | "status" | "dry-run" | "rehearse";
 
 export const SQLITE_MIGRATE_MESSAGE =
   "SQLite has no schema scripts: it builds the latest schema when the factory opens it. `npm run migrate` runs only the data steps (project keys) on SQLite.";
 
 export const BACKUP_REMINDER =
-  "Back up the database before migrating (e.g. mysqldump --single-transaction <database> > backup.sql). Steps are not reversible.";
+  "Back up the database before migrating (e.g. mysqldump --single-transaction <database> > backup.sql), and rehearse first (npm run migrate -- --rehearse). Numbered steps are not reversible.";
 
 /**
- * `--status` / `--dry-run` as arguments (`npm run migrate -- --status`) or as npm config
+ * `--status` / `--dry-run` / `--rehearse` as arguments (`npm run migrate -- --status`) or as npm config
  * (`npm run migrate --status` sets npm_config_status).
  */
 export function parseMigrateArgs(args: readonly string[], env: Record<string, string | undefined> = {}): MigrateMode | { error: string } {
   const flag = (name: string, envName: string) => args.includes(`--${name}`) || env[envName] === "true";
-  const unknown = args.filter((a) => a !== "--status" && a !== "--dry-run");
-  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status or --dry-run)` };
-  const status = flag("status", "npm_config_status");
-  const dry = flag("dry-run", "npm_config_dry_run");
-  if (status && dry) return { error: "use one of --status and --dry-run" };
-  return status ? "status" : dry ? "dry-run" : "apply";
+  const unknown = args.filter((a) => a !== "--status" && a !== "--dry-run" && a !== "--rehearse");
+  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run or --rehearse)` };
+  const modes = (["status", "dry-run", "rehearse"] as const).filter((m) => flag(m, `npm_config_${m.replace("-", "_")}`));
+  if (modes.length > 1) return { error: "use one of --status, --dry-run and --rehearse" };
+  return modes[0] ?? "apply";
 }
 
 function pad(n: number): string {
@@ -43,7 +46,7 @@ export async function runMigrate(
   db: Queryable,
   mode: MigrateMode,
   print: (line: string) => void,
-  opts: { dir?: string } = {},
+  opts: { dir?: string; backupDir?: string | null } = {},
 ): Promise<number> {
   const m = new MysqlMigrations(db, opts);
   try {
@@ -66,6 +69,7 @@ export async function runMigrate(
       print(s.pending.length === 0 ? `up to date at state ${s.state}: nothing to apply` : "dry run: nothing was changed");
       return 0;
     }
+    if (mode === "rehearse") throw new Error("rehearse runs through migrateCommand: it needs its own copy of the database");
     print(BACKUP_REMINDER);
     const s = await m.apply(print);
     print(s.pending.length === 0 ? `up to date at state ${s.state}: nothing to apply` : `done: state ${s.pending.at(-1)!.number}`);
@@ -76,19 +80,77 @@ export async function runMigrate(
   }
 }
 
-/** Opens one connection for `runMigrate` and closes it. */
-export async function migrateCommand(opts: MysqlOptions, mode: MigrateMode, print: (line: string) => void): Promise<number> {
-  const c = await mysql.createConnection({ host: opts.host, port: opts.port, user: opts.user, password: opts.password, database: opts.database });
+/**
+ * Opens one connection for `runMigrate` and closes it. `backupDir`: where a breaking migration backs up the
+ * tables it changes before it runs (RFC 0015 §12 D1).
+ */
+export async function migrateCommand(opts: MysqlOptions, mode: MigrateMode, print: (line: string) => void, backupDir: string | null = null): Promise<number> {
+  if (mode === "rehearse") return rehearse(opts, print);
+  const c = await connect(opts, opts.database);
   try {
-    return await runMigrate(c, mode, print);
+    return await runMigrate(c, mode, print, { backupDir });
   } finally {
     await c.end();
   }
 }
 
+function connect(opts: MysqlOptions, database: string): Promise<mysql.Connection> {
+  return mysql.createConnection({ host: opts.host, port: opts.port, user: opts.user, password: opts.password, database });
+}
+
+/**
+ * D8: copies the database to `<database>_rehearsal` (one consistent snapshot), applies every pending step and
+ * migration there, checks that no row was lost or changed, and drops the copy. The live database is only read.
+ */
+async function rehearse(opts: MysqlOptions, print: (line: string) => void): Promise<number> {
+  const copy = `${opts.database}_rehearsal`;
+  const src = await connect(opts, opts.database);
+  const backups = await mkdtemp(join(tmpdir(), "sf-rehearsal-"));
+  let created = false;
+  try {
+    try {
+      await src.query(`DROP DATABASE IF EXISTS \`${copy}\``);
+      await src.query(`CREATE DATABASE \`${copy}\``);
+      created = true;
+    } catch (err) {
+      print(`cannot create the rehearsal database ${copy}: ${err instanceof Error ? err.message : String(err)}`);
+      print(`grant it once: GRANT ALL ON \`${copy}\`.* TO '${opts.user}'@'%';`);
+      return 1;
+    }
+    const [rows] = await src.query("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY 1");
+    const tables = (rows as Row[]).map((r) => String(r.t));
+    await src.query("SET FOREIGN_KEY_CHECKS = 0");
+    for (const t of tables) {
+      const [[ddl]] = (await src.query(`SHOW CREATE TABLE \`${t}\``)) as unknown as [Row[]];
+      await src.query(String(ddl!["Create Table"]).replace(/^CREATE TABLE `/, `CREATE TABLE \`${copy}\`.\``));
+    }
+    await src.query("START TRANSACTION WITH CONSISTENT SNAPSHOT");
+    for (const t of tables) await src.query(`INSERT INTO \`${copy}\`.\`${t}\` SELECT * FROM \`${t}\``);
+    await src.query("COMMIT");
+    print(`copied ${tables.length} tables to ${copy}`);
+
+    const c = await connect(opts, copy);
+    try {
+      const before = await fingerprintTables(mysqlMigrationDb(c));
+      const code = await runMigrate(c, "apply", print, { backupDir: backups });
+      if (code !== 0) return code;
+      const lost = await lostRows(mysqlMigrationDb(c), before);
+      for (const line of lost) print(`lost: ${line}`);
+      print(lost.length === 0 ? `rehearsal passed: every row of ${before.size} tables is still there` : "rehearsal FAILED: do not migrate the live database");
+      return lost.length === 0 ? 0 : 1;
+    } finally {
+      await c.end();
+    }
+  } finally {
+    if (created) await src.query(`DROP DATABASE IF EXISTS \`${copy}\``);
+    await src.end();
+    await rm(backups, { recursive: true, force: true });
+  }
+}
+
 /** The pending schema step file names, read-only (for `migrate --status --json`); a refusal is one entry. */
 export async function pendingStepNames(opts: MysqlOptions): Promise<string[]> {
-  const c = await mysql.createConnection({ host: opts.host, port: opts.port, user: opts.user, password: opts.password, database: opts.database });
+  const c = await connect(opts, opts.database);
   try {
     const s = await new MysqlMigrations(c).status();
     if (s.state !== null && s.state > s.latest) return [];

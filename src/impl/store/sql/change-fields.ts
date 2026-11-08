@@ -33,7 +33,7 @@ export async function changeFields(
   const pr_number = prNumber({ change_ref });
   if (url !== null) return { pr_number, change_ref, change_url: url };
   if (pr_number === null || !project.startsWith(GITHUB_KEY_PREFIX)) return { pr_number, change_ref, change_url: null };
-  const [row] = await db.all("SELECT value FROM cursors WHERE name = ?", [projectLabelCursor(project)]);
+  const [row] = await db.all("SELECT value FROM inbound_cursors WHERE name = ?", [projectLabelCursor(project)]);
   return { pr_number, change_ref, change_url: row ? `https://${String(row.value)}/pull/${pr_number}` : null };
 }
 

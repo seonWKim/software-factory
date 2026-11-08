@@ -1,5 +1,6 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
+import { dirname, join } from "node:path";
+import { type Row, type SqlDialect, type SqlDriver, type SqlExecutor, type SqlValue, applyMigrations } from "../../../state/index.js";
 import { MIGRATIONS } from "./schema.js";
 
 const SQLITE_CONSTRAINT_UNIQUE = 2067;
@@ -21,7 +22,14 @@ export class SqliteDriver implements SqlDriver {
     run: async (sql, params = []) => Number(this.db.prepare(sql).run(...(params as SQLInputValue[])).changes),
   };
 
-  constructor(path: string) {
+  /**
+   * `baselineOnly`: stop after the frozen numbered list, for tests of a historical step on an old database
+   * (the timestamped migrations then run as on any database when a later driver opens it).
+   */
+  constructor(
+    private readonly path: string,
+    private readonly opts: { baselineOnly?: boolean } = {},
+  ) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
   }
@@ -34,6 +42,10 @@ export class SqliteDriver implements SqlDriver {
     return this.serialize(() => this.exec.run(sql, params));
   }
 
+  /**
+   * The frozen numbered baseline, then the timestamped migrations (RFC 0015 §6.3), all in one transaction.
+   * A breaking migration backs up its tables to `backups/` beside a file database first (§12 D1).
+   */
   migrate(): Promise<void> {
     return this.transaction(async () => {
       this.db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)");
@@ -42,6 +54,13 @@ export class SqliteDriver implements SqlDriver {
         this.db.exec(this.withoutExistingColumns(MIGRATIONS[v - 1]!));
         this.db.prepare("INSERT INTO schema_migrations (version) VALUES (?)").run(v);
       }
+      if (this.opts.baselineOnly) return;
+      // A database built just now holds nothing worth a backup.
+      const fresh = (row.v ?? 0) === 0;
+      await applyMigrations(
+        { dialect: "sqlite", ...this.exec },
+        { backupDir: this.path === ":memory:" || fresh ? null : join(dirname(this.path), "backups"), now: () => new Date().toISOString() },
+      );
     });
   }
 

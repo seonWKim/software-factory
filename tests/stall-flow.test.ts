@@ -215,7 +215,7 @@ describe("who probes a due stall pause", () => {
     const f = await stalled([true]);
     f.clock.advance(PROBE_MS);
     await f.prober.tickModelProbe();
-    const rows = (await f.store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const rows = (await f.store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
     expect(rows.find((r) => r.name === "model_answered")).toBeDefined();
     // The stalled run's retry waits on no time of its own (not_before = the stall), so nothing holds it.
     const [, retry] = await f.runs(f.a, "implement");

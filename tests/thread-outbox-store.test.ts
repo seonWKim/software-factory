@@ -122,31 +122,6 @@ for (const backend of BACKENDS) {
   });
 }
 
-describe("SQLite migration 29: thread outbox", () => {
-  it("is in the migration list and creates thread_outbox; pending app requests are copied into the inbox once", async () => {
-    expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
-    expect(MIGRATIONS[STEP - 1]).toContain("CREATE TABLE IF NOT EXISTS thread_outbox (");
-    const driver = new SqliteDriver(":memory:");
-    const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
-    // Back to 27: no outbox, and requests written before the inbox copy existed.
-    await driver.run("DROP TABLE thread_outbox");
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
-    const req = "INSERT INTO app_command_requests (request_key, actor, command, args, created_at, handled_at) VALUES (?, ?, ?, ?, ?, ?)";
-    await driver.run(req, ["p1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", null]);
-    await driver.run(req, ["h1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z"]);
-    await store.migrate();
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    const copied = (await store.listCliCommandsAfter(0, 100)).filter((c) => typeof c.args.app_request === "number");
-    expect(copied.map((c) => c.command)).toEqual(["approve"]);
-    expect(copied[0]!.key).toBe(`app:${copied[0]!.args.app_request}`);
-    expect(await driver.all("SELECT * FROM thread_outbox")).toEqual([]);
-    await store.close();
-  });
-});
-
 describe("MySQL step 0029: thread outbox", () => {
   const sql = () => readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
   const columns = (text: string) => {

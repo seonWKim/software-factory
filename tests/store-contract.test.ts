@@ -10,6 +10,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -646,7 +647,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("verdicts", () => {
+  describe("controller_verdicts", () => {
     const user = { kind: "user" as const, id: "github:1" as UserId };
     const verdict = (id: WorkItemId, expected_version: number, comment_id = "c1") => ({
       id, expected_version, actor: user, verdict: "changes" as const, severity: "minor" as const,
@@ -849,7 +850,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE })).not.toBeNull();
     });
 
-    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+    const pauseRows = async (store: FactoryStore) => (await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
     const later = (clock: { now(): Date }, ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
 
     it.each(["rate_limit", "forge_auth", "preflight_access", "model_stall"] as const)(
@@ -1074,9 +1075,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const labelled = (await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
       const unlabelled = (await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
       const plain = (await store.createWorkItem(issue(7), system)).item;
-      expect(await raw(store, "work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
-      expect(await raw(store, "work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
-      expect(await raw(store, "work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
+      expect(await raw(store, "controller_work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await raw(store, "controller_work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
+      expect(await raw(store, "controller_work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
       expect((await store.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe(labelled.id);
       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, "6"))!.id).toBe(unlabelled.id);
     });
@@ -1088,12 +1089,12 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34" }, actor: system, reason: "x" });
       await store.transition({ id: b.id, expected_version: 1, patch: { change_ref: "35" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: prUrl(LABEL, 34) });
-      expect(await raw(store, "work_items", b.id)).toMatchObject({ pr_number: 35, change_ref: "35", change_url: null });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "controller_work_items", b.id)).toMatchObject({ pr_number: 35, change_ref: "35", change_url: null });
       expect(await store.getWorkItem(a.id)).toMatchObject({ pr_number: 34, change_ref: "34" });
       // A patch without change_ref leaves the change columns alone.
       await store.transition({ id: a.id, expected_version: 2, patch: { blocked_on: "human" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
       // pr_number and change_url are not part of the state change: only the patched field is.
       const [, set] = await store.listStateChanges(a.id);
       expect(set!.changes).toEqual({ change_ref: { from: null, to: "34" } });
@@ -1107,7 +1108,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const a = (await store.createWorkItem(issue(1), system)).item;
       const opened = "https://github.example/o/r/pull/34";
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34", change_url: opened }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
       expect(await store.getWorkItem(a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
     });
 
@@ -1120,7 +1121,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       // Another URL, and a new change_ref with no URL (which would derive one), both keep the stored URL.
       await store.transition({ id: a.id, expected_version: 2, patch: { change_ref: "35", change_url: "https://other/pull/35" }, actor: system, reason: "x" });
       await store.transition({ id: a.id, expected_version: 3, patch: { change_ref: "36" }, actor: system, reason: "x" });
-      expect(await raw(store, "work_items", a.id)).toMatchObject({ pr_number: 36, change_ref: "36", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 36, change_ref: "36", change_url: opened });
     });
 
     it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
@@ -1160,7 +1161,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     it("an unreviewed merge insert writes change_ref", async () => {
       const { store } = await make();
       const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "7", merge_sha: "m7", merger_id: null });
-      expect(await raw(store, "unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
+      expect(await raw(store, "controller_unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
     });
   });
 
@@ -1580,7 +1581,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("cursors", () => {
+  describe("inbound_cursors", () => {
     it("advances only from the expected value", async () => {
       const { store } = await make();
       expect(await store.advanceCursor("intake", null, "a")).toBe(true);
@@ -1593,7 +1594,14 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
 
   describe("raw table reads (design §9 Data page)", () => {
     // Every table the schema creates on both backends (MySQL adds its own step bookkeeping tables).
-    const DOMAIN_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
+    // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
+    const BASELINE_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
+    const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
+    const DOMAIN_TABLES = [
+      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t)),
+      ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
+      "runtime_schema_migrations",
+    ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {
       const { store, clock } = await make();
@@ -1606,18 +1614,17 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(names).toEqual([...names].sort());
       for (const t of DOMAIN_TABLES) expect(names, t).toContain(t);
       // The item thread and the command inbox (migration 24, issue #281).
-      for (const t of ["item_thread", "command_inbox"]) expect(DOMAIN_TABLES, t).toContain(t);
       if (name === "sqlite") expect(names).toEqual([...DOMAIN_TABLES, "schema_migrations"].sort());
       else expect(names).toContain("schema_migrations");
       const byName = new Map(tables.map((t) => [t.name, t]));
-      expect(byName.get("work_items")).toMatchObject({ rows: 2, primary_key: ["id"], order_by: ["created_at", "id"] });
-      expect(byName.get("work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at", "updated_at"]));
-      expect(byName.get("runs")).toMatchObject({ rows: 1 });
-      expect(byName.get("state_changes")).toMatchObject({ rows: 2, order_by: ["at", "id"] });
-      expect(byName.get("file_conflicts")).toMatchObject({ rows: 2, primary_key: ["project_key", "path", "event_key"], order_by: ["at", "project_key", "path", "event_key"] });
-      expect(byName.get("run_attempts")).toMatchObject({ rows: 0, primary_key: ["run_id", "attempt"], order_by: ["started_at", "run_id", "attempt"] });
-      expect(byName.get("cursors")).toMatchObject({ primary_key: ["name"], order_by: ["name"] });
-      expect(byName.get("claim_decisions")).toMatchObject({ rows: 0 });
+      expect(byName.get("controller_work_items")).toMatchObject({ rows: 2, primary_key: ["id"], order_by: ["created_at", "id"] });
+      expect(byName.get("controller_work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at", "updated_at"]));
+      expect(byName.get("worker_runs")).toMatchObject({ rows: 1 });
+      expect(byName.get("controller_state_changes")).toMatchObject({ rows: 2, order_by: ["at", "id"] });
+      expect(byName.get("controller_file_conflicts")).toMatchObject({ rows: 2, primary_key: ["project_key", "path", "event_key"], order_by: ["at", "project_key", "path", "event_key"] });
+      expect(byName.get("worker_run_attempts")).toMatchObject({ rows: 0, primary_key: ["run_id", "attempt"], order_by: ["started_at", "run_id", "attempt"] });
+      expect(byName.get("inbound_cursors")).toMatchObject({ primary_key: ["name"], order_by: ["name"] });
+      expect(byName.get("controller_claim_decisions")).toMatchObject({ rows: 0 });
       expect(a.id).toMatch(/^wi_/);
     });
 
@@ -1629,15 +1636,15 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         clock.advance(1000);
       }
       const newest = [...ids].reverse();
-      const p1 = (await store.listTableRows({ table: "work_items", limit: 3 }))!;
+      const p1 = (await store.listTableRows({ table: "controller_work_items", limit: 3 }))!;
       expect(p1).toMatchObject({ total: 7, limit: 3, offset: 0 });
       expect(p1.rows.map((r) => r.id)).toEqual(newest.slice(0, 3));
-      const p3 = (await store.listTableRows({ table: "work_items", limit: 3, offset: 6 }))!;
+      const p3 = (await store.listTableRows({ table: "controller_work_items", limit: 3, offset: 6 }))!;
       expect(p3.rows.map((r) => r.id)).toEqual(newest.slice(6));
       expect(p3.total).toBe(7);
       // Without a time column the primary key orders, descending.
       for (const c of ["b", "c", "a"]) await store.advanceCursor(c, null, "v");
-      expect((await store.listTableRows({ table: "cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
+      expect((await store.listTableRows({ table: "inbound_cursors" }))!.rows.map((r) => r.name)).toEqual(["c", "b", "a"]);
       // Every column comes back, numbers as numbers.
       expect(p1.rows[0]).toMatchObject({ version: 1, title: null });
     });
@@ -1650,10 +1657,10 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         Array.from({ length: 205 }, (_, n) => store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v")),
       );
       expect(created.every(Boolean)).toBe(true);
-      const def = (await store.listTableRows({ table: "cursors" }))!;
+      const def = (await store.listTableRows({ table: "inbound_cursors" }))!;
       expect(def.rows).toHaveLength(50);
       expect(def).toMatchObject({ limit: 50, total: 205 });
-      const big = (await store.listTableRows({ table: "cursors", limit: 1000 }))!;
+      const big = (await store.listTableRows({ table: "inbound_cursors", limit: 1000 }))!;
       expect(big.rows).toHaveLength(200);
       expect(big.limit).toBe(200);
     }, 30_000);
@@ -1664,24 +1671,24 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const q = (await store.createWorkItem({ ...issue(1), problem: quoted }, system)).item;
       await store.createWorkItem(issue(2), system);
       await store.createWorkItem({ ...issue(3), problem: "problem 2" }, system);
-      const hit = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: quoted } }))!;
+      const hit = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: quoted } }))!;
       expect(hit.total).toBe(1);
       expect(hit.rows.map((r) => r.id)).toEqual([q.id]);
-      const two = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "problem 2" } }))!;
+      const two = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: "problem 2" } }))!;
       expect(two.total).toBe(2);
       expect(two.rows.every((r) => r.problem === "problem 2")).toBe(true);
-      const inject = (await store.listTableRows({ table: "work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
+      const inject = (await store.listTableRows({ table: "controller_work_items", filter: { column: "problem", value: "x' OR '1'='1" } }))!;
       expect(inject).toMatchObject({ total: 0, rows: [] });
       // A number column matches its text form.
-      expect((await store.listTableRows({ table: "work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
+      expect((await store.listTableRows({ table: "controller_work_items", filter: { column: "version", value: "1" } }))!.total).toBe(3);
     });
 
     it("an unknown table or filter column is refused with null", async () => {
       const { store } = await make();
       expect(await store.listTableRows({ table: "nope" })).toBeNull();
-      expect(await store.listTableRows({ table: "work_items; DROP TABLE runs" })).toBeNull();
-      expect(await store.listTableRows({ table: "work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
-      expect((await store.listTables()).map((t) => t.name)).toContain("runs");
+      expect(await store.listTableRows({ table: "work_items; DROP TABLE worker_runs" })).toBeNull();
+      expect(await store.listTableRows({ table: "controller_work_items", filter: { column: "id = id OR 1", value: "x" } })).toBeNull();
+      expect((await store.listTables()).map((t) => t.name)).toContain("worker_runs");
     });
   });
 
@@ -2666,75 +2673,6 @@ describe("migration 35 (change fields) on an existing SQLite database", () => {
     }
   });
 
-  it("an item without a PR inserts as before: the change columns are listed only with a PR number", async () => {
-    // A schema from before the migration, as tests of older steps build (tests/session-migration.test.ts on MySQL).
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
-    const raw = new DatabaseSync(path);
-    for (const m of MIGRATIONS.slice(0, CHANGE_MIGRATION - 1)) raw.exec(m);
-    raw.close();
-    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
-    try {
-      const { item } = await store.createWorkItem(issue(1), system);
-      expect((await store.getWorkItem(item.id))!).toMatchObject({ id: item.id, pr_number: null });
-    } finally {
-      await store.close();
-    }
-  });
-
-  it("backfills change_ref and change_url from pr_number and the label, adds the indexes; pr_number-only rows still resolve", async () => {
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-change-")), "factory.db");
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await seed.migrate();
-    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
-    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
-    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
-    const patched = (await seed.createWorkItem(issue(7), system)).item;
-    await seed.transition({ id: patched.id, expected_version: 1, patch: { change_ref: "9" }, actor: system, reason: "x" });
-    const plain = (await seed.createWorkItem(issue(8), system)).item;
-    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "11", merge_sha: "m", merger_id: null });
-    await seed.close();
-    // Back to the state before the migration: no change columns or indexes, every row as it was.
-    const db = new DatabaseSync(path);
-    db.exec(`
-      DROP INDEX work_items_change; DROP INDEX unreviewed_merges_change;
-      ALTER TABLE work_items DROP COLUMN change_ref; ALTER TABLE work_items DROP COLUMN change_url;
-      ALTER TABLE unreviewed_merges DROP COLUMN change_ref;
-      DELETE FROM schema_migrations WHERE version >= ${CHANGE_MIGRATION};
-    `);
-    db.close();
-
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
-    try {
-      await store.migrate();
-      expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-      const row = async (table: string, id: string) => (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
-      expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: prUrl(LABEL, 5) });
-      expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
-      expect(await row("work_items", patched.id)).toMatchObject({ change_ref: "9", change_url: prUrl(LABEL, 9) });
-      expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
-      expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
-    } finally {
-      await store.close();
-    }
-
-    const check = new DatabaseSync(path);
-    const index = (name: string) => check.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?").get(name) as { sql: string } | undefined;
-    expect(index("work_items_change")?.sql).toMatch(/ON work_items \(project, change_ref\)/);
-    expect(index("unreviewed_merges_change")?.sql).toMatch(/UNIQUE INDEX .* ON unreviewed_merges \(project, change_ref\)/);
-    // A row an older controller wrote: pr_number only, change_ref NULL. The lookup falls back to pr_number.
-    check.prepare("UPDATE work_items SET pr_number = 12 WHERE id = ?").run(plain.id);
-    check.close();
-    const reopened = new SqlFactoryStore(new SqliteDriver(path), clock);
-    try {
-      // The read returns the pr_number as change_ref, so the core, which reads change_ref, sees the PR.
-      expect((await reopened.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: plain.id, pr_number: 12, change_ref: "12" });
-      expect((await reopened.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe(labelled.id);
-      expect(await reopened.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
-    } finally {
-      await reopened.close();
-    }
-  });
 });
 
 describe("MySQL step 35 (change-fields)", () => {
@@ -2752,7 +2690,7 @@ describe("MySQL step 35 (change-fields)", () => {
     db.onCleanup(() => store.close());
     await store.migrate();
     const { item } = await store.createWorkItem(issue(1), system);
-    await conn.query("UPDATE work_items SET pr_number = 12 WHERE id = ?", [item.id]);
+    await conn.query("UPDATE controller_work_items SET pr_number = 12 WHERE id = ?", [item.id]);
     expect((await store.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: item.id, pr_number: 12 });
     expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
   });

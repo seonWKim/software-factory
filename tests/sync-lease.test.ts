@@ -98,8 +98,8 @@ describe("one GitHub sync per project", () => {
     const r = await replicas(2);
     for (const c of r.controllers) await c.tickIntake();
     // The sync cursors only: `github:budget` is this process's call count for the status page, a report, not a sync write.
-    const cursors = async () => (await rows(r.store, "cursors")).filter((c) => String(c.name).startsWith("intake:"));
-    const snapshot = async () => [await rows(r.store, "sync_leases"), await rows(r.store, "forge_budget"), await cursors()];
+    const cursors = async () => (await rows(r.store, "inbound_cursors")).filter((c) => String(c.name).startsWith("intake:"));
+    const snapshot = async () => [await rows(r.store, "inbound_sync_leases"), await rows(r.store, "outbound_forge_budget"), await cursors()];
     const before = await snapshot();
     expect(before[0]).toHaveLength(1);
     expect(before[1]).toHaveLength(1);
@@ -116,8 +116,8 @@ describe("one GitHub sync per project", () => {
     await controller.tickOutbox();
     await controller.catchUpStatus();
     expect(source.polls).toHaveLength(1);
-    expect(await rows(store, "sync_leases")).toEqual([]);
-    expect(await rows(store, "forge_budget")).toEqual([]);
+    expect(await rows(store, "inbound_sync_leases")).toEqual([]);
+    expect(await rows(store, "outbound_forge_budget")).toEqual([]);
   });
 });
 

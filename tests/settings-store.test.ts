@@ -33,7 +33,7 @@ describe("settings overrides: one transaction with the audit row", () => {
     const good = new SqlFactoryStore(driver, clock);
     await good.migrate();
     await good.setSettingOverride({ key: "workers", project: "", value: "2", actor: "local:owner" });
-    const bad = new SqlFactoryStore(failing(driver, /INSERT INTO settings_changes/), clock);
+    const bad = new SqlFactoryStore(failing(driver, /INSERT INTO runtime_settings_changes/), clock);
 
     await expect(bad.setSettingOverride({ key: "workers", project: "", value: "3", actor: "local:owner" })).rejects.toThrow("audit insert failed");
     await expect(bad.setSettingOverride({ key: "tick_ms", project: "", value: "500", actor: "local:owner" })).rejects.toThrow("audit insert failed");
@@ -69,9 +69,9 @@ describe.skipIf(!MYSQL_URL)("migration step 17 on MySQL", () => {
 
     await new MysqlMigrations(c).apply(() => undefined);
     const [tables] = await c.query(
-      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'settings_%' ORDER BY 1",
+      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'runtime\\_settings\\_%' ORDER BY 1",
     );
-    expect((tables as { name: string }[]).map((t) => t.name)).toEqual(["settings_changes", "settings_overrides"]);
+    expect((tables as { name: string }[]).map((t) => t.name)).toEqual(["runtime_settings_changes", "runtime_settings_overrides"]);
     await store.migrate();
     await store.setSettingOverride({ key: "workers", project: "", value: "2", actor: "local:owner" });
     expect(await store.listSettingChanges(5)).toHaveLength(1);
@@ -81,7 +81,7 @@ describe.skipIf(!MYSQL_URL)("migration step 17 on MySQL", () => {
     const { store } = await newMysqlDatabase();
     await store.setSettingOverride({ key: "workers", project: "", value: "2", actor: "local:owner" });
     const inner = (store as unknown as { db: SqlDriver }).db;
-    const bad = new SqlFactoryStore(failing(inner, /INSERT INTO settings_changes/), new FakeClock());
+    const bad = new SqlFactoryStore(failing(inner, /INSERT INTO runtime_settings_changes/), new FakeClock());
     await expect(bad.setSettingOverride({ key: "workers", project: "", value: "3", actor: "local:owner" })).rejects.toThrow("audit insert failed");
     expect((await store.listSettingOverrides()).map((o) => o.value)).toEqual(["2"]);
     expect(await store.listSettingChanges(10)).toHaveLength(1);

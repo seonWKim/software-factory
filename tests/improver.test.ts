@@ -163,7 +163,7 @@ describe("improve: the run", () => {
     expect(report.groups[0]!.work_item_ids).toHaveLength(2);
     expect(report.patterns.map((g) => [g.error_code, g.run_ids])).toEqual([["agent_timed_out", [in3]]]);
     expect(run!.outcome).toMatchObject({ status: "succeeded", data: { report_id: report.id, groups: 1, patterns: 1, tokens: 0 } });
-    expect((await store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
 
     // The controller acknowledges it and leaves the system item as it was.
     const before = (await store.getWorkItem(run!.work_item_id))!;

@@ -124,7 +124,7 @@ const WORK_ITEM_COLUMNS =
   "files_to_change, pr_files";
 
 /**
- * The columns and values of INSERT INTO work_items, the change columns taken from the item (newWorkItem). The change columns are listed only with a PR number: without one they are NULL by default,
+ * The columns and values of INSERT INTO controller_work_items, the change columns taken from the item (newWorkItem). The change columns are listed only with a PR number: without one they are NULL by default,
  * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
  */
 export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue[] } {

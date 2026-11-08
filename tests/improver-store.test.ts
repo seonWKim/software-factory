@@ -29,8 +29,8 @@ describe("improve tables: schema", () => {
     expect(v.applied).toBe(v.latest);
     expect(v.applied).toBeGreaterThanOrEqual(STEP);
     const tables = await store.listTables();
-    for (const t of TABLES) expect(tables.find((x) => x.name === t), t).toBeDefined();
-    expect(tables.find((x) => x.name === "filed_patterns")!.rows).toBe(0);
+    for (const t of ["controller_improve_reports", "controller_filed_patterns"]) expect(tables.find((x) => x.name === t), t).toBeDefined();
+    expect(tables.find((x) => x.name === "controller_filed_patterns")!.rows).toBe(0);
   });
 
   it("MySQL step 0031 creates the same tables with the same columns as SQLite migration 31", () => {

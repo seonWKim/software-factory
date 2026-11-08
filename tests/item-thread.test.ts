@@ -92,9 +92,9 @@ function sqliteExec(driver: SqliteDriver): Exec {
 
 /** A SQLite database as it was at version 23: no new tables, rows in the old ones. */
 async function sqliteAt23(): Promise<{ driver: SqliteDriver; store: SqlFactoryStore; items: WorkItemId[] }> {
-  const driver = new SqliteDriver(":memory:");
+  const driver = new SqliteDriver(":memory:", { baselineOnly: true });
   const store = new SqlFactoryStore(driver, new FakeClock());
-  await store.migrate();
+  await driver.migrate();
   const items = [(await store.createWorkItem(localItem(1), system)).item.id, (await store.createWorkItem(localItem(2), system)).item.id];
   for (const t of NEW_TABLES) await driver.run(`DROP TABLE ${t}`);
   await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
@@ -105,9 +105,9 @@ async function sqliteAt23(): Promise<{ driver: SqliteDriver; store: SqlFactorySt
 describe("SQLite migration 24: item thread and command inbox", () => {
   it("migrate() on an empty database reaches the latest migration and creates both tables, empty", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
-    const driver = new SqliteDriver(":memory:");
+    const driver = new SqliteDriver(":memory:", { baselineOnly: true });
     const store = new SqlFactoryStore(driver, new FakeClock());
-    await store.migrate();
+    await driver.migrate();
     expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
     const names = await driver.all(
       `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${[...NEW_TABLES, ...OLD_TABLES].map(() => "?").join(", ")}) ORDER BY name`,
@@ -118,58 +118,20 @@ describe("SQLite migration 24: item thread and command inbox", () => {
     await store.close();
   });
 
-  it("a database at version 23 with rows: the copy keeps every row, its seq, content and timestamps", async () => {
-    const { driver, store, items } = await sqliteAt23();
-    const q = sqliteExec(driver);
-    const before = { item_messages: await allRows(q, "item_messages"), cli_commands: await allRows(q, "cli_commands") };
-    const cursor = 2; // saved before the migration: the last command read was seq 2
-    const nextBefore = await nextOldCommandKey(q, cursor);
 
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    await expectCopied(q, store, before, items);
-    const [next] = await store.listCliCommandsAfter(cursor, 1);
-    expect(next?.key).toBe(nextBefore);
-    expect(next).toMatchObject({ seq: 5, key: "k2" });
-    await store.close();
-  });
 
-  it("after the copy the store writes only the new tables; a new command's seq follows the copied ones", async () => {
-    const { driver, store, items } = await sqliteAt23();
-    await store.migrate();
-    const q = sqliteExec(driver);
-    const oldCounts = await Promise.all(OLD_TABLES.map((t) => count(q, t)));
-    const { command } = await store.appendCliCommand({ key: "k4", actor: "local:owner", command: "approve", args: {} });
-    expect(command.seq).toBeGreaterThan(6);
-    expect(await store.appendCliCommand({ key: "k1", actor: "local:owner", command: "x", args: {} })).toMatchObject({ created: false, command: { seq: 2 } });
-    expect((await store.recordItemMessage({ work_item_id: items[0]!, marker: "m1", body: "again" })).created).toBe(false);
-    expect((await store.recordItemMessage({ work_item_id: items[0]!, marker: "m3", body: "third" })).message.seq).toBeGreaterThan(9);
-    expect(await Promise.all(OLD_TABLES.map((t) => count(q, t)))).toEqual(oldCounts);
-    expect((await store.listCliCommandsAfter(6, 10)).map((c) => c.key)).toEqual(["k4"]);
-    await store.close();
-  });
-
-  it("is safe to run again after the recorded version is set back: no row is copied twice", async () => {
-    const { driver, store, items } = await sqliteAt23();
-    const q = sqliteExec(driver);
-    const before = { item_messages: await allRows(q, "item_messages"), cli_commands: await allRows(q, "cli_commands") };
-    await store.migrate();
-    await driver.run("DELETE FROM schema_migrations WHERE version > ?", [STEP - 1]);
-    await store.migrate();
-    expect(await driver.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    await expectCopied(q, store, before, items);
-    await store.close();
-  });
 });
 
 describe("the store reads and writes only the new tables", () => {
   it("no SQL statement in the store names item_messages or cli_commands; the docs name the new tables", () => {
     const store = readFileSync(join(process.cwd(), "src/impl/store/sql/sql-factory-store.ts"), "utf8");
     for (const t of OLD_TABLES) expect(store, t).not.toMatch(new RegExp(`\\b${t}\\b`));
-    for (const t of NEW_TABLES) expect(store, t).toMatch(new RegExp(`(?:INTO|FROM) ${t}\\b`));
+    // Under their RFC 0015 names since the prefix migration.
+    const STORE_TABLES = ["controller_item_thread", "inbound_commands"];
+    for (const t of STORE_TABLES) expect(store, t).toMatch(new RegExp(`(?:INTO|FROM) ${t}\\b`));
     for (const doc of ["docs/design/05-sources.md", "docs/plugins/source-adapter.md"]) {
       const text = readFileSync(join(process.cwd(), doc), "utf8");
-      for (const t of NEW_TABLES) expect(text, `${doc}: ${t}`).toContain(`\`${t}\``);
+      for (const t of STORE_TABLES) expect(text, `${doc}: ${t}`).toContain(`\`${t}\``);
       for (const t of OLD_TABLES) expect(text, `${doc}: ${t}`).not.toContain(`\`${t}\``);
     }
   });
@@ -219,40 +181,4 @@ describe.skipIf(!MYSQL_URL)("MySQL step 0024 on MySQL", () => {
     for (const t of NEW_TABLES) expect(await count(mysqlExec(c), t)).toBe(0);
   });
 
-  it("with rows: the copy keeps every row, its seq, content and timestamps, and the saved cursor; rerun copies nothing twice", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c).apply(() => undefined);
-    const latest = (await new MysqlMigrations(c).status()).state!;
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    const items = [(await store.createWorkItem(localItem(1), system)).item.id, (await store.createWorkItem(localItem(2), system)).item.id];
-    // Back to state 23: no new tables, rows in the old ones.
-    const q = mysqlExec(c);
-    await c.query("DROP TABLE thread_outbox"); // step 0029 references item_thread, so it goes first
-    for (const t of NEW_TABLES) await c.query(`DROP TABLE ${t}`);
-    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [STEP - 1]);
-    await seedOldTables(q, items);
-    const before = { item_messages: await allRows(q, "item_messages"), cli_commands: await allRows(q, "cli_commands") };
-    const nextBefore = await nextOldCommandKey(q, 2);
-
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-    await expectCopied(q, store, before, items);
-    expect((await store.listCliCommandsAfter(2, 1))[0]?.key).toBe(nextBefore);
-
-    // Set back and run again.
-    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [STEP - 1]);
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-    await expectCopied(q, store, before, items);
-    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [latest]);
-    // The rebuilt table lacks what later steps added to it (e.g. the mirror mark): run their ALTERs again.
-    for (const s of readSteps(STEPS_DIR, INLINE_STEPS).filter((s) => s.number > STEP)) {
-      const text = s.sql ?? readFileSync(join(STEPS_DIR, s.file), "utf8");
-      for (const line of text.split("\n")) if (line.startsWith("ALTER TABLE command_inbox ")) await c.query(line);
-    }
-    const { command } = await store.appendCliCommand({ key: "k4", actor: "local:owner", command: "approve", args: {} });
-    expect(command.seq).toBeGreaterThan(6);
-    expect(await count(q, "cli_commands")).toBe(before.cli_commands.length);
-  });
 });

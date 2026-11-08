@@ -22,7 +22,7 @@ const LEASE = 60_000;
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
 const ROUTES = [
   "/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health", "/api/v1/unreviewed-merges",
-  "/api/v1/data/tables", "/api/v1/data/tables/work_items", "/api/v1/data/tables/runs", "/api/v1/data/tables/state_changes",
+  "/api/v1/data/tables", "/api/v1/data/tables/controller_work_items", "/api/v1/data/tables/worker_runs", "/api/v1/data/tables/controller_state_changes",
 ];
 
 function get(d: UiDeps, path: string, opts: { method?: string; host?: string } = {}): Promise<UiResponse> {
@@ -707,7 +707,7 @@ describe("ui api: item commands POST (issue #227)", () => {
   }
 
   async function appRequestRows(store: FactoryStore): Promise<number | undefined> {
-    return (await store.listTables()).find((t) => t.name === "app_command_requests")?.rows;
+    return (await store.listTables()).find((t) => t.name === "inbound_app_requests")?.rows;
   }
 
   async function nothingWritten(store: FactoryStore) {

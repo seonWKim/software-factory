@@ -226,7 +226,7 @@ describe("improve filing: solo, the local source", () => {
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     expect(report.groups.map((g) => g.filing)).toEqual([{ status: "skipped", reason: "no_source" }]);
-    expect((await w.store.listTables()).find((t) => t.name === "filed_patterns")!.rows).toBe(0);
+    expect((await w.store.listTables()).find((t) => t.name === "controller_filed_patterns")!.rows).toBe(0);
   });
 });
 

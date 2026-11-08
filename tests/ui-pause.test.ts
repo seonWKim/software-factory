@@ -65,7 +65,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
     health: new HealthMonitor(async () => [], clock),
     ...(opts.wired === false ? {} : { pauses }),
   };
-  const rows = async () => (await real.listTableRows({ table: "claim_pauses", limit: 200 }))!.rows;
+  const rows = async () => (await real.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
   return { d, real, pauses, log, rows, writes: () => writes };
 }
 

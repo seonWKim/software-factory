@@ -1,12 +1,14 @@
 // Discovery (RFC 0015 §6.1): the registry finds every `*.handler.ts` and `*.topic.ts` under src/ (`.js` once
 // built) and indexes them. Nothing registers itself in a central list, and nothing here names a feature.
 
-import { readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Envelope, MessageKind } from "../../shared/envelope.js";
 import type { HandlerDescriptor } from "../../shared/handler.js";
 import type { TopicDescriptor } from "../../shared/topic.js";
+import { findDescriptorFiles } from "../../state/index.js";
+
+export { findDescriptorFiles };
 
 export const DESCRIPTOR_PATTERNS = {
   handler: /\.handler\.(?:ts|js)$/,
@@ -14,20 +16,6 @@ export const DESCRIPTOR_PATTERNS = {
 } as const;
 
 export type DescriptorKind = keyof typeof DESCRIPTOR_PATTERNS;
-
-/** Every file under `root` whose name matches `pattern`, sorted by path; never a `.d.ts` or a test. */
-export function findDescriptorFiles(root: string, pattern: RegExp): string[] {
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, e.name);
-      if (e.isDirectory()) walk(path);
-      else if (e.isFile() && pattern.test(e.name) && !e.name.endsWith(".d.ts")) out.push(path);
-    }
-  };
-  walk(root);
-  return out.sort();
-}
 
 export interface Located<D> {
   /** Path relative to the source root. */

@@ -37,6 +37,7 @@ import { ISSUE_USAGE, issueDeps, parseIssueArgs, runIssue } from "./issue-cmd.js
 import { MODE_USAGE, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "./settings-cmd.js";
 import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
+import { rehearseSqlite } from "./impl/store/sqlite/rehearse.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
 import type { SqlExecutor } from "./state/index.js";
@@ -84,11 +85,12 @@ const USAGE = `factory [--config <path>] <command>
                checkpoint sets it back to manual
   ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
                git-worktree updater, dev runs it too and restarts it on each new revision
-  migrate [--status | --dry-run]
+  migrate [--status | --dry-run | --rehearse]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
-               --dry-run prints what would run and each row it would change, no flag applies them
-               (back up first). The other commands refuse to start while steps or owner/name rows remain
+               --dry-run prints what would run and each row it would change, --rehearse runs them on a
+               copy and checks no row was lost, no flag applies them (back up first). The other commands
+               refuse to start while steps or owner/name rows remain
   doctor [--llm]
                checks setup without printing any secret; --llm adds one line that runs llm-check
   llm-check [--model cheap|standard|strong]
@@ -369,15 +371,11 @@ async function main(argv: readonly string[]): Promise<number> {
       const json = args.includes("--json");
       const noDrain = args.includes("--no-drain");
       const mode = parseMigrateArgs(args.filter((a) => a !== "--json" && a !== "--no-drain"), process.env);
-      if (typeof mode !== "string") {
-        console.log(mode.error);
+      if (typeof mode !== "string" || (json && mode !== "status")) {
+        console.log(typeof mode !== "string" ? mode.error : "--json goes with --status");
         return 1;
       }
       if (json) {
-        if (mode !== "status") {
-          console.log("--json goes with --status");
-          return 1;
-        }
         console.log(JSON.stringify({ pending: await pendingMigrationNames(loaded) }));
         return 0;
       }
@@ -393,9 +391,11 @@ async function main(argv: readonly string[]): Promise<number> {
         };
         const db = loaded.store;
         if (db.type !== "mysql") {
+          const file = join(loaded.stateDir, "db", "factory.db");
+          if (mode === "rehearse") return rehearseSqlite(file, print);
           print(SQLITE_MIGRATE_MESSAGE);
           await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-          const driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+          const driver = new SqliteDriver(file);
           try {
             await driver.migrate();
             return await runProjectKeyStep(driver, resolveRepo, mode, print);
@@ -410,8 +410,8 @@ async function main(argv: readonly string[]): Promise<number> {
         }
         const { host, port, database, user } = db;
         const options = { host, port, database, user, password: password.reveal() };
-        const code = await migrateCommand(options, mode, print);
-        if (code !== 0) return code;
+        const code = await migrateCommand(options, mode, print, join(loaded.stateDir, "db", "backups"));
+        if (code !== 0 || mode === "rehearse") return code;
         // After the schema steps: the data step needs the tables they create.
         const driver = new MysqlDriver(options);
         try {

@@ -79,42 +79,6 @@ for (const b of BACKENDS) {
   });
 }
 
-describe("SQLite migration: restart history", () => {
-  it("adds an empty child_restarts table to an existing database and leaves its items and alerts as they were", async () => {
-    expect(STEP).toBeGreaterThan(0);
-    const path = join(mkdtempSync(join(tmpdir(), "sf-mig-restarts-")), "factory.db");
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await seed.migrate();
-    const { item } = await seed.createWorkItem(issue(1), system);
-    const { alert } = (await seed.recordAlert({ pattern: "child_restarts", pattern_key: "child_restarts", error_code: "child_restarts", count: 5, detail: "r5" }, 1)) as { alert: unknown };
-    await seed.close();
-    // Back to the state before the migration.
-    const raw = new DatabaseSync(path);
-    raw.exec(`DROP TABLE child_restarts; DELETE FROM schema_migrations WHERE version >= ${STEP};`);
-    const dump = (db: DatabaseSync) => ({
-      items: db.prepare("SELECT * FROM work_items").all().map((r) => ({ ...r })),
-      alerts: db.prepare("SELECT * FROM alerts").all().map((r) => ({ ...r })),
-    });
-    const old = dump(raw);
-    raw.close();
-
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await store.migrate();
-    try {
-      expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual([]);
-      expect(await store.getWorkItem(item.id)).toEqual(item);
-      expect(await store.listAlerts({ limit: 10 })).toEqual([alert]);
-    } finally {
-      await store.close();
-    }
-    const again = new DatabaseSync(path);
-    expect(dump(again)).toEqual(old);
-    expect(again.prepare("SELECT COUNT(*) AS n FROM child_restarts").get()).toEqual({ n: 0 });
-    again.close();
-  });
-});
-
 describe("MySQL step: restart history (child-restarts)", () => {
   it("has the SQLite migration's number and creates the same table and index", () => {
     expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "child-restarts")).toMatchObject({

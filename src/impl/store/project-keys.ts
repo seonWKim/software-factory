@@ -11,7 +11,7 @@ import { type ProjectRef, isLegacyProject, projectLabelCursor } from "../../core
 import type { Row, SqlExecutor } from "../../state/index.js";
 
 /** Every table with a project column. A new one must be added here (tests/project-migration.test.ts checks). */
-export const PROJECT_TABLES = ["work_items", "unreviewed_merges"] as const;
+export const PROJECT_TABLES = ["controller_work_items", "controller_unreviewed_merges"] as const;
 export type ProjectTable = (typeof PROJECT_TABLES)[number];
 
 /** A project value that is not a key: `owner/name` before this step. Keys always contain ':'. */
@@ -96,8 +96,8 @@ export async function applyProjectKeys(db: ProjectKeyDb, plan: ProjectKeyPlan): 
     }
     for (const p of plan.projects) {
       const name = projectLabelCursor(p.key);
-      if ((await tx.run("UPDATE cursors SET value = ? WHERE name = ?", [p.label, name])) === 0) {
-        await tx.run("INSERT INTO cursors (name, value) VALUES (?, ?)", [name, p.label]);
+      if ((await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ?", [p.label, name])) === 0) {
+        await tx.run("INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [name, p.label]);
       }
     }
     return changed;

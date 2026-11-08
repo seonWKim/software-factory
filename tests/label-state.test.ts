@@ -167,7 +167,7 @@ describe("solo setup", () => {
     await store.recordAppCommandRequest({ key: "k1", actor: "local:someone" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
     await controller.tickCommands();
     expect(await store.listItemMessages(item.id)).toHaveLength(1);
-    for (const table of ["posted_comments", "label_states"]) {
+    for (const table of ["outbound_deliveries", "outbound_label_states"]) {
       expect((await store.listTableRows({ table }))?.total, table).toBe(0);
     }
   });
@@ -177,7 +177,7 @@ describe("schema", () => {
   it("SQLite builds posted_comments and label_states on open", async () => {
     const { store } = await newStore();
     const names = (await store.listTables()).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["posted_comments", "label_states"]));
+    expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
   });
 
   it.skipIf(!MYSQL_URL)("a MySQL store refuses to start until step 0027 is applied, then has both tables", async () => {
@@ -193,6 +193,6 @@ describe("schema", () => {
     db.onCleanup(() => store.close());
     await store.migrate();
     const names = (await store.listTables()).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["posted_comments", "label_states"]));
+    expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
   });
 });

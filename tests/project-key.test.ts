@@ -41,8 +41,8 @@ async function rawStore(clock = new FakeClock()) {
   const store = new SqlFactoryStore(driver, clock);
   await store.migrate();
   const projects = async () => [
-    ...(await driver.all("SELECT project FROM work_items")).map((r) => String(r.project)),
-    ...(await driver.all("SELECT project FROM unreviewed_merges")).map((r) => String(r.project)),
+    ...(await driver.all("SELECT project FROM controller_work_items")).map((r) => String(r.project)),
+    ...(await driver.all("SELECT project FROM controller_unreviewed_merges")).map((r) => String(r.project)),
   ];
   return { driver, store, clock, projects };
 }
