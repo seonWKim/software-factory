@@ -302,7 +302,7 @@ describe("merge check: composition", () => {
     vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets.env"));
     const built = await build(await loadConfig(dir), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      const controllerSandbox = (built.controller as unknown as { d: { sandbox?: Sandbox } }).d.sandbox;
+      const controllerSandbox = built.controller.kernel.d.sandbox;
       const workerSandbox = (built.worker as unknown as { d: { sandbox: Sandbox } }).d.sandbox;
       expect(controllerSandbox).toBeDefined();
       expect(controllerSandbox).toBe(workerSandbox);

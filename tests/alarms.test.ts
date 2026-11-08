@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
-import { type ControllerDeps } from "../src/core/controller.js";
+import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { RunKind, RunOutcome, WorkerId } from "../src/core/types.js";

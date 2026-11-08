@@ -119,7 +119,7 @@ describe("stream intake: listener", () => {
     expect(await store.listInboxAfter(SLACK, 0, 10)).toHaveLength(1);
 
     const c = controller(store, clock, source, "replica-a");
-    const handled = vi.spyOn(c as unknown as { handle(e: unknown): Promise<void> }, "handle");
+    const handled = vi.spyOn(c, "consumeEvent");
     await c.tickIntake();
     await c.tickIntake();
     expect(handled).toHaveBeenCalledTimes(1);
@@ -273,7 +273,7 @@ describe("stream intake: controller", () => {
 
     const ca = controller(store, clock, a, "replica-a");
     const cb = controller(store, clock, b, "replica-b");
-    const handledA = vi.spyOn(ca as unknown as { handle(e: unknown): Promise<void> }, "handle");
+    const handledA = vi.spyOn(ca, "consumeEvent");
     await cb.tickIntake();
     expect(await stateChangeCount(store, 1)).toBe(1);
     expect(await stateChangeCount(store, 2)).toBe(1);

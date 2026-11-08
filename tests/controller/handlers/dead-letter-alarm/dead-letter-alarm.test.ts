@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SqlBus } from "../../../../src/bus/index.js";
-import { CONTROLLER, type ControllerContext, type LegacyDecisions } from "../../../../src/controller/index.js";
+import { CONTROLLER, type ControllerContext, type Decisions } from "../../../../src/controller/index.js";
 import { INBOUND, INBOUND_RECEIVED } from "../../../../src/inbound/index.js";
 import { ComponentConsumer } from "../../../../src/runtime/consumer.js";
 import { loadRegistry } from "../../../../src/runtime/registry/registry.js";
@@ -25,7 +25,7 @@ async function harness() {
   const bus = new SqlBus();
   const inbound = bus.component({ db: store.db, component: INBOUND, topics, consumerId: "t" });
   const controllerBus = bus.component({ db: store.db, component: CONTROLLER, topics, consumerId: "t" });
-  const legacy: LegacyDecisions = { consumeEvent: async () => {}, consumeCommand: async () => {} };
+  const decisions: Decisions = { consumeEvent: async () => {}, consumeCommand: async () => {} };
   const flagged: string[] = [];
   const alarms = new ComponentConsumer<ControllerContext>({
     db: store.db,
@@ -36,7 +36,7 @@ async function harness() {
     context: (_tx, emit) => ({
       db: store.db,
       emit,
-      legacy,
+      decisions,
       // As the controller role does: a detail the scanner flags is dropped.
       recordAlert: async (alert, dedupe_ms) => {
         const clean = alert.detail !== null && !flagged.some((f) => alert.detail!.includes(f));

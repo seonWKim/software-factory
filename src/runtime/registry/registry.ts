@@ -17,6 +17,7 @@ export const DESCRIPTOR_PATTERNS = {
   setting: /\.setting\.(?:ts|js)$/,
   role: /\.role\.(?:ts|js)$/,
   hook: /\.hook\.(?:ts|js)$/,
+  unit: /\.unit\.(?:ts|js)$/,
 } as const;
 
 export type DescriptorKind = keyof typeof DESCRIPTOR_PATTERNS;

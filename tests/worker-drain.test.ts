@@ -135,9 +135,14 @@ describe("dev child: two children through a swap", () => {
     for (let i = 0; i < 30; i++) await new Promise((r) => setImmediate(r));
   };
   /** Counts each controller step a pass runs, so a test sees whether a pass started. */
-  function countSteps(c: ControllerRole) {
-    const steps = ["afterPoll", "reaperStep", "checksStep", "coordinationStep", "mirrorStep", "runsStep", "probeStep", "outboxStep"] as const;
-    const spies = steps.map((s) => vi.spyOn(c as unknown as Record<string, () => Promise<void>>, s));
+  async function countSteps(c: ControllerRole) {
+    const units = {
+      afterPoll: await c.unit("closes"), reaperStep: await c.unit("reaper"), checksStep: await c.unit("checks-gate"),
+      coordinationStep: await c.unit("coordination"), mirrorStep: await c.unit("mirror"), runsStep: await c.unit("run-results"),
+      probeStep: await c.unit("model-probe"), outboxStep: await c.unit("outbox"),
+    };
+    const steps = Object.keys(units) as (keyof typeof units)[];
+    const spies = steps.map((s) => vi.spyOn(units[s] as unknown as Record<string, () => Promise<void>>, s));
     return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<(typeof steps)[number], number>;
   }
 
@@ -147,7 +152,7 @@ describe("dev child: two children through a swap", () => {
       new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, repeated_failure_rule: false });
     const oldLog = recordingLog();
     const oldController = controllerOf(oldLog);
-    const oldSteps = countSteps(oldController);
+    const oldSteps = await countSteps(oldController);
     const oldChannel = channel();
     const oldStop = new AbortController();
     const oldChild = runDevChild({ controller: oldController, worker: oldWorker }, oldChannel.ch, oldStop.signal, oldLog);
@@ -159,7 +164,7 @@ describe("dev child: two children through a swap", () => {
 
     // The swap: the new child starts first, then the old one is asked to drain.
     const newController = controllerOf();
-    const newSteps = countSteps(newController);
+    const newSteps = await countSteps(newController);
     const newWorker = { run: (s: AbortSignal) => new Promise<void>((r) => s.addEventListener("abort", () => r(), { once: true })) };
     const newChannel = channel();
     const newStop = new AbortController();

@@ -2,7 +2,7 @@
   "canary.ts": 1,
   "compose.ts": 1,
   "core/alarms.ts": 1,
-  "core/controller.ts": 1,
+  "core/controller-deps.ts": 1,
   "core/improver.ts": 1,
   "core/lease.ts": 1,
   "core/listener.ts": 1,

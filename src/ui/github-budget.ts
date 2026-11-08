@@ -2,7 +2,7 @@
 // stored after its last poll (GITHUB_BUDGET_CURSOR), read from the store, so the page makes no GitHub call.
 // With no calls left before the reset the factory is waiting, not failing: the reset time is the wait reason.
 
-import type { GitHubBudgetStatus } from "../core/controller.js";
+import type { GitHubBudgetStatus } from "../core/controller-deps.js";
 import { GITHUB_BUDGET_CURSOR } from "../inbound/index.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { esc } from "./html.js";

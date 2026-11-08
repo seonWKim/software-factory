@@ -31,7 +31,7 @@ class StrictSource extends FakeSource {
     super();
   }
   override async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string }> {
-    const fromOutbox = /Controller(?:Role)?\.deliver\b/.test(new Error().stack ?? "");
+    const fromOutbox = /OutboxUnit\.deliver\b/.test(new Error().stack ?? "");
     if (this.delayMs) await new Promise((r) => setTimeout(r, this.delayMs));
     const item = await this.store.getWorkItemBySource(source.type, source.id);
     const inThread = item ? (await this.store.listItemMessages(item.id)).some((m) => m.marker === marker && m.body === body) : false;
@@ -62,7 +62,7 @@ async function setup(sources?: (store: FactoryStore) => SourceAdapter[]) {
   const finishTriage = async (c: ControllerRole) => {
     const run = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
     await store.completeRun(run!.id, run!.lease!.token, { status: "succeeded", summary: "s", data: { spec: triageSpec } });
-    await (c as unknown as { runsStep(): Promise<void> }).runsStep();
+    await (await c.unit("run-results")).runsStep();
   };
   return { clock, store, source, controller, intake, finishTriage };
 }

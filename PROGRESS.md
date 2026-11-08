@@ -5,10 +5,11 @@
 The factory is moving to RFC 0015: an event-driven factory of independent, restartable actors. M0, M1 and M2 are done.
 The cores of M3 (bus), M6 (worker engine), M9 (passports) and M10 (extension points) are merged on
 `refactor/rfc-0015`. M4 put intake on the bus: inbound polls and stores records, and the controller consumes them
-from `controller.commands`. The decisions are still the legacy ones in `core/controller.ts`, and runs still go
-through `core/worker.ts`. The live database is not migrated: the owner runs `npm run migrate` after
-reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner. Next is M5 (controller units) plus
-the M3, M9 and M10 leftovers.
+from `controller.commands`. M5 moved the legacy controller into discovered controller units
+(`src/controller/units/`; `core/controller.ts` is gone); the units still do their own I/O. Runs still go through
+`core/worker.ts`. The live database is not migrated: the owner runs `npm run migrate` after
+reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner. Next are the M5 follow-ups (pure
+load/decide units), M6 (worker port) and the M3, M9 and M10 leftovers.
 
 The RFC and the target schema live in `~/Desktop/software-factory-rfcs/` (`0015-event-driven-factory.md`,
 `0015-target-schema.sql`). This file says what exists today on the `refactor/rfc-0015` branch, what is still legacy,
@@ -45,7 +46,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 2 | Components and discovery | done | 2279de4, 8e46469; re-planned: CLI + plugin discovery now, legacy code moves with its rewrite |
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
-| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork | 8dc1414: actor state tables + state-machines test |
+| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core merged | merge 073f94f: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | not started | |
 | 8 | Merge queue | not started | |
@@ -73,7 +74,16 @@ src/
                                 - migrations/20261108T2310-runtime-hook-decisions
   <component>/settings/ NEW     one <key>.setting.ts per settable and PR-only key (defineSetting), in its owner
                                 component: controller, worker, inbound, runtime, state, identity, guards
-  controller/           NEW     M5 groundwork (8dc1414): router/actor.ts, actors/work-item/work-item.actor.ts
+  controller/           NEW     M5: the decisions (core/controller.ts is gone)
+                                - router/: unit.ts (defineUnit, UnitOperations), router.ts (dispatch by event kind,
+                                  tick steps in order), actor.ts (state tables)
+                                - actors/work-item/: the WorkItem state table, checked on every stage change
+                                - units/<unit>/<unit>.unit.ts: 22 discovered units (intake, commands, phases, closes,
+                                  standing, verdicts, pr-events, run-results, checks-gate, coordination, merge-check,
+                                  alarms, mirror, app-requests, local-merge, reaper, model-probe, improve, sync, auth,
+                                  transitions, outbox); units/kernel.ts (shared deps, sources, settings, guard),
+                                  units/support.ts (shared declarations); the units still do their own I/O
+                                - handlers/legacy-controller/: bus → router bridge (name kept: inbox consumer name)
   worker/roles/         NEW     one <kind>.role.ts per agent run kind (defineRole): prompt, tools, Rule of Two facts,
                                 golden
   worker/engine/        NEW     ExecutionEngine (index.ts) and the journal engine (plugins/journal/); not wired into
@@ -113,7 +123,8 @@ src/
                                   authz_audit
                                 - profiles/: ProfileStore (display names by user id);
                                   migrations/20261108T2345-identity-profiles
-  core/                 LEGACY  controller.ts (4,959 lines), worker.ts (3,098), policy, coordination, ...
+  core/                 LEGACY  worker.ts (3,098), policy, coordination, controller-deps.ts (the controller role's
+                                deps type), ...
   impl/                 LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/           LEGACY  FactoryStore (136 methods) and the other plugin interfaces
   ui/                   LEGACY  HTTP API and pages for web/
@@ -130,8 +141,8 @@ tests/architecture/     NEW     dependency-direction, file-budget, no-clock, tab
 
 Data flow: inbound polls the sources and the forge, stores each record with an `InboundReceived` message, and its
 `normalize-source` handler publishes `CommandReceived` / `SourceEventReceived` on `controller.commands`. The
-controller's `legacy-controller` handler hands each to the legacy decision code, which still writes the store and the
-thread outbox. Workers still claim runs from the store and push/open PRs themselves.
+controller's `legacy-controller` handler hands each to the controller role's router, whose unit decides and still
+writes the store and the thread outbox itself. Workers still claim runs from the store and push/open PRs themselves.
 
 ## Data and migrations
 
@@ -153,7 +164,8 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`) |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| dependency-direction | 93 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`); they go as legacy code goes (M5) |
+| unit-purity | 42 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); each goes as its unit gets a pure load/decide split |
+| dependency-direction | 212 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
 
@@ -249,9 +261,27 @@ M10 (extension points):
 - `runtime/run-roles/` avoids the RFC's `runtime/roles/` (process roles).
 - Hooks fail closed on timeout or error.
 
+M5 (controller units):
+
+- The move was mechanical (a generator over the class: method bodies unchanged, `this.x` → the owning unit's
+  operation) and landed in one commit, not one unit per commit: a partial move would have needed the old class and
+  the router to call each other. The contract and router are a commit of their own before it.
+- Units call each other through `ctx.unit(name)`, typed by declaration merging into `UnitOperations`, not by import.
+- `ControllerRole` keeps its public `tick*`, `applyRun`, `mergeLocal`, `handleEvent`, `consume*` methods as thin
+  router calls, so the ~70 test files did not change; tests that reached into private methods now use
+  `role.unit(name)` or `role.kernel`.
+- The `legacy-controller` handler keeps its name: it is the inbox consumer name of every handled message.
+- The standing-rule gate list (`PROTECTED_PATHS`, and so `GATE_PATHS`) names `src/controller/` in place of the
+  removed `src/core/controller.ts`: the same protection, now for the units, the router and the state tables.
+- The coordination default `hotspot_paths` still names `src/core/controller.ts` (now matches nothing). Choosing its
+  replacement (a unit file, the units folder, or none) changes how items are held, so it waits on the owner.
+- Not yet: pure `load`/`decide` units (the unit-purity ratchet lists all of today's I/O); the controller loop still
+  sleeps on the injected `Clock`, and units read `clock.now()` through the kernel (no-clock's regex does not see it).
+
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
+- M5 `hotspot_paths` default: it still names the removed `src/core/controller.ts`; pick its replacement or drop it.
 - M10 `mode`: it is `free`, not tighten-only, because #444 lets a project choose auto under a global manual, with
   `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
 - M10 gate list: `tests/architecture/` is not on it yet. A spec allowing `tests/` would then always need the owner (a
@@ -261,7 +291,10 @@ M10 (extension points):
 
 ## Next
 
-1. M5: controller units (router + pure `decide()` units; `controller.ts` gone; the M4 seams go with it).
+1. M5 follow-up: pure units. Per unit, most-touched first (run-results, commands, transitions): a `load` the
+   router runs, a `decide` that returns a decision, the router committing state + inbox + outbox in one transaction;
+   then the `legacy-controller` bridge goes, the loop moves onto a TickGenerator over `Clock`, and decisions take the
+   tick's time.
 2. M3 leftovers (the bus plugin, `requires` and dead-letter alarms are done):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);

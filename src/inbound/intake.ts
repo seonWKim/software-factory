@@ -10,7 +10,7 @@
 // deliveries. Time comes only from the tick.
 
 import type { SourceType } from "../core/types.js";
-import { type GitHubBudgetStatus, rateLimitWait } from "../core/controller.js";
+import { type GitHubBudgetStatus, rateLimitWait } from "../core/controller-deps.js";
 import type { TickLease } from "../core/lease.js";
 import type { Logger } from "../core/log.js";
 import type { SyncFence } from "../interfaces/factory-store.js";

@@ -205,7 +205,7 @@ function runStart(events: readonly GateEvent[], gate: StandingGate, tier: Tier):
  */
 export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
   gates: [
-    "src/core/controller.ts", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
+    "src/controller/", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
     "src/core/merge-check.ts", "src/core/standing.ts", "src/runtime/hooks/",
   ],
   prompts: ["prompts/", "golden/"],

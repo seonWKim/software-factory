@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { DependencyLink, DependencySource } from "../src/core/coordination.js";
-import { DEPENDENCY_STATE_TTL_MS } from "../src/core/controller.js";
+import { DEPENDENCY_STATE_TTL_MS } from "../src/controller/units/coordination/coordination.unit.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { statusOf } from "../src/core/status-label.js";
 import type { DependencyState, RunKind, SourceRef, WorkItemId, WorkItemPatch } from "../src/core/types.js";

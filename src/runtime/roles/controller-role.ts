@@ -1,30 +1,32 @@
-// The controller role (RFC 0015 §8, M4): what `factory controller` and `factory dev` run. It wires the bus into
-// the legacy controller (strangler): inbound polls the sources and the forge, stores their records and announces
-// them; its normalizer turns them into controller.commands; the controller's consumer hands each to the legacy
-// decision code. Every part moves on its own TickGenerator (inbound: intake, relay, consume, records, prune;
-// controller: relay, consume, prune; bus: retry, prune), never on a clock read here.
+// The controller role (RFC 0015 §8, M4–M5): what `factory controller` and `factory dev` run. Inbound polls the
+// sources and the forge, stores their records and announces them; its normalizer turns them into
+// controller.commands; the controller's consumer hands each to the router, which gives each event to the unit that
+// accepts its kind. The units (src/controller/units/, discovered) decide; their steps run on the controller's tick.
+// Inbound and the bus move on their own TickGenerators.
 //
-// The sync lease is made here and shared: inbound polls under it, the legacy controller fences its deliveries with
-// it. Tests drive the same path one step at a time through tickIntake and tickCommands, which drain the bus.
+// The sync lease is made here and shared: inbound polls under it, the sync unit fences deliveries with it. Tests
+// drive the same path one step at a time through the tick* methods, which drain the bus.
 
 import { join } from "node:path";
 import {
   BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
-import { CONTROLLER, type ControllerContext } from "../../controller/index.js";
-import { Controller, type ControllerDeps, type GitHubBudgetStatus } from "../../core/controller.js";
+import {
+  CONTROLLER, type ControllerContext, type ControllerEvent, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
+} from "../../controller/index.js";
+import type { ControllerDeps, GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { FactoryConfig } from "../../core/config.js";
 import { TickLease, syncLeaseName, syncLeaseOps } from "../../core/lease.js";
 import { Listener } from "../../core/listener.js";
 import { GITHUB_RATE_LIMIT } from "../../core/policy.js";
 import { LiveSettings } from "../../core/settings.js";
-import type { SourceType } from "../../core/types.js";
+import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickSource } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
-import { loadRegistry, type Registry } from "../registry/registry.js";
+import { loadDescriptors, loadRegistry, type Registry } from "../registry/registry.js";
 import { ensureDiscoveredTopicTables } from "../registry/topic-tables.js";
 
 export interface ControllerRoleDeps extends ControllerDeps {
@@ -50,6 +52,7 @@ const CODE_ROOT = join(import.meta.dirname, "..", "..");
 const MAX_DRAIN_ROUNDS = 50;
 
 let discovered: Promise<Registry> | null = null;
+let discoveredUnits: Promise<ControllerUnits> | null = null;
 
 /** The discovered handlers and topics, loaded once per process; startup refuses a broken dispatch. */
 async function registry(): Promise<Registry> {
@@ -57,6 +60,11 @@ async function registry(): Promise<Registry> {
   const problems = r.problems();
   if (problems.length > 0) throw new Error(`message dispatch is broken: ${problems.join("; ")}`);
   return r;
+}
+
+/** The discovered controller units, loaded once per process. */
+function units(): Promise<ControllerUnits> {
+  return (discoveredUnits ??= loadDescriptors<ControllerUnits[number]>(CODE_ROOT, "unit").then((l) => l.map((u) => u.descriptor)));
 }
 
 /** The SQL driver under the store: the bus and inbound write in its transactions. */
@@ -73,7 +81,7 @@ function leaseTimings(live: LiveSettings): Pick<FactoryConfig, "lease_ms" | "hea
 
 type Prepared = ControllerRoleDeps & { settings: LiveSettings; sync: TickLease | null };
 
-/** The live settings and the sync lease, made once and shared by inbound and the legacy controller. */
+/** The live settings and the sync lease, made once and shared by inbound and the controller units. */
 function prepare(deps: ControllerRoleDeps): Prepared {
   const settings = deps.settings ?? LiveSettings.fixed(deps.config);
   const sources = deps.sources ?? (deps.source ? [deps.source] : []);
@@ -94,18 +102,28 @@ interface Wiring {
   readonly decisions: ComponentConsumer<ControllerContext>;
 }
 
-export class ControllerRole extends Controller {
+/** The local merge's `who`: the CLI's local identity or the app request's factory user ID. */
+type MergeBy = Parameters<UnitOperations["local-merge"]["mergeLocal"]>[1];
+
+export class ControllerRole implements Decisions {
   private readonly role: Prepared;
+  /** What every unit shares: the deps, the configured sources, the live settings. */
+  readonly kernel: Kernel;
   private wiring?: Promise<Wiring>;
+  private routed?: Promise<Router<Kernel, ControllerEvent>>;
 
   constructor(deps: ControllerRoleDeps) {
-    const d = prepare(deps);
-    super(d);
-    this.role = d;
+    this.role = prepare(deps);
+    this.kernel = new Kernel(this.role);
   }
 
-  override async run(signal: AbortSignal): Promise<void> {
+  /**
+   * The decision loop: each tick_ms the units' `tick` steps, and their `poll` steps once a poll interval passed.
+   * Inbound polls the sources and the forge, and the bus delivers their records and the command rows.
+   */
+  async run(signal: AbortSignal): Promise<void> {
     const w = await this.wire();
+    const r = await this.router();
     const onError = (schedule: string, err: unknown) =>
       this.role.log.error("loop step failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
     const ticks = this.role.ticks ?? new TimeBasedTicks();
@@ -119,29 +137,50 @@ export class ControllerRole extends Controller {
     scheduleComponent(controller, w.controllerBus);
     const bus = ticks.create(onError);
     scheduleBus(bus, w.scheduler);
-    await Promise.all([super.run(signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
+    await Promise.all([this.decide(r, signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
     // Shutting down: hand the sync lease over now instead of after lease_ms.
     await this.role.sync?.release();
   }
 
-  /** One intake step: every source and the forge polled now, then their records through the bus to the decisions. */
-  override async tickIntake(): Promise<void> {
+  /** The units' steps on the controller's tick (the injected clock's, so tests move it by hand). */
+  private async decide(r: Router<Kernel, ControllerEvent>, signal: AbortSignal): Promise<void> {
+    const k = this.kernel;
+    // The label, never the key: log lines and comments name a project by its readable path.
+    k.d.log.info("controller started", { project: k.cfg.project.label });
+    let lastPoll = -Infinity;
+    while (!signal.aborted) {
+      await k.live.refresh();
+      const now = k.nowMs();
+      const due = now - lastPoll >= k.cfg.poll_interval_ms;
+      if (due) lastPoll = now;
+      await r.tick(due ? ["tick", "poll"] : ["tick"]);
+      await k.d.clock.sleep(k.cfg.tick_ms, signal).catch(() => undefined);
+    }
+  }
+
+  /** One intake step: every source and the forge polled now, then their records through the bus to the units. */
+  async tickIntake(): Promise<void> {
     await this.role.settings.refresh();
     const w = await this.wire();
     const t = this.tick("intake");
     await w.inbound.tick(t, true);
     await this.drain(t);
-    await super.tickIntake();
+    const r = await this.router();
+    await this.kernel.guard("sync", () => r.unit("sync").syncStep());
+    await r.unit("closes").afterPoll();
+    await r.unit("outbox").outboxStep();
   }
 
-  /** One command step: the command rows after the cursor, through the bus to the decisions, then their mirrors. */
-  override async tickCommands(): Promise<void> {
+  /** One command step: the command rows after the cursor, through the bus to the units, then their mirrors. */
+  async tickCommands(): Promise<void> {
     await this.role.settings.refresh();
     const w = await this.wire();
     const t = this.tick("commands");
     await w.inbound.relayCommands(t);
     await this.drain(t);
-    await super.tickCommands();
+    const r = await this.router();
+    await r.unit("mirror").mirrorStep();
+    await r.unit("outbox").outboxStep();
   }
 
   /** Removes inbound records past inbox_retention_days, as inbound's `records` tick does. */
@@ -149,8 +188,128 @@ export class ControllerRole extends Controller {
     await (await this.wire()).inbound.prune(this.tick("records"));
   }
 
+  /**
+   * One outbox step (issue #282): every pending thread entry of a configured source type is delivered to its
+   * target source once. The only caller of a source's postComment.
+   */
+  async tickOutbox(): Promise<void> {
+    await this.step(async () => undefined);
+  }
+
+  async tickRuns(): Promise<void> {
+    await this.step((r) => r.unit("run-results").runsStep());
+  }
+
+  async tickModelProbe(): Promise<void> {
+    await this.step((r) => r.unit("model-probe").probeStep());
+  }
+
+  async tickReaper(): Promise<void> {
+    await this.step((r) => r.unit("reaper").reaperStep());
+  }
+
+  async tickMergeCheck(): Promise<void> {
+    await this.step((r) => r.unit("merge-check").mergeCheckStep());
+  }
+
+  async tickCoordination(): Promise<void> {
+    await this.step((r) => r.unit("coordination").coordinationStep());
+  }
+
+  async tickChecks(): Promise<void> {
+    await this.step((r) => r.unit("checks-gate").checksStep());
+  }
+
+  /** One alarm step (design 05-alarms) with the settings as of this tick. */
+  async tickAlarms(): Promise<void> {
+    await this.kernel.live.refresh();
+    await (await this.router()).unit("alarms").alarmsStep();
+  }
+
+  /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
+  async tickImprove(): Promise<void> {
+    await this.kernel.live.refresh();
+    await (await this.router()).unit("improve").improveStep();
+  }
+
+  async tickPhases(): Promise<void> {
+    await (await this.router()).unit("phases").tickPhases();
+  }
+
+  async tickSourceCloses(): Promise<void> {
+    await (await this.router()).unit("closes").tickSourceCloses();
+  }
+
+  /** The start-up status catch-up (issue #254); false while the request budget defers it. */
+  async catchUpStatus(): Promise<boolean> {
+    return (await this.router()).unit("outbox").catchUpStatus();
+  }
+
+  /** A finished run's outcome, then the outbox. */
+  async applyRun(run: Run): Promise<void> {
+    const r = await this.router();
+    await r.unit("run-results").apply(run);
+    await r.unit("outbox").outboxStep();
+  }
+
+  /** The local merge (design 05-sources, Local items); returns the refusal, or null when the item merged. */
+  async mergeLocal(id: WorkItemId, who: MergeBy, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
+    return (await this.router()).unit("local-merge").mergeLocal(id, who, key, detail);
+  }
+
+  /** One event decided at once (tests and the status catch-up path), then the outbox. */
+  async handleEvent(e: ControllerEvent): Promise<void> {
+    const r = await this.router();
+    await r.dispatch(e);
+    await r.unit("outbox").outboxStep();
+  }
+
+  /**
+   * One event a source or the forge reported, delivered by the bus (RFC 0015 M4). A failure is logged and passed,
+   * as a polled event's always was: the next poll or the person's next comment brings it again.
+   */
+  async consumeEvent(e: ControllerEvent): Promise<void> {
+    const r = await this.router();
+    await this.kernel.guard(`event:${e.kind}`, () => r.dispatch(e));
+  }
+
+  /**
+   * One command row (issue #282), delivered by the bus in its stream's order (the commands unit). Throws when its
+   * handling failed (a store error): the bus retries it, and the commands after it in its stream wait.
+   */
+  async consumeCommand(c: Parameters<Decisions["consumeCommand"]>[0]): Promise<void> {
+    try {
+      await (await this.router()).unit("commands").handleInboxCommand(c);
+    } catch (err) {
+      this.role.log.error("command failed; retried next tick", { command_seq: c.seq, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      throw err;
+    }
+  }
+
+  /** One unit's operations, for a test that drives a single step. */
+  async unit<N extends UnitName>(name: N): Promise<UnitOperations[N]> {
+    return (await this.router()).unit(name);
+  }
+
+  /** Settings refreshed, one unit step, then the outbox: the shape of every manual tick. */
+  private async step(fn: (r: Router<Kernel, ControllerEvent>) => Promise<unknown>): Promise<void> {
+    await this.kernel.live.refresh();
+    const r = await this.router();
+    await fn(r);
+    await r.unit("outbox").outboxStep();
+  }
+
   private tick(schedule: string): Tick {
-    return tickAt(schedule, 1, this.nowMs());
+    return tickAt(schedule, 1, this.kernel.nowMs());
+  }
+
+  private router(): Promise<Router<Kernel, ControllerEvent>> {
+    return (this.routed ??= units().then((list) => {
+      const r = new Router<Kernel, ControllerEvent>(list, this.kernel, { guard: (what, fn) => this.kernel.guard(what, fn) });
+      const problems = r.problems();
+      if (problems.length > 0) throw new Error(`controller units are broken: ${problems.join("; ")}`);
+      return r;
+    }));
   }
 
   /** Relays and consumes until nothing moves: what the role's ticks do over time, done at once. */
@@ -215,7 +374,7 @@ export class ControllerRole extends Controller {
       decisions: new ComponentConsumer<ControllerContext>({
         db, bus: controllerBus, registry: r, component: CONTROLLER, transactional: false,
         context: (_tx, emit) => ({
-          db, emit, legacy: this,
+          db, emit, decisions: this,
           recordAlert: async (alert, dedupe_ms) => {
             const scan = alert.detail === null ? null : await d.scanner.scan("ui", alert.detail);
             await d.store.recordAlert({ ...alert, detail: scan?.clean ? alert.detail : null }, dedupe_ms);
