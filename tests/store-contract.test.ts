@@ -1606,6 +1606,9 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "identity_passports",
       "identity_revocations",
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
+      // The sql bus's own tables (RFC 0015 M3).
+      "bus_scheduler",
+      "bus_topics",
     ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {

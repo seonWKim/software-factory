@@ -11,6 +11,17 @@ CREATE TABLE authz_audit (
     at           TEXT NOT NULL
   );
 
+CREATE TABLE bus_scheduler (
+  id INTEGER NOT NULL PRIMARY KEY,
+  released_until TEXT NOT NULL
+);
+
+CREATE TABLE bus_topics (
+  name TEXT NOT NULL PRIMARY KEY,
+  consumption TEXT NOT NULL,
+  partitions INTEGER NOT NULL
+);
+
 CREATE TABLE controller_alert_patterns (
     pattern_key    TEXT PRIMARY KEY,
     last_alert_at  TEXT NOT NULL

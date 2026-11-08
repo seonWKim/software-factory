@@ -15,7 +15,7 @@ background agents) is paused until it lands.
 | 0 | Foundations: shared kernel, architecture tests + ratchet, schema snapshot, migration safety kit | done (6235fc9) |
 | 1 | Table renames to `<component>_` prefixes (backup → expand → backfill → verify → swap) | done; rehearsed on a copy of the live MySQL DB |
 | 2 | Components and discovery (re-planned: CLI + plugin discovery now; legacy code moves with its rewrite) | done (2279de4, 8e46469) |
-| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core in progress (background agent, branch refactor/rfc-0015-m3-bus) |
+| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged (bus contract green on SQLite and MySQL); components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork: actor state tables + state-machines test (8dc1414) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core merged: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
@@ -35,6 +35,11 @@ src/
   cli/                 NEW  command.ts (defineCommand), index.ts (loadCommands), support.ts, and one folder per command
                             under handlers/ (dev, loops, status, stats, workers, resume, link-code, settings, ui,
                             migrate, setup, doctor, llm-check, golden, issue, session, local, improve, canary)
+  bus/                 NEW  index.ts (EventBus, Inbox, Relay, RetryScheduler, deliver), scheduler/ (bus schedules on a
+                            TickGenerator), plugins/sql/ (SqlEventBus: outbox publish + relay, partition cursors with
+                            leases, competing rows, retries, dead letters, delayed messages, inbox dedupe;
+                            SqlRetryScheduler: release horizon, retention, replay; ddl.ts: per-topic tables from
+                            the topic descriptor), migrations/ (bus_topics, bus_scheduler)
   state/               NEW  SqlDriver interface (moved from impl/store/sql/driver.ts), schema snapshots, discovery,
                             migrate/: backup.ts (backup, verify a copy, restore; order-independent checksums),
                             migration.ts (defineMigration), runner.ts (timestamped migrations after the frozen
@@ -108,6 +113,13 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
   edited `identity_passports` row is refused (`tampered`). Person passports last 1h by default, 7 days at most.
 - 2026-11-08 (M9): the solo identity is git `user.email`, then the OS user, then `anonymous`, as in the legacy
   CLI. Git `user.name` is a display name and is not used.
+- 2026-11-08 (M3): the sql bus's per-topic tables are created by an ensure step from each discovered topic
+  descriptor (`ensureTopicTables`), not by a migration per topic, and recorded in `bus_topics`; a change of a
+  topic's partitions or consumption is refused there and needs a bus migration. The schema snapshot runs it.
+- 2026-11-08 (M3): the bus's time is a release horizon in `bus_scheduler`, moved by the retry scheduler's tick.
+  Retries, delayed messages and claim leases are due against it, so consumers never read a clock.
+- 2026-11-08 (M3): a delayed message on a partitioned topic is parked (retries row, attempt 0) and the cursor
+  moves past it, so a timer never holds up its partition; it is delivered when due, outside partition order.
 
 ## Live database
 
@@ -116,5 +128,8 @@ Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; t
 
 ## Next
 
-M3 (bus) lands from its background branch, then M4 inbound on top of it. M6 engine and M9 passports land
-from their branches when ready.
+M4 inbound on the bus. M3 leftovers: each component's migration creates its outbox and inbox
+(`ensureComponentTables`); the runtime builds the sql bus as a plugin, ensures discovered topics at start and in
+`npm run migrate`, and runs the bus schedules; `requires` on competing topics (worker filtering) and dead-letter
+alerts on `system.alerts`. M9 follow-up: guided `factory setup` that registers the user's display name against
+their ID (owner decision 2026-11-08); `narrow` callable only from worker/ and identity/ (architecture rule).

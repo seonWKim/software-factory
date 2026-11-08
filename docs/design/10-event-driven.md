@@ -50,6 +50,19 @@ force.
   the `reaper` tick it fails runs past their deadline and takes over runs whose lease (`heartbeat` timeout)
   expired. A run journaled by another `code_version` is taken over only by code that declares it can resume
   it; otherwise it waits for a worker on that revision or fails at its deadline.
+- **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
+  and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
+  the rows to the topic on the component's `relay` tick. Each topic has its own tables (`bus_<topic>`,
+  `_cursors`, `_retries`, `_dead_letters`), created from the discovered topic descriptor by `ensureTopicTables`
+  (never altered or dropped there) and listed in `bus_topics`; a change of a topic's partitions or consumption is
+  refused and needs a bus migration. Partitioned and fan-out topics hand out one message per partition at a time
+  under a lease, in order; a failed message holds its partition until it succeeds or is dead-lettered. Competing
+  topics claim per row. Time on the bus is the release horizon in `bus_scheduler`, which only the retry
+  scheduler's tick moves: retries, delayed messages and expired leases become due against it, so no consumer
+  reads a clock. A delayed message on a partitioned topic is parked and does not hold up its partition. Consumers
+  dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
+  at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
+  MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
@@ -61,3 +74,6 @@ force.
 - **CLI commands** (decision changed 2026-11-08, RFC 0015 M2). Before: `src/main.ts` held one `switch` case per
   command and one hand-written help text.
 - **Plugin discovery root** (decision changed 2026-11-08, RFC 0015 M2). Before: only `src/impl/` was walked.
+- **Messaging between parts** (decision changed 2026-11-08, RFC 0015 M3). Before: no bus; the controller tick
+  polls sources and the store, and workers claim runs from the store (still how the factory runs until components
+  are wired to the bus in M4 and later).

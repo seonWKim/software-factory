@@ -14,6 +14,19 @@ CREATE TABLE `authz_audit` (
   KEY `authz_audit_at` (`at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `bus_scheduler` (
+  `id` bigint NOT NULL,
+  `released_until` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_topics` (
+  `name` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `consumption` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partitions` bigint NOT NULL,
+  PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_alert_patterns` (
   `pattern_key` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `last_alert_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
