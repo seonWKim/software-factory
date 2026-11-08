@@ -34,7 +34,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      # A pull request runs the plain `npm test` (the `run:` line tests/check-commands.test.ts matches against
+      # repo.check_commands). A push to main runs the same command with vitest's JSON report added, for the
+      # slowest-files step below (docs/design/05-ci-gate.md, Slowest files).
       - run: npm test
+        if: github.event_name != 'push'
+      - name: npm test (with a JSON report)
+        if: github.event_name == 'push'
+        run: npm test -- --reporter=default --reporter=json --outputFile.json=${{ runner.temp }}/test-report.json
+      - name: The 10 slowest test files
+        if: always() && github.event_name == 'push'
+        run: node scripts/slowest-files.mjs ${{ runner.temp }}/test-report.json
 
   test-mysql:
     runs-on: ubuntu-latest

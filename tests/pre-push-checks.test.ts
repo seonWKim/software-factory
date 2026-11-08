@@ -1,6 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
@@ -19,21 +17,11 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import type { TestDatabase } from "../src/interfaces/test-database.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
+import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { newStore } from "./helpers/store.js";
 
 // The pre-push checks (design §4, decided 2026-11-03): an implement run runs repo.check_commands after sync and
 // the scope, size and floor gates, before any handoff row or push. A failure gets one fix step in the same run.
-
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-const AGENT_ENV = {
-  ...GIT_ENV,
-  GIT_AUTHOR_NAME: "agent", GIT_AUTHOR_EMAIL: "agent@example.com",
-  GIT_COMMITTER_NAME: "agent", GIT_COMMITTER_EMAIL: "agent@example.com",
-};
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", env: AGENT_ENV }).trim();
-}
 
 function commitFile(repo: string, path: string, content: string, msg: string): string {
   mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -146,9 +134,21 @@ class FakeTestDatabase implements TestDatabase {
 
 type AgentStep = (workdir: string, spec: AgentRunSpec) => void;
 
+/** A bare origin with main (README, src/a.txt), a dev clone and a factory checkout. */
+const repos = gitTemplate((root) => {
+  const origin = join(root, "origin.git");
+  const dev = join(root, "dev");
+  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  git(root, "clone", "--quiet", origin, dev);
+  commitFile(dev, "README.md", "hi\n", "init");
+  commitFile(dev, "src/a.txt", "a\n", "add a");
+  git(dev, "push", "--quiet", "origin", "main");
+  git(root, "clone", "--quiet", origin, join(root, "repo"));
+});
+
 /**
- * A bare origin with main (README, src/a.txt) and a factory checkout. The implementer edits src/a.txt, commits,
- * then runs `implement`. A fix step (the prompt's "## Checks failed before push") runs `fix`.
+ * A copy of the template's repositories. The implementer edits src/a.txt, commits, then runs `implement`. A fix
+ * step (the prompt's "## Checks failed before push") runs `fix`.
  */
 async function setup(opts: {
   checks?: string[][];
@@ -160,16 +160,9 @@ async function setup(opts: {
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "sf-checks-")));
+  const root = repos.copy();
   const origin = join(root, "origin.git");
-  const dev = join(root, "dev");
   const repo = join(root, "repo");
-  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
-  git(root, "clone", "--quiet", origin, dev);
-  commitFile(dev, "README.md", "hi\n", "init");
-  commitFile(dev, "src/a.txt", "a\n", "add a");
-  git(dev, "push", "--quiet", "origin", "main");
-  git(root, "clone", "--quiet", origin, repo);
 
   const cfg: FactoryConfig = {
     ...config,
