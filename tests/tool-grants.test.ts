@@ -140,7 +140,7 @@ describe("tool_grants at startup", () => {
 describe("the GitHub broker's read_only flags", () => {
   it("only github.preflight is read-only", () => {
     const broker = new GitHubToolBroker({
-      client: {} as never, credentials: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
+      client: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const flags = Object.fromEntries(broker.allTools().map((t) => [t.name, t.read_only]));
     expect(flags).toEqual({ "git.store_branch": false, "github.push_branch": false, "github.open_pr": false, "github.preflight": true });

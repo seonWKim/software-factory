@@ -22,7 +22,7 @@ import { issue, newStore, system, w1 } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, issueRef, prompts, silent, cleanScanner,
 } from "./helpers/fakes.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 
 const cred = { name: "CLAUDE_CODE_OAUTH_TOKEN" as const, value: "oauth-value-123456" };
 const paths = { home: "/tmp/h", claudeConfigDir: "/tmp/c", path: "/usr/bin" };
@@ -340,7 +340,6 @@ describe("Tool broker", () => {
     } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
       client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      credentials: { token: async () => null },
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
@@ -373,21 +372,14 @@ describe("Tool broker", () => {
     expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.preflight", preflight)).toMatchObject({ ok: true });
   });
 
-  it("pushes only factory branches", async () => {
+  it("stores only factory branches", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call(ctx, "github.push_branch", { workdir: "/x", branch: "main", base_ref: "main" });
+    const r = await broker.call(ctx, STORE_BRANCH, { workdir: "/x", branch: "main", base_ref: "main" });
     expect(r).toMatchObject({ ok: false, error_code: "branch_not_allowed" });
-  });
-
-  it("egress-scans a PR's text before any request", async () => {
-    const { broker, ctx, requests } = await setup();
-    const r = await broker.call(ctx, "github.open_pr", { branch: "factory/x", base_ref: "main", title: "t", body: "leaky-secret-value" });
-    expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
-    expect(requests).toHaveLength(0);
   });
 });
 
-describe("Tool broker push: .env.example at HEAD must hold no values", () => {
+describe("Tool broker store: .env.example at HEAD must hold no values", () => {
   const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
   const commit = (dir: string, files: Record<string, string>, msg: string) => {
@@ -421,22 +413,22 @@ describe("Tool broker push: .env.example at HEAD must hold no values", () => {
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
     const broker = new GitHubToolBroker({
       client: {} as GitHubClient, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/", repoPath: repo,
-      credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) } as unknown as GitHubCredentials,
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
-    const push = () => broker.call(ctx, "github.push_branch", { workdir, branch: "factory/wi_env", base_ref: "main" });
-    const pushed = () => git(origin, "for-each-ref", "refs/heads/factory/wi_env") !== "";
+    // The run's last step: the branch stored in the factory repo, for outbound to push (RFC 0015 M7).
+    const push = () => broker.call(ctx, STORE_BRANCH, { workdir, branch: "factory/wi_env", base_ref: "main" });
+    const pushed = () => git(repo, "for-each-ref", "refs/factory/outbound/factory/wi_env") !== "";
     return { workdir, push, pushed };
   }
 
-  it("pushes when .env.example has names and blank values only", async () => {
+  it("stores when .env.example has names and blank values only", async () => {
     const { workdir, push, pushed } = await setup();
     commit(workdir, { ".env.example": "# names only\nGITHUB_TOKEN=\nexport MYSQL_PASSWORD=\nSLACK_BOT_TOKEN=\"\"\n" }, "add a name");
     expect(await push()).toMatchObject({ ok: true });
     expect(pushed()).toBe(true);
   });
 
-  it("refuses with egress_blocked, and runs no git push, when .env.example assigns a value", async () => {
+  it("refuses with egress_blocked, and writes no ref, when .env.example assigns a value", async () => {
     for (const line of [`GITHUB_TOKEN=${VALUE}`, `export GITHUB_TOKEN=${VALUE}`, `GITHUB_TOKEN="${VALUE}"`]) {
       const { workdir, push, pushed } = await setup();
       commit(workdir, { ".env.example": `# names only\n${line}\n` }, "leak");

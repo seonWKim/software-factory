@@ -188,7 +188,7 @@ describe("the GitHub preflight in the broker", () => {
     const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
     const client = { request: async () => { throw err; } } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
+      client, store, scanner: cleanScanner,
       clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };

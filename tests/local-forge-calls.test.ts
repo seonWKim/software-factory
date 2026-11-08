@@ -60,7 +60,7 @@ async function withGitHub(source: SourceRef, sandbox: FakeSandbox = new FakeSand
   const f = await pipeline();
   const client = new NanGuardClient();
   const broker = new GitHubToolBroker({
-    client, credentials: { token: async () => null } as unknown as GitHubCredentials, store: f.store, scanner: cleanScanner,
+    client, store: f.store, scanner: cleanScanner,
     clock: f.clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
   });
   const worker = new Worker({

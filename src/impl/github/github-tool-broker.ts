@@ -1,13 +1,11 @@
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
-import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
-import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, storeBranch, trustedRunFolder } from "../broker/trusted-git.js";
+import { branchAllowed, holdsLease, storeBranch } from "../broker/trusted-git.js";
 
 /**
  * Where a run's last step stores its branch in the factory repo (RFC 0015 M7): a staging ref outbound's
@@ -30,33 +28,6 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
-    name: "github.push_branch",
-    read_only: false,
-    description: "Push the current HEAD of a run folder to its factory branch on the factory repo's remote.",
-    input_schema: {
-      type: "object",
-      required: ["workdir", "branch", "base_ref"],
-      properties: { workdir: { type: "string" }, branch: { type: "string" }, base_ref: { type: "string" } },
-    },
-  },
-  {
-    name: "github.open_pr",
-    read_only: false,
-    description:
-      "Open a PR for a factory branch, or update the open one's title and body so it matches the branch. `labels` adds (true) or removes (false) each named label on it.",
-    input_schema: {
-      type: "object",
-      required: ["branch", "base_ref", "title", "body"],
-      properties: {
-        branch: { type: "string" },
-        base_ref: { type: "string" },
-        title: { type: "string" },
-        body: { type: "string" },
-        labels: { type: "object", additionalProperties: { type: "boolean" } },
-      },
-    },
-  },
-  {
     name: "github.preflight",
     read_only: true,
     description:
@@ -74,28 +45,20 @@ interface PushArgs {
   branch: string;
   base_ref: string;
 }
-interface PrArgs {
-  branch: string;
-  base_ref: string;
-  title: string;
-  body: string;
-  /** Label name → present. Adding creates a missing label; removing one that is not there is a no-op. */
-  labels?: Record<string, boolean>;
-}
 interface PreflightArgs {
   branch: string;
   base_ref: string;
 }
 
 /**
- * G2: credentialed GitHub actions, in the worker process. Every call checks the caller still holds
- * its lease (fencing) and egress-scans what it is about to send (G5). Pushes only to factory branches.
+ * G2: a run's GitHub tools, in the worker process: the store of its branch in the factory repo (the push and the PR
+ * are outbound's, through the forge, RFC 0015 M7) and the read-only preflight. Every call checks the caller still
+ * holds its lease (fencing); the store egress-scans the branch (G5) and writes only factory branches.
  */
 export class GitHubToolBroker implements ToolBroker {
   constructor(
     private readonly deps: {
       client: GitHubApi;
-      credentials: GitHubCredentials;
       store: FactoryStore;
       scanner: EgressScanner;
       clock: Clock;
@@ -110,7 +73,7 @@ export class GitHubToolBroker implements ToolBroker {
     return TOOLS.filter((t) => grants.includes(t.name));
   }
 
-  /** Push and PR change the forge; only the preflight, which reads, is read-only. */
+  /** The store writes the factory repo; only the preflight, which reads, is read-only. */
   allTools(): readonly ToolDescriptor[] {
     return TOOLS;
   }
@@ -120,10 +83,6 @@ export class GitHubToolBroker implements ToolBroker {
     switch (name) {
       case STORE_BRANCH:
         return this.store(args as PushArgs);
-      case "github.push_branch":
-        return this.push(args as PushArgs);
-      case "github.open_pr":
-        return this.openPr(args as PrArgs);
       case "github.preflight":
         return this.preflight(args as PreflightArgs);
       default:
@@ -139,70 +98,6 @@ export class GitHubToolBroker implements ToolBroker {
     if (!repo) return { ok: false, error_code: "no_trusted_repo", message: "the broker has no factory repo path" };
     const r = await storeBranch(a.workdir, { repo, base: `origin/${a.base_ref}`, ref: stagingRef(a.branch), force: true }, this.deps.scanner);
     return "sha" in r ? { ok: true, content: { sha: r.sha, forge: true } } : r;
-  }
-
-  /**
-   * Pushes the run folder's HEAD. Everything trusted comes from the factory repo, never from the run folder the
-   * agent could write (design §5): the remote URL, and the base commit the scanned diff starts from. Git in the
-   * run folder runs with TRUSTED_GIT_ENV and only after its git folder and config pass the checks, so no hook,
-   * fsmonitor, textconv or URL rewrite the agent configured runs or redirects the push.
-   */
-  private async push(a: PushArgs): Promise<ToolResult> {
-    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
-    if (refused) return refused;
-    const repo = this.deps.repoPath;
-    if (!repo) return { ok: false, error_code: "no_trusted_repo", message: "the broker has no factory repo path" };
-    const [baseR, urlR] = await Promise.all([
-      factoryCommit(repo, `origin/${a.base_ref}`),
-      factoryRemoteUrl(repo),
-    ]);
-    if (!("sha" in baseR) || !("url" in urlR)) {
-      const why = [baseR, urlR].map((r) => ("message" in r ? r.message : "")).join(" ");
-      return { ok: false, error_code: "git_failed", message: why.trim().slice(0, 500) };
-    }
-    const url = urlR.url;
-
-    const folder = await trustedRunFolder(a.workdir);
-    if (!("git" in folder)) return folder;
-    const { git } = folder;
-    const blocked = await scanBranch(git, baseR.sha, this.deps.scanner);
-    if (blocked) return blocked;
-
-    const token = await this.deps.credentials.token();
-    if (!token) return { ok: false, error_code: "no_credential", message: "GitHub credentials missing" };
-    // The token reaches git only through this child's env and an inline credential helper, never argv.
-    const helper = '!f() { echo username=x-access-token; echo "password=$SF_GIT_TOKEN"; }; f';
-    const r = await git(
-      ["-c", "credential.helper=", "-c", `credential.helper=${helper}`, "push", "--quiet", "--no-verify", url, `HEAD:refs/heads/${a.branch}`],
-      { SF_GIT_TOKEN: token.reveal() },
-    );
-    if (r.exit_code !== 0) {
-      // A host that cannot be reached is the network, not the push: the network pause, with the host only.
-      const host = unreachableHost(r.stderr);
-      if (host !== null) return { ok: false, error_code: NETWORK_UNAVAILABLE, message: networkDetail(host) };
-      // A refused credential is not a rejected push: forge_auth pauses implement-type claims (design §5 Restarts).
-      return { ok: false, error_code: forgeAuthRefused(r.stderr) ? FORGE_AUTH : "push_failed", message: r.stderr.trim().slice(0, 500) };
-    }
-    const head = await git(["rev-parse", "HEAD"]);
-    return { ok: true, content: { sha: head.stdout.trim() } };
-  }
-
-  private async openPr(a: PrArgs): Promise<ToolResult> {
-    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
-    if (refused) return refused;
-    const scan = await this.deps.scanner.scan("pr", [a.title, a.body, ...Object.keys(a.labels ?? {})].join("\n"));
-    if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
-
-    try {
-      const pr = await openOrUpdatePr(this.deps.client, this.deps.repo, a);
-      return { ok: true, content: pr };
-    } catch (err) {
-      // A rate limit or a 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.
-      const limited = rateLimited("open_pr", err);
-      if (limited) return limited;
-      if (refusedStatus(err)) return { ok: false, error_code: FORGE_AUTH, message: `open_pr: GitHub refused the credentials (${refusedStatus(err)})` };
-      throw err;
-    }
   }
 
   /**

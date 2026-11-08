@@ -7,17 +7,18 @@ import { IMPLEMENT_KINDS, INTERACTIVE, SESSION_ABANDONED, SESSION_RELEASED, bran
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
 import { type LearnedSettingsSource, settingValues } from "./settings.js";
 import type { Run, RunId, SourceRef, SourceType, WorkItem, WorkItemId, WorkItemPatch } from "./types.js";
-import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor } from "./worker-deps.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, hasTool, prTitle, routeFor, runPushIntents } from "./worker-deps.js";
 import type { AuthProvider, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, SessionUpdate, StartSessionResult } from "../interfaces/factory-store.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
-import type { ToolBroker, ToolCallContext } from "../interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext } from "../interfaces/tool-broker.js";
 
 // `factory session` (design §5, 2026-11-01): the owner's own LLM session on an item, as one `interactive` run. `finish`
-// runs the worker's pre-push gates and `repo.test_command`, then pushes and opens the PR only through the broker (a local
-// item: commits its local branch through the local broker, no PR, as the worker does); the
+// runs the worker's pre-push gates and `repo.test_command`, then stores the branch through the broker and records the
+// push and PR as keyed intents outbound delivers (RFC 0015 M7; a local item: commits its local branch through the local
+// broker, no PR, as the worker does); the
 // controller applies the end like any run outcome. The LLM runs as the owner, outside the run-folder rule (an exception).
 
 /** The local record of an open session (under state_dir). Holds a lease token, never a credential. */
@@ -173,7 +174,7 @@ export class Sessions {
     if (!run || !item) return refused("the session's run or item is gone from the store");
     const last = run.last_finish;
     const blocked = item.blocked_on !== "none" ? `, blocked on ${item.blocked_on}: ${item.blocked_reason ?? ""}` : "";
-    const finish = !last ? "none yet" : last.ok ? `${last.at} passed, PR #${last.pr_number}` : `${last.at} refused: ${last.reasons.join("; ")}`;
+    const finish = !last ? "none yet" : last.ok ? `${last.at} passed${last.pr_number === null ? "" : `, PR #${last.pr_number}`}` : `${last.at} refused: ${last.reasons.join("; ")}`;
     return { ok: true, lines: [
       `item: ${item.id} (${item.source.id}) ${item.stage}${blocked}`, `run: ${run.id} ${run.status}, actor ${run.actor_id ?? "unknown"}`,
       `lease: ${run.lease ? `expires ${run.lease.expires_at}` : "none (the session has ended)"}`, `branch: ${f.file.branch}; run folder: ${f.file.folder.workdir}`,
@@ -208,9 +209,9 @@ export class Sessions {
   /**
    * The gates in order: scope, size, floor, then `repo.test_command` in the run folder (skipped after a failed gate).
    * A failure lists the reasons, records them as the last finish, keeps the session open and pushes nothing. All
-   * pass: push and PR through the item's broker only (a local item: its local branch, no PR), then the run completes
-   * as succeeded and the controller moves the item to REVIEW with a review run. Safe to run again after a failed
-   * push: the broker reuses the branch's open PR.
+   * pass: the branch stored through the item's broker, the push and PR recorded as keyed intents (a local item: its
+   * local branch, no PR), then the run completes as succeeded; the controller moves the item to REVIEW with a review
+   * run once outbound delivered the PR. Safe to run again after a refused store: nothing was recorded.
    */
   async finish(o: { id?: WorkItemId; tokens?: number; signal?: AbortSignal }): Promise<SessionResult> {
     const open = await this.tokens(o);
@@ -250,34 +251,39 @@ export class Sessions {
     if (checked.failed) return this.refuseFinish(file, [`tests: \`${test}\` ${checked.failed.how}`]);
 
     if (this.forgeForLocal(item)) return this.refuseFinish(file, [LOCAL_NEEDS_LOCAL_BROKER]);
-    // Every gate passed: push and PR through the broker, which fences on this run's lease and scans what it sends.
+    // Every gate passed: the store through the broker, which fences on this run's lease and scans what it sends.
     const ctx: ToolCallContext = { run_id: file.run_id, work_item_id: item.id, lease_token: file.token };
     const head = (await git(["rev-parse", "HEAD"])).trim();
     const { broker } = routeFor(this.d, item);
-    const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
-    if (!pushed.ok) return this.refuseFinish(file, [`push: ${pushed.error_code}: ${pushed.message}`.slice(0, 500)]);
+    // The branch goes to the factory repo; a forge item's push and PR are keyed intents outbound delivers (RFC 0015
+    // M7), as an implement run's, and the controller puts the PR on the item when that delivery completes.
+    const store = await broker.call(ctx, STORE_BRANCH, { workdir: handle.workdir, branch: file.branch, base_ref: cfg.repo.base_branch });
+    if (!store.ok) return this.refuseFinish(file, [`push: ${store.error_code}: ${store.message}`.slice(0, 500)]);
     // The factory's own push, so the next poll does not take it for a person's (design 2026-11-01).
     if (!(await this.d.store.recordPushedHead(file.run_id, file.token, head)).ok) return refused("refused: the session ended while pushing");
     const lines = checkedLines(checked.results, { fixed: false, skipped: null });
-    const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
-    // A broker with no PR tool (the local one): the local branch is the review's input and `factory merge` its merge.
-    let number: number | null = null;
-    let pr_url: string | null = null;
-    if (hasTool(broker, "github.open_pr")) {
-      const pr = await broker.call(ctx, "github.open_pr", { branch: file.branch, base_ref: cfg.repo.base_branch, title: prTitle(item), body });
-      if (!pr.ok) return this.refuseFinish(file, [`pr: ${pr.error_code}: ${pr.message}`.slice(0, 500)]);
-      const opened = pr.content as { number?: unknown; url?: unknown };
-      number = Number(opened.number);
-      // The forge's PR link, stored as the item's change_url (design 02).
-      pr_url = typeof opened.url === "string" ? opened.url : null;
+    const content = store.content as { sha?: unknown; forge?: unknown };
+    // The local broker's branch is the change itself: the review's input, and `factory merge` its merge.
+    let pr_intent: string | null = null;
+    if (content.forge === true) {
+      const body = prBody(item, (await this.d.store.getRun(file.run_id))!, lines);
+      const r = runPushIntents({
+        host: this.d.owner.split(":")[1] ?? "", work_item_id: item.id, run_id: file.run_id, branch: file.branch,
+        sha: typeof content.sha === "string" ? content.sha : head, base_ref: cfg.repo.base_branch, pr: { title: prTitle(item), body, labels: {} },
+      });
+      for (const intent of r.intents) await this.d.store.recordRunIntent(intent);
+      pr_intent = r.pr;
     }
-    await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: number } });
-    const done = await this.d.store.completeRun(file.run_id, file.token, { status: "succeeded", summary: "interactive session finished", data: { pr_number: number, pr_url, commits, files: paths.slice(0, MAX_PR_FILES) } });
-    if (!done.ok) return refused(`refused: the session ended before it could complete; ${number === null ? "the branch is committed" : "the PR is open"}`);
+    await this.d.store.updateSession(file.run_id, file.token, { last_finish: { ok: true, reasons: [], pr_number: null } });
+    const done = await this.d.store.completeRun(file.run_id, file.token, {
+      status: "succeeded", summary: "interactive session finished",
+      data: { pr_number: null, pr_url: null, commits, files: paths.slice(0, MAX_PR_FILES), ...(pr_intent ? { pr_pending: true, pr_intent } : {}) },
+    });
+    if (!done.ok) return refused(`refused: the session ended before it could complete; ${pr_intent === null ? "the branch is committed" : "the push and PR are queued"}`);
     await this.d.files.remove(item.id);
     await this.d.sandbox.destroy(handle).catch(() => undefined); // everything in it is on its branch now
-    this.d.log.info("session finished", { work_item_id: item.id, run_id: file.run_id, pr_number: number });
-    const sent = number === null ? `committed the local branch ${file.branch} (no push, no PR)` : `pushed ${file.branch} and opened PR #${number}`;
+    this.d.log.info("session finished", { work_item_id: item.id, run_id: file.run_id, pr_pending: pr_intent !== null });
+    const sent = pr_intent === null ? `committed the local branch ${file.branch} (no push, no PR)` : `queued the push of ${file.branch} and its PR (outbound delivers them)`;
     return { ok: true, lines: [...lines, `${sent}; the item goes to review next`] };
   }
 
@@ -297,10 +303,10 @@ export class Sessions {
     return refused(...lines, "finish refused; the session stays open and nothing was pushed:", ...reasons.map((r) => `- ${r}`));
   }
 
-  /** Whether a local item would reach the forge's broker: no local route given and the broker opens PRs. Never allowed. */
+  /** Whether a local item would reach the forge's broker: no local route given and the broker is the forge's. Never allowed. */
   private forgeForLocal(item: WorkItem): boolean {
     const route = routeFor(this.d, item);
-    return route.local && hasTool(route.broker, "github.open_pr");
+    return route.local && hasTool(route.broker, "github.preflight");
   }
 
   /** The one session meant: `id`, else the only open one on this machine. */

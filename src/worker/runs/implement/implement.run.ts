@@ -233,11 +233,9 @@ async function implement(
   let stored: { sha: string; forge: boolean };
   try {
     stored = await step("store-branch", async () => {
-      const r = await w.route(item).broker.call(ctx, STORE_BRANCH, { workdir: handle.workdir, branch, base_ref: base });
-      if (!r.ok) throw new RunFailure(r.error_code, r.message);
+      const s = await w.storeBranch(item, ctx, handle.workdir, branch, head);
       await w.recordPushedHead(run, ctx, head);
-      const content = r.content as { sha?: unknown; forge?: unknown };
-      return { sha: typeof content.sha === "string" ? content.sha : head, forge: content.forge === true };
+      return s;
     });
   } catch (err) {
     throw await keepWip(w, run, item, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
@@ -245,7 +243,7 @@ async function implement(
   let pr_intent: string | null = null;
   if (stored.forge) {
     const description = w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null }));
-    pr_intent = await step("record-push", () => w.recordPush(item, run, { branch, sha: stored.sha, title: prTitle(item), ...description }));
+    pr_intent = await step("record-push", async () => (await w.recordPush(item, run, { branch, sha: stored.sha }, { title: prTitle(item), ...description })).pr);
   }
   // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
   // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
@@ -525,11 +523,16 @@ async function keepWip(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
   if (failure.code === "lease_lost") return failure;
   let kept = resumed;
   if (!resumed) {
-    const pushed = await w.route(item).broker
-      .call(ctx, "github.push_branch", { workdir: handle.workdir, branch: wip.branch, base_ref: w.cfg.repo.base_branch })
-      .catch((e: unknown) => ({ ok: false as const, error_code: "exception", message: e instanceof Error ? e.message : "unknown" }));
-    kept = pushed.ok;
-    if (!pushed.ok) w.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: pushed.error_code });
+    // Stored in the factory repo, then a keyed push intent outbound delivers (RFC 0015 M7), as the PR branch's.
+    kept = await w.storeBranch(item, ctx, handle.workdir, wip.branch, wip.head)
+      .then(async (s) => {
+        if (s.forge) await w.recordPush(item, run, { branch: wip.branch, sha: s.sha }, null);
+        return true;
+      })
+      .catch((e: unknown) => {
+        w.d.log.warn("wip push failed; the retry runs the agent again", { run_id: run.id, error_code: e instanceof RunFailure ? e.code : "exception" });
+        return false;
+      });
   }
   return kept ? new RunFailure(failure.code, failure.message, failure.infra, { ...failure.extra, wip }) : failure;
 }

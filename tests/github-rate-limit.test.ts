@@ -124,7 +124,7 @@ describe("broker: github_rate_limited", () => {
     const fake = new FakeClock(clock.now());
     const { client } = clientWith(fake, answer);
     const broker = new GitHubToolBroker({
-      client, credentials, store, scanner: cleanScanner, clock: fake, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
+      client, store, scanner: cleanScanner, clock: fake, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     const branch = `factory/${item.id}`;

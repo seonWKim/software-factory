@@ -142,7 +142,7 @@ describe("open_pr updates an open PR (issue #229)", () => {
       },
     } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
+      client, store, scanner: cleanScanner,
       clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };

@@ -20,9 +20,9 @@ async function review(
   plan: ResumePlan | null,
   step: RunCall["step"],
 ) {
-  // A local item (no PR tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
+  // A local item (no forge tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
   // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
-  const local = !hasTool(w.route(item).broker, "github.open_pr");
+  const local = !hasTool(w.route(item).broker, "github.preflight");
   if (item.change_ref === null && !local) throw new RunFailure("no_pr", "work item has no PR");
   // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
   if (item.head_branch !== null || local) {

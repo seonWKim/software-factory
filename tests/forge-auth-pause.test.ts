@@ -175,7 +175,7 @@ describe("the broker maps forge 401/403 to forge_auth", () => {
     const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
     const client = { request: async (m: string, p: string) => request(m, p) } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
+      client, store, scanner: cleanScanner,
       clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     return { broker, ctx: { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token }, branch: `factory/${item.id}` };

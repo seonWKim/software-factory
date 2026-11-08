@@ -103,7 +103,6 @@ function brokerFor(repo: string, store: Awaited<ReturnType<typeof newStore>>["st
   } as unknown as GitHubClient;
   return new GitHubToolBroker({
     client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/", repoPath: repo,
-    credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) as unknown as Secret },
     scanner: cleanScanner,
   });
 }

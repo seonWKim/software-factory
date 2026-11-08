@@ -2,18 +2,18 @@ import { prNumber } from "../../../core/change-ref.js";
 import { checkedLines, commandText } from "../../../core/checks.js";
 import { AUTO_RESOLVE_LIMIT, branchFor } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
-import type { Run, WorkItem } from "../../../core/types.js";
-import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
-import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
+import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 /**
  * Merges origin/<base> into the PR branch in a fresh run folder (its own clone), runs the test command, and pushes only a clean,
  * passing merge (never a force push). No agent. Conflicts and failing tests are reported on the PR and in
- * `result`; the controller decides the state. Git and push errors fail the run.
+ * `result`; the controller decides the state. Git and store errors fail the run; the push is outbound's delivery
+ * (`push_intent` in the result, which the controller waits on).
  */
-async function update(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal) {
+async function update(w: Worker, c: RunCall) {
+  const { run, item, signal } = c;
   if (item.change_ref === null) throw new RunFailure("no_pr", "work item has no PR");
   const { repo, branch_prefix } = w.cfg;
   const branch = branchFor(item, branch_prefix);
@@ -79,21 +79,16 @@ async function update(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext,
     const passed = checks.results.map((r) => `\`${commandText(r.command)}\``).join(", ");
 
     const merge_sha = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-    const pushed = await w.route(item).broker.call(ctx, "github.push_branch", {
-      workdir: handle.workdir,
-      branch,
-      base_ref: repo.base_branch,
-    });
-    if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
-    await w.recordPushedHead(run, ctx, merge_sha);
-    await w.refreshPr(run, item, ctx, branch, checkedLines(checks.results, { fixed: false, skipped: null }));
+    // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it.
+    const push_intent = await w.pushBranch(c, handle.workdir, branch, merge_sha, () =>
+      w.prRefresh(item, checkedLines(checks.results, { fixed: false, skipped: null })));
     const how = mechanical
       ? `with only appended lines on both sides in ${mechanical.map((f) => `\`${f}\``).join(", ")}, merged in code (base lines first),`
       : "cleanly";
     await comment(
       `PR #${item.change_ref} updated with ${repo.base_branch}: merged \`${baseRef}\` (${base_sha.slice(0, 8)}) ${how} and ${passed} passed. A human merge is still required.`,
     );
-    return { result: "pushed", merge_sha, head_sha, base_sha };
+    return { result: "pushed", merge_sha, head_sha, base_sha, ...(push_intent ? { push_intent } : {}) };
   } finally {
     await w.d.sandbox.destroy(handle);
   }
@@ -103,5 +98,5 @@ export default defineRunKind({
   name: "update",
   folder: false,
   timeouts: DEFAULT_TIMEOUTS,
-  execute: (w, c) => update(w, c.run, c.item, c.ctx, c.signal),
+  execute: update,
 });

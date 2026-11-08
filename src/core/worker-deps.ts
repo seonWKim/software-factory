@@ -15,7 +15,7 @@ import type { AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { FactoryStore, RunIntent } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
@@ -77,6 +77,36 @@ export const TRUSTED_GIT_ENV: Readonly<Record<string, string>> = {
 export function prTitle(item: WorkItem): string {
   const title = item.title?.replace(/\s+/g, " ").trim();
   return title || firstLine(item.problem).slice(0, 80);
+}
+
+/** A PR's title, body and labels (label name → present), as a run's PR intent sends them. */
+export interface PrText {
+  readonly title: string;
+  readonly body: string;
+  readonly labels: Readonly<Record<string, boolean>>;
+}
+
+/**
+ * A run's push and PR as keyed intents (RFC 0015 M7), once `git.store_branch` stored `sha` in the factory repo of
+ * `host`: the push, then the PR (null: no PR write), in one destination (`git:<host>:<branch>`) so the PR waits
+ * behind the push. The push is keyed by branch and sha (a head pushed once is never pushed again), the PR by branch
+ * and run: each run's PR delivery is its own, so the controller can wait for it, and recording them again stores
+ * nothing. Both name the run, which the controller applies when they are delivered. The worker's runs and
+ * `factory session finish` record them through the store (`recordRunIntent`).
+ */
+export function runPushIntents(o: {
+  host: string; work_item_id: string; run_id: string; branch: string; sha: string; base_ref: string; pr: PrText | null;
+}): { intents: RunIntent[]; push: string; pr: string | null } {
+  const target = { type: "git", id: `${o.host}:${o.branch}`, link: "" };
+  const push = `push:${o.branch}:${o.sha}`;
+  const intents: RunIntent[] = [{ action: "push", target, work_item_id: o.work_item_id, key: push, args: { branch: o.branch, sha: o.sha, run_id: o.run_id } }];
+  if (!o.pr) return { intents, push, pr: null };
+  const pr = `pr:${o.branch}:${o.run_id}`;
+  intents.push({
+    action: "pr", target, work_item_id: o.work_item_id, key: pr,
+    args: { branch: o.branch, sha: o.sha, run_id: o.run_id, base_ref: o.base_ref, title: o.pr.title, body: o.pr.body, labels: JSON.stringify(o.pr.labels) },
+  });
+  return { intents, push, pr };
 }
 
 export function firstLine(s: string): string {

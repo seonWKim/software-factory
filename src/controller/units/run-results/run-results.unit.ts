@@ -77,6 +77,8 @@ function suggestedSplit(detail: string, paths: readonly string[], limits: { max_
 /** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 /** An implement run's push and PR wait in outbound (RFC 0015 M7): `blocked_on: outbound`. */
 export const PR_PENDING = "pr_pending";
+/** An update or resolve run's push waits for outbound (RFC 0015 M7) before the review of its head is queued. */
+export const PUSH_PENDING = "push_pending";
 
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
@@ -298,21 +300,7 @@ export class RunResultsUnit {
           // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`
           // applies the PR number and queues the review once the PR delivery completes. One delivered before this
           // result is applied (outbound ran first) is applied here, so the wait never misses it.
-          if (data.pr_pending === true) {
-            const delivered = typeof data.pr_intent === "string" ? await this.c.k.actionByKey(data.pr_intent) : null;
-            if (delivered?.delivered_ref) {
-              const applied = await this.prApplied(it, delivered.delivered_ref, delivered.delivered_url);
-              return { ...applied, patch: { ...applied.patch, token_cost: tokens, ...(files ? { pr_files: files } : {}) }, reason: "implemented", ack_run: run.id };
-            }
-            return {
-              patch: {
-                blocked_on: "outbound", blocked_reason: PR_PENDING, token_cost: tokens, ...(files ? { pr_files: files } : {}),
-              },
-              actor: SYSTEM,
-              reason: "implemented",
-              ack_run: run.id,
-            };
-          }
+          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented");
           // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           return {
@@ -393,22 +381,19 @@ export class RunResultsUnit {
               conflictCountsLine(counts),
             ].join("\n"));
           }
-          return {
-            patch: { stage: "REVIEW", token_cost: tokens },
-            actor: SYSTEM,
-            reason: "resolved",
-            detail: { run_id: run.id },
-            ack_run: run.id,
-            enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-resolve:${run.id}`, input: await this.c.unit("checks-gate").reviewInput(prNumber(it), it.id) },
-          };
+          if (await this.pushPending(data)) return this.pushWait(run, "resolved", { token_cost: tokens });
+          const pushed = await this.pushApplied(it, run);
+          return { ...pushed, patch: { ...pushed.patch, token_cost: tokens }, reason: "resolved", ack_run: run.id };
         }
         case "manual":
           // Written already acknowledged, so never here; kept for exhaustiveness.
           return ack("run_ignored");
         case "interactive": {
-          // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
+          // `session finish` passed every gate and stored its branch through the broker (design §5, 2026-11-01): as an implement PR.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
+          // A forge item's push and PR are outbound's (RFC 0015 M7), as an implement run's: the item waits for the PR.
+          if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...files }, "session_finished", detail);
           // No PR (a local item, design 05-sources): it reviews and merges as its local branch, as an implement run's.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           const input = await this.c.unit("checks-gate").reviewInput(pr, it.id);
@@ -425,14 +410,8 @@ export class RunResultsUnit {
           switch (data.result) {
             case "pushed":
               if (beforeImplement) {
-                return {
-                  patch: { blocked_on: "none", blocked_reason: null },
-                  actor: SYSTEM,
-                  reason: "update_pushed",
-                  detail: { run_id: run.id },
-                  ack_run: run.id,
-                  enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-update:${run.id}`, input: await this.c.unit("checks-gate").reviewInput(prNumber(it), it.id) },
-                };
+                if (await this.pushPending(data)) return this.pushWait(run, "update_pushed", {});
+                return { ...(await this.pushApplied(it, run)), reason: "update_pushed", ack_run: run.id };
               }
               return { patch: {}, actor: SYSTEM, reason: "update_pushed", ack_run: run.id };
             case "up_to_date": {
@@ -475,6 +454,54 @@ export class RunResultsUnit {
     await this.c.unit("transitions").decide(id, async (it) =>
       it.blocked_on === "outbound" && it.blocked_reason === PR_PENDING ? this.prApplied(it, ref, url) : null,
     );
+  }
+
+  /**
+   * Outbound delivered an update or resolve run's push (RFC 0015 M7): the review its result queued once runs now, on
+   * the pushed head. Only an item still waiting for a push changes, so a redelivered result changes nothing.
+   */
+  async pushDelivered(id: WorkItemId, run_id: string): Promise<void> {
+    await this.c.unit("transitions").decide(id, async (it) => {
+      if (it.blocked_on !== "outbound" || it.blocked_reason !== PUSH_PENDING) return null;
+      const run = (await this.c.k.reader.listRuns(it.id)).find((r) => r.id === run_id);
+      return run ? this.pushApplied(it, run) : null;
+    });
+  }
+
+  /** Whether a run's result names a push intent (`push_intent`) outbound has not delivered yet. */
+  private async pushPending(data: Record<string, unknown>): Promise<boolean> {
+    if (typeof data.push_intent !== "string") return false;
+    return !(await this.c.k.actionByKey(data.push_intent))?.delivered_at;
+  }
+
+  /** The item waits for its run's push (`blocked_on: outbound`, `push_pending`); `pushDelivered` ends the wait. */
+  private pushWait(run: Run, reason: string, patch: Partial<WorkItem>): Decision {
+    return { patch: { ...patch, blocked_on: "outbound", blocked_reason: PUSH_PENDING }, actor: SYSTEM, reason, detail: { run_id: run.id }, ack_run: run.id };
+  }
+
+  /** The review of the head an update or resolve run pushed, keyed by that run (never an earlier loop's review). */
+  private async pushApplied(it: WorkItem, run: Run): Promise<NonNullable<Decision>> {
+    return {
+      patch: { ...(it.stage === "REVIEW" ? {} : { stage: "REVIEW" as const }), blocked_on: "none", blocked_reason: null },
+      actor: SYSTEM,
+      reason: "push_delivered",
+      detail: { run_id: run.id },
+      enqueue: { kind: "review", idempotency_key: `${it.id}:review:after-${run.kind}:${run.id}`, input: await this.c.unit("checks-gate").reviewInput(prNumber(it), it.id) },
+    };
+  }
+
+  /**
+   * A run that stored its push and PR as intents (RFC 0015 M7, an implement run or a session's finish): the item
+   * waits for outbound, and `prDelivered` applies the PR number and queues the review once the PR delivery completes.
+   * One delivered before this result is applied (outbound ran first) is applied here, so the wait never misses it.
+   */
+  private async prPending(it: WorkItem, run: Run, data: Record<string, unknown>, patch: Partial<WorkItem>, reason: string, detail?: StateChangeDetail): Promise<Decision> {
+    const delivered = typeof data.pr_intent === "string" ? await this.c.k.actionByKey(data.pr_intent) : null;
+    if (delivered?.delivered_ref) {
+      const applied = await this.prApplied(it, delivered.delivered_ref, delivered.delivered_url);
+      return { ...applied, patch: { ...applied.patch, ...patch }, reason, ack_run: run.id, ...(detail ? { detail } : {}) };
+    }
+    return { patch: { ...patch, blocked_on: "outbound", blocked_reason: PR_PENDING }, actor: SYSTEM, reason, ack_run: run.id, ...(detail ? { detail } : {}) };
   }
 
   /** The PR on the item and the review queued, as an implement result with a PR number did before. */
