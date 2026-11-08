@@ -63,7 +63,7 @@ export class LocalMergeUnit {
    * null when the change is in the queue.
    */
   async mergeLocal(id: WorkItemId, who: ExternalIdentity | AppActor | typeof AUTO_MERGE, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
-    const item = await this.c.k.d.store.getWorkItem(id);
+    const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
     const { repo, branch_prefix } = this.c.k.cfg;
     const branch = branchFor(item, branch_prefix);
@@ -106,7 +106,7 @@ export class LocalMergeUnit {
    * transition queues one base push. This is the function the outbound `local` merge delivery takes over (M7).
    */
   async land(id: WorkItemId, by: string, key: string, base_sha: string, detail: Record<string, unknown>): Promise<"landed" | "moved" | string> {
-    const item = await this.c.k.d.store.getWorkItem(id);
+    const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
     if (!awaitingMerge(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
     if (!canMergeLocal(this.c.k.d.sandbox)) return "this controller has no sandbox that can merge locally";
@@ -157,12 +157,12 @@ export class LocalMergeUnit {
 
   /** The item, as the merge queue checks whether its entry still waits for a merge. */
   item(id: WorkItemId): Promise<WorkItem | null> {
-    return this.c.k.d.store.getWorkItem(id);
+    return this.c.k.reader.getWorkItem(id);
   }
 
   /** A refusal posted on the item: why the merge did not apply, keyed by `key`. */
   async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
-    const item = await this.c.k.d.store.getWorkItem(id);
+    const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return;
     this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
     const what = by === AUTO_ACTOR ? "The automatic merge" : "`factory merge`";
@@ -188,7 +188,7 @@ export class LocalMergeUnit {
   async basePushStep(): Promise<void> {
     const pusher = this.basePusher();
     if (!pusher) return;
-    for (const row of await this.c.k.d.store.listPendingBasePushes(BASE_PUSH_BATCH)) {
+    for (const row of await this.c.k.reader.listPendingBasePushes(BASE_PUSH_BATCH)) {
       await this.c.k.guard("base push", () => this.pushBase(row, pusher));
     }
   }
@@ -220,7 +220,7 @@ export class LocalMergeUnit {
 
   /** One message on the closed item: its merge stays local until a person merges the remote base by hand and pushes. */
   async basePushConflict(row: BasePush, conflicts: readonly string[]): Promise<void> {
-    const item = await this.c.k.d.store.getWorkItem(row.work_item_id);
+    const item = await this.c.k.reader.getWorkItem(row.work_item_id);
     if (!item) return;
     const base = row.base_ref;
     const body = [
@@ -243,7 +243,7 @@ export class LocalMergeUnit {
   async autoMergeStep(): Promise<void> {
     const r = this.c.k.live.resolved();
     if (r.global.mode.value !== "auto" && !Object.values(r.projects).some((p) => p.mode?.value === "auto")) return;
-    const waiting = await this.c.k.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
+    const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
     for (const it of waiting) {
       if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
       const auto = await this.autoMode(it.project);
@@ -251,8 +251,8 @@ export class LocalMergeUnit {
       // Keyed by the review that passed, not the item version: the merge queue's own state changes bump the version.
       const review = await this.c.unit("run-results").latestReview(it.id);
       const key = `auto-merge:${it.id}:${review?.id ?? `v${it.version}`}`;
-      if ((await this.c.k.d.store.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
-      const missing = lastPrNotes(await this.c.k.d.store.listRuns(it.id))?.missing ?? [];
+      if ((await this.c.k.reader.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
+      const missing = lastPrNotes(await this.c.k.reader.listRuns(it.id))?.missing ?? [];
       const refusal = autoMergeRefusal({
         tier: it.tier ?? 5,
         max_tier: this.c.k.live.values().auto_merge_max_tier,
@@ -280,7 +280,7 @@ export class LocalMergeUnit {
   /** The audit seq of the newest `mode` change stored at `level` ("" global); null when none is found. */
   async modeChangeSeq(level: string | null): Promise<number | null> {
     if (level === null) return null;
-    return (await this.c.k.d.store.listSettingChanges(MODE_HISTORY)).find((c) => c.key === "mode" && c.project === level)?.seq ?? null;
+    return (await this.c.k.reader.listSettingChanges(MODE_HISTORY)).find((c) => c.key === "mode" && c.project === level)?.seq ?? null;
   }
 
   /**
@@ -321,15 +321,15 @@ export class LocalMergeUnit {
     if (m.mode !== "auto" || m.level === null) return;
     const seq = await this.modeChangeSeq(m.level);
     // G5: the alert reaches the status page, so its detail is scanned as UI text first.
-    const scan = await this.c.k.d.scanner.scan("ui", detail);
-    const r = await this.c.k.d.store.recordAlert(
-      { pattern: "auto_stopped", pattern_key: `auto_stopped:${m.level || "global"}:${seq ?? 0}`, error_code: cause, count: 1, detail: scan.clean ? detail : null },
-      ALERT_DEDUPE_MS,
-    );
-    if (!r.created) return;
-    await this.c.k.d.store.setSettingOverride({ key: "mode", project: m.level, value: JSON.stringify("manual"), actor: AUTO_ACTOR });
-    await this.c.k.live.refresh();
-    this.c.k.d.log.warn("auto mode stopped; the mode is manual again", { cause, alert_id: r.alert.id, mode_change: seq });
+    const scan = await this.c.k.reader.scan("ui", detail);
+    await this.c.k.commit({ writes: [{
+      kind: "stop_auto",
+      alert: { pattern: "auto_stopped", pattern_key: `auto_stopped:${m.level || "global"}:${seq ?? 0}`, error_code: cause, count: 1, detail: scan.clean ? detail : null },
+      dedupe_ms: ALERT_DEDUPE_MS,
+      level: m.level,
+      actor: AUTO_ACTOR,
+      mode_change: seq,
+    }] });
   }
 }
 

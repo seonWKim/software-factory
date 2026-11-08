@@ -34,7 +34,7 @@ type LogFields = NonNullable<Parameters<ControllerDeps["log"]["warn"]>[1]>;
 const READS = [
   "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
-  "getMergeCheck", "getAppCommandRequest",
+  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listPendingBasePushes", "listSettingChanges",
 ] as const;
 
 /**
@@ -66,6 +66,11 @@ export type ControllerWrite =
   | { kind: "link_delivery"; seq: number }
   /** A CLI command whose mirror on its item's issue was delivered (or that has nothing to mirror). */
   | { kind: "cli_mirrored"; key: string }
+  /**
+   * An auto mode stop (design 03-risk): the `auto_stopped` alert, and only when its conditional insert created it, the
+   * mode set back to manual at `level` by `actor`, so a second stop (a re-run, another replica) writes nothing.
+   */
+  | { kind: "stop_auto"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number; level: string; actor: string; mode_change: number | null }
   /** Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts). */
   | { kind: "expire_leases"; max_attempts: number; backoff_ms: (attempt: number) => number };
 
@@ -156,6 +161,7 @@ export class Kernel {
       else if (w.kind === "thread_entry") await store.recordItemMessage(w.entry);
       else if (w.kind === "link_delivery") await store.linkDelivery(w.seq);
       else if (w.kind === "cli_mirrored") await store.markCliCommandMirrored(w.key);
+      else if (w.kind === "stop_auto") await this.stopAuto(w);
       else await this.expireLeases(w);
     }
   }
@@ -203,6 +209,14 @@ export class Kernel {
         }),
     );
     for (const id of ids) log.warn("lease expired", { run_id: id });
+  }
+
+  private async stopAuto(w: Extract<ControllerWrite, { kind: "stop_auto" }>): Promise<void> {
+    const r = await this.d.store.recordAlert(w.alert, w.dedupe_ms);
+    if (!r.created) return;
+    await this.d.store.setSettingOverride({ key: "mode", project: w.level, value: JSON.stringify("manual"), actor: w.actor });
+    await this.live.refresh();
+    this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.alert.id, mode_change: w.mode_change });
   }
 
   /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
