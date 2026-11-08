@@ -2,6 +2,10 @@
 // within 3 days, a claim or worker pause, a claim deadlock and a revision mismatch, each with its command, in
 // /api/v1/overview's `system_actions` and counted in `needs_you`. The poll asks GitHub nothing.
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClaimDecision, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore, SchemaVersion } from "../src/interfaces/factory-store.js";
@@ -12,7 +16,7 @@ import type { Check } from "../src/setup.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
-import { LastChecks, parseRevision } from "../src/ui/system-actions.js";
+import { LastChecks, olderThanFactory, parseRevision } from "../src/ui/system-actions.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const REV_A = "a".repeat(40);
@@ -198,5 +202,28 @@ describe("system actions: revisions", () => {
     expect(parseRevision("abc1234")).toBe("abc1234");
     expect(parseRevision("<script>")).toBeNull();
     expect(parseRevision(null)).toBeNull();
+  });
+
+  it("a hand-started UI server stops only when the factory runs a newer commit of the same line", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-rev-"));
+    try {
+      const git = (...a: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" }).trim();
+      git("init", "-q");
+      git("commit", "-q", "--allow-empty", "-m", "a");
+      const a = git("rev-parse", "HEAD");
+      git("commit", "-q", "--allow-empty", "-m", "b");
+      const b = git("rev-parse", "HEAD");
+      git("checkout", "-q", "-b", "side", a);
+      git("commit", "-q", "--allow-empty", "-m", "c");
+      const c = git("rev-parse", "HEAD");
+      expect(await olderThanFactory(root, a, b)).toContain("the factory runs the newer");
+      expect(await olderThanFactory(root, b, a)).toBeNull(); // this page is newer: keep serving
+      expect(await olderThanFactory(root, c, b)).toBeNull(); // another branch: git cannot order them
+      expect(await olderThanFactory(root, a, a)).toBeNull();
+      expect(await olderThanFactory(root, null, b)).toBeNull();
+      expect(await olderThanFactory(root, a, null)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
