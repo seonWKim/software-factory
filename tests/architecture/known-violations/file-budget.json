@@ -1,1 +1,17 @@
-{}
+{
+  "compose.ts": 1408,
+  "controller/units/commands/commands.unit.ts": 752,
+  "controller/units/run-results/run-results.unit.ts": 1180,
+  "core/settings.ts": 777,
+  "core/types.ts": 735,
+  "golden.ts": 690,
+  "impl/github/github-issue-source.ts": 720,
+  "impl/runner/claude-code-runner.ts": 663,
+  "impl/store/sql/sql-factory-store.ts": 3017,
+  "impl/store/sqlite/schema.ts": 721,
+  "impl/updater/git-worktree.ts": 925,
+  "interfaces/factory-store.ts": 1361,
+  "ui/api.ts": 644,
+  "worker/runner.ts": 1130,
+  "worker/runs/implement/implement.run.ts": 1122
+}

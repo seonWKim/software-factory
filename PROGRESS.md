@@ -184,17 +184,18 @@ outbound takes them (M7).
 ## Ratchet (known violations)
 
 The lists in `tests/architecture/known-violations/*.json` only shrink. Counts checked against those files on
-2026-11-08.
+2026-11-09 (M11).
 
 | Test | Count | Meaning |
 |---|---|---|
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | table-ownership-sql | 0 | empty list |
-| file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
+| forge-writes | 1 | `controller/units/phases/phases.unit.ts` `fileSubIssue` (sub-issue filing through outbound waits on the owner) |
+| file-budget | 15 files, 15,845 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1180), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| unit-purity | 25 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
-| dependency-direction | 295 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
+| unit-purity | 24 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
+| dependency-direction | 298 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
 
