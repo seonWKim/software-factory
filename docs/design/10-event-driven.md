@@ -72,7 +72,9 @@ force.
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
-    journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new run. Each process
+    with a succeeded step journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new
+    run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
+    deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
     own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
@@ -443,3 +445,6 @@ force.
 - **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,
   review and update comments itself through the broker's `github.comment`, inside the run, and an update run failed
   when its comment failed.
+- **Resume across a deploy** (decision changed 2026-11-09, worker review finding 4). Before: any journal row, a
+  failed one included, made a run journaled by another `code_version` fail `not_resumable`, so a paused or
+  network-requeued run lost its WIP on every deploy.

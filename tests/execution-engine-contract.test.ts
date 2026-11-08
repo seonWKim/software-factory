@@ -411,4 +411,26 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(await next.engine.claim(fresh)).not.toBeNull();
     expect(await runRow(db[0], fresh)).toMatchObject({ code_version: "v2" });
   });
+
+  it("a run whose journal holds only a failed step (a paused or network-requeued agent) is resumed by other code", async () => {
+    const opened = await backend.open();
+    const { db, store } = opened;
+    const old = worker(db[0], "worker-old", { codeVersion: "v1" });
+    const id = await newRun(store);
+    await old.tick(T0);
+    const run = (await old.engine.claim(id))!;
+    await expect(
+      old.engine.step(run, "run-agent", async (ctx) => {
+        await ctx.savePartial({ session: "s-1" });
+        throw new Crash("network_unavailable");
+      }),
+    ).rejects.toBeInstanceOf(Crash);
+    expect(await reap(opened, T0 + 30 * S)).toEqual([id]);
+
+    const next = worker(db[1], "worker-new", { codeVersion: "v2" });
+    const resumed = await claimAt(next, id, T0 + 30 * S);
+    expect(resumed).not.toBeNull();
+    expect(await runRow(db[0], id)).toMatchObject({ lease_owner: "worker-new", code_version: "v2" });
+    expect(await next.engine.step(resumed!, "run-agent", async (ctx) => ctx.partial)).toEqual({ session: "s-1" });
+  });
 });
