@@ -1,6 +1,6 @@
 // The controller units' shared kernel (RFC 0015 M5).
 
-import { LiveSettings, type ProjectSettings, settingValues } from "../../core/settings.js";
+import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../../core/settings.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
@@ -76,9 +76,10 @@ export type ControllerWrite =
   | { kind: "cli_mirrored"; key: string }
   /**
    * An auto mode stop (design 03-risk): the `auto_stopped` alert, and only when its conditional insert created it, the
-   * mode set back to manual at `level` by `actor`, so a second stop (a re-run, another replica) writes nothing.
+   * mode set back to manual at `level` by `actor`. A second stop (a re-run, another replica) writes nothing once the
+   * mode is manual; while it is still auto (the first stop's settings write failed) it sets manual.
    */
-  | { kind: "stop_auto"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number; level: string; actor: string; mode_change: number | null }
+  | { kind: "stop_auto"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number; project: string; level: string; actor: string; mode_change: number | null }
   /**
    * Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts);
    * `then` decides the writes that follow from what expired (the reaper's log lines).
@@ -234,10 +235,15 @@ export class Kernel {
 
   private async stopAuto(w: Extract<ControllerWrite, { kind: "stop_auto" }>): Promise<void> {
     const r = await this.d.store.recordAlert(w.alert, w.dedupe_ms);
-    if (!r.created) return;
+    // A stop whose alert another replica (or a crashed earlier attempt) recorded still sets manual while the stored
+    // mode is auto: else a failed settings write would leave auto mode on for the alert's whole dedupe window.
+    if (!r.created) {
+      await this.live.refresh();
+      if (modeOf(this.live.resolved(), w.project).mode !== "auto") return;
+    }
     await this.d.store.setSettingOverride({ key: "mode", project: w.level, value: JSON.stringify("manual"), actor: w.actor });
     await this.live.refresh();
-    this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.alert.id, mode_change: w.mode_change });
+    this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.created ? r.alert.id : null, mode_change: w.mode_change });
   }
 
   /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
@@ -303,15 +309,18 @@ export class Kernel {
     return null;
   }
 
-  async guard(what: string, fn: () => Promise<void>): Promise<void> {
+  /** Runs `fn`, logging a failure instead of throwing it; returns the failure (null when none) for a caller that retries. */
+  async guard(what: string, fn: () => Promise<void>): Promise<unknown> {
     try {
       await fn();
+      return null;
     } catch (err) {
       // A forge call refused with no calls left is a wait for the reset, not a failure: the step runs again next
       // poll, and every other step (local work) goes on.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
       else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      return err;
     }
   }
 }

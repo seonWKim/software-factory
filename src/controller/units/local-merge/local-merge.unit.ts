@@ -326,6 +326,7 @@ export class LocalMergeUnit {
       kind: "stop_auto",
       alert: { pattern: "auto_stopped", pattern_key: `auto_stopped:${m.level || "global"}:${seq ?? 0}`, error_code: cause, count: 1, detail: scan.clean ? detail : null },
       dedupe_ms: ALERT_DEDUPE_MS,
+      project,
       level: m.level,
       actor: AUTO_ACTOR,
       mode_change: seq,

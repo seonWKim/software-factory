@@ -177,9 +177,10 @@ export class RunResultsUnit {
         return this.retryOrBlock(it, run, "task", "invalid_output");
       }
 
-      // Never reached: apply hands merge-check runs to the merge queue first.
-      if (run.kind === "merge-check") return ack("run_ignored");
       switch (run.kind) {
+        case "merge-check":
+          // `apply` hands merge-check runs to the merge queue before it reads any outcome.
+          throw new Error(`merge-check run ${run.id} reached the run outcome path`);
         case "triage": {
           // The item's size caps decide whether the estimate needs phases (src/core/split.ts).
           const { max_diff_lines, max_diff_files } = this.c.k.settings(it.project);
