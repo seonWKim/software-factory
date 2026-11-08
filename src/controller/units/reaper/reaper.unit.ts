@@ -1,9 +1,18 @@
-// Requeues runs whose worker stopped renewing its lease.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Requeues runs whose worker stopped renewing its lease. A pure step (RFC 0015 §6.2): it decides on the tick's time
+// and the settings, and the router commits the lease expiry.
 
 import { retryDelayMs } from "../../../core/policy.js";
-import type { Ctx } from "../context.js";
+import type { ControllerDecision, Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+
+/** The settings a reaper tick decides on. */
+interface ReaperSettings {
+  lease_ms: number;
+  heartbeat_ms: number;
+  retry_base_ms: number;
+  retry_max_ms: number;
+  max_attempts: number;
+}
 
 /** Requeues runs whose worker stopped renewing its lease. */
 export class ReaperUnit {
@@ -19,39 +28,29 @@ export class ReaperUnit {
 
   reaperGraceUntil = -Infinity;
 
-  async reaperStep(): Promise<void> {
-    const now = this.c.k.d.clock.now().getTime();
+  /** The settings in effect this tick. One repository per factory today, so the configured repo's limit applies to every lease. */
+  settings(): ReaperSettings {
+    const { lease_ms, heartbeat_ms, retry_base_ms, retry_max_ms } = this.c.k.cfg;
+    const { max_attempts } = this.c.k.settings(this.c.k.project());
+    return { lease_ms, heartbeat_ms, retry_base_ms, retry_max_ms, max_attempts };
+  }
+
+  /** The lease expiry at `now`, unless this process just woke from a sleep longer than a lease. */
+  decide(s: ReaperSettings, now: number): ControllerDecision {
     const previous = this.lastReaperTick;
     this.lastReaperTick = now;
-    if (previous !== null && now - previous > this.c.k.cfg.lease_ms) {
+    const writes: ControllerDecision["writes"][number][] = [];
+    if (previous !== null && now - previous > s.lease_ms) {
       // This process slept (or stalled) longer than a lease: every lease looks expired, including those of
       // workers that slept with us and are about to renew. Give them one heartbeat_ms first.
-      this.reaperGraceUntil = now + this.c.k.cfg.heartbeat_ms;
-      this.c.k.d.log.warn("reaper woke after a gap; grace before expiring leases", { gap_ms: now - previous });
+      this.reaperGraceUntil = now + s.heartbeat_ms;
+      writes.push({ kind: "log", level: "warn", msg: "reaper woke after a gap; grace before expiring leases", fields: { gap_ms: now - previous } });
     }
-    if (now < this.reaperGraceUntil) return;
-    const { retry_base_ms, retry_max_ms } = this.c.k.cfg;
-    // One repository per factory today, so the configured repo's limit applies to every lease.
-    const { max_attempts } = this.c.k.settings(this.c.k.project());
+    if (now < this.reaperGraceUntil) return { writes };
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
-    // Each attempt the store's conditional update cut off gets its end line (issue #210): the run's last
-    // heartbeat is its end. The reaper sees only an expired lease, so the reason is always lease_expired.
-    const ids = await this.c.k.d.store.expireLeases(
-      max_attempts,
-      (attempt) => retryDelayMs(attempt, retry_base_ms, retry_max_ms),
-      (a) =>
-        this.c.k.d.log.warn("run abandoned", {
-          run_id: a.run_id,
-          work_item_id: a.work_item_id,
-          attempt: a.attempt,
-          status: "abandoned",
-          reason: "lease_expired",
-          started_at: a.started_at,
-          ended_at: a.ended_at,
-          duration_ms: a.duration_ms,
-        }),
-    );
-    for (const id of ids) this.c.k.d.log.warn("lease expired", { run_id: id });
+    const backoff_ms = (attempt: number) => retryDelayMs(attempt, s.retry_base_ms, s.retry_max_ms);
+    writes.push({ kind: "expire_leases", max_attempts: s.max_attempts, backoff_ms });
+    return { writes };
   }
 }
 
@@ -65,6 +64,10 @@ export default controllerUnit({
   name: "reaper",
   create: (c: Ctx) => new ReaperUnit(c),
   steps: [
-    { name: "reaper", every: "tick", order: 100, run: (u) => u.reaperStep() },
+    {
+      name: "reaper", every: "tick", order: 100,
+      load: async (u) => u.settings(),
+      decide: (u, s: ReaperSettings, t) => u.decide(s, Date.parse(t.now)),
+    },
   ],
 });

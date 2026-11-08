@@ -186,7 +186,7 @@ export class ControllerRole implements Decisions {
     await w.inbound.relayCommands(t);
     await this.drain(t);
     const r = await this.router();
-    await r.unit("mirror").mirrorStep();
+    await r.step("cli mirror", t);
     await r.unit("outbox").outboxStep();
   }
 
@@ -212,7 +212,7 @@ export class ControllerRole implements Decisions {
   }
 
   async tickReaper(): Promise<void> {
-    await this.step((r) => r.unit("reaper").reaperStep());
+    await this.step((r) => r.step("reaper", this.tick("reaper")));
   }
 
   async tickMergeCheck(): Promise<void> {
