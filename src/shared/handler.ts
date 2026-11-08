@@ -4,6 +4,9 @@
 
 import type { Draft, Envelope } from "./envelope.js";
 
+/** Where a new consumer group starts on a topic (`EventBus.subscribe`). */
+export type StartPosition = "latest" | "earliest";
+
 export interface HandlerContext {
   /** Queues a message. The runtime writes it to the component's outbox in the same transaction as the handler's state. */
   emit(draft: Draft): void;
@@ -19,6 +22,12 @@ export interface HandlerDescriptor<M extends Envelope = Envelope, C extends Hand
   readonly name: string;
   /** Message types it subscribes to; the registry indexes handlers by these. */
   readonly accepts: readonly M["type"][];
+  /**
+   * Where its consumer group starts on a partitioned or fan-out topic it is new to: `latest` (the default) after
+   * every message already there, `earliest` at the first one the topic still holds (a replay of its retention).
+   * Taken when the component's consumer starts; a group that exists keeps its cursors.
+   */
+  readonly startFrom?: StartPosition;
   /** Cheap filter run before `handle`. false skips the message with no side effects. */
   readonly canHandle?: (m: M) => boolean;
   handle(m: M, ctx: C): Promise<void>;

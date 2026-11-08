@@ -44,6 +44,17 @@ export class ComponentConsumer<C extends HandlerContext> {
       });
   }
 
+  /**
+   * Subscribes each handler's group to its topics at the handler's `startFrom` (default `latest`). The role calls
+   * it when it starts, before any component relays, so a new handler gets what is published from then on and an
+   * existing one keeps its cursors.
+   */
+  async subscribe(): Promise<void> {
+    for (const { h, topics } of this.handlers) {
+      for (const topic of topics) await this.o.bus.subscribe(h.name, topic.name, h.startFrom ?? "latest");
+    }
+  }
+
   /** Claims and handles what is due for each handler; returns how many messages it claimed. */
   async consume(): Promise<number> {
     let n = 0;

@@ -128,6 +128,10 @@ async function setup(backend: Backend) {
     deliver(db, bus, a, consumer, c, async (tx, m) => {
       await tx.run("INSERT INTO testc_effects (k) VALUES (?)", [`${consumer}:${m.idempotency_key}`]);
     });
+  // As a consumer does when it starts: the topics are empty, so "latest" starts at the first message.
+  for (const group of ["g", "g1", "g2", "alarms", "ui"]) {
+    for (const topic of [EVENTS, SYSTEM_ALERTS]) await a.subscribe(group, topic.name, "latest");
+  }
   await advance(0);
   return { db, a, b, newBus, scheduler, msg, publish, relay, advance, effects, handle, now, componentTicks, busTicks };
 }
@@ -239,6 +243,34 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
       await s.advance(LEASE_MS);
       expect(await s.a.renew(later!)).toBe(false);
     }
+  });
+
+  it("a new group starts after what the topic holds unless it opts for earliest; an existing group keeps its cursor", async () => {
+    const s = await setup(backend);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    const drain = async (group: string) => {
+      const ids: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        for (const c of await s.a.consume(group, EVENTS.name, 10)) {
+          ids.push(c.message.id);
+          await s.a.ack(c);
+        }
+      }
+      return ids;
+    };
+    await expect(s.a.consume("new", EVENTS.name, 10)).rejects.toThrow("consumer group new is not subscribed to test.events");
+    await s.a.subscribe("new", EVENTS.name, "latest");
+    await s.a.subscribe("replay", EVENTS.name, "earliest");
+    expect(await drain("new")).toEqual([]);
+    expect(await drain("replay")).toEqual(["m1"]);
+    expect(await drain("g")).toEqual(["m1"]);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    // Subscribing again on the next start moves no cursor, whatever the position asked for.
+    await s.a.subscribe("g", EVENTS.name, "latest");
+    await s.b.subscribe("replay", EVENTS.name, "earliest");
+    for (const group of ["new", "replay", "g"]) expect(await drain(group)).toEqual(["m2"]);
   });
 
   it("keeps per-partition order: one message of a partition at a time, in publish order", async () => {

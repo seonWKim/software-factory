@@ -44,6 +44,9 @@ async function harness() {
       },
     }),
   });
+  // As the role does when it starts, before anything is relayed.
+  await alarms.subscribe();
+  await inbound.subscribe("g", "inbound.records", "latest");
   /** Publishes one inbound record, claims it as group `g` and dead-letters it. */
   const deadLetter = async (subject: string, code = "bad_input") => {
     const m = envelope(

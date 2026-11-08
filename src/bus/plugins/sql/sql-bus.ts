@@ -14,6 +14,7 @@
 
 import { MAX_KEY_LENGTH, MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
 import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
+import type { StartPosition } from "../../../shared/handler.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
@@ -58,8 +59,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly capabilities: readonly string[];
   private readonly byName = new Map<string, TopicDescriptor>();
   private readonly byType = new Map<string, TopicDescriptor>();
-  /** Groups whose cursor rows exist; only saves a write, the rows themselves are the state. */
-  private readonly cursorsReady = new Set<string>();
+  /** Groups whose cursor rows exist; only saves a read, the rows themselves are the state. */
+  private readonly subscribed = new Set<string>();
 
   constructor(o: SqlBusOptions) {
     if (!/^[a-z]+$/.test(o.component)) throw new Error(`component name "${o.component}" must be lowercase letters`);
@@ -183,6 +184,21 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   async prune(tick: Tick): Promise<void> {
     await this.db.run(`DELETE FROM ${this.inbox} WHERE expires_at IS NOT NULL AND expires_at <= ?`, [tick.now]);
     await this.db.run(`DELETE FROM ${this.outbox} WHERE published_at IS NOT NULL AND published_at < ?`, [addMs(tick.now, -this.outboxRetentionMs)]);
+  }
+
+  async subscribe(group: string, topicName: string, from: StartPosition): Promise<void> {
+    const topic = this.topic(topicName);
+    if (topic.consumption === "competing") return;
+    const t = topicTables(topic.name);
+    await this.db.transaction(async (tx) => {
+      // Every seq up to a partition's committed MAX has committed: inserts into a topic commit in seq order.
+      const heads = from === "earliest" ? [] : await tx.all(`SELECT ${P} AS p, MAX(seq) AS seq FROM ${t.messages} GROUP BY ${P}`);
+      const head = new Map(heads.map((r) => [Number(r.p), Number(r.seq)]));
+      for (let p = 0; p < topic.partitions; p++) {
+        await insertOrSkip(tx, this.dialect, `${t.cursors} (consumer_group, ${P}, last_seq) VALUES (?, ?, ?)`, [group, p, head.get(p) ?? 0]);
+      }
+    });
+    this.subscribed.add(`${topic.name}\0${group}`);
   }
 
   async consume(group: string, topicName: string, max: number): Promise<Claimed[]> {
@@ -314,7 +330,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   private async consumePartitions(group: string, topic: TopicDescriptor, max: number, horizon: string): Promise<Claimed[]> {
     const t = topicTables(topic.name);
-    await this.ensureCursors(group, topic, t);
+    await this.assertSubscribed(group, topic, t);
     const candidates = await this.db.all(
       `SELECT c.${P} AS p, c.lease_token AS token FROM ${t.cursors} c WHERE c.consumer_group = ? AND (c.lease_until IS NULL OR c.lease_until <= ?) ` +
         `AND (EXISTS (SELECT 1 FROM ${t.messages} m WHERE m.${P} = c.${P} AND m.seq > c.last_seq) ` +
@@ -383,13 +399,13 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     return null;
   }
 
-  private async ensureCursors(group: string, topic: TopicDescriptor, t: TopicTables): Promise<void> {
+  /** A group with no cursors was never subscribed: consuming would pick a start position by accident. */
+  private async assertSubscribed(group: string, topic: TopicDescriptor, t: TopicTables): Promise<void> {
     const key = `${topic.name}\0${group}`;
-    if (this.cursorsReady.has(key)) return;
-    for (let p = 0; p < topic.partitions; p++) {
-      await insertOrSkip(this.db, this.dialect, `${t.cursors} (consumer_group, ${P}) VALUES (?, ?)`, [group, p]);
-    }
-    this.cursorsReady.add(key);
+    if (this.subscribed.has(key)) return;
+    const [row] = await this.db.all(`SELECT COUNT(*) AS n FROM ${t.cursors} WHERE consumer_group = ?`, [group]);
+    if (Number(row!.n) !== topic.partitions) throw new Error(`consumer group ${group} is not subscribed to ${topic.name}: subscribe it when it starts`);
+    this.subscribed.add(key);
   }
 }
 

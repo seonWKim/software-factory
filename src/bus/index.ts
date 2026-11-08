@@ -3,6 +3,7 @@
 // interfaces later, with the same keys and dedupe.
 
 import type { Envelope } from "../shared/envelope.js";
+import type { StartPosition } from "../shared/handler.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import type { TopicDescriptor } from "../shared/topic.js";
 import type { SqlDriver, SqlExecutor } from "../state/index.js";
@@ -35,7 +36,18 @@ export interface NackError {
 export interface EventBus {
   /** Writes the messages to the caller's component outbox, in the caller's transaction. The relay publishes them. */
   publish(tx: Tx, messages: readonly Envelope[]): Promise<void>;
-  /** Claims up to `max` messages of `topic` for `group`. Per partition, one message at a time, in order. */
+  /**
+   * Registers consumer group `group` on `topic`; safe to call on every start. A group new to a partitioned or
+   * fan-out topic gets its cursors here: after every message the topic holds now (`latest`), or before the first
+   * one it still holds (`earliest`). A group that has cursors keeps them. "Latest" is taken at this call, so the
+   * consumer subscribes when it starts, before its component relays anything, and gets what is published after.
+   * A competing topic is one queue for every group: nothing to register.
+   */
+  subscribe(group: string, topic: string, from: StartPosition): Promise<void>;
+  /**
+   * Claims up to `max` messages of `topic` for `group`. Per partition, one message at a time, in order. Refuses a
+   * group that was never subscribed to a partitioned or fan-out topic.
+   */
   consume(group: string, topic: string, max: number): Promise<Claimed[]>;
   /**
    * Called right before the consumer handles `c`: extends its lease from the bus's time, so a batch's later
