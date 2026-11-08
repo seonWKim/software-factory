@@ -46,7 +46,8 @@ minutes; past that the main session takes over from their WIP commit.
 | 01:33– | M7 rest: resolve/update/wip pushes, PR body refresh, session push and PR, sub-issue filing, outbound's service passport (m7-rest) | agent | running, time box 90 min |
 | 01:33–01:57 | Outbound `local` merge delivery (b84434e…9e58717): the merge queue's landing and the base push are keyed outbound actions made by the `local` target; the queue stays `merging` until DeliveryCompleted; units write intents through the kernel's `intent` commit (`Kernel.recordAction` gone); 4 ratchet entries removed | agent | merged 01:59 (6a4963b), SQLite green (3749); main added the carry-over of base pushes pending at upgrade (8764289) |
 | 01:33–01:37 | Worker finding 2 (fdaf3a6): an interrupted agent step starts a new session instead of resuming in a fresh folder; the partial-session resume removed | main | SQLite green (3747); the test fails without the fix |
-| next | Merge both agents; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
+| 02:05– | Review of outbound, the controller's delivery side, and the migrations added since 00:00 (read-only agent) | agent | running |
+| next | Merge m7-rest; apply the outbound review; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
