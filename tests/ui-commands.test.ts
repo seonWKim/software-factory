@@ -174,7 +174,7 @@ describe("app command requests: refusals", () => {
     expect(await h.store.listRuns(it1.id)).toEqual([]);
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted).toHaveLength(1);
-    expect(posted[0]!.body).toBe("`reject` was not applied: only `approve` is applied from an app request; reply `/reject` on the issue instead.");
+    expect(posted[0]!.body).toBe("`reject` was not applied: only `approve` and `merge` are applied from an app request; reply `/reject` on the issue instead.");
     expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
     expect(h.source.comments).toHaveLength(1);
   });
@@ -185,7 +185,7 @@ describe("app command requests: refusals", () => {
     const r = await h.request("k1", WRITER, "@everyone <b>", { work_item_id: it1.id });
     await h.controller.tickCommands();
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
-    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` is applied from an app request."]);
+    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` and `merge` are applied from an app request."]);
   });
 
   it("a request for no known work item is refused on its row only: nothing is posted", async () => {
@@ -306,7 +306,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
     expect(replies.map((x) => x.command)).toEqual(["approve", "reject"]);
     expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
-    expect(replies[1]!.refusal).toContain("only `approve` is applied from an app request");
+    expect(replies[1]!.refusal).toContain("only `approve` and `merge` are applied from an app request");
     for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
 });
