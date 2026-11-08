@@ -19,6 +19,8 @@ export default defineConfig({
     exclude: ["node_modules", "dist", ".worktrees", ".factory", ".vite-cache"],
     // A real MySQL round trip is slower, and a loaded CI runner more so: the default 5 s timed tests out there.
     testTimeout: process.env.SF_TEST_MYSQL_URL ? 20_000 : 5_000,
-    ...(Number.isInteger(share) && share > 0 ? { maxWorkers: share } : {}),
+    // One MySQL server serves every worker, and each test file migrates a fresh database: at one worker per CPU the
+    // server falls behind and tests time out at 20 s (2026-11-09, 10 CPUs: 20 timeouts; 4 workers: green in 6 min).
+    ...(Number.isInteger(share) && share > 0 ? { maxWorkers: share } : process.env.SF_TEST_MYSQL_URL ? { maxWorkers: 4 } : {}),
   },
 });
