@@ -30,7 +30,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
 | 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
 | 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
-| 22:40–00:40 | M6 `worker.ts` onto the engine; M9 wiring (passports at the edge and in the ToolBroker, UI names) | agents | running |
+| 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
 | 23:55–01:55 | M8 merge queue; M7 outbound (controller side); M5 follow-up: pure units on ticks | agents | running |
 | 00:40–02:30 | Merge M6, M9; M7 worker half after M6; finish what an agent left (main takes over past its time box) | main | |
 | 02:30–05:00 | Merge M7, M8, pure units; M10 call sites (hooks, roles); full MySQL suite with no agents running | agents + main | |
