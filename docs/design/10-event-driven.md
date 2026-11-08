@@ -348,15 +348,15 @@ force.
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
   `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
-  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous, so
-  `ruleOfTwoRefusal` refuses them unless a person approved their input. No role approves what it proposes, and no
+  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous. `ruleOfTwoRefusal`
+  states that rule, but no run start calls it yet: an implement or resolve run starts once its item is approved,
+  by a person or by auto mode, so in auto mode they run with all three facts and no person (owner decision pending). No role approves what it proposes, and no
   principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
   means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
   ratchet). Every agent step takes its system prompt (the role's file under `prompts/`) and its tools from its role
   (`Worker.roleSpec`; the run kind's role, or `resolve` for implement's conflict retry); a run kind names neither. A
-  role whose prompt file is missing fails the run `prompt_missing` before the agent starts. Auto mode does not call
-  `ruleOfTwoRefusal` yet (owner decision pending).
+  role whose prompt file is missing fails the run `prompt_missing` before the agent starts.
 - **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10; decision changed in the M6 leftovers:
   `before_run` is called and the `hooks` setting enables them, see History). A hook is
   `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
