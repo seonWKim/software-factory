@@ -1,7 +1,8 @@
 // What the controller asks outbound to write (RFC 0015 M7): thread entries, status labels, 👀 reactions, issue closes
 // and posts on sources with no work item are stored as intents, and the outbox step announces them as
 // DeliveryRequested; outbound batches and delivers them, and DeliveryCompleted comes back to `delivered`.
-// Moved out of the legacy controller (RFC 0015 M5); its store reads are still inline (unit-purity ratchet).
+// It reads through the kernel's reader and writes through the kernel's commit (RFC 0015 M5): every reply of every
+// unit is a `threadEntry` write, and the one builder of an entry is `threadEntry` in kernel.ts.
 
 import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
@@ -12,6 +13,7 @@ import type { ThreadLinkField } from "../../../interfaces/factory-store.js";
 import { labelTarget } from "../../../interfaces/factory-store.js";
 import { THREAD_INTENT, type NewAction } from "../../../outbound/index.js";
 import type { Ctx } from "../context.js";
+import { type ControllerWrite, type ThreadEntry, deliveredUrl, threadEntry } from "../kernel.js";
 import { controllerUnit } from "../context.js";
 
 /** Items the start-up status catch-up reads (newest first). Past this, a warning; the rest stay as they are. */
@@ -32,13 +34,13 @@ export class OutboxUnit {
     // An optional read: with the request budget low it waits for the reset (issue #254); run() asks again each tick.
     await this.c.k.guard("sync", () => this.c.unit("sync").syncStep());
     if (this.c.unit("sync").lowBudget()) return false;
-    const items = await this.c.k.d.store.listWorkItems(CATCH_UP_LIMIT);
+    const items = await this.c.k.reader.listWorkItems(CATCH_UP_LIMIT);
     if (items.length >= CATCH_UP_LIMIT) {
       this.c.k.d.log.warn("status catch-up hit its limit", { limit: CATCH_UP_LIMIT });
     }
     const open = items.filter((it) => it.stage !== "CLOSED");
     // One batched read of the stored label states: a target already showing its status costs no call at all.
-    const stored = await this.c.k.d.store.listLabelStates(open.map((it) => it.source.id));
+    const stored = await this.c.k.reader.listLabelStates(open.map((it) => it.source.id));
     const shown = new Set(stored.map((l) => `${l.source_id} ${l.target} ${l.status}`));
     for (const it of open) {
       if (this.c.unit("sync").lowBudget()) return false;
@@ -68,13 +70,13 @@ export class OutboxUnit {
    */
   async prComment(it: WorkItem, key: string, body: string): Promise<void> {
     const pr_number = prNumber(it);
-    if (pr_number === null || !this.c.k.forge) {
+    const pr = pr_number === null ? null : this.c.k.prRef(pr_number);
+    if (pr === null) {
       await this.comment(it, key, body);
       return;
     }
-    const pr = this.c.k.forge.prRef(pr_number);
     const marker = `<!-- factory:${key} -->`;
-    await this.c.k.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
+    await this.write({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
   }
 
   /** 👀 on the event, through outbound. Best effort there: a failure is a warning and never blocks anything. */
@@ -101,9 +103,9 @@ export class OutboxUnit {
    */
   async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
     const pr = change_ref === null ? null : prNumber({ change_ref });
-    const forge = this.c.k.forge;
-    if (pr !== null && forge) {
-      await this.request({ action: "status", target: forge.prRef(pr), args: { status, change_ref, pr, item_source: JSON.stringify(source) } });
+    const ref = pr === null ? null : this.c.k.prRef(pr);
+    if (ref !== null) {
+      await this.request({ action: "status", target: ref, args: { status, change_ref, pr, item_source: JSON.stringify(source) } });
       return;
     }
     await this.request({ action: "status", target: source, args: { status, change_ref } });
@@ -119,17 +121,13 @@ export class OutboxUnit {
   }
 
   /**
-   * The thread write behind every factory message: the entry, and in the same transaction its outbox row unless
-   * the thread is the item's own surface (a local item). An entry goes only to its item's own source: `target`
-   * (e.g. the item's PR) is used when it is of that source's type, else the item's source.
+   * The thread write behind every factory message: a `threadEntry` write, committed by the kernel. Returns the URL
+   * of an earlier write of the same marker that outbound already delivered (read first), else null.
    */
   async post(it: WorkItem, target: SourceRef, body: string, marker: string, link: ThreadLinkField | null = null): Promise<string | null> {
-    const type = it.source.type;
-    const delivery = type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
-    const { created, message } = await this.c.k.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery });
-    if (created || delivery === null) return null;
-    const row = (await this.c.k.d.store.listDeliveries(it.id)).find((d) => d.thread_seq === message.seq);
-    return row?.url ?? null;
+    const url = it.source.type === LOCAL_SOURCE ? null : deliveredUrl(await this.c.k.reader.listDeliveries(it.id), marker);
+    await this.write(threadEntry(it, target, body, marker, link));
+    return url;
   }
 
   /**
@@ -146,9 +144,12 @@ export class OutboxUnit {
 
   /** DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field). */
   async delivered(intent_ids: readonly string[]): Promise<void> {
-    for (const id of intent_ids) {
-      if (id.startsWith(THREAD_INTENT)) await this.c.k.d.store.linkDelivery(Number(id.slice(THREAD_INTENT.length)));
-    }
+    const writes: ControllerWrite[] = intent_ids.filter((id) => id.startsWith(THREAD_INTENT)).map((id) => ({ kind: "link_delivery", seq: Number(id.slice(THREAD_INTENT.length)) }));
+    await this.c.k.commit({ writes });
+  }
+
+  private async write(entry: ThreadEntry): Promise<void> {
+    await this.c.k.commit({ writes: [{ kind: "thread_entry", entry }] });
   }
 
   /** Stores one action intent; the outbox step announces it. A local item's surface is the store: nothing to write. */
