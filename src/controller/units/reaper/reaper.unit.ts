@@ -4,6 +4,24 @@
 import { retryDelayMs } from "../../../core/policy.js";
 import type { ControllerDecision, Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import type { ControllerWrite, ExpiredLeases } from "../kernel.js";
+
+/**
+ * Each attempt the expiry cut off gets its end line (issue #210): the run's last heartbeat is its end. Only an
+ * expired lease is seen here, so the reason is always lease_expired. Then one line per run requeued or failed.
+ */
+function expiredLines(r: ExpiredLeases): ControllerWrite[] {
+  return [
+    ...r.abandoned.map((a): ControllerWrite => ({
+      kind: "log", level: "warn", msg: "run abandoned",
+      fields: {
+        run_id: a.run_id, work_item_id: a.work_item_id, attempt: a.attempt, status: "abandoned", reason: "lease_expired",
+        started_at: a.started_at, ended_at: a.ended_at, duration_ms: a.duration_ms,
+      },
+    })),
+    ...r.run_ids.map((id): ControllerWrite => ({ kind: "log", level: "warn", msg: "lease expired", fields: { run_id: id } })),
+  ];
+}
 
 /** The settings a reaper tick decides on. */
 interface ReaperSettings {
@@ -49,7 +67,7 @@ export class ReaperUnit {
     if (now < this.reaperGraceUntil) return { writes };
     // An expired lease waits out the same backoff as any retry before another claim (design §5 Restarts).
     const backoff_ms = (attempt: number) => retryDelayMs(attempt, s.retry_base_ms, s.retry_max_ms);
-    writes.push({ kind: "expire_leases", max_attempts: s.max_attempts, backoff_ms });
+    writes.push({ kind: "expire_leases", max_attempts: s.max_attempts, backoff_ms, then: expiredLines });
     return { writes };
   }
 }

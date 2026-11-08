@@ -173,6 +173,11 @@ export interface LoadedConfig {
    * for the rest. Empty: `auto`. Parsed by outbound's `batchingPolicies`; core imports no component.
    */
   outbound_batching: Readonly<Record<string, { readonly mode: "auto" | "commit" | "fixed"; readonly debounce_ms: number; readonly max_wait_ms: number; readonly max_messages: number }>>;
+  /**
+   * `merge_queue.depth` (RFC 0015 §7 Merge queue): how many entries from the head are checked at once, each on the
+   * base plus the entries ahead of it. 1 to 10; solo default 1, enterprise typically 2.
+   */
+  merge_queue_depth: number;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /**

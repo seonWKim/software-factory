@@ -1,7 +1,8 @@
 import { LiveSettings } from "../core/settings.js";
 import type { Timestamp, WorkerId } from "../core/types.js";
+import { loadRunKinds, runKindProblems } from "./run-kind.js";
 import { Worker } from "./runner.js";
-import type { WorkerDeps } from "./support.js";
+import { KINDS, type WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
@@ -96,6 +97,8 @@ export class WorkerPool {
    * last in-flight run is done.
    */
   async run(signal: AbortSignal): Promise<void> {
+    const problems = runKindProblems(KINDS, await loadRunKinds());
+    if (problems.length > 0) throw new Error(`run kinds are broken: ${problems.join("; ")}`);
     const slots = new Map<number, Slot>();
     const all = new Set<Promise<void>>();
     const started_at = this.d.clock.now().toISOString() as Timestamp;

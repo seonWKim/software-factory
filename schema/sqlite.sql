@@ -65,6 +65,60 @@ CREATE TABLE bus_controller_commands_retries (
   PRIMARY KEY (consumer_group, message_seq)
 );
 
+CREATE TABLE bus_controller_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_controller_events_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_controller_events_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_controller_events_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
 CREATE TABLE bus_deliveries_requests (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,
@@ -1385,6 +1439,14 @@ CREATE INDEX bus_controller_commands_partition ON bus_controller_commands (`part
 CREATE INDEX bus_controller_commands_published ON bus_controller_commands (published_at);
 
 CREATE INDEX bus_controller_commands_retries_due ON bus_controller_commands_retries (next_attempt_at);
+
+CREATE INDEX bus_controller_events_due ON bus_controller_events (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_controller_events_partition ON bus_controller_events (`partition`, seq);
+
+CREATE INDEX bus_controller_events_published ON bus_controller_events (published_at);
+
+CREATE INDEX bus_controller_events_retries_due ON bus_controller_events_retries (next_attempt_at);
 
 CREATE INDEX bus_deliveries_requests_due ON bus_deliveries_requests (not_before) WHERE not_before IS NOT NULL;
 

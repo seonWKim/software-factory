@@ -82,3 +82,14 @@ export function loadRunKinds(root: string = `${import.meta.dirname}/runs`): Prom
   }
   return found;
 }
+
+/**
+ * Startup problems (the pool refuses to start on any): a kind the worker claims with no run file, whose every run
+ * would fail only once claimed, and a run file of a kind the worker never claims.
+ */
+export function runKindProblems(claimed: readonly string[], found: ReadonlyMap<string, RunKindDescriptor>): string[] {
+  return [
+    ...claimed.filter((k) => !found.has(k)).map((k) => `run kind "${k}" is claimed but has no run file (src/worker/runs/${k}/${k}.run.ts)`),
+    ...[...found.keys()].filter((k) => !claimed.includes(k)).map((k) => `run kind "${k}" has a run file but no worker claims it`),
+  ];
+}

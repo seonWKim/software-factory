@@ -143,6 +143,8 @@ export interface FileConfig {
   inbox_retention_days?: number;
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
+  /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
+  merge_queue?: { depth?: unknown };
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
@@ -442,6 +444,7 @@ export async function loadConfig(
     agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     outbound_batching: batchingPolicies(file.outbound?.batching),
+    merge_queue_depth: mergeQueueDepth(file),
     workers,
     max_workers,
     deny_paths: [
@@ -1324,6 +1327,19 @@ export function agentStopChecks(file: Pick<FileConfig, "agent_stop_checks">): nu
   const v = file.agent_stop_checks;
   if (v === undefined) return AGENT_STOP_CHECKS_DEFAULT;
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("agent_stop_checks must be a positive integer");
+  return v;
+}
+
+/** The deepest speculative merge queue: each level is one more merge-check run out at once. */
+export const MERGE_QUEUE_DEPTH_MAX = 10;
+
+/** `merge_queue.depth`: absent means 1 (solo: one check at a time), otherwise 1 to MERGE_QUEUE_DEPTH_MAX or startup fails. */
+export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
+  const v = file.merge_queue?.depth;
+  if (v === undefined) return 1;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > MERGE_QUEUE_DEPTH_MAX) {
+    throw new Error(`merge_queue.depth must be an integer from 1 to ${MERGE_QUEUE_DEPTH_MAX}`);
+  }
   return v;
 }
 

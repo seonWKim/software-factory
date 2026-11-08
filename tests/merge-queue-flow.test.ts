@@ -14,7 +14,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { ControllerRole, type ControllerRoleDeps } from "../src/runtime/roles/controller-role.js";
+import { defineHook } from "../src/shared/hook.js";
 import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { BACKENDS } from "./helpers/store.js";
@@ -23,7 +24,9 @@ import { BACKENDS } from "./helpers/store.js";
 // Two local changes each pass their own checks (a.yml alone, b.yml alone), but together they break the test command
 // (it fails when both files exist). Both are approved for a merge at once: the first lands; the second is checked
 // as it would land (base + the first) by a merge-check run, comes back red, leaves the queue with the reason, and
-// the base never holds both files.
+// the base never holds both files. At speculative depth 2 (`merge_queue.depth`) both checks run at once, b's on the
+// base plus a, and two changes that pass together both land, b on the commit a landed as. A check no worker runs is
+// ended by MergeCheckTimedOut; an enabled before_merge hook that vetoes keeps the base where it was.
 
 const ME = "local:me@example.com" as UserId;
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -34,7 +37,13 @@ const DIR = ".github/workflows";
 /** Fails exactly when a.yml and b.yml are both there. */
 const NOT_BOTH = ["sh", "-c", `test ! -f ${DIR}/a.yml || test ! -f ${DIR}/b.yml`];
 
-async function factory(backend: (typeof BACKENDS)[number]) {
+interface Options {
+  depth?: number;
+  test?: string[];
+  hooks?: ControllerRoleDeps["hooks"];
+}
+
+async function factory(backend: (typeof BACKENDS)[number], o: Options = {}) {
   const root = mkdtempSync(join(tmpdir(), "sf-merge-queue-"));
   const repo = join(root, "repo");
   git(root, "init", "--quiet", "-b", "main", repo);
@@ -46,7 +55,8 @@ async function factory(backend: (typeof BACKENDS)[number]) {
   const project = localProject({ owner: "o", name: "r" });
   const cfg: FactoryConfig = {
     ...config, project, local_only: true,
-    repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: NOT_BOTH },
+    repo: { ...config.repo, path: repo, install_command: ["sh", "-c", "exit 0"], test_command: o.test ?? NOT_BOTH },
+    merge_queue_depth: o.depth ?? 1,
   };
   const clock = new FakeClock();
   const { store } = await backend.make(clock);
@@ -54,6 +64,7 @@ async function factory(backend: (typeof BACKENDS)[number]) {
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    ...(o.hooks ? { hooks: o.hooks } : {}),
   });
   // The first implement run adds a.yml, the second b.yml (the changes are made one after the other).
   let implemented = 0;
@@ -91,13 +102,22 @@ async function factory(backend: (typeof BACKENDS)[number]) {
     expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     return id;
   };
-  return { repo, store, controller, step, cli, toMergePending };
+  return { repo, store, clock, controller, worker, step, cli, toMergePending };
+}
+
+/** The merge-check runs of the items, in order, with what each merged and how it came back. */
+async function checks(f: Awaited<ReturnType<typeof factory>>, ...ids: WorkItemId[]) {
+  const runs = (await Promise.all(ids.map((id) => f.store.listRuns(id)))).flat().filter((r) => r.kind === "merge-check");
+  return runs.map((r) => ({
+    branches: (r.input?.merge_check as { branches: string[] }).branches.length,
+    result: r.outcome?.status === "succeeded" ? r.outcome.data.result : (r.outcome?.status ?? r.status),
+  }));
 }
 
 for (const backend of BACKENDS) {
   describe(`merge queue (${backend.name})`, { timeout: 120_000 }, () => {
-    it("a change whose merged result is red never lands; the change ahead of it does", async () => {
-      const f = await factory(backend);
+    it.each([1, 2])("a change whose merged result is red never lands; the change ahead of it does (depth %i)", async (depth) => {
+      const f = await factory(backend, { depth });
       const a = await f.toMergePending("Add a");
       const b = await f.toMergePending("Add b");
       const mainBefore = git(f.repo, "rev-parse", "main");
@@ -119,13 +139,87 @@ for (const backend of BACKENDS) {
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merged"]);
       expect((await queue.entries(b)).map((e) => e.state)).toEqual(["removed"]);
-      // Each was checked by its own merge-check run, b on the base a landed on.
-      const checks = [...(await f.store.listRuns(a)), ...(await f.store.listRuns(b))].filter((r) => r.kind === "merge-check");
-      expect(checks.map((r) => r.outcome?.status === "succeeded" ? r.outcome.data.result : null)).toEqual(["green", "red"]);
+      // Each was checked by its own merge-check run, b on the base plus a (at depth 1 on the base a landed on).
+      expect(await checks(f, a, b)).toEqual([{ branches: 1, result: "green" }, { branches: depth === 1 ? 1 : 2, result: "red" }]);
 
       // Nothing else is checked or merged later.
       await f.step();
       expect(git(f.repo, "rev-parse", "main")).toBe(main);
+    });
+    it("at depth 2 checks both at once, b on the base plus a, and both land, b on the commit a landed as", async () => {
+      const f = await factory(backend, { depth: 2, test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const b = await f.toMergePending("Add b");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.cli({ action: "command", command: "merge", id: b, text: "" });
+      await f.controller.tickCommands();
+      // Both checks are out before any worker ran one: b's merges a's branch and then its own.
+      const queue = await f.controller.unit("merge-queue");
+      expect([...(await queue.entries(a)), ...(await queue.entries(b))].map((e) => e.state)).toEqual(["checking", "checking"]);
+      expect(await checks(f, a, b)).toEqual([{ branches: 1, result: "queued" }, { branches: 2, result: "queued" }]);
+
+      await f.step();
+      const main = git(f.repo, "rev-parse", "main");
+      const aSha = (await f.store.getWorkItem(a))!.merge_sha;
+      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main });
+      expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ")[1]).toBe(aSha);
+      expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n").sort()).toEqual([`${DIR}/a.yml`, `${DIR}/b.yml`, "README.md"]);
+      // No check ran again: b's check on the base plus a was the tree that landed.
+      expect(await checks(f, a, b)).toEqual([{ branches: 1, result: "green" }, { branches: 2, result: "green" }]);
+    });
+
+    it("a check no worker finishes is ended by MergeCheckTimedOut; its late result changes nothing", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.controller.tickCommands();
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
+
+      // Just before the timer nothing moves; past it, the delayed message ends the check.
+      f.clock.advance(queue.checkTimeoutMs() - 1);
+      await f.controller.tickRuns();
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
+      f.clock.advance(1);
+      await f.controller.tickRuns();
+      expect((await queue.entries(a)).map((e) => [e.state, e.reason])).toEqual([["removed", "its merge check did not finish in time; run `factory merge` again"]]);
+      const refused = (await f.store.listItemMessages(a)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+      expect(refused).toHaveLength(1);
+      expect(refused[0]).toContain("did not finish in time");
+
+      // The worker runs the stale check later: green, but the entry left, so nothing lands.
+      while (await f.worker.tick()) await f.controller.tickRuns();
+      expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }]);
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    });
+
+    it("an enabled before_merge hook that vetoes keeps the base where it was; a disabled one never runs", async () => {
+      const seen: string[] = [];
+      const freeze = defineHook({
+        name: "freeze", point: "before_merge", budget_ms: 1_000,
+        run: async (input) => { seen.push(input.subject); return { kind: "veto", reason: "the base is frozen" }; },
+      });
+      const off = await factory(backend, { test: ["sh", "-c", "exit 0"], hooks: { enabled: [], list: [freeze] } });
+      const landed = await off.toMergePending("Add a");
+      await off.cli({ action: "command", command: "merge", id: landed, text: "" });
+      await off.step();
+      expect(await off.store.getWorkItem(landed)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+      expect(seen).toEqual([]);
+
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"], hooks: { enabled: ["freeze"], list: [freeze] } });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.step();
+      expect(seen).toEqual([a]);
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["removed"]);
+      const refused = (await f.store.listItemMessages(a)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+      expect(refused[0]).toContain("hook freeze: the base is frozen");
     });
   });
 }

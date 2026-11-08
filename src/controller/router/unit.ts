@@ -11,6 +11,7 @@
 // clock: time comes from the tick. The router commits the decision. A legacy step (`run`) or event (a plain function)
 // still reads and writes inline; the unit-purity ratchet lists those units until they are split.
 
+import type { Envelope } from "../../shared/envelope.js";
 import type { Tick } from "../../shared/ticks/tick-generator.js";
 
 /** Each unit's operations by unit name; every `<unit>.unit.ts` adds its own entry. */
@@ -67,11 +68,18 @@ export type UnitEvents<E extends { kind: string }, O, R = unknown, W = unknown> 
     | PureEvent<O, Extract<E, { kind: T }>, R, W, unknown>;
 };
 
+/**
+ * The bus messages a unit decides on, by message type (one unit per type): what a unit emitted earlier (a delayed
+ * timer such as MergeCheckTimedOut) comes back here through the controller's consumer.
+ */
+export type UnitMessages<O> = Readonly<Record<string, (u: O, m: Envelope) => Promise<void>>>;
+
 export interface UnitDescriptor<K = unknown, E extends { kind: string } = { kind: string }, O = unknown, R = unknown, W = unknown> {
   readonly kind: "unit";
   readonly name: string;
   create(c: UnitContext<K, E>): O;
   readonly events?: UnitEvents<E, O, R, W>;
+  readonly messages?: UnitMessages<O>;
   readonly steps?: readonly UnitStep<O, R, W>[];
 }
 

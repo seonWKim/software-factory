@@ -12,7 +12,7 @@ describe("delivery-results", () => {
   it("hands the batch's intent ids to the decisions", async () => {
     const { store } = await newStore();
     const got: string[][] = [];
-    const decisions: Decisions = { consumeEvent: async () => {}, consumeCommand: async () => {}, deliveryCompleted: async (ids) => void got.push([...ids]) };
+    const decisions: Decisions = { consumeEvent: async () => {}, consumeCommand: async () => {}, deliveryCompleted: async (ids) => void got.push([...ids]), receive: async () => {} };
     const m = envelope(
       { type: DELIVERY_COMPLETED, subject: "d", idempotency_key: "b1", idempotency_key_ttl_ms: null, payload: { batch_id: "b1", destination: "d", intent_ids: ["int_3", "act_4"] } },
       { id: null, correlation_id: "b1", project_id: "p", passport_id: null, occurred_at: "2026-11-08T00:00:00.000Z" },
