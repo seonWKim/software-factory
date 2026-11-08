@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import type { TickGenerator } from "../../shared/ticks/tick-generator.js";
 import type { SqlExecutor } from "../../state/index.js";
+import { ProfileStore, checkDisplayName } from "../profiles/profiles.js";
 import { checkRestrictions, outside } from "./restrictions.js";
 import { PassportStore } from "./store.js";
 import { attenuateToken, makeLink, mintToken, passportOf, tokenHash, verifyToken, type Link, type PassportKeyring } from "./token.js";
@@ -59,6 +60,7 @@ type Chain = { ok: true; links: readonly Link[] } | { ok: false; reason: string;
 
 export class PassportService implements Authorization, PassportChecker {
   private readonly store: PassportStore;
+  private readonly profiles: ProfileStore;
   private readonly personTtlMs: number;
   private readonly maxTtlMs: number;
   private readonly newId: () => string;
@@ -67,6 +69,7 @@ export class PassportService implements Authorization, PassportChecker {
 
   constructor(private readonly o: IdentityOptions) {
     this.store = new PassportStore(o.db);
+    this.profiles = new ProfileStore(o.db);
     this.personTtlMs = o.personTtlMs ?? 3_600_000;
     this.maxTtlMs = o.maxTtlMs ?? 7 * 86_400_000;
     this.newId = o.newId ?? (() => `pp_${randomUUID()}`);
@@ -87,6 +90,10 @@ export class PassportService implements Authorization, PassportChecker {
     const provider = this.o.providers.find((p) => p.provider === identity.provider);
     const principal = provider ? await provider.resolve(identity) : null;
     if (!principal) throw new NotAuthenticated(`no ${identity.provider} identity resolves to a factory user`);
+    // The enterprise hook: a provider that knows the person's name hands it over here, stored once by id.
+    const name = await provider!.displayName?.(identity);
+    const checked = name ? checkDisplayName(name) : null;
+    if (checked?.ok) await this.profiles.set(principal.user_id, checked.name, identity.provider, now);
     const ttl = Math.min(opts.ttl_ms ?? this.personTtlMs, this.maxTtlMs);
     if (!(ttl > 0)) throw new Error("a passport needs a positive lifetime");
     const key = await this.o.keys.current();

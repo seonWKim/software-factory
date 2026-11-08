@@ -354,6 +354,14 @@ CREATE TABLE `identity_passports` (
   KEY `identity_passports_expiry` (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `identity_profiles` (
+  `user_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `display_name` varchar(255) COLLATE utf8mb4_bin NOT NULL,
+  `source` varchar(32) COLLATE utf8mb4_bin NOT NULL,
+  `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `identity_revocations` (
   `passport_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `revoked_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,

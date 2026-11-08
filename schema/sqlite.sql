@@ -255,6 +255,13 @@ CREATE TABLE identity_passports (
     expires_at    TEXT NOT NULL
   );
 
+CREATE TABLE identity_profiles (
+    user_id       TEXT PRIMARY KEY,
+    display_name  TEXT NOT NULL,
+    source        TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+  );
+
 CREATE TABLE identity_revocations (
     passport_id  TEXT PRIMARY KEY,
     revoked_by   TEXT NOT NULL,
