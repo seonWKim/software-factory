@@ -21,6 +21,7 @@ export type {
   Principal,
   Provider,
   ResourceRef,
+  RoleCheck,
   Restrictions,
   Role,
 } from "./passport/types.js";

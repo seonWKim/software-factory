@@ -5,7 +5,7 @@ import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
-import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
+import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
@@ -132,7 +132,7 @@ export class CommandsUnit {
   async handleInboxCommand(c: CliCommand): Promise<void> {
     if (c.origin === "app") {
       // An app request (RFC 0015 D7): its own row, or a row from before the merge that points at it by seq.
-      const r = await this.c.k.d.store.getAppCommandRequest(typeof c.args.app_request === "number" ? c.args.app_request : c.key);
+      const r = await this.c.k.reader.getAppCommandRequest(typeof c.args.app_request === "number" ? c.args.app_request : c.key);
       if (r && r.handled_at === null) await this.c.unit("app-requests").applyAppRequest(r);
       return;
     }
@@ -141,19 +141,19 @@ export class CommandsUnit {
       // A source's own command (issue #284): applied only where that source's adapter runs, and a failure is logged
       // and passed like a polled event's, so a sync plugin's outage never holds the local commands after it.
       const e = synced.event;
-      if (e && this.c.k.byType.has(synced.source.type)) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
+      if (e && this.c.k.hasAdapter(synced.source.type)) await this.c.k.guard(`event:${e.kind}`, () => this.c.dispatch(e));
       return;
     }
     const id = c.args.item;
     if (typeof id !== "string" || id === "") return;
-    const item = await this.c.k.d.store.getWorkItem(id as WorkItemId);
+    const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
     // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
     // judges it, and a sync source item's transition never waits on its source. Its mirror on the issue is the mirror step's.
     if (!item) return;
     // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
     // CLI refuses it for any other when it writes one.
     if (c.command === MERGE_COMMAND) {
-      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key);
+      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
       return;
     }
     const e = commandEvent(c, item.source);
@@ -167,7 +167,7 @@ export class CommandsUnit {
    */
   async handleCommand(e: CommandEvent): Promise<void> {
     const onPr = (e.kind === "resolve_requested" || e.kind === "revise_requested") && e.pr ? e.pr : null;
-    const item = onPr ? await this.itemOfPr(onPr) : await this.c.k.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = onPr ? await this.itemOfPr(onPr) : await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     // A `/revise` on the PR of a closed item is ordinary conversation now: no reaction, no reply (design §4).
     if (e.kind === "revise_requested" && onPr && item.stage === "CLOSED") return;
@@ -214,8 +214,8 @@ export class CommandsUnit {
   async itemOfPr(pr: { change_ref: string; head_branch: string }): Promise<WorkItem | null> {
     const id = workItemIdFromBranch(pr.head_branch, this.c.k.cfg.branch_prefix);
     const it = id
-      ? await this.c.k.d.store.getWorkItem(id as WorkItemId)
-      : await this.c.k.d.store.getWorkItemByPr(this.c.k.project(), pr.change_ref).then((x) => (x?.origin === "adopted" ? x : null));
+      ? await this.c.k.reader.getWorkItem(id as WorkItemId)
+      : await this.c.k.reader.getWorkItemByPr(this.c.k.project(), pr.change_ref).then((x) => (x?.origin === "adopted" ? x : null));
     return it && it.change_ref === pr.change_ref ? it : null;
   }
 
@@ -254,7 +254,7 @@ export class CommandsUnit {
   ): Promise<Decision | Refusal> {
     if (it.stage === "CLOSED" || it.change_ref !== f.change_ref) return null;
     const [field, value] = Object.entries(f.key)[0] as [string, string];
-    const done = (await this.c.k.d.store.listStateChanges(it.id)).some(
+    const done = (await this.c.k.reader.listStateChanges(it.id)).some(
       (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
     if (done) return null;
     const phase = commandPhase(it);
@@ -308,7 +308,7 @@ export class CommandsUnit {
     paths: readonly string[] = [],
   ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
-      const it = await this.c.k.d.store.getWorkItem(id);
+      const it = await this.c.k.reader.getWorkItem(id);
       if (!it) return null;
       const atCheckpoint = it.stage !== "CLOSED" && it.blocked_reason === BUDGET_CHECKPOINT;
       if (atCheckpoint && (e.kind === "budget_continue" || e.kind === "spec_rejected")) {
@@ -359,7 +359,7 @@ export class CommandsUnit {
     e: Extract<CommandEvent, { kind: "budget_continue" | "spec_rejected" }>,
     actor: Extract<Actor, { kind: "user" }>,
   ): Promise<string | null | typeof RETRY> {
-    const cp = (await this.c.k.d.store.listBudgetCheckpoints(it.id)).filter((c) => c.answer === "pending").at(-1);
+    const cp = (await this.c.k.reader.listBudgetCheckpoints(it.id)).filter((c) => c.answer === "pending").at(-1);
     if (!cp) return "the budget checkpoint has no pending record";
     const common = { id: it.id, expected_version: it.version, actor, checkpoint_id: cp.id };
     let input: Parameters<FactoryStore["answerBudgetCheckpoint"]>[0];
@@ -388,7 +388,7 @@ export class CommandsUnit {
         enqueue: { kind: cp.held_run_kind, idempotency_key: cp.held_run_key, not_before: cp.held_run_not_before },
       };
     }
-    const r = await this.c.k.d.store.answerBudgetCheckpoint(input);
+    const r = await this.c.k.commitItem([], { kind: "budget_answer", input });
     if (r.ok) {
       this.c.k.d.log.info("transition", { work_item_id: it.id, reason: input.reason, version: r.item.version });
       await this.c.unit("outbox").showStatus(r.item);
@@ -450,7 +450,7 @@ export class CommandsUnit {
    * commands for the item's current state. Like other commands, ignored entirely on an issue that is not one.
    */
   async handleInfo(e: InfoEvent): Promise<void> {
-    const item = await this.c.k.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
     const state = await this.stateOf(item);
@@ -472,9 +472,9 @@ export class CommandsUnit {
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
     if (code !== null) return this.handleLink(e, code);
-    const llm = this.c.k.d.llm;
+    const llm = this.c.k.reader.llm;
     if (!llm) return;
-    const item = await this.c.k.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item) return;
     const principal = await this.c.unit("auth").authorize(e.author, "approve_spec", item.id);
     if ("refuse" in principal) return;
@@ -514,13 +514,13 @@ export class CommandsUnit {
    */
   async handleLink(e: PlainCommentEvent, code: string): Promise<void> {
     const account = { provider: e.author.provider, subject: e.author.subject };
-    const r = code === "" ? ({ ok: false, reason: "invalid" } as const) : await this.c.k.d.store.redeemLinkCode(code, account);
+    const r = code === "" ? ({ ok: false, reason: "invalid" } as const) : await this.c.k.redeemLinkCode(code, account);
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
     this.c.k.d.log.info("link attempt", { provider: account.provider, ok: r.ok, ...(r.ok ? { user_id: r.user_id } : { reason: r.reason }) });
     const body = r.ok
       ? `This account is now linked to factory user \`${r.user_id}\`. Commands from it act as that user.`
       : `This account was not linked: ${LINK_REFUSALS[r.reason]}. Ask for a new code with \`factory link-code <user_id>\`.`;
-    const item = await this.c.k.d.store.getWorkItemBySource(e.source.type, e.source.id);
+    const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (item) await this.c.unit("outbox").post(item, e.source, body, `<!-- factory:link:${e.comment_id} -->`);
     else await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
   }
@@ -528,7 +528,7 @@ export class CommandsUnit {
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
   async floorTierNeeded(it: WorkItem): Promise<number | null> {
     if (it.blocked_reason !== FLOOR_TIER) return null;
-    const row = (await this.c.k.d.store.listStateChanges(it.id)).filter((c) => c.reason === "floor_blocked").at(-1);
+    const row = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.reason === "floor_blocked").at(-1);
     const tier = row?.detail?.required_tier;
     return typeof tier === "number" ? tier : null;
   }
@@ -688,14 +688,14 @@ export class CommandsUnit {
    * approver as actor) and the next claim takes the run. Without such a hold it is refused as before.
    */
   async approveHold(it: WorkItem, actor: Extract<Actor, { kind: "user" }>): Promise<string | null | typeof RETRY> {
-    const queued = new Set((await this.c.k.d.store.listRuns(it.id)).filter((r) => r.kind === "implement" && r.status === "queued").map((r) => r.id));
-    const held = (await this.c.k.d.store.listClaimDecisions(it.id))
+    const queued = new Set((await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "implement" && r.status === "queued").map((r) => r.id));
+    const held = (await this.c.k.reader.listClaimDecisions(it.id))
       .filter((d) => d.decision === "held" && d.approved_by === null && queued.has(d.run_id))
       .at(-1);
     if (!held) {
       return `the spec is not waiting for approval and no implement run is held by coordination cost (the item is ${phaseLabel(commandPhase(it))})`;
     }
-    const r = await this.c.k.d.store.approveClaimHold({ id: it.id, expected_version: it.version, actor, run_id: held.run_id });
+    const r = await this.c.k.commitItem([], { kind: "claim_approval", input: { id: it.id, expected_version: it.version, actor, run_id: held.run_id } });
     if (r.ok) {
       this.c.k.d.log.info("transition", { work_item_id: it.id, reason: "coordination_approved", version: r.item.version, run_id: held.run_id });
       return null;
@@ -707,7 +707,7 @@ export class CommandsUnit {
   /** The kind of run behind an agent_needs_human or repeated_failure block (from the item's runs); else undefined. */
   async blockedBy(it: WorkItem): Promise<RunKind | undefined> {
     if (it.blocked_on !== "human" || (it.blocked_reason !== AGENT_NEEDS_HUMAN && it.blocked_reason !== REPEATED_FAILURE)) return undefined;
-    return blockingRunKind(it.blocked_reason, await this.c.k.d.store.listRuns(it.id));
+    return blockingRunKind(it.blocked_reason, await this.c.k.reader.listRuns(it.id));
   }
 
   /** At agent_needs_human: the kind of run that asked; else undefined. */

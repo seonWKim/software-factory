@@ -32,10 +32,28 @@ type Store = ControllerDeps["store"];
 type LogFields = NonNullable<Parameters<ControllerDeps["log"]["warn"]>[1]>;
 
 /** The store reads a pure unit's `load` may use (RFC 0015 §6.2). Each a plain read: none writes or locks. */
-const READS = ["getWorkItem", "listUnmirroredCliCommands", "listDeliveries", "listRuns", "listBudgetCheckpoints", "getTierHistory"] as const;
+const READS = [
+  "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
+  "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
+  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listPendingBasePushes", "listSettingChanges", "getWorkItemByMergeSha",
+  "listVerdicts", "listStandingRules",
+] as const;
 
-/** What a pure unit's `load` reads through: store reads and the egress scan (a check, no write). */
-export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan">;
+/**
+ * What a unit's `load` reads through: store reads, the egress scan (a check, no write), the forge's PR check reads
+ * (remote reads, no write; null when config selects no forge) and the command suggester.
+ */
+export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan"> & {
+  readonly forge: Pick<Forge, "prChecks" | "prCheckResults"> | null;
+  /** The provider that suggests a command for a plain comment (a query, no state change); null when none is configured. */
+  readonly llm: NonNullable<ControllerDeps["llm"]> | null;
+  /**
+   * The permission checks (RFC 0015 §8): a person's command by the auth plugin of its origin (`local`: the CLI and the
+   * local UI) under its passport, and the controller's automatic steps under its service passport (null: no
+   * Identity, allowed). A check: it changes no controller state; Identity audits each decision.
+   */
+  readonly auth: { readonly forge: ControllerDeps["auth"]; readonly local: ControllerDeps["auth"] | null; readonly service: ControllerDeps["service_auth"] | null };
+};
 
 /**
  * One write a pure unit decided, committed by the router through `Kernel.commit`, in decision order. Each is one
@@ -46,8 +64,21 @@ export type ControllerWrite =
   | { kind: "log"; level: "info" | "warn"; msg: string; fields: LogFields }
   /** A thread entry, keyed on its marker (and its outbox row unless the thread is the item's own surface). */
   | { kind: "thread_entry"; entry: Parameters<Store["recordItemMessage"]>[0] }
+  /** A delivered thread entry's URL onto its item's link field (DeliveryCompleted). */
+  | { kind: "link_delivery"; seq: number }
+  /** An app request (the status page) handled: applied, or refused with `refusal`. Conditional on it being unhandled. */
+  | { kind: "app_request_handled"; seq: number; refusal: string | null }
+  /** A standing rule turned on or off (`/standing`), keyed on its gate and tier. */
+  | { kind: "standing_rule"; rule: Parameters<Store["putStandingRule"]>[0] }
+  /** A standing approval proposed, keyed on its gate, tier and run. */
+  | { kind: "standing_proposal"; proposal: Parameters<Store["recordStandingProposal"]>[0] }
   /** A CLI command whose mirror on its item's issue was delivered (or that has nothing to mirror). */
   | { kind: "cli_mirrored"; key: string }
+  /**
+   * An auto mode stop (design 03-risk): the `auto_stopped` alert, and only when its conditional insert created it, the
+   * mode set back to manual at `level` by `actor`, so a second stop (a re-run, another replica) writes nothing.
+   */
+  | { kind: "stop_auto"; alert: Parameters<Store["recordAlert"]>[0]; dedupe_ms: number; level: string; actor: string; mode_change: number | null }
   /**
    * Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts);
    * `then` decides the writes that follow from what expired (the reaper's log lines).
@@ -62,12 +93,12 @@ export interface ExpiredLeases {
   readonly run_ids: readonly string[];
 }
 
-type ThreadEntry = Extract<ControllerWrite, { kind: "thread_entry" }>["entry"];
+export type ThreadEntry = Extract<ControllerWrite, { kind: "thread_entry" }>["entry"];
 
 /**
- * A factory message on an item's thread, with its outbox row unless the thread is the item's own surface (a local
- * item). It goes only to the item's own source: `target` (e.g. the item's PR) is used when it is of that source's
- * type, else the item's source.
+ * The one builder of a factory message on an item's thread (every unit's reply, the outbox unit's `post` included):
+ * the entry, with its outbox row unless the thread is the item's own surface (a local item). It goes only to the
+ * item's own source: `target` (e.g. the item's PR) is used when it is of that source's type, else the item's source.
  */
 export function threadEntry(
   it: WorkItem, target: SourceRef, body: string, marker: string, link: NonNullable<ThreadEntry["delivery"]>["link_field"] = null,
@@ -78,14 +109,30 @@ export function threadEntry(
 }
 
 /**
- * An item decision's one conditional write at the version it was decided on: a transition, or a budget checkpoint
- * in its place (the block and the checkpoint row in one transaction).
+ * The URL of the item's thread entry with `marker`, once outbound delivered it, from the item's deliveries (read in
+ * `load`); null before. Read before the entry's write: a first write has no delivery yet, so it is null then too.
  */
-export type ItemWrite =
-  | { kind: "transition"; input: Parameters<Store["transition"]>[0] }
-  | { kind: "budget_checkpoint"; input: Parameters<Store["openBudgetCheckpoint"]>[0] };
+export function deliveredUrl(deliveries: readonly { marker: string; url: string | null }[], marker: string): string | null {
+  return deliveries.find((d) => d.marker === marker)?.url ?? null;
+}
 
-export type ItemCommitted = Awaited<ReturnType<Store["openBudgetCheckpoint"]>> | Awaited<ReturnType<Store["transition"]>>;
+/** The store's conditional item writes, by the kind of an `ItemWrite`. */
+interface ItemWrites {
+  transition: Store["transition"];
+  /** A budget checkpoint in a transition's place: the block and the checkpoint row in one transaction. */
+  budget_checkpoint: Store["openBudgetCheckpoint"];
+  /** A person's answer to a budget checkpoint (`/approve`, `/reject`). */
+  budget_answer: Store["answerBudgetCheckpoint"];
+  /** A person's approval of an implement run held by coordination cost. */
+  claim_approval: Store["approveClaimHold"];
+  /** A verdict on the item's change (`/verdict`, or an implicit one). */
+  verdict: Store["recordVerdict"];
+}
+
+/** An item decision's one conditional write, at the version it was decided on. */
+export type ItemWrite = { [K in keyof ItemWrites]: { kind: K; input: Parameters<ItemWrites[K]>[0] } }[keyof ItemWrites];
+
+export type ItemCommitted<W extends ItemWrite> = Awaited<ReturnType<ItemWrites[W["kind"]]>>;
 
 /** How the units hand writes to outbound (RFC 0015 M7): the role binds them to the store's driver and its bus. */
 export interface Deliveries {
@@ -125,7 +172,14 @@ export class Kernel {
     // Bound one by one, so a unit holding the reader cannot reach the store's writes through it.
     // Looked up at call time: a startup check may build the kernel over a store stub that has none of them.
     const reads = Object.fromEntries(READS.map((m) => [m, (...a: unknown[]) => (store[m] as (...a: unknown[]) => unknown).apply(store, a)]));
-    this.reader = { ...(reads as Pick<Store, (typeof READS)[number]>), scan: (channel, content) => d.scanner.scan(channel, content) };
+    const forge = this.forge;
+    this.reader = {
+      ...(reads as Pick<Store, (typeof READS)[number]>),
+      scan: (channel, content) => d.scanner.scan(channel, content),
+      forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
+      llm: d.llm ?? null,
+      auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
+    };
   }
 
   /** A pure unit's decision, written in order (the router's commit). */
@@ -134,7 +188,12 @@ export class Kernel {
     for (const w of decision.writes) {
       if (w.kind === "log") log[w.level](w.msg, w.fields);
       else if (w.kind === "thread_entry") await store.recordItemMessage(w.entry);
+      else if (w.kind === "link_delivery") await store.linkDelivery(w.seq);
       else if (w.kind === "cli_mirrored") await store.markCliCommandMirrored(w.key);
+      else if (w.kind === "stop_auto") await this.stopAuto(w);
+      else if (w.kind === "app_request_handled") await store.markAppCommandRequest(w.seq, w.refusal);
+      else if (w.kind === "standing_rule") await store.putStandingRule(w.rule);
+      else if (w.kind === "standing_proposal") await store.recordStandingProposal(w.proposal);
       else if (w.kind === "emit") await this.deliveries.emit(w.draft, this.d.clock.now().toISOString());
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
@@ -144,9 +203,21 @@ export class Kernel {
    * An item decision (RFC 0015 §7): the writes before it (each keyed, so a re-decide after a version conflict adds
    * nothing), then its conditional write. A version conflict comes back for the caller to decide again.
    */
-  async commitItem(before: readonly ControllerWrite[], w: ItemWrite): Promise<ItemCommitted> {
+  async commitItem<W extends ItemWrite>(before: readonly ControllerWrite[], w: W): Promise<ItemCommitted<W>> {
     await this.commit({ writes: before });
-    return w.kind === "transition" ? this.d.store.transition(w.input) : this.d.store.openBudgetCheckpoint(w.input);
+    const store = this.d.store;
+    const write = { transition: store.transition, budget_checkpoint: store.openBudgetCheckpoint, budget_answer: store.answerBudgetCheckpoint, claim_approval: store.approveClaimHold, verdict: store.recordVerdict }[w.kind];
+    return (write as (input: W["input"]) => Promise<ItemCommitted<W>>).call(store, w.input);
+  }
+
+  /** `/link <code>`: the code's one conditional redeem (used once, counted on a failure), committed here. */
+  redeemLinkCode(...a: Parameters<Store["redeemLinkCode"]>): ReturnType<Store["redeemLinkCode"]> {
+    return this.d.store.redeemLinkCode(...a);
+  }
+
+  /** Whether this process runs an adapter of `type` (a synced source's own command is applied only there). */
+  hasAdapter(type: SourceType): boolean {
+    return this.byType.has(type);
   }
 
   /** One lease expiry: what it cut off and which runs it moved, for the decision's `then`. */
@@ -161,6 +232,14 @@ export class Kernel {
     await this.commit({ writes: [{ kind: "emit", draft }] });
   }
 
+  private async stopAuto(w: Extract<ControllerWrite, { kind: "stop_auto" }>): Promise<void> {
+    const r = await this.d.store.recordAlert(w.alert, w.dedupe_ms);
+    if (!r.created) return;
+    await this.d.store.setSettingOverride({ key: "mode", project: w.level, value: JSON.stringify("manual"), actor: w.actor });
+    await this.live.refresh();
+    this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.alert.id, mode_change: w.mode_change });
+  }
+
   /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
   async recordAction(a: NewAction): Promise<void> {
     await this.deliveries.record(a, this.d.clock.now().toISOString());
@@ -169,6 +248,11 @@ export class Kernel {
   /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */
   announce(): Promise<number> {
     return this.deliveries.announce(this.d.clock.now().toISOString());
+  }
+
+  /** PR `pr` as a comment or label target on the forge (a pure mapping, no call); null when config selects no forge. */
+  prRef(pr: number): SourceRef | null {
+    return this.forge?.prRef(pr) ?? null;
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */

@@ -51,11 +51,11 @@ owner decisions below. Status per row is updated here as each step lands.
 | 2 | Components and discovery | done | 2279de4, 8e46469; re-planned: CLI + plugin discovery now, legacy code moves with its rewrite |
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
-| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
+| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
-| 8 | Merge queue | depth N, timeout, hook (branch `refactor/rfc-0015-m8-leftovers`) | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
-| 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
+| 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
+| 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; left: SecretStore key for enterprise, outbound's service passport |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | contract migrations written | e28aab9: `legacy_*` drops for M1 and M4, run only by `npm run migrate -- --contract` 14 days after their rename (not applied); docs, ratchets and the file budget left |
 
@@ -175,7 +175,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| unit-purity | 39 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); each goes as its unit gets a pure load/decide split (reaper, mirror, transitions are off it) |
+| unit-purity | 25 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
 | dependency-direction | 295 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
@@ -281,7 +281,9 @@ M9 (identity and passports):
   `allowed_paths`) and no tier caveat. Their tools are the worker's own forge tools per run kind plus `tool_grants`.
 - Wiring: comment commands get their passport at inbound's relay, not in the normalizer (the normalizer runs in
   the consumer's transaction; Identity writes on its own connection). `CommandReceived` inherits it.
-- Wiring: the auth plugins still decide; `AuditedAuthProvider` records each decision with passport id `none`.
+- Follow-up: Identity decides a command with a passport (chain, expiry, revocation, caveats, principal) and asks the
+  origin's auth plugin for the role half (`RoleCheck`), so the grants stay where they were; with none, the plugin
+  decides and the audit row says `none`. Auto mode's approvals and merges go through `service:controller`.
 - Wiring: the solo key is `<state>/passport.key` (0600, on `deny_paths`); `SF_PASSPORT_KEY` from the SecretStore
   is not wired.
 - Wiring: service passports last 24 h and renew at half-life; revoking one ends its runs' passports, and the next
@@ -324,12 +326,16 @@ M5 follow-up (pure units, partial):
   conditional, not yet in one transaction: the store has no way to run several of its writes in a caller's
   transaction (only `applyTransition` internally).
 - The units' loop is one `decide` schedule on a TickGenerator over the injected `Clock` (`TickSource.create` takes an
-  optional time source). `tick_ms` is read at start, not each pass.
+  optional time source). `tick_ms` is read again before each wait (`Period`), as it was each pass before.
 - Pure: `reaper`, `mirror`, `transitions`. `transitions`' follow-ups (`outbox.showStatus`, `local-merge.stopAuto`)
   are still other units' operations, which the unit-purity regex does not see.
-- Not converted: `run-results` and `commands`. Their decisions post through `outbox.comment` (whose returned URL
-  goes into the patch) and call `checks-gate`, `standing`, `local-merge`, `auth` inline, so they become pure only
-  after those operations are reads and writes; converting them first would only hide the I/O behind other units.
+- Follow-up (second pass): every reply is a `threadEntry` write (`outbox.post` commits it; the earlier delivery's
+  URL is read first), `auth` and the forge's PR check reads are on the reader, and `stopAuto`, verdicts, budget
+  answers, coordination approvals, app request marks and standing rules are kernel writes. That takes `outbox`,
+  `auth`, `checks-gate`, `run-results`, `commands`, `app-requests`, `standing`, `verdicts` and `merge-check` off the
+  ratchet. They are not split into load/decide: `run-results` and `commands` still interleave reads, other units'
+  operations and writes in one method, so their messages cannot yet commit with the inbox row in one transaction
+  (not built for that reason). `merge-check` still hands the store and sandbox to `MergeChecker`, which the regex misses.
 - The `legacy-controller` bridge keeps "inbox row after the effect" for every message; nothing it carries is
   exactly-once yet.
 - Still reading `clock.now()` in units: `run-results` (2), `coordination` (5), `model-probe` (2), `commands` (1),
@@ -351,11 +357,13 @@ M5 follow-up (pure units, partial):
 0. M6 leftovers: the runner's waits (idle loop, heartbeat interval, pause and diff watches, host-sleep check) onto a
    TickGenerator; the engine's reaper tick once the controller's reaper unit stops requeueing; steps for update and
    resolve; compose passes the deployed revision as `code_version`; roles drive prompts and tools.
-1. M5 follow-up: pure units, leaves first. The contract, the TickGenerator loop and `reaper`, `mirror`,
-   `transitions` are done. Next: the shared reply path (`outbox.comment`/`post` as `threadEntry` writes, with the
-   existing delivery's URL read in `load`) once M7 lands, `checks-gate`/`local-merge` once M8 lands, `auth` as a read;
-   then `run-results` and `commands`; then a store call that runs a decision's writes and the inbox row in one
-   transaction, and the `legacy-controller` bridge's "inbox row after the effect" goes.
+1. M5 follow-up: pure units, leaves first. Done: the contract, the TickGenerator loop (`tick_ms` live), `reaper`,
+   `mirror`, `transitions` split; the one reply path; `outbox`, `auth`, `checks-gate`, `run-results`, `commands`,
+   `app-requests`, `standing`, `verdicts`, `merge-check` read through the reader and write through the kernel. Next:
+   split `commands` and `run-results` into load/decide (their methods still interleave reads, other units' operations
+   and writes); `merge-check`'s `MergeChecker` off the store; the rest of the ratchet (`intake`, `closes`, `phases`,
+   `coordination`, `pr-events`, `sync`, `improve`, `alarms`, `model-probe`); then a store call that runs a decision's
+   writes and the inbox row in one transaction, and the `legacy-controller` bridge's "inbox row after the effect" goes.
 2. M3 leftovers (the bus plugin, `requires` and dead-letter alarms are done):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);
@@ -365,8 +373,6 @@ M5 follow-up (pure units, partial):
    - roles drive the worker's prompts and tools (M6);
    - a stored setting to enable hooks.
 4. M9 follow-up:
-   - M5: command units decide through `authorize(passport_id, ...)` and audit with the command's passport (today the
-     auth plugins decide and the audit row says `none`); the controller's automatic steps use its service passport;
    - M7: outbound uses its service passport;
    - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;
    - sessions (`factory session`) push through an unguarded broker: give them a passport;

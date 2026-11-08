@@ -59,7 +59,7 @@ export class ChecksGateUnit {
     // Every change waits here for a merge; in auto mode the auto-merge step merges a local one it may (design 03-risk).
     // An incomplete PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
-    const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.c.k.d.store.listRuns(it.id))?.missing ?? []);
+    const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.c.k.reader.listRuns(it.id))?.missing ?? []);
     // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
     const local = it.change_ref === null && it.origin !== "adopted";
     const ready = local
@@ -144,15 +144,15 @@ export class ChecksGateUnit {
   async updateBeforeImplement(it: WorkItem, head: string): Promise<string | null> {
     const pr = prNumber(it);
     if (pr === null || head === "" || it.head_branch !== null) return null;
-    const check = await this.c.k.d.store.getMergeCheck(it.id);
+    const check = await this.c.k.reader.getMergeCheck(it.id);
     if (!check || check.mergeable || check.head_sha !== head) return null;
     const key = updateKey(it.id, String(pr), check.head_sha, check.base_sha);
-    return (await this.c.k.d.store.listRuns(it.id)).some((r) => r.idempotency_key === key) ? null : key;
+    return (await this.c.k.reader.listRuns(it.id)).some((r) => r.idempotency_key === key) ? null : key;
   }
 
   /** Whether the item's latest review with a verdict, other than run `self`, passed. */
   async lastVerdictPassed(id: WorkItemId, self: RunId): Promise<boolean> {
-    const last = (await this.c.k.d.store.listRuns(id))
+    const last = (await this.c.k.reader.listRuns(id))
       .filter((r) => r.kind === "review" && r.id !== self && r.outcome?.status === "succeeded" && r.outcome.data.review != null)
       .at(-1);
     if (last?.outcome?.status !== "succeeded") return false;
@@ -162,7 +162,7 @@ export class ChecksGateUnit {
 
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
   async readChecks(it: WorkItem): Promise<PrChecks> {
-    const forge = this.c.k.forge;
+    const forge = this.c.k.reader.forge;
     const pr_number = prNumber(it);
     if (!forge || pr_number === null) return { state: "passed" };
     try {
@@ -183,7 +183,7 @@ export class ChecksGateUnit {
    * prompt says the results could not be read; the review still runs.
    */
   async reviewInput(pr_number: number | null, work_item_id: WorkItemId | null): Promise<RunInput> {
-    const forge = this.c.k.forge;
+    const forge = this.c.k.reader.forge;
     if (!forge || pr_number === null) return { ci_checks: [] };
     try {
       const results = await forge.prCheckResults(pr_number);
@@ -209,7 +209,7 @@ export class ChecksGateUnit {
     await this.c.k.guard("sync", () => this.c.unit("sync").syncStep());
     // Check reads are optional: with the budget low, or another replica syncing, they wait for a later tick.
     if (this.c.unit("sync").lowBudget()) return;
-    const waiting = await this.c.k.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
+    const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "ci", limit: CHECKS_BATCH });
     for (const w of waiting) {
       if (!waitingOnChecks(w)) continue;
       const review = await this.c.unit("run-results").latestReview(w.id);
@@ -217,7 +217,7 @@ export class ChecksGateUnit {
       await this.c.k.guard("checks", () => this.c.unit("transitions").decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
     }
     // Items stalled before failed checks on an unchanged head looped (PR #399): in REVIEW, unblocked, with no run.
-    const unblocked = await this.c.k.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "none", limit: CHECKS_BATCH });
+    const unblocked = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "none", limit: CHECKS_BATCH });
     for (const w of unblocked) {
       if (!(await this.stalled(w))) continue;
       const review = await this.c.unit("run-results").latestReview(w.id);
@@ -233,7 +233,7 @@ export class ChecksGateUnit {
   /** In REVIEW with no block and no blocked reason, and no run queued, running or not yet applied: nothing will look at it again. */
   async stalled(it: WorkItem): Promise<boolean> {
     if (it.stage !== "REVIEW" || it.blocked_on !== "none" || it.blocked_reason !== null) return false;
-    return !(await this.c.k.d.store.listRuns(it.id)).some((r) => r.status === "queued" || r.status === "running" || r.acknowledged_at === null);
+    return !(await this.c.k.reader.listRuns(it.id)).some((r) => r.status === "queued" || r.status === "running" || r.acknowledged_at === null);
   }
 }
 

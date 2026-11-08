@@ -158,32 +158,38 @@ force.
   `emit` write (or `Kernel.emit` from a unit that still writes inline) publishes on the controller's bus, delayed
   until the draft's `not_before`, on `controller.events`; the `unit-messages` handler hands each back to the unit
   that names its type under `messages` in its unit file.
-- **Pure units: load, decide, the router commits** (decision changed 2026-11-08, M5 follow-up; see History). A
-  step or event may be split in two (`PureStep`, `PureEvent` in `src/controller/router/unit.ts`): `load(…, reader,
-  tick)` reads what the decision needs through the kernel's read-only accessors (`Kernel.reader`: named store reads
-  and the egress scan, nothing that writes), and `decide(…, loaded, tick)` returns a `UnitDecision`, the writes to
-  commit, with no I/O and no clock. The router runs both and hands the decision to `Kernel.commit`, which applies
-  the writes in order (`ControllerWrite`: a thread entry, a CLI mirror mark, the lease expiry, a bus message, a log
-  line; the lease expiry's `then` decides the log lines that follow from what it expired, so the reaper's lines are
-  its own decision, not `Kernel.commit`'s). Each
-  write is one keyed or conditional store write, so committing a decision twice changes nothing the first commit
-  did; the writes of one decision are not one transaction yet. An item decision ends in `Kernel.commitItem`: its
-  keyed writes first (the budget checkpoint comment), then the conditional transition or budget checkpoint at the
-  version it was decided on, and a version conflict is decided again. `threadEntry` (`units/kernel.ts`) is where a
-  pure unit's factory message gets its delivery (the outbox unit's `post` decides the same way until M7 moves it).
-  The units' steps run on one `decide` schedule each `tick_ms` of a TickGenerator over the injected `Clock`
-  (`TickSource.create(onError, time)`; the time-based plugin reads and sleeps on `time` when given), so FakeClock
-  tests move them by hand as before; `poll` steps run with the `tick` steps once `poll_interval_ms` passed by the
-  tick's time. `tick_ms` is read when the loop starts (before: each pass). Pure today: `reaper` (its time is the
-  tick's), `mirror`, and `transitions` (its re-read and budget reads go through the reader, its budget hold is a
-  pure function of them, its writes through `commitItem`; its follow-ups, the status labels and the auto stop, are
-  still other units' operations). `tests/architecture/unit-purity.test.ts` lists the rest, and the list only
-  shrinks. Order for the rest: leaves before their callers. `run-results`, `commands`, `app-requests`, `verdicts`,
-  `standing` and `intake` post through `outbox.comment`/`post` and ask `auth`, `checks-gate`, `standing` and
-  `local-merge` inline, so they become pure only once those operations are writes and reads (`outbox` after M7,
-  `checks-gate`/`local-merge` after M8). The `legacy-controller` bridge keeps "inbox row after the effect" for
-  every message: no message it carries is exactly-once yet, since `commands` and the event units are not pure.
-  Solo and enterprise: the same; each replica runs every unit.
+- **Pure units: load, decide, the router commits** (decision changed 2026-11-09, M5 follow-up: one reply path,
+  more units read through the reader and write through the kernel, `tick_ms` live again; see History). A step or
+  event may be split in two (`PureStep`, `PureEvent` in `src/controller/router/unit.ts`): `load(…, reader, tick)`
+  reads what the decision needs through the kernel's read-only accessors (`Kernel.reader`: named store reads, the
+  egress scan, the forge's PR check reads, the command suggester and the permission checks, none of which changes
+  controller state; Identity audits each permission decision), and `decide(…, loaded, tick)` returns a
+  `UnitDecision`, the writes to commit, with no I/O and no clock. The router runs both and hands the decision to
+  `Kernel.commit`, which applies the writes in order (`ControllerWrite`: a thread entry, a delivered entry's link, a
+  CLI mirror mark, an app request's mark, a standing rule or proposal, auto mode's stop, the lease expiry, a bus
+  message, a log line; the lease expiry's `then` decides the log lines that follow from what it expired, so the
+  reaper's lines are its own decision). Each write is one keyed or conditional store write, so committing a decision twice changes nothing the
+  first commit did; the writes of one decision are not one transaction yet. An item decision ends in
+  `Kernel.commitItem`: its keyed writes first (the budget checkpoint comment), then its one conditional write at the
+  version it was decided on (a transition, a budget checkpoint, a budget answer, a coordination approval, a
+  verdict), and a version conflict is decided again. Every factory message is a `threadEntry` write
+  (`units/kernel.ts`, the one builder; the outbox unit's `post` and `comment` commit it the same way), and the URL of
+  an earlier delivery of the same marker is read first (`deliveredUrl`). The units' steps run on one `decide`
+  schedule each `tick_ms` of a TickGenerator over the injected `Clock` (`TickSource.create(onError, time)`; the
+  time-based plugin reads and sleeps on `time` when given), so FakeClock tests move them by hand as before; `poll`
+  steps run with the `tick` steps once `poll_interval_ms` passed by the tick's time. A schedule's period may be a
+  function (`Period`), read again after each tick, so a changed `tick_ms` applies from the next tick. Split into
+  load and decide today: `reaper` (its time is the tick's), `mirror`, and `transitions` (its re-read and budget
+  reads go through the reader, its budget hold is a pure function of them, its writes through `commitItem`). Off
+  the unit-purity ratchet but not split yet (every read through the reader, every write through `commit` or
+  `commitItem`, but reads, other units' operations and writes still interleave in one method): `outbox`, `auth`,
+  `checks-gate`, `run-results`, `commands`, `app-requests`, `standing`, `verdicts`, and `merge-check` (it still hands
+  the store and the sandbox to its `MergeChecker`, which the ratchet's patterns do not see).
+  `tests/architecture/unit-purity.test.ts` lists the rest, and the list only shrinks. `local-merge` reads through
+  the reader and stops auto mode with a write, but its merge, base push and red-main check are sandbox and forge
+  effects until outbound's `local` delivery takes them. The `legacy-controller` bridge keeps "inbox row after the
+  effect" for every message: no message it carries is exactly-once yet, since `commands` and the event units do not
+  return one decision to commit with the inbox row. Solo and enterprise: the same; each replica runs every unit.
 - **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half; the
   worker's pushes, PR writes and review comments are still worker steps). Controller units store intents (thread
   entries in `outbound_intents`; status labels, 👀, issue closes and posts with no thread entry in
@@ -234,8 +240,9 @@ force.
   never used), and puts it on `InboundReceived`, so `CommandReceived` inherits it as its cause's `passport_id`. The
   RFC puts this in the normalizer; it is at the relay because the normalizer runs inside the consumer's
   transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
-  and checked by the ToolBroker on every call. The auth plugins still decide commands; every decision is written to
-  `authz_audit`.
+  and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
+  it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
+  written to `authz_audit`.
 - **The merge queue** (decision changed 2026-11-08, RFC 0015 M8 and its leftovers; see History). A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
@@ -269,6 +276,10 @@ force.
 
 ## History
 
+- **Pure units: load, decide, the router commits** (decision changed 2026-11-09, M5 follow-up). Before: the outbox
+  unit's `post` built and wrote thread entries itself beside `threadEntry`, only `reaper`, `mirror` and
+  `transitions` were off the ratchet, the reader held store reads and the scan only, and `tick_ms` was read once when
+  the decide loop started.
 - **Merging a local change** (decision changed 2026-11-08, RFC 0015 M8). Before: `factory merge` and auto mode
   merged at once in the controller's sandbox, running the install command and the checks on the merge commit; two
   changes approved together were each checked against the base alone (05-sources.md "Merge").

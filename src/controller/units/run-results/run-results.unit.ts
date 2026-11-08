@@ -146,7 +146,7 @@ export class RunResultsUnit {
   constructor(private readonly c: Ctx) {}
 
   async runsStep(): Promise<void> {
-    for (const run of await this.c.k.d.store.listUnacknowledgedRuns(20)) {
+    for (const run of await this.c.k.reader.listUnacknowledgedRuns(20)) {
       await this.c.k.guard(`run:${run.kind}`, () => this.apply(run));
     }
     // A store read only in auto mode: the items the runs just moved to merge_pending merge in the same tick.
@@ -257,7 +257,11 @@ export class RunResultsUnit {
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
           const auto = spec.phases ? null : await this.c.unit("local-merge").autoMode(it.project);
-          const refusal = auto ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) }) : null;
+          // Auto mode approves under the controller's service passport (RFC 0015 §8).
+          const refusal = auto
+            ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
+              ?? (await this.c.unit("auth").automatic("approve_spec", it))
+            : null;
           if (auto && refusal === null) {
             const next = { ...it, ...fields };
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -586,7 +590,7 @@ export class RunResultsUnit {
 
   /** The item's latest succeeded review run, the one the CI gate applies to. */
   async latestReview(id: WorkItemId): Promise<Run | undefined> {
-    return (await this.c.k.d.store.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
+    return (await this.c.k.reader.listRuns(id)).filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1);
   }
 
   /**
@@ -602,7 +606,7 @@ export class RunResultsUnit {
   async retryOrBlock(it: WorkItem, run: Run, cls: FailureClass, code: string): Promise<Decision> {
     const { max_restart, retry_base_ms, retry_max_ms } = this.c.k.cfg;
     const { max_attempts } = this.c.k.settings(it.project);
-    const step = (await this.c.k.d.store.listRuns(it.id)).filter(
+    const step = (await this.c.k.reader.listRuns(it.id)).filter(
       (r) => r.kind === run.kind && sameStep(r.idempotency_key, run.idempotency_key) && (r.id === run.id || r.acknowledged_at !== null),
     );
     const count = (c: FailureClass) => step.filter((r) => failureClass(r.outcome) === c).length;
@@ -613,7 +617,7 @@ export class RunResultsUnit {
     const detail = { run_id: run.id, error_code: code, failure: cls, task_failures: task, infra_failures: infra };
 
     if (cls === "checks_env") {
-      const env = (await this.c.k.d.store.listRuns(it.id)).filter(
+      const env = (await this.c.k.reader.listRuns(it.id)).filter(
         (r) => failureClass(r.outcome) === "checks_env" && (r.id === run.id || r.acknowledged_at !== null),
       ).length;
       if (env > CHECKS_ENV_LIMIT) {
@@ -672,7 +676,7 @@ export class RunResultsUnit {
    * so applying it twice enqueues one resolve run.
    */
   async autoResolve(it: WorkItem, run: Run, baseSha: string): Promise<Decision> {
-    const keys = (await this.c.k.d.store.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
+    const keys = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
     const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
     const attempt = nextAutoResolveAttempt(done);
     const detail = { run_id: run.id, base_sha: baseSha || null, auto_resolve_attempts: done };
@@ -759,7 +763,7 @@ export class RunResultsUnit {
    * made sets merge_conflict_pending, which its own state change will record only after the comment.
    */
   async conflictCountsOf(it: WorkItem, pending: 0 | 1): Promise<{ automatic: number; person: number }> {
-    const c = conflictCounts(await this.c.k.d.store.listRuns(it.id), await this.c.k.d.store.listStateChanges(it.id));
+    const c = conflictCounts(await this.c.k.reader.listRuns(it.id), await this.c.k.reader.listStateChanges(it.id));
     return { automatic: c.automatic, person: c.person + pending };
   }
 

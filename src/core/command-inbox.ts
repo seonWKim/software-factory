@@ -3,16 +3,22 @@ import type { SourceRef } from "./types.js";
 import { localIdentity } from "./local-cli.js";
 import type { CliCommand, NewCliCommand } from "../interfaces/factory-store.js";
 import type { SourceEvent } from "../interfaces/source-adapter.js";
+import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 
 /**
  * The command inbox's reader (issue #282; design 05-sources "Thread first"). A CLI command (`args.item` the work
  * item ID, `args.text` an optional string) is rebuilt as `/<command> <text>` and mapped by the one comment event
  * mapping (src/core/comment-event.ts) every source shares, so the controller handles it as the same comment:
  * the same event kinds, the same authorize check, the same replies. `comment_id` is the command's key; the
- * identity is provider `local`, subject the actor after `local:`.
+ * identity is provider `local`, subject the actor after `local:`, with the row's edge passport.
  */
 export function commandEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
-  return commentEvent(source, c.key, localIdentity(c.actor), rebuilt(c));
+  return commentEvent(source, c.key, commandIdentity(c, localIdentity(c.actor)), rebuilt(c));
+}
+
+/** `identity` with the command row's edge passport (RFC 0015 §8), which the controller's authorize checks. */
+export function commandIdentity(c: Pick<NewCliCommand, "passport_id">, identity: ExternalIdentity): ExternalIdentity {
+  return c.passport_id === undefined ? identity : { ...identity, passport_id: c.passport_id };
 }
 
 /** `/<command> <text>`, the comment a command row was read from or stands for. */
@@ -64,7 +70,7 @@ export function syncedCommand(c: NewCliCommand): { source: SourceRef; event: Sou
   const subject = GITHUB_ACTOR.exec(c.actor)?.[1];
   const source = sourceRef(c.args.source);
   if (!id || !subject || !source) return null;
-  const e = commentEvent(source, id, { provider: "github", subject }, rebuilt(c));
+  const e = commentEvent(source, id, commandIdentity(c, { provider: "github", subject }), rebuilt(c));
   const pr = commandPr(c.args.pr);
   if (!e || !pr) return { source, event: e };
   if (e.kind === "revise_requested" || e.kind === "resolve_requested") return { source, event: { ...e, pr } };

@@ -97,6 +97,12 @@ export interface ResourceRef {
 
 export type PassportId = string;
 
+/**
+ * The role half of a decision, for a passport whose chain, expiry, revocation and caveats already passed: `allowed`,
+ * or the refusal reason. Given to `authorize` when the deciding grants are not Identity's own (an auth plugin's).
+ */
+export type RoleCheck = (principal: string) => Promise<string>;
+
 /** A verified passport: the chain's facts, never a secret or a display name. */
 export interface Passport {
   readonly id: PassportId;
@@ -125,7 +131,8 @@ export type AuthzResult =
 
 /** RFC 0015 §6.2: the sync API other components call through identity/index.ts. */
 export interface Authorization {
-  authorize(passport: PassportId, action: Action, resource: ResourceRef): Promise<AuthzResult>;
+  /** `roles`: the role half decided by the caller's grants (an auth plugin) in place of Identity's own. */
+  authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck): Promise<AuthzResult>;
   narrow(passport: PassportId, restrictions: NarrowRequest): Promise<Issued>;
 }
 

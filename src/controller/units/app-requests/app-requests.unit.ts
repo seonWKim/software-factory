@@ -30,21 +30,21 @@ export class AppRequestsUnit {
     const say = (reason: string) => (name ? `\`${name}\` was not applied: ${reason}.` : `The command was not applied: ${reason}.`);
     const raw = r.args.work_item_id;
     const id = typeof raw === "string" && raw !== "" ? (raw as WorkItemId) : null;
-    const item = id ? await this.c.k.d.store.getWorkItem(id) : null;
+    const item = id ? await this.c.k.reader.getWorkItem(id) : null;
     if (!item) return this.finishAppRequest(r, null, say(id ? "the work item was not found" : "the request names no work item"));
-    const applied = async () => (await this.c.k.d.store.listStateChanges(item.id)).some((c) => c.detail?.[APP_REQUEST] === r.seq);
+    const applied = async () => (await this.c.k.reader.listStateChanges(item.id)).some((c) => c.detail?.[APP_REQUEST] === r.seq);
     if (await applied()) return this.finishAppRequest(r, item, null);
 
     let refusal: string | null;
     if (r.command === MERGE_COMMAND) {
       // mergeLocal posts its own reply, under the same marker as finishAppRequest's, so the thread gets it once.
       refusal = item.source.type === LOCAL_SOURCE
-        ? await this.c.unit("local-merge").mergeLocal(item.id, r.actor, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
+        ? await this.c.unit("local-merge").mergeLocal(item.id, { user_id: r.actor, passport_id: r.passport_id }, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
         : `${item.id} is not a local item: merge its PR instead`;
     } else if (r.command !== "approve") {
       refusal = "only `approve` and `merge` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
-      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
+      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, r.passport_id);
       if ("refuse" in principal) refusal = principal.refuse;
       else {
         const note = await this.c.unit("commands").approvalNote(item.id, typeof r.args.note === "string" ? r.args.note : undefined);
@@ -68,7 +68,7 @@ export class AppRequestsUnit {
       this.c.k.d.log.info("app command refused", { request_seq: r.seq, work_item_id: item?.id ?? null, command: r.command.slice(0, 64) });
       if (item) await this.c.unit("outbox").post(item, item.source, text, `<!-- factory:refused:app-${r.seq} -->`);
     }
-    await this.c.k.d.store.markAppCommandRequest(r.seq, text);
+    await this.c.k.commit({ writes: [{ kind: "app_request_handled", seq: r.seq, refusal: text }] });
   }
 }
 

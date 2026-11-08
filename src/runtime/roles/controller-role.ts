@@ -189,7 +189,7 @@ export class ControllerRole implements Decisions {
       this.role.log.error("loop step failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
     const ticks = this.role.ticks ?? new TimeBasedTicks();
     const inbound = ticks.create(onError);
-    inbound.schedule("intake", this.role.settings.config().tick_ms, (t) => w.inbound.tick(t));
+    inbound.schedule("intake", () => this.role.settings.config().tick_ms, (t) => w.inbound.tick(t));
     inbound.schedule("consume", BUS_PERIODS.consume, async () => void (await w.normalizers.consume()));
     inbound.schedule("records", BUS_PERIODS.prune, (t) => w.inbound.prune(t));
     scheduleComponent(inbound, w.inboundBus);
@@ -221,7 +221,8 @@ export class ControllerRole implements Decisions {
   private decide(g: TickGenerator, r: ControllerRouter): void {
     const k = this.kernel;
     let lastPoll = -Infinity;
-    g.schedule("decide", k.cfg.tick_ms, async (t) => {
+    // tick_ms is read again before each wait: a change applies from the next tick.
+    g.schedule("decide", () => k.cfg.tick_ms, async (t) => {
       await k.live.refresh();
       const now = Date.parse(t.now);
       const due = now - lastPoll >= k.cfg.poll_interval_ms;
