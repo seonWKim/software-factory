@@ -20,6 +20,7 @@ import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
+import { loadHooks } from "./runtime/index.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
@@ -143,6 +144,8 @@ export interface FileConfig {
   inbox_retention_days?: number;
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
+  /** Hook names the owner enabled (RFC 0015 §15.2). Absent: none. Checked against the discovered hooks at startup. */
+  hooks?: unknown;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
@@ -442,6 +445,7 @@ export async function loadConfig(
     agent_stop_checks: agentStopChecks(file),
     inbox_retention_days: retention,
     outbound_batching: batchingPolicies(file.outbound?.batching),
+    ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     workers,
     max_workers,
     deny_paths: [
@@ -833,6 +837,7 @@ export async function build(
     store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  await checkEnabledHooks(config.hooks ?? []);
   shareGitHubBudget(loaded, github, store, config);
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
@@ -945,6 +950,20 @@ export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsB
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
   return Number.parseInt(value.trim(), 10);
+}
+
+/** `hooks` from factory.config.json: a list of hook names, or startup fails. */
+export function hookNames(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new Error("hooks must be a list of hook names");
+  return value as string[];
+}
+
+/** Every enabled hook name must be a discovered `*.hook.ts`: a typo would otherwise leave the owner's check off. */
+export async function checkEnabledHooks(enabled: readonly string[]): Promise<void> {
+  if (enabled.length === 0) return;
+  const known = new Set((await loadHooks()).map((h) => h.descriptor.name));
+  const missing = enabled.filter((n) => !known.has(n));
+  if (missing.length > 0) throw new Error(`hooks: no discovered hook named ${missing.join(", ")}`);
 }
 
 /** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */

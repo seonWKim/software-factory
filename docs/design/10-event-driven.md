@@ -195,7 +195,8 @@ force.
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
   ratchets the writes still outside outbound (the worker's, base push, PR close, sub-issue filing).
-- **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
+- **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
+  in the M6 leftovers: roles now drive prompts and tools, see History). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
   `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
@@ -204,17 +205,23 @@ force.
   principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
   means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
-  ratchet). Not wired into the run path yet: the worker still picks prompts and tools itself (M6), and auto mode does
-  not call `ruleOfTwoRefusal` (owner decision pending).
-- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10). A hook is
+  ratchet). Every agent step takes its system prompt (the role's file under `prompts/`) and its tools from its role
+  (`Worker.roleSpec`; the run kind's role, or `resolve` for implement's conflict retry); a run kind names neither. A
+  role whose prompt file is missing fails the run `prompt_missing` before the agent starts. Auto mode does not call
+  `ruleOfTwoRefusal` yet (owner decision pending).
+- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10; decision changed in the M6 leftovers:
+  `before_run` is called and the `hooks` setting enables them, see History). A hook is
   `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
   `before_run`, `before_delivery`) with a budget of at most 10 s. `runHooks` (`src/runtime/hooks/`, on the gate list)
   runs only after the guards allowed the action: a guard's refusal stands and no hook runs. Each enabled hook of the
   point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
-  until the owner enables it; the caller passes the enabled names. Not wired yet: no call site (merge queue M8, run
-  start M6, outbound M7) and no stored enable setting; no hook ships.
+  until the owner lists it in `hooks` (factory.config.json, a PR-only key, so enabling one is a reviewed and
+  audited change; startup fails on a name no discovered hook has). `before_run` is called at run start, after the
+  guards (the claim and the run passport) allowed the run: a refusal fails the run `hook_refused` before its folder
+  or agent; a note is logged. Not called yet: `before_merge` (merge queue) and `before_delivery` (outbound). No hook
+  ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
   "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
   a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
@@ -277,6 +284,9 @@ force.
 - **Runs and the worker** (decision changed 2026-11-08, RFC 0015 M6). Before: the engine existed only in its
   contract test; runs went through `src/core/worker.ts` (one class, every kind a method, a dispatch by kind), which
   renewed its lease through the store's heartbeat and kept no journal, so a run whose worker died started over.
+- **Roles and hooks in the run path** (decision changed 2026-11-08, M6 leftovers). Before: each run kind passed its
+  own system prompt and tool list, the role files only declared them; no hook point was called and nothing enabled
+  a hook.
 - **Takeover and the worker's waits** (decision changed 2026-11-08, M6 leftovers). Before: the engine had its own
   `reaper` tick (take a run over in place, fail runs past their deadline), not attached in the worker, beside the
   controller's reaper that requeued; and the runner's waits slept on the injected Clock in `while` loops.

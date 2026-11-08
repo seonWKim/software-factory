@@ -173,6 +173,11 @@ export interface LoadedConfig {
    * for the rest. Empty: `auto`. Parsed by outbound's `batchingPolicies`; core imports no component.
    */
   outbound_batching: Readonly<Record<string, { readonly mode: "auto" | "commit" | "fixed"; readonly debounce_ms: number; readonly max_wait_ms: number; readonly max_messages: number }>>;
+  /**
+   * `hooks` (RFC 0015 §15.2, design 10-event-driven): the hook names the owner enabled, each a discovered
+   * `*.hook.ts`. A PR-only key, checked at startup. Absent or empty: no hook runs, solo or enterprise.
+   */
+  hooks?: readonly string[];
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /**

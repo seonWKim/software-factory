@@ -14,7 +14,7 @@ import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, WRITE_TOOLS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
+import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import type { NeedsHuman } from "../../../core/outputs.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
@@ -95,9 +95,7 @@ async function implement(
       const stopWatch = new AbortController();
       const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
       const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), {
-        system_prompt: w.d.prompts.implement,
         prompt,
-        tools: WRITE_TOOLS,
         model_class: model,
         output_schema: IMPLEMENT_SCHEMA,
         // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
@@ -639,7 +637,6 @@ async function syncBase(
   const step = { run, item, handle, signal, gitDir, dirs, baseSha, conflicts, identity, model };
 
   const first = await conflictStep(w, step, "merge", {
-    system_prompt: w.d.prompts.implement,
     prompt: [
       renderWorkItem(item, { includeSpec: true }),
       "## Merge conflicts",
@@ -657,8 +654,8 @@ async function syncBase(
   if (first.failure === null) return commitSync(w, handle, baseSha, conflicts, first.pending, identity);
 
   // Retry as a resolve step (decision changed 2026-11-02): same run, nothing pushed in between.
-  const resolvePrompt = w.d.prompts.resolve;
-  if (!resolvePrompt) return mergeConflict(w, run, item, ctx, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
+  const resolvable = await w.roleSpec("resolve").then(() => true, () => false);
+  if (!resolvable) return mergeConflict(w, run, item, ctx, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
   await restartMerge(w, handle, tip, branch);
   const again = await w.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
   if (again.exit_code === 0) return { baseSha, merged: true, conflicts: [] };
@@ -670,7 +667,6 @@ async function syncBase(
     files.push({ path, text: r.exit_code === 0 ? r.stdout : "" });
   }
   const second = await conflictStep(w, { ...step, conflicts: left }, "resolve", {
-    system_prompt: resolvePrompt,
     prompt: [
       renderResolvePrompt(item, baseRef, files, ""),
       "",
@@ -724,13 +720,12 @@ async function conflictStep(
     baseSha: string; conflicts: string[]; identity: Record<string, string>; model: ModelClass;
   },
   name: "merge" | "resolve",
-  spec: Pick<AgentRunSpec, "system_prompt" | "prompt" | "output_schema">,
+  spec: Pick<AgentRunSpec, "prompt" | "output_schema">,
 ): Promise<{ failure: string | null; pending: boolean; transcript: string }> {
   const { run, item, handle, signal, conflicts } = s;
   const result = await w.agent(run, item, handle, signal, {
     ...spec,
     ...(name === "resolve" ? { role: "resolve" as const } : {}),
-    tools: WRITE_TOOLS,
     model_class: s.model,
     writable_paths: [s.gitDir],
     env_allowlist: s.identity,
@@ -904,7 +899,6 @@ async function fixStep(
       : ["(Its output is withheld: the factory's leak scanner flagged it. Run the command yourself to see it.)"];
   const cmd = commandText(failed.command);
   const result = await w.agent(run, item, handle, signal, {
-    system_prompt: w.d.prompts.implement,
     prompt: [
       renderWorkItem(item, { includeSpec: true }),
       "## Checks failed before push",
@@ -913,7 +907,6 @@ async function fixStep(
       "",
       ...output,
     ].join("\n"),
-    tools: WRITE_TOOLS,
     model_class: s.model,
     output_schema: IMPLEMENT_SCHEMA,
     writable_paths: [s.gitDir],

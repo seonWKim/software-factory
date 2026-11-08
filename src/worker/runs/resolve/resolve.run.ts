@@ -7,7 +7,7 @@ import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { NO_HOOKS, RunFailure, WRITE_TOOLS, gitIdentity, specQuery, staleStepNote, tail } from "../../support.js";
+import { NO_HOOKS, RunFailure, gitIdentity, specQuery, staleStepNote, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
 
@@ -25,8 +25,8 @@ import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
  */
 async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass) {
   if (item.change_ref === null) throw new RunFailure("no_pr", "work item has no PR");
-  const system_prompt = w.d.prompts.resolve;
-  if (!system_prompt) throw new RunFailure("prompt_missing", "prompts/resolve.md is missing");
+  // Its role's prompt and tools (src/worker/roles/resolve.role.ts), checked before anything is merged.
+  await w.roleSpec("resolve");
   const { repo, branch_prefix } = w.cfg;
   const branch = branchFor(item, branch_prefix);
   const baseRef = `origin/${repo.base_branch}`;
@@ -73,9 +73,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
       }
       const notes = run.input?.notes ?? "";
       const result = await w.agent(run, item, handle, signal, {
-        system_prompt,
         prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes) + staleStepNote(renumbered, files), specQuery(item)),
-        tools: WRITE_TOOLS,
         model_class: model,
         output_schema: IMPLEMENT_SCHEMA,
         writable_paths: [gitDir],

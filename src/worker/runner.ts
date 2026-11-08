@@ -3,8 +3,10 @@ import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlin
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
 import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-tick-generator.js";
+import type { HookDescriptor } from "../shared/hook.js";
+import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
-import { type FactoryConfig, STALL_DEFAULTS, grantsFor } from "../core/config.js";
+import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import type { LogFields } from "../core/log.js";
@@ -12,14 +14,14 @@ import { type CheckRound, checkCommands, commandText, redact, runChecks } from "
 import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import { MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, renumberPlan, touchesSqliteSchema } from "../core/mechanical.js";
-import { Read } from "../core/tools/index.js";
+import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
 import { type AgentRunResult, type AgentRunSpec, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
 import type { ToolCallContext, ToolResult } from "../interfaces/tool-broker.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, hasTool, prTitle, routeFor, tail, testWorkerShare, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, hasTool, prTitle, routeFor, tail, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /**
  * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a
@@ -56,6 +58,8 @@ export class Worker {
 
   private readonly engines: ExecutionEngines;
   private readonly ticks: TickSource;
+  private rolesReady: Promise<RoleCatalog> | null;
+  private hooksReady: Promise<readonly HookDescriptor[]> | null;
 
   /**
    * `plugins.engines`: the selected `engine` plugin; absent (a Worker a test builds): the journal over the store's
@@ -65,6 +69,8 @@ export class Worker {
   constructor(readonly d: WorkerDeps, plugins: WorkerPlugins = {}) {
     this.engines = plugins.engines ?? new JournalEngines(storeSql(d.store));
     this.ticks = plugins.ticks ?? new TimeBasedTicks();
+    this.rolesReady = plugins.roles ? Promise.resolve(plugins.roles) : null;
+    this.hooksReady = plugins.hooks ? Promise.resolve(plugins.hooks) : null;
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     this.cfg = this.live.config();
     this.runModels = d.settings ? this.live.models() : d.models;
@@ -93,6 +99,42 @@ export class Worker {
         if (!worked) return;
       }
     });
+  }
+
+  /**
+   * The `before_run` hooks the owner enabled (`hooks` in factory.config.json; RFC 0015 §8, §15.2), after the
+   * guards allowed the run: a veto, a hook over its budget or one that throws stops the run before it does
+   * anything (fail closed), and every decision is audited. A note is logged. None enabled: nothing runs.
+   */
+  async beforeRun(run: Run, item: WorkItem): Promise<void> {
+    const enabled = new Set(this.cfg.hooks ?? []);
+    if (enabled.size === 0) return;
+    this.hooksReady ??= loadHooks().then((found) => found.map((h) => h.descriptor));
+    const r = await runHooks({
+      input: { point: "before_run", subject: run.id, project_id: item.project, passport_id: null, at: this.d.clock.now().toISOString() },
+      hooks: await this.hooksReady,
+      enabled,
+      guard: { allowed: true },
+      // A hook's budget runs on the injected clock, so tests move it as they move the worker's ticks.
+      timer: { after: (ms, signal) => this.d.clock.sleep(ms, signal).catch(() => undefined) },
+      audit: new SqlHookAudit(storeSql(this.d.store)),
+    });
+    for (const n of r.notes) this.d.log.info("hook note", { run_id: run.id, hook: n.hook, note: n.note });
+    if (!r.allowed) throw new RunFailure(HOOK_REFUSED, r.reason ?? "refused by a hook", false);
+  }
+
+  /**
+   * The system prompt and tools of a run role (`src/worker/roles/<role>.role.ts`): the prompt file it names under
+   * prompts/, and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt
+   * file is missing, fails the run (`prompt_missing`).
+   */
+  async roleSpec(name: string): Promise<{ system_prompt: string; tools: ToolSpec[] }> {
+    this.rolesReady ??= loadRoles();
+    const role = (await this.rolesReady).get(name);
+    if (!role?.prompt) throw new RunFailure("prompt_missing", `run role "${name}" names no prompt`);
+    const system_prompt = this.d.prompts[role.prompt.replace(/\.md$/, "") as keyof Prompts];
+    if (!system_prompt) throw new RunFailure("prompt_missing", `prompts/${role.prompt} is missing`);
+    return { system_prompt, tools: toolsNamed(role.tools) };
   }
 
   /**
@@ -213,6 +255,8 @@ export class Worker {
       await this.d.passports?.begin({
         run: run.id, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
       });
+      // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
+      await this.beforeRun(run, item);
       // One class for every agent step of the run, the merge-conflict steps of an implement run included.
       const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
@@ -748,7 +792,7 @@ export class Worker {
     item: WorkItem,
     handle: SandboxHandle,
     signal: AbortSignal,
-    role: Pick<AgentRunSpec, "system_prompt" | "prompt" | "tools" | "model_class" | "output_schema"> &
+    role: Pick<AgentRunSpec, "prompt" | "model_class" | "output_schema"> &
       Partial<Pick<AgentRunSpec, "writable_paths" | "env_allowlist" | "role" | "gate_hooks">>,
     /** Second agent step in one run (the conflict resolution): its own transcript, `<run>.<step>.json`. */
     step?: string,
@@ -779,6 +823,8 @@ export class Worker {
     // A new session is journaled as the step's partial result before the agent starts (RFC 0015 §7).
     if (session && !session.resume) await opts.onSession?.(session.id);
     if (s) s.step_session = session?.id ?? null;
+    // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
+    const declared = await this.roleSpec(role.role ?? run.kind);
     const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
       run_id: run.id,
@@ -793,6 +839,7 @@ export class Worker {
       stall_ms: this.cfg.stall_ms ?? STALL_DEFAULTS.stall_ms,
       first_output_ms: this.cfg.first_output_ms ?? STALL_DEFAULTS.first_output_ms,
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
+      ...declared,
       ...role,
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       // The toolchain block (design 05-sandbox.md): caches the agent may read, never write, and its env entries.
@@ -1018,11 +1065,16 @@ export class Worker {
   }
 }
 
-/** The plugins a Worker runs on; absent ones are their defaults. */
+/** The plugins and discovered descriptors a Worker runs on; absent ones are their defaults (discovery for roles and hooks). */
 export interface WorkerPlugins {
   engines?: ExecutionEngines;
   ticks?: TickSource;
+  roles?: RoleCatalog;
+  hooks?: readonly HookDescriptor[];
 }
+
+/** A run an enabled `before_run` hook refused (a veto, a timeout or an error): a task failure, not retried as infra. */
+export const HOOK_REFUSED = "hook_refused";
 
 /** WorkerDeps.code_version when the process names none. */
 const DEV_CODE_VERSION = "dev";

@@ -299,7 +299,7 @@ export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_m
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
   "plugins", "repo", "store", "floors", "dials", "auth", "permissions", "secrets", "egress", "broker", "deny_paths", "env", "toolchain",
-  "outbound.batching",
+  "outbound.batching", "hooks",
 ] as const;
 export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
