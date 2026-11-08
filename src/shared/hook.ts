@@ -4,6 +4,8 @@
 
 export const HOOK_POINTS = ["before_merge", "before_run", "before_delivery"] as const;
 export type HookPoint = (typeof HOOK_POINTS)[number];
+/** Points no caller runs yet: startup refuses a hook enabled at one. Remove a point here when its caller lands. */
+export const UNCALLED_HOOK_POINTS: readonly HookPoint[] = ["before_delivery"];
 
 /** What a hook sees: ids only, as on the bus. `at` is the tick time the caller decides at. */
 export interface HookInput {

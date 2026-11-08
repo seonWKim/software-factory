@@ -370,7 +370,9 @@ force.
   read only from the checked-in file like `dials` (since 2026-11-09), so a replica's own config cannot drop a veto. `before_run` is called at run start, after the
   guards (the claim and the run passport) allowed the run: a refusal fails the run `hook_refused` before its folder
   or agent; a note is logged. `before_merge` is called at the merge queue's landing (subject the work item): a veto
-  removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound). No hook ships.
+  removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound), so startup refuses an
+  enabled hook at that point (`UNCALLED_HOOK_POINTS`, `src/shared/hook.ts`; since 2026-11-09) until outbound calls
+  it. No hook ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
   "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
   a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
@@ -554,3 +556,5 @@ force.
 - **`hooks` on a shared store** (changed 2026-11-09, runtime review M1). Before: `hooks` was PR-only but not a
   reviewed key, so a MySQL replica started with its own `--config` took `hooks` from that file; `hooks: []` there
   skipped the owner's `before_merge` veto whenever that replica landed the merge queue.
+- **An enabled `before_delivery` hook** (changed 2026-11-09, runtime review L1). Before: startup accepted it (the
+  name was discovered) though nothing ran it, so every delivery went out unchecked with no error.

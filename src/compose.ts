@@ -21,6 +21,7 @@ import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { loadHooks } from "./runtime/index.js";
+import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
@@ -969,12 +970,19 @@ export function hookNames(value: unknown): readonly string[] {
   return value as string[];
 }
 
-/** Every enabled hook name must be a discovered `*.hook.ts`: a typo would otherwise leave the owner's check off. */
-export async function checkEnabledHooks(enabled: readonly string[]): Promise<void> {
+/**
+ * Every enabled hook name must be a discovered `*.hook.ts` at a point the factory calls: a typo, or a point no
+ * caller runs yet, would otherwise leave the owner's check off without a word.
+ */
+export async function checkEnabledHooks(enabled: readonly string[], discovered?: readonly HookDescriptor[]): Promise<void> {
   if (enabled.length === 0) return;
-  const known = new Set((await loadHooks()).map((h) => h.descriptor.name));
+  const known = new Map((discovered ?? (await loadHooks()).map((h) => h.descriptor)).map((h) => [h.name, h]));
   const missing = enabled.filter((n) => !known.has(n));
   if (missing.length > 0) throw new Error(`hooks: no discovered hook named ${missing.join(", ")}`);
+  const unwired = enabled.filter((n) => UNCALLED_HOOK_POINTS.includes(known.get(n)!.point));
+  if (unwired.length > 0) {
+    throw new Error(`hooks: ${unwired.map((n) => `${n} (${known.get(n)!.point})`).join(", ")}: that point is not wired yet, so the hook would never run; remove it from hooks`);
+  }
 }
 
 /** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */

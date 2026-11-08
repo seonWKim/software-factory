@@ -92,4 +92,11 @@ describe("the hooks setting", () => {
     expect(() => hookNames([1])).toThrow("hooks must be a list of hook names");
     expect(hookNames(["freeze"])).toEqual(["freeze"]);
   });
+
+  it("startup refuses a hook at a point nothing calls yet (before_delivery); one at a called point passes", async () => {
+    const at = (name: string, point: HookDescriptor["point"]) => defineHook({ name, point, budget_ms: 100, run: async () => ({ kind: "pass" }) });
+    const hooks = [at("delivery-check", "before_delivery"), at("merge-check", "before_merge")];
+    await expect(checkEnabledHooks(["delivery-check"], hooks)).rejects.toThrow("hooks: delivery-check (before_delivery): that point is not wired yet");
+    await expect(checkEnabledHooks(["merge-check"], hooks)).resolves.toBeUndefined();
+  });
 });
