@@ -16,6 +16,7 @@ import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
+import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 import type { NeedsHuman } from "../../../core/outputs.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
@@ -140,7 +141,7 @@ async function implement(
         missing: out.value.missing, deviations: out.value.deviations,
       };
       const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-      return { work: done, start, head, bundle: await saveBundle(w, run, item, handle, dirs, start) };
+      return { work: done, start, head, bundle: await saveRunBundle(w, run, item, handle, dirs, start) };
     });
     if ("needs_human" in agentStep) return { needs_human: agentStep.needs_human };
     if (!ran) {
@@ -417,7 +418,7 @@ async function pauseImplement(
   const dirty = await commitWorktree(w, handle, `wip: paused run ${run.id}`);
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   const commits = head === start ? 0 : (await w.git(handle, ["rev-list", `${start}..HEAD`])).split("\n").filter(Boolean).length;
-  const bundle = head === start ? null : await saveBundle(w, run, item, handle, dirs, start);
+  const bundle = head === start ? null : await saveRunBundle(w, run, item, handle, dirs, start);
 
   const worked_on = `paused: ${commits} commit${commits === 1 ? "" : "s"} of work in progress up to ${head.slice(0, 8)}${dirty ? ", uncommitted changes in one WIP commit" : ""}`;
   const note = p.last_note?.trim().slice(0, WIP_TEXT_CHARS) ?? "";
@@ -432,29 +433,13 @@ async function pauseImplement(
 }
 
 /**
- * The run's commits since `start` as a git bundle in shared storage (base64 text), for a resume on another
- * host. Like transcripts, nothing is stored before the egress scan (G5): the commits' patch text must scan
- * clean, else no bundle is kept and such a resume starts from the branch and the handoff note. Returns the key.
+ * The run's commits since `start` as a git bundle in shared storage, for a resume on another host (`saveBundle`):
+ * kept only when their patch text scans clean (G5); otherwise such a resume starts from the branch and the
+ * handoff note. Returns the key.
  */
-async function saveBundle(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, dirs: string, start: string): Promise<string | null> {
+async function saveRunBundle(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, dirs: string, start: string): Promise<string | null> {
   const patch = await w.git(handle, ["log", "-p", "--binary", "--format=%H%n%B", `${start}..HEAD`]);
-  const scan = await w.d.scanner.scan("commit", patch);
-  if (!scan.clean) {
-    w.d.log.warn("pause: the WIP commits did not scan clean; no bundle kept", { run_id: run.id, rules: scan.findings.map((f) => f.rule).join(",") });
-    return null;
-  }
-  const file = `${dirs.split("\n").at(-1)}/sf-pause.bundle`;
-  const made = await w.gitRaw(handle, ["bundle", "create", file, `${start}..HEAD`]);
-  // `-i`: the input file on BSD base64; ignore-garbage, a no-op when encoding, on GNU (which reads `file` itself).
-  const text = made.exit_code === 0 ? await w.d.sandbox.exec(handle, ["base64", "-i", file], { env: w.d.toolEnv }) : null;
-  await w.d.sandbox.exec(handle, ["rm", "-f", "--", file], { env: w.d.toolEnv });
-  if (!text || text.exit_code !== 0) {
-    w.d.log.warn("pause: git bundle failed; no bundle kept", { run_id: run.id });
-    return null;
-  }
-  const key = `bundles/${item.id}/${run.id}.bundle.b64`;
-  await w.d.storage.put(key, new TextEncoder().encode(text.stdout.replace(/\s+/g, "")));
-  return key;
+  return saveBundle(w, run, item, handle, dirs, { revs: [`${start}..HEAD`], patch, what: "pause" });
 }
 
 /**
@@ -464,26 +449,16 @@ async function saveBundle(w: Worker, run: Run, item: WorkItem, handle: SandboxHa
  * from the branch as it is, with the handoff note in its prompt.
  */
 async function restoreWip(w: Worker, run: Run, handle: SandboxHandle, branch: string, gitDir: string, state: RunResume): Promise<boolean> {
-  const data = state.bundle && state.head ? await w.d.storage.get(state.bundle) : null;
-  if (!data || !state.head) {
+  const got = await fetchBundle(w, handle, gitDir, state.bundle, state.head);
+  if (got === "missing") {
     w.d.log.warn("paused run: no WIP bundle to restore; starting from the branch", { run_id: run.id });
     return false;
   }
-  const file = `${gitDir}/sf-resume.bundle`;
-  const wrote = await w.d.sandbox.exec(handle, ["sh", "-c", 'base64 -d > "$1"', "sh", file], {
-    env: w.d.toolEnv,
-    stdin: new TextDecoder().decode(data),
-  });
-  const fetched = wrote.exit_code === 0 ? await w.gitRaw(handle, ["fetch", "--quiet", "--no-tags", file, "HEAD"]) : wrote;
-  const got = fetched.exit_code === 0
-    ? await w.gitRaw(handle, ["rev-parse", "--verify", "--end-of-options", "FETCH_HEAD^{commit}"])
-    : fetched;
-  await w.d.sandbox.exec(handle, ["rm", "-f", "--", file], { env: w.d.toolEnv });
-  if (got.exit_code !== 0 || got.stdout.trim() !== state.head) {
+  if (got === "failed") {
     w.d.log.warn("paused run: the WIP bundle did not restore; starting from the branch", { run_id: run.id });
     return false;
   }
-  await checkoutClean(w, handle, branch, state.head);
+  await checkoutClean(w, handle, branch, state.head!);
   return true;
 }
 
@@ -1179,9 +1154,6 @@ type AgentStep =
     /** Shared-storage key of the bundle of start..head; null when the commits did not scan clean (G5). */
     readonly bundle: string | null;
   };
-
-/** A taken-over run whose finished agent step left no bundle to restore: it fails (infra) and is retried afresh. */
-const RESUME_LOST = "resume_lost";
 
 /** The session an interrupted agent step saved, when this host's runner still has it; else null (a new session). */
 async function liveSession(w: Worker, partial: unknown): Promise<string | null> {

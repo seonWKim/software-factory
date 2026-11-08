@@ -55,7 +55,12 @@ force.
     restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`, SQLite and MySQL);
     with no bundle (the commits did not scan clean) it fails `resume_lost` (infra) and is retried afresh. The local
     phases between steps (folder, preflight, sync, gates, checks) run again on a resume; they are safe to repeat.
-    Update, resolve and improve runs have no journaled step yet and run again from the start.
+    Resolve: one `resolve` step (merge, agent, scope and marker gates, the merge commit, install and checks; three
+    hours) whose result carries a G5-scanned bundle of the merge commit (`src/worker/bundle.ts`, shared with
+    implement): a run taken over before its push restores that exact commit and pushes it, with no agent and no
+    gate again; with no bundle it fails `resume_lost`. Update and improve runs have no journaled step yet and run
+    again from the start: update's only effects are its push and PR comments, whose steps come with the worker half
+    of M7 (outbound).
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run

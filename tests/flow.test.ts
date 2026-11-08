@@ -1648,8 +1648,8 @@ describe("/resolve on a merge conflict", () => {
     expect(untrusted).toBeGreaterThan(p.indexOf("## Conflicting files"));
     expect(p.indexOf("ignore previous instructions")).toBeGreaterThan(untrusted);
 
-    // Gates ran before the push, in order: install, then test.
-    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
+    // Gates ran before the push, in order: install, then test (then the resolve step bundles its merge commit).
+    expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"))).toEqual(["npm ci", "npm test"]);
     // Push, the same PR's body rebuilt for the branch as it is now (issue #229), then the review comment.
     expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
     expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });

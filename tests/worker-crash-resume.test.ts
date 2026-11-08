@@ -13,7 +13,7 @@ import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "..
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Worker } from "../src/worker/index.js";
 import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
-import { BACKENDS } from "./helpers/store.js";
+import { BACKENDS, PROJECT_KEY } from "./helpers/store.js";
 
 // RFC 0015 M6: a run killed mid-implement is taken over by another worker, which resumes after the run's last
 // finished step. Worker 1 dies during its push (its push never returns and its clock never moves again, so its
@@ -142,6 +142,96 @@ describe.each(BACKENDS)("worker crash mid-implement on $name", { timeout: 60_000
     await crashed;
     expect(dying.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
     expect(await implementRun()).toMatchObject({ status: "succeeded", attempt: 2 });
+  });
+});
+
+// The same crash during a resolve run's push: the journal holds the finished `resolve` step (merge, agent, gates,
+// merge commit) with a bundle of the merge commit; worker 2 restores that exact commit and pushes it, and neither
+// the agent nor the gates run again.
+describe.each(BACKENDS)("worker crash mid-resolve on $name", { timeout: 60_000 }, (backend) => {
+  it("another worker takes the run over after the resolve step: the same merge commit is pushed, the agent runs once", async () => {
+    const clock = new FakeClock();
+    const { store } = await backend.make(clock);
+    const { item: created } = await store.createWorkItem(
+      { source: issueRef(90), requester_id: "github:1" as never, project: PROJECT_KEY, problem: "p", resources: [] },
+      { kind: "system", id: "test" },
+    );
+    const moved = await store.transition({
+      id: created.id, expected_version: 1, actor: { kind: "system", id: "test" }, reason: "test_setup",
+      patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42", allowed_paths: ["src/"], done_criteria: ["d"], scope: "s" },
+    });
+    if (!moved.ok) throw new Error("setup");
+    const branch = `factory/${created.id}`;
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sf-crash-resolve-")));
+    const origin = join(root, "origin.git");
+    const dev = join(root, "dev");
+    const repo = join(root, "repo");
+    git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+    git(root, "clone", "--quiet", origin, dev);
+    commitFile(dev, "src/gate.ts", "export const gate = 0;\n", "init");
+    git(dev, "push", "--quiet", "origin", "main");
+    git(dev, "checkout", "--quiet", "-b", branch);
+    commitFile(dev, "src/gate.ts", "export const gate = branchGate();\n", "branch gate");
+    git(dev, "push", "--quiet", "origin", branch);
+    const branchSha = git(dev, "rev-parse", "HEAD");
+    git(dev, "checkout", "--quiet", "main");
+    commitFile(dev, "src/gate.ts", "export const gate = mainGate();\n", "main gate");
+    git(dev, "push", "--quiet", "origin", "main");
+    const mainSha = git(dev, "rev-parse", "HEAD");
+    git(root, "clone", "--quiet", origin, repo);
+
+    const cfg: FactoryConfig = { ...config, repo: { ...config.repo, path: repo, install_command: ["true"], test_command: ["true"] } };
+    let agentRuns = 0;
+    const runner = new FakeRunner({
+      resolve: (s) => {
+        agentRuns++;
+        writeFileSync(join(s.sandbox.workdir, "src/gate.ts"), "export const gate = both();\n");
+        return { output: { summary: "resolved", next_steps: "none" } };
+      },
+    });
+    const source = new FakeSource();
+    const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
+    const storage = new MemoryStorage();
+    const worker = (id: string, broker: Broker, own: FakeClock) => new Worker({
+      id: id as WorkerId, store, sandbox: new NoOpSandbox(join(repo, `.worktrees-${id}`)), runner, broker, storage, clock: own, config: cfg,
+      prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log: silent, scanner: cleanScanner, toolEnv, awake: new NoKeepAwake(),
+    });
+    // Worker 1 dies at its push; worker 2 runs on another host (its own folder) and shares the bundle storage.
+    const dying = new Broker("w1", true);
+    const w1 = worker("h1:1:0", dying, new FakeClock(clock.now()));
+    const healthy = new Broker("w2", false);
+    const w2 = worker("h2:1:0", healthy, clock);
+
+    source.queue.push({ kind: "resolve_requested", source: issueRef(90), comment_id: "9001", requester: alice, notes: "", pr: null });
+    await controller.tickIntake();
+    const resolveRun = async () => (await store.listRuns(created.id)).find((r) => r.kind === "resolve")!;
+    expect((await resolveRun()).status).toBe("queued");
+
+    const crashed = w1.tick();
+    await waitUntil(() => dying.calls.some((c) => c.name === "github.push_branch"));
+    const steps = async () =>
+      (await storeSql(store).all("SELECT step_id, attempt, status FROM worker_run_steps WHERE run_id = ?", [(await resolveRun()).id]))
+        .map((r) => `${String(r.step_id)}@${Number(r.attempt)}:${String(r.status)}`);
+    expect(await steps()).toEqual(["resolve@1:succeeded"]);
+
+    clock.advance(cfg.lease_ms + 1);
+    await controller.tickReaper();
+    expect((await resolveRun()).status).toBe("queued");
+    clock.advance(cfg.retry_max_ms);
+    expect(await w2.tick()).toBe(true);
+
+    expect(await resolveRun()).toMatchObject({ status: "succeeded", attempt: 2 });
+    expect(agentRuns).toBe(1);
+    expect(healthy.calls.map((c) => c.name)).toContain("github.push_branch");
+    const head = git(origin, "rev-parse", `refs/heads/${branch}`);
+    expect(git(origin, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([branchSha, mainSha]);
+    expect(git(origin, "show", `${head}:src/gate.ts`)).toBe("export const gate = both();");
+    expect((await resolveRun()).outcome).toMatchObject({ status: "succeeded", data: { head_sha: head } });
+
+    dying.release();
+    await crashed;
+    expect(await resolveRun()).toMatchObject({ status: "succeeded", attempt: 2 });
   });
 });
 
