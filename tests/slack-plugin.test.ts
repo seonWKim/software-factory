@@ -152,6 +152,11 @@ describe("slack message format", () => {
     );
   });
 
+  it("a folded <details> block becomes its summary as a bold line, with no HTML tag left as text", () => {
+    const md = ["### Done when", "- a", "", "<details><summary>2 more criteria</summary>", "", "- b", "- c", "", "</details>", "", "```", "<details>", "```"].join("\n");
+    expect(toMrkdwn(md, REPO)).toBe("*Done when*\n• a\n\n*2 more criteria*\n\n• b\n• c\n\n```\n&lt;details&gt;\n```");
+  });
+
   it("buttons come from the footer the command table builds, for the commands that take no text", () => {
     const footer = commandFooter({ phase: "spec_pending", has_pr: false });
     expect(footerCommands(`Spec\n\n${footer}`)).toEqual(["approve", "help"]);
