@@ -206,36 +206,22 @@ export interface TransitionInput {
    * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
-  /**
-   * Queue one base push in the same transaction (design 05-sources, Local items): the local merge's close, when a
-   * forge is selected. At most one row per item; a second is ignored.
-   */
-  base_push?: NewBasePush;
-}
-
-/** What a local merge queues for the remote: its base branch and its merge commit. */
-export interface NewBasePush {
-  base_ref: string;
-  merge_sha: string;
 }
 
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-export interface BasePush extends NewBasePush {
-  seq: number;
-  work_item_id: WorkItemId;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push). */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+export interface BasePush {
+  base_ref: string;
+  merge_sha: string;
+  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
   attempts: number;
-  /** When the next try may run. */
-  next_attempt_at: Timestamp;
   /** Null while pending. */
-  finished_at: Timestamp | null;
   outcome: BasePushOutcome | null;
   /** The remote base after a `pushed` outcome. */
   pushed_sha: string | null;
   last_error: string | null;
-  created_at: Timestamp;
 }
 
 export type TransitionResult =
@@ -984,23 +970,11 @@ export interface FactoryStore {
    */
   failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
 
-  // The base push (design 05-sources, Local items): a local merge with a forge selected queues one row in its close
-  // transition; the controller's base push step claims it, fetches, merges a moved remote base, and pushes, retrying
-  // with backoff. Nothing here changes the item.
-
-  /** Unfinished base pushes whose retry time has come and that no live claim holds, oldest first, at most `limit`. Read-only. */
-  listPendingBasePushes(limit: number): Promise<BasePush[]>;
-  /** The base push of `work_item_id`, finished or not; null when its merge queued none. Read-only. */
-  getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
   /**
-   * Claims base push `seq` for `lease_ms`, so only one replica pushes it. Conditional: only an unfinished row with no
-   * live claim. Returns the claim token, or null when the row is finished or claimed by another.
+   * The newest base push of `work_item_id` (design 05-sources, Local items; RFC 0015 M8: the `push_base` action a
+   * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
-  claimBasePush(seq: number, lease_ms: number): Promise<number | null>;
-  /** Finishes row `seq` under claim `token`. False, changing nothing, when the token is not the row's live claim. */
-  finishBasePush(seq: number, token: number, result: { outcome: BasePushOutcome; pushed_sha: string | null; error?: string }): Promise<boolean>;
-  /** A failed try under claim `token`: one more attempt, the error, the claim released, the next try `retry_in_ms` from now. */
-  failBasePush(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
+  getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).

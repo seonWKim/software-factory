@@ -4,6 +4,7 @@
 
 import type { SourceRef } from "../../core/types.js";
 import { GIT_TARGET } from "../intents.js";
+import { deliverGit, gitAccepts } from "./local-git.js";
 import { act, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
 const GITHUB = "github_issue";
@@ -91,10 +92,11 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       deliver: (d) => (d.kind === "comment" ? adapter(SLACK)!.postComment(d.target, d.body, d.marker) : act(adapter(SLACK)!, d.row)),
     },
     {
-      // A local item's surface is the store itself: nothing to write.
+      // A local item's surface is the store itself: nothing to write. A merge queue landing and its base push are
+      // the factory repo's (RFC 0015 M8), through the git the runtime gave this process.
       name: "local",
-      accepts: (d) => typeOf(d) === LOCAL,
-      deliver: async () => ({ url: null }),
+      accepts: (d) => typeOf(d) === LOCAL || (d.kind === "action" && gitAccepts(t.git ?? null, d.row)),
+      deliver: async (d) => (d.kind === "action" && gitAccepts(t.git ?? null, d.row) ? deliverGit(t.git!, d.row) : { url: null }),
     },
     {
       name: "source",

@@ -9,6 +9,9 @@ export {
 export { Outbound, type OutboundDeps } from "./outbound.js";
 export { buildTargets } from "./targets/targets.js";
 export type { Delivery, DeliveryTarget, TargetDeps } from "./targets/target.js";
+export {
+  basePushOutcome, localGit, mergeOutcome, type GitBasePushResult, type GitBasePushSpec, type GitMergeResult, type GitMergeSpec, type LocalGit,
+} from "./targets/local-git.js";
 export { DEFAULT_BATCHING, batchingPolicies, policyFor, type BatchingPolicy, type Budget } from "./aggregator/batching.js";
 export type { OutboundContext } from "./context.js";
 export { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";

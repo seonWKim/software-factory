@@ -14,6 +14,8 @@ import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-sta
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import { recordAction } from "../src/outbound/intents.js";
+import type { SqlDriver } from "../src/state/index.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
@@ -1920,50 +1922,35 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
-  describe("base pushes (migration 41): one row per local merge, claimed by one replica", () => {
-    /** An item closed by a local merge that queued its base push in the same transition. */
-    const merged = async (store: FactoryStore, n: number, base_push?: { base_ref: string; merge_sha: string }) => {
-      const { item } = await store.createWorkItem(issue(n), system);
-      const r = await store.transition({
-        id: item.id, expected_version: item.version, actor: system, reason: "local_merged",
-        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: base_push?.merge_sha ?? "m" },
-        ...(base_push ? { base_push } : {}),
-      });
-      if (!r.ok) throw new Error("transition failed");
-      return item.id;
-    };
-
-    it("the close transition writes the row; a transition without one writes none", async () => {
-      const { store } = await make();
-      const pushed = await merged(store, 1, { base_ref: "main", merge_sha: "a".repeat(40) });
-      const plain = await merged(store, 2);
-      expect(await store.getBasePush(pushed)).toMatchObject({
-        work_item_id: pushed, base_ref: "main", merge_sha: "a".repeat(40), attempts: 0, finished_at: null, outcome: null,
-      });
-      expect(await store.getBasePush(plain)).toBeNull();
-      expect((await store.listPendingBasePushes(10)).map((p) => p.work_item_id)).toContain(pushed);
-    });
-
-    it("a second claim of the same row gets nothing while the first holds it; a stale token finishes nothing", async () => {
+  describe("base pushes (RFC 0015 M8): the item's newest push_base action, as the status page reads it", () => {
+    it("pending with its batch's failed tries, then pushed or a conflict once delivered; none when the merge stored none", async () => {
       const { store, clock } = await make();
-      const id = await merged(store, 3, { base_ref: "main", merge_sha: "b".repeat(40) });
-      const { seq } = (await store.getBasePush(id))!;
-      const [a, b] = await Promise.all([store.claimBasePush(seq, LEASE), store.claimBasePush(seq, LEASE)]);
-      expect([a, b].filter((t) => t !== null)).toHaveLength(1);
-      const token = (a ?? b)!;
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
-      // A failed try: one attempt, the error kept, the claim released, the next try later.
-      expect(await store.failBasePush(seq, token, "rate limited", 5_000)).toBe(true);
-      expect(await store.getBasePush(id)).toMatchObject({ attempts: 1, last_error: "rate limited", finished_at: null });
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
-      clock.advance(5_000);
-      const again = (await store.claimBasePush(seq, LEASE))!;
-      expect(again).not.toBeNull();
-      expect(await store.finishBasePush(seq, token, { outcome: "pushed", pushed_sha: "c" })).toBe(false);
-      expect(await store.finishBasePush(seq, again, { outcome: "pushed", pushed_sha: "c".repeat(40) })).toBe(true);
-      expect(await store.getBasePush(id)).toMatchObject({ outcome: "pushed", pushed_sha: "c".repeat(40) });
-      expect(await store.claimBasePush(seq, LEASE)).toBeNull();
-      expect(await store.listPendingBasePushes(10)).toEqual([]);
+      const db = (store as unknown as { db: SqlDriver }).db;
+      const { item } = await store.createWorkItem(issue(1), system);
+      const { item: plain } = await store.createWorkItem(issue(2), system);
+      const now = clock.now().toISOString();
+      const push = (sha: string) => recordAction(db, {
+        action: "push_base", target: { type: "git", id: "h:main", link: "" }, work_item_id: item.id, key: `push_base:${item.id}:${sha}`,
+        args: { base_ref: "main", merge_sha: sha, message: "m" },
+      }, now);
+      await push("a".repeat(40));
+      expect(await store.getBasePush(plain.id)).toBeNull();
+      expect(await store.getBasePush(item.id)).toEqual({ base_ref: "main", merge_sha: "a".repeat(40), attempts: 0, last_error: null, outcome: null, pushed_sha: null });
+
+      const [row] = await db.all("SELECT seq FROM outbound_actions WHERE work_item_id = ?", [item.id]);
+      await db.run(
+        "INSERT INTO outbound_batches (id, destination, idempotency_key, state, intent_count, attempts, last_error, opened_at, flush_at) VALUES ('b1', 'git:h:main', 'b1', 'failed', 1, 2, 'rate limited', ?, ?)",
+        [now, now],
+      );
+      await db.run("INSERT INTO outbound_batch_intents (intent_id, batch_id, commit_id, commit_count) VALUES (?, 'b1', 'c1', 1)", [`act_${Number(row!.seq)}`]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ attempts: 2, last_error: "rate limited", outcome: null });
+
+      await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE seq = ?", [now, JSON.stringify({ pushed: "c".repeat(40) }), Number(row!.seq)]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ outcome: "pushed", pushed_sha: "c".repeat(40) });
+      // A later merge's push is the newest: a conflict once delivered.
+      await push("d".repeat(40));
+      await db.run("UPDATE outbound_actions SET delivered_at = ?, delivered_ref = ? WHERE intent_key = ?", [now, JSON.stringify({ conflicts: ["x"] }), `push_base:${item.id}:${"d".repeat(40)}`]);
+      expect(await store.getBasePush(item.id)).toMatchObject({ merge_sha: "d".repeat(40), outcome: "conflict", pushed_sha: null, attempts: 0 });
     });
   });
 

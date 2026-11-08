@@ -6,6 +6,7 @@ import type { SourceRef } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import type { ActionRow } from "../intents.js";
+import type { LocalGit } from "./local-git.js";
 
 /** One intent as a target delivers it: a thread entry's comment, or an action. */
 export type Delivery =
@@ -26,6 +27,8 @@ export interface TargetDeps {
   readonly forge: Forge | null;
   /** The factory repo's path: where a run's last step wrote its commit (RFC 0015 M7). */
   readonly repo: string;
+  /** The factory repo's merge and base push (RFC 0015 M8, the `local` target); null when this process has none. */
+  readonly git?: LocalGit | null;
 }
 
 /** An action on `adapter`: the status label, the 👀, the close, or a post with no thread entry. */
@@ -47,5 +50,8 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
     case "push":
     case "pr":
       throw new Error(`a ${row.action} goes through the forge (github-change, github-push)`);
+    case "merge":
+    case "push_base":
+      throw new Error(`a ${row.action} goes through the local target`);
   }
 }

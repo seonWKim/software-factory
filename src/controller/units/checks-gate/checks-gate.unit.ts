@@ -73,7 +73,7 @@ export class ChecksGateUnit {
         "",
         "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
       ].join("\n")
-      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.c.k.cfg.repo.base_branch}\`, ${this.c.unit("local-merge").basePusher() ? "then queues its push to origin" : "with no push"}` : ""}.`;
+      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.c.k.cfg.repo.base_branch}\`, ${this.c.unit("local-merge").pushesBase() ? "then queues its push to origin" : "with no push"}` : ""}.`;
     await this.c.unit("outbox").comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }

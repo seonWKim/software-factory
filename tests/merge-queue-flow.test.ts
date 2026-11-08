@@ -259,7 +259,7 @@ for (const backend of BACKENDS) {
       expect(refused[0]).toContain("hook freeze: the base is frozen");
     });
 
-    it("a close that fails after the base moved is landed again: the item closes on that merge, nothing merges twice", async () => {
+    it("a close that fails after the merge was delivered is applied again: the item closes on that merge, nothing merges twice", async () => {
       const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
       const a = await f.toMergePending("Add a");
       const mainBefore = git(f.repo, "rev-parse", "main");
@@ -267,12 +267,14 @@ for (const backend of BACKENDS) {
       await f.cli({ action: "command", command: "merge", id: a, text: "" });
       await f.step();
       expect(failed()).toBe(true);
-      // The base holds the change, the item is not closed yet, and the queue is not stuck landing.
+      // The base holds the change, the item is not closed yet, and the queue still holds the landing.
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
       expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
-      expect((await queueRow(f)).state).toBe("idle");
+      expect((await queueRow(f)).state).toBe("merging");
 
+      // Past the lease the landing is taken over: it finds its merge delivered and applies it, with no second merge.
+      f.clock.advance(f.cfg.lease_ms);
       await tickQueue(f);
       const main = git(f.repo, "rev-parse", "main");
       expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ")[1]).toBe(mainBefore);
