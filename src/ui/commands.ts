@@ -32,6 +32,8 @@ export interface UiCommands {
    * (a page with no auth wired) means false: no Merge button.
    */
   mergeAllowed?: () => Promise<boolean>;
+  /** The actor's edge passport (Identity, RFC 0015 §8), stored on each request row. Absent: none. */
+  passport?: () => Promise<string>;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -130,7 +132,8 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   if (!item) return err(404, "No such work item.");
   const key = `app:${randomUUID()}`;
   const args: Record<string, unknown> = { work_item_id: item.id, ...(parsed.note === undefined ? {} : { note: parsed.note }) };
-  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args });
+  const passport_id = await c.passport?.();
+  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args, ...(passport_id ? { passport_id } : {}) });
   return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
 }
 

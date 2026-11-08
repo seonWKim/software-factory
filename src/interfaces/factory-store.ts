@@ -1169,6 +1169,8 @@ export interface NewCliCommand {
   args: Record<string, unknown>;
   /** Mirrored once to its item's sync source, best effort: listed by `listUnmirroredCliCommands` until marked. */
   mirror?: boolean;
+  /** The edge passport the command entered with (RFC 0015 §8, Identity); absent on rows from before M9. */
+  passport_id?: string;
 }
 
 export interface CliCommand extends NewCliCommand {
@@ -1189,6 +1191,8 @@ export interface NewAppCommandRequest {
   command: string;
   /** The command's arguments, stored as JSON: `work_item_id`, and for `approve` an optional `note`. */
   args: Record<string, unknown>;
+  /** The page's edge passport (RFC 0015 §8, Identity); absent when the UI has no Identity. */
+  passport_id?: string;
 }
 
 export interface AppCommandRequest extends NewAppCommandRequest {

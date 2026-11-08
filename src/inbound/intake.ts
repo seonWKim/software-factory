@@ -64,6 +64,12 @@ export interface InboundDeps {
   readonly replica_id?: string;
   /** Runs one stream source's listener (it stores pushed events as records) until `signal` aborts. */
   readonly listen?: (source: StreamSource, signal: AbortSignal) => Promise<void>;
+  /**
+   * The edge passport of a command row that has none (a comment command a poll stored): Identity authenticates
+   * its actor through the provider mapping (RFC 0015 §8, M9). Null when no provider resolves the actor; the
+   * controller's authorize still decides. Absent: commands keep the passport their row has.
+   */
+  readonly passportFor?: (origin: string, actor: string) => Promise<string | null>;
   readonly log: Logger;
 }
 
@@ -130,7 +136,12 @@ export class Inbound {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(start)}`);
     const rows = await commandsAfter(this.d.db, after, RELAY_BATCH);
     if (rows.length === 0) return;
-    const announced = rows.map((c) => this.received(c.id, "command", streamOf(c.args.source), t));
+    // Passports are minted before the commit: one minted for a commit that loses its cursor race is never used.
+    const announced: Envelope[] = [];
+    for (const c of rows) {
+      const passport = c.passport_id ?? (await this.d.passportFor?.(c.origin, c.actor)) ?? null;
+      announced.push(this.received(c.id, "command", streamOf(c.args.source), t, passport));
+    }
     await this.commit(COMMANDS_CURSOR, cursor, String(rows.at(-1)!.seq), null, async () => announced);
   }
 
@@ -248,10 +259,11 @@ export class Inbound {
     }
   }
 
-  private received(id: string, kind: "event" | "command", stream: string, t: Tick): Envelope {
+  /** `passport`: a command's edge passport; the normalizer's CommandReceived inherits it as its cause's. */
+  private received(id: string, kind: "event" | "command", stream: string, t: Tick, passport: string | null = null): Envelope {
     return envelope(
       { type: INBOUND_RECEIVED, subject: stream, idempotency_key: id, idempotency_key_ttl_ms: RECORD_TTL_MS, payload: { record_id: id, kind } },
-      { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id: null, occurred_at: t.now },
+      { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id: passport, occurred_at: t.now },
       "inbound",
     );
   }

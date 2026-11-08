@@ -1,5 +1,22 @@
-import type { PassportService } from "../../identity/index.js";
+import type { AuthProvider as IdentityProvider, PassportService, Principal as IdentityPrincipal, Provider } from "../../identity/index.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
+
+/**
+ * The provider mapping of an auth plugin as Identity's provider (RFC 0015 §8 "Edge"): a forge or chat account
+ * resolves to the same factory user the plugin's own `resolve` gives (linked accounts first), with no remote call.
+ */
+export class PluginIdentityProvider implements IdentityProvider {
+  constructor(
+    readonly provider: Exclude<Provider, "local" | "service">,
+    private readonly plugin: AuthProvider,
+  ) {}
+
+  async resolve(identity: { provider: Provider; subject: string }): Promise<IdentityPrincipal | null> {
+    if (identity.provider !== this.provider) return null;
+    const p = await this.plugin.resolve({ provider: this.provider, subject: identity.subject });
+    return p ? { user_id: p.user_id } : null;
+  }
+}
 
 /**
  * Any auth plugin, with every authorize decision written to authz_audit (RFC 0015 §8, M9). The decision is the

@@ -19,6 +19,7 @@ import { Listener } from "../../core/listener.js";
 import { GITHUB_RATE_LIMIT } from "../../core/policy.js";
 import { LiveSettings } from "../../core/settings.js";
 import type { SourceType } from "../../core/types.js";
+import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import { TimeBasedTickGenerator } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick } from "../../shared/ticks/tick-generator.js";
@@ -33,6 +34,8 @@ export interface ControllerRoleDeps extends ControllerDeps {
    * remaining calls, the reset and this process's count. Absent: nothing is stored.
    */
   github_budget?: () => GitHubBudgetStatus | null;
+  /** Identity (M9): inbound gives a command row without a passport its actor's edge passport. Absent: none. */
+  identity?: Pick<IdentityRuntime, "commandPassport">;
 }
 
 /** The sync lease's owner with no replica_id (tests, a solo process): such roles in one process act as one replica. */
@@ -191,6 +194,7 @@ export class ControllerRole extends Controller {
       ...(d.github_budget ? { budget: d.github_budget } : {}),
       ...(d.refresh_forge_budget ? { refreshBudget: d.refresh_forge_budget } : {}),
       ...(d.replica_id ? { replica_id: d.replica_id } : {}),
+      ...(d.identity ? { passportFor: d.identity.commandPassport } : {}),
       // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
       listen: (source, signal) =>
         new Listener({ store: d.store, source, clock: d.clock, config: leaseTimings(d.settings), log: d.log, owner }).run(signal),

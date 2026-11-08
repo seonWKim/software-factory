@@ -105,6 +105,7 @@ export function commandOf(row: Row): CliCommand {
     command: String(row.command),
     args: JSON.parse(String(row.args)) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
+    ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
     created_at: row.created_at as CliCommand["created_at"],
   };
 }
