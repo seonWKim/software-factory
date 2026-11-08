@@ -2,7 +2,7 @@
 // through `npm run migrate -- --contract`, at least CONTRACT_MIN_DAYS after the merge was applied; the runner
 // archives their rows first (D4).
 
-import { LEGACY_PREFIX, defineMigration, tableExists } from "../../state/index.js";
+import { LEGACY_PREFIX, defineMigration, dropTables } from "../../state/index.js";
 import { APPS, COMMANDS } from "./20261108T2200-inbound-merge-commands.migration.js";
 
 const LEGACY = [COMMANDS, APPS].map((t) => LEGACY_PREFIX + t);
@@ -12,6 +12,6 @@ export default defineMigration({
   tables: LEGACY,
   after: ["20261108T2200-inbound-merge-commands"],
   async up(db) {
-    for (const t of LEGACY) if (await tableExists(db, t)) await db.run(`DROP TABLE ${t}`);
+    await dropTables(db, LEGACY);
   },
 });

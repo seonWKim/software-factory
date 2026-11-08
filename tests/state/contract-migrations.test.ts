@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyMigrations, pendingMigrations, tableExists, type MigrationDb } from "../../src/state/index.js";
+import { applyMigrations, dropTables, pendingMigrations, tableExists, type MigrationDb } from "../../src/state/index.js";
 import { newStore } from "../helpers/store.js";
 
 // RFC 0015 §12 D2: a contract migration drops `legacy_*` only when the owner runs `migrate --contract`, and only
@@ -47,5 +47,17 @@ describe("contract migrations", () => {
     }
     expect(await tableExists(d, "controller_work_items")).toBe(true);
     expect(await tableExists(d, "inbound_commands")).toBe(true);
+  });
+
+  it("drop a child table before the table its foreign key points to, so a parent listed first does not fail", async () => {
+    // legacy_verdicts points to legacy_state_changes: dropping the parent first fails once a verdict row exists.
+    const d = await db();
+    await d.run("CREATE TABLE p (id INTEGER PRIMARY KEY)");
+    await d.run("CREATE TABLE c (id INTEGER PRIMARY KEY, p_id INTEGER NOT NULL REFERENCES p(id))");
+    await d.run("INSERT INTO p (id) VALUES (1)");
+    await d.run("INSERT INTO c (id, p_id) VALUES (1, 1)");
+    await expect(d.run("DROP TABLE p")).rejects.toThrow(/FOREIGN KEY/);
+    await dropTables(d, ["p", "c", "missing"]);
+    expect([await tableExists(d, "p"), await tableExists(d, "c")]).toEqual([false, false]);
   });
 });

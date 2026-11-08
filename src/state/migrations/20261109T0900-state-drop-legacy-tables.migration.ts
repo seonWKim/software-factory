@@ -2,7 +2,7 @@
 // `npm run migrate -- --contract`, at least CONTRACT_MIN_DAYS after M1 was applied; the runner archives every table
 // that still holds rows first (D4), and refuses without a backup folder.
 
-import { LEGACY_PREFIX, tableExists } from "../migrate/copy-tables.js";
+import { LEGACY_PREFIX, dropTables } from "../migrate/copy-tables.js";
 import { defineMigration } from "../migrate/migration.js";
 import { ARCHIVE_ONLY, RENAMES } from "./20261108T1300-state-prefix-tables.migration.js";
 
@@ -13,6 +13,6 @@ export default defineMigration({
   tables: LEGACY,
   after: ["20261108T1300-state-prefix-tables"],
   async up(db) {
-    for (const t of LEGACY) if (await tableExists(db, t)) await db.run(`DROP TABLE ${t}`);
+    await dropTables(db, LEGACY);
   },
 });

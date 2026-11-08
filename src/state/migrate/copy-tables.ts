@@ -71,32 +71,48 @@ async function cloneDdl(db: MigrationDb, r: Rename, map: ReadonlyMap<string, str
   return { table, indexes: [] };
 }
 
-/** Copy order: a table after every table its foreign keys point to (among those being copied). */
-async function copyOrder(db: MigrationDb, renames: readonly Rename[]): Promise<Rename[]> {
+/** `tables` with each one after every table among them its foreign keys point to. */
+async function parentsFirst(db: MigrationDb, tables: readonly string[]): Promise<string[]> {
   const deps = new Map<string, Set<string>>();
-  const names = new Set(renames.map((r) => r.from));
-  for (const r of renames) {
+  const names = new Set(tables);
+  for (const t of tables) {
     const refs =
       db.dialect === "sqlite"
-        ? (await db.all(`SELECT "table" AS t FROM pragma_foreign_key_list('${r.from}')`)).map((x) => String(x.t))
+        ? (await db.all(`SELECT "table" AS t FROM pragma_foreign_key_list('${t}')`)).map((x) => String(x.t))
         : (await db.all(
             "SELECT referenced_table_name AS t FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND table_name = ? AND referenced_table_name IS NOT NULL",
-            [r.from],
+            [t],
           )).map((x) => String(x.t));
-    deps.set(r.from, new Set(refs.filter((t) => names.has(t) && t !== r.from)));
+    deps.set(t, new Set(refs.filter((r) => names.has(r) && r !== t)));
   }
-  const out: Rename[] = [];
+  const out: string[] = [];
   const done = new Set<string>();
-  const visit = (r: Rename, path: Set<string>): void => {
-    if (done.has(r.from)) return;
-    if (path.has(r.from)) throw new Error(`foreign key cycle through ${r.from}`);
-    path.add(r.from);
-    for (const d of deps.get(r.from) ?? []) visit(renames.find((x) => x.from === d)!, path);
-    done.add(r.from);
-    out.push(r);
+  const visit = (t: string, path: Set<string>): void => {
+    if (done.has(t)) return;
+    if (path.has(t)) throw new Error(`foreign key cycle through ${t}`);
+    path.add(t);
+    for (const d of deps.get(t) ?? []) visit(d, path);
+    done.add(t);
+    out.push(t);
   };
-  for (const r of renames) visit(r, new Set());
+  for (const t of tables) visit(t, new Set());
   return out;
+}
+
+/** Copy order: a table after every table its foreign keys point to (among those being copied). */
+async function copyOrder(db: MigrationDb, renames: readonly Rename[]): Promise<Rename[]> {
+  const by = new Map(renames.map((r) => [r.from, r]));
+  return (await parentsFirst(db, renames.map((r) => r.from))).map((t) => by.get(t)!);
+}
+
+/**
+ * Drops the tables that exist among `tables`, each before any table it points to by foreign key, so a contract
+ * migration that stopped half way finishes on its rerun (§12 D3). The runner archived their rows first (D4).
+ */
+export async function dropTables(db: MigrationDb, tables: readonly string[]): Promise<void> {
+  const present: string[] = [];
+  for (const t of tables) if (await tableExists(db, t)) present.push(t);
+  for (const t of (await parentsFirst(db, present)).reverse()) await db.run(`DROP TABLE ${q(db, t)}`);
 }
 
 export interface CopyReport {
