@@ -25,7 +25,7 @@ export const EXPECTS = ["should_flag", "should_pass"] as const;
 export type Expect = (typeof EXPECTS)[number];
 
 /**
- * The tool names of the worker's review run (`WRITE_TOOLS` in src/core/worker.ts), resolved to the shared
+ * The tool names of the worker's review run (`WRITE_TOOLS` in src/worker/support.ts), resolved to the shared
  * tool specs with `toolsNamed`.
  * tests/golden.test.ts checks this against a real Worker review run, so a drift fails the tests.
  */
@@ -525,7 +525,7 @@ export const PROMPT_CODE_PATHS: readonly string[] = [
   "src/golden.ts",
   "src/core/outputs.ts",
   "src/core/model-choice.ts",
-  "src/core/worker.ts",
+  "src/worker/",
   "src/impl/runner/",
   "src/impl/claude/",
   "src/impl/openai/",

@@ -41,15 +41,38 @@ force.
   every import twice. New component code that still calls legacy code is listed by
   `tests/architecture/dependency-direction.test.ts` as `component-imports-legacy`; those entries go as the
   legacy code goes.
-- **Runs execute as journaled steps** (since 2026-11-08, RFC 0015 M6, engine only; the legacy worker does not use it
-  yet). `ExecutionEngine` (`src/worker/engine/`), default `journal`: each step's result is stored in
-  `worker_run_steps` and returned instead of running the step again, so a resumed run skips finished steps;
-  results are JSON, and a step can save a partial result (the agent's session id) for the attempt that resumes
-  it. Writes are fenced by `worker_runs.lease_token`. On the worker's `heartbeat` tick the engine renews its
-  leases and aborts steps past `start_to_close` or runs past `deadline_at` (created + `schedule_to_close`); on
-  the `reaper` tick it fails runs past their deadline and takes over runs whose lease (`heartbeat` timeout)
-  expired. A run journaled by another `code_version` is taken over only by code that declares it can resume
-  it; otherwise it waits for a worker on that revision or fails at its deadline.
+- **Runs execute as journaled steps** (since 2026-11-08, RFC 0015 M6; decision changed: the worker now runs on the
+  engine). The worker lives in `src/worker/`: `pool.ts` runs the worker loops, `runner.ts` claims a run and drives it,
+  and each run kind is one discovered folder `src/worker/runs/<kind>/<kind>.run.ts` (`defineRunKind`: its named
+  timeouts, whether the runner makes its folder, and its body). The runner names no kind. `ExecutionEngine`
+  (`src/worker/engine/`) is a plugin kind, `plugins.engine`, default `journal` (docs/plugins/execution-engine.md):
+  each step's result is stored in `worker_run_steps` and returned instead of running the step again, so a resumed
+  run skips finished steps; results are JSON, and a step can save a partial result for the attempt that resumes it.
+  Writes are fenced by `worker_runs.lease_token`.
+  - Steps today: triage `run-agent`; review `run-agent`, `post-review`; implement `run-agent` (partial: the agent's
+    session id, resumed when this host's runner still has it; result: the work and a G5-scanned git bundle of its
+    commits in shared storage), `record-handoffs`, `push-branch`, `open-pr`. A run taken over after its agent step
+    restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`, SQLite and MySQL);
+    with no bundle (the commits did not scan clean) it fails `resume_lost` (infra) and is retried afresh. The local
+    phases between steps (folder, preflight, sync, gates, checks) run again on a resume; they are safe to repeat.
+    Update, resolve and improve runs have no journaled step yet and run again from the start.
+  - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
+    runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
+    engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
+    journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new run. Each process
+    stamps `dev` until compose passes its revision (`WorkerDeps.code_version`).
+  - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
+    own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
+    the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
+    `start_to_close` (infra); a run past its deadline fails `schedule_to_close`.
+  - Takeover is still the controller's reaper: it requeues a run whose lease expired, and the next claim resumes it
+    from the journal. The engine's own `reaper` tick (takeover in place, deadline failing) is not attached in the
+    worker until the controller's reaper unit (M5) stops requeueing expired runs; two takeover paths would race.
+  - Time: the engine moves only on ticks the runner gives it (the claim and each heartbeat). The runner's waits
+    (idle claim loop, heartbeat interval, pause watch, the implement diff watch, the host-sleep check) still sleep
+    on the injected Clock, which reaches the worker through the legacy `WorkerDeps` (`src/core/worker-deps.ts`, so
+    `src/worker/` imports no clock); they move onto a TickGenerator in a later step.
+  - Pushes, PR writes and review comments stay in the worker as journaled steps until outbound takes them (M7).
 - **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
   and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
   the rows to the topic on the component's `relay` tick. Each topic has its own tables (`bus_<topic>`,
@@ -119,3 +142,6 @@ force.
 - **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
   forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
   tick.
+- **Runs and the worker** (decision changed 2026-11-08, RFC 0015 M6). Before: the engine existed only in its
+  contract test; runs went through `src/core/worker.ts` (one class, every kind a method, a dispatch by kind), which
+  renewed its lease through the store's heartbeat and kept no journal, so a run whose worker died started over.

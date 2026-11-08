@@ -72,7 +72,7 @@ graph LR
 
 - **Supervisor** (`src/supervisor.ts`, `Updater` plugin): under `git-worktree` it builds each new base commit into `.factory/versions/<rev>` (from `origin/<base>`, or the local `refs/heads/<base>` when no GitHub plugin is selected), forks a child from it, then asks the old child to drain over IPC (start-then-drain). It also runs `factory ui` as a child and swaps it on each revision. It writes `supervisor.json` (revision, `migration_pending`, restarts) and reads `supervisor-request.json` from `npm run migrate`; with `updater.auto_migrate` it applies pending steps itself. Under `none` it runs controller and worker in-process.
 - **Controller** (`src/core/controller.ts`): deterministic, one tick of steps: commands, intake and sync (GitHub steps only on the `inbound_sync_leases` holder), outbox, runs, coordination, checks, merge check, phases, alarms, improve, reaper, model and network probes. Never runs an agent.
-- **Worker pool** (`src/core/worker-pool.ts`, `worker.ts`): claims runs, builds a sandbox, runs the agent, runs the pre-push checks, pushes through the broker, writes the outcome. Picks the route per item (`routeFor`): local items take the local broker and sandbox. Never decides a transition.
+- **Worker pool** (`src/worker/`: `pool.ts`, `runner.ts`, one folder per run kind under `runs/`): claims runs, builds a sandbox, runs the agent, runs the pre-push checks, pushes through the broker, writes the outcome. Picks the route per item (`routeFor`): local items take the local broker and sandbox. Never decides a transition.
 - **UI server** (`src/ui/`): reads the store; its writes are app command requests (applied by the controller like any command), settings (through the same `runSettings` as the CLI), pause resumes and standing rules, each audited.
 - **CLI** (`src/main.ts` finds each command in `src/cli/handlers/<command>/<command>.command.ts`; `src/core/local-cli.ts`): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows for any item, local or GitHub; the controller applies them like comments.
 
@@ -295,7 +295,7 @@ sequenceDiagram
 
 ## 5. A local item, end to end (local route)
 
-Since #427 a local item takes the local broker, a local sandbox and the local merge whatever plugins are selected (`routeFor` in `src/core/worker.ts`, `Plugins.localRoute` in `src/compose.ts`). No forge, no remote.
+Since #427 a local item takes the local broker, a local sandbox and the local merge whatever plugins are selected (`routeFor` in `src/core/worker-deps.ts`, `Plugins.localRoute` in `src/compose.ts`). No forge, no remote.
 
 ```mermaid
 sequenceDiagram

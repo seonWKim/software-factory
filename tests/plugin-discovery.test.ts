@@ -109,6 +109,7 @@ describe("plugin discovery: the built-in registry", () => {
       github_auth: "token",
       test_database: "none",
       network_probe: "http",
+      engine: "journal",
     };
     expect(defaultPlugins("darwin")).toEqual({ ...fixed, awake: "caffeinate" });
     expect(defaultPlugins("linux")).toEqual({ ...fixed, awake: "none" });

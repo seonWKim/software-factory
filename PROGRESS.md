@@ -5,8 +5,9 @@
 The factory is moving to RFC 0015: an event-driven factory of independent, restartable actors. M0, M1 and M2 are done.
 The cores of M3 (bus), M6 (worker engine), M9 (passports) and M10 (extension points) are merged on
 `refactor/rfc-0015`. M4 put intake on the bus: inbound polls and stores records, and the controller consumes them
-from `controller.commands`. The decisions are still the legacy ones in `core/controller.ts`, and runs still go
-through `core/worker.ts`. The live database is not migrated: the owner runs `npm run migrate` after
+from `controller.commands`. The decisions are still the legacy ones in `core/controller.ts`. M6 moved the worker
+into `src/worker/` (discovered run kinds) and runs every run through the ExecutionEngine's step journal; a run whose
+worker dies resumes after its last finished step. The live database is not migrated: the owner runs `npm run migrate` after
 reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner. Next is M5 (controller units) plus
 the M3, M9 and M10 leftovers.
 
@@ -46,7 +47,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork | 8dc1414: actor state tables + state-machines test |
-| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core merged | merge 073f94f: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
+| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | not started | |
 | 8 | Merge queue | not started | |
 | 9 | Identity and passports | core merged | merge 6be1042: passport service, tables, `tests/passport.test.ts`; not wired yet (ToolBroker check, edge adapters, service passports) |
@@ -76,11 +77,16 @@ src/
   controller/           NEW     M5 groundwork (8dc1414): router/actor.ts, actors/work-item/work-item.actor.ts
   worker/roles/         NEW     one <kind>.role.ts per agent run kind (defineRole): prompt, tools, Rule of Two facts,
                                 golden
-  worker/engine/        NEW     ExecutionEngine (index.ts) and the journal engine (plugins/journal/); not wired into
-                                the legacy worker yet
+  worker/               NEW     M6: index.ts (public API), pool.ts (worker loops), runner.ts (claims a run through the
+                                store, adopts it into the engine, drives its kind), support.ts (shared helpers),
+                                run-kind.ts (defineRunKind, loadRunKinds)
+                                - runs/<kind>/<kind>.run.ts: triage, implement, review, update, resolve, improve;
+                                  each kind's body, its own helpers and its named timeouts
+  worker/engine/        NEW     ExecutionEngine (index.ts) and the journal engine (plugins/journal/, a `plugins.engine`
+                                plugin, default)
                                 - named steps journaled in worker_run_steps (a stored result wins)
-                                - lease fencing by token, heartbeat and reaper ticks, named timeouts,
-                                  code_version pinning
+                                - lease fencing by token, adopt (a run the store's claim leased), heartbeat and
+                                  reaper ticks, named timeouts, code_version pinning
   worker/migrations/    NEW     20261108T1730-worker-run-journal: worker_run_steps, worker_runs.code_version/deadline_at
   cli/                  NEW     command.ts (defineCommand), index.ts (loadCommands), support.ts
                                 - handlers/: one folder per command: dev, loops, status, stats, workers, resume,
@@ -113,7 +119,8 @@ src/
                                   authz_audit
                                 - profiles/: ProfileStore (display names by user id);
                                   migrations/20261108T2345-identity-profiles
-  core/                 LEGACY  controller.ts (4,959 lines), worker.ts (3,098), policy, coordination, ...
+  core/                 LEGACY  controller.ts (4,959 lines), worker-deps.ts (WorkerDeps, routing; goes with M7), policy,
+                                coordination, ...
   impl/                 LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/           LEGACY  FactoryStore (136 methods) and the other plugin interfaces
   ui/                   LEGACY  HTTP API and pages for web/
@@ -131,7 +138,8 @@ tests/architecture/     NEW     dependency-direction, file-budget, no-clock, tab
 Data flow: inbound polls the sources and the forge, stores each record with an `InboundReceived` message, and its
 `normalize-source` handler publishes `CommandReceived` / `SourceEventReceived` on `controller.commands`. The
 controller's `legacy-controller` handler hands each to the legacy decision code, which still writes the store and the
-thread outbox. Workers still claim runs from the store and push/open PRs themselves.
+thread outbox. Workers still claim runs from the store, then run them as journaled steps; pushes, PR writes and review
+comments are worker steps until outbound takes them (M7).
 
 ## Data and migrations
 
@@ -151,9 +159,9 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | table-ownership-sql | 0 | empty list |
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
-| no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`) |
+| no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| dependency-direction | 93 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`); they go as legacy code goes (M5) |
+| dependency-direction | 176 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and 84 from `worker/` exposed by the M6 move (core helpers, interfaces, `storeSql`, `plugin-api.ts`); they go as legacy code goes (M5, M7) |
 
 ## Decisions taken while implementing
 
@@ -212,6 +220,26 @@ M6 (engine):
 - The journal is keyed by (run, step) as in the target schema. `attempt` is the attempt that last ran the step.
 - Engine time is the latest tick's (no clock).
 
+M6 (worker port):
+
+- Run kinds are `src/worker/runs/<kind>/<kind>.run.ts` (`defineRunKind`), not the RFC's `handlers/role-<kind>/`:
+  they are not bus handlers yet (runs are still claimed from the store), and `src/worker/roles/` keeps the Rule of
+  Two profiles on the gate list.
+- Claims stay in the store's `claimRun` (its coordination, claim pauses and branch-writer lock); the engine grew
+  `adopt` (hold a run another claim path leased under its token) and `release`. The journal engine also takes
+  `leaseMs` (the live `lease_ms` at each renewal) and `onLost`.
+- The engine's reaper tick is not attached in the worker: the controller's reaper requeues expired runs, and the
+  next claim resumes them from the journal. Attaching both would race two takeover paths.
+- Implement's `run-agent` result carries a G5-scanned git bundle of its commits (the pause's bundle code), so a
+  takeover on another host restores them. The bundle is written with `base64 -i`, not `sh -c`, so no shell runs
+  outside the checks.
+- `WorkerDeps`, `routeFor`, `hasTool`, `prTitle` and `TRUSTED_GIT_ENV` stay legacy in `core/worker-deps.ts`: the
+  session command (`core/session.ts`) uses them, and WorkerDeps still carries the injected Clock, which
+  `src/worker/` may not import.
+- `ExecutionEngine` became the plugin kind `engine` (19 interfaces); `factory.config.json` names `journal`.
+- Named timeouts: one hour per step, a week per run, the lease as heartbeat (`DEFAULT_TIMEOUTS`); every kind uses
+  the defaults for now. `tests/worker-continue.test.ts` moved its far-future rate-limit reset inside the week.
+
 M9 (identity and passports):
 
 - `narrow` returns the new passport's id and its token (`Issued`), not only the id as in the RFC's sketch, because a
@@ -255,6 +283,9 @@ M10 (extension points):
 
 ## Next
 
+0. M6 leftovers: the runner's waits (idle loop, heartbeat interval, pause and diff watches, host-sleep check) onto a
+   TickGenerator; the engine's reaper tick once the controller's reaper unit stops requeueing; steps for update and
+   resolve; compose passes the deployed revision as `code_version`; roles drive prompts and tools.
 1. M5: controller units (router + pure `decide()` units; `controller.ts` gone; the M4 seams go with it).
 2. M3 leftovers:
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
