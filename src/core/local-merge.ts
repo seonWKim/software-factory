@@ -1,7 +1,7 @@
 // The local merge (design 05-sources, Local items): `factory merge <id>` merges an item's local branch into the
 // factory repo's local base branch, through the sandbox the controller already holds (as the merge check does),
-// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which the
-// controller's base push step brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
+// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which
+// outbound's `local` target brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
 import type { SourceRef, SourceType, WorkItem } from "./types.js";
 import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-store.js";
@@ -86,7 +86,7 @@ export type LocalMergeSandbox = Sandbox & {
   localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null>;
 };
 
-/** What the base push step asks the sandbox: bring the remote base into the local one before the push. */
+/** What the base push asks the sandbox: bring the remote base into the local one before the push. */
 export interface BaseSyncSpec {
   repo: string;
   base_ref: string;

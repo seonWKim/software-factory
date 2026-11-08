@@ -1,17 +1,17 @@
 // The local merge, base pushes, auto mode's merges and its stop conditions.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); the merge and the base push are outbound deliveries (M8), the
+// conflict probe and the red-main check are still inline (unit-purity ratchet).
 
 import { checkCommands } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
-import { AUTO_ACTOR, autoMergeRefusal, retryDelayMs, branchFor } from "../../../core/policy.js";
-import { type BaseSyncSandbox, LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canSyncBase } from "../../../core/local-merge.js";
+import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
+import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canSyncBase } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
-import { type Actor, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CommandPassport, ExternalIdentity } from "../../../interfaces/auth-provider.js";
-import type { BasePush } from "../../../interfaces/factory-store.js";
-import type { Forge } from "../../../interfaces/forge.js";
+import { basePushOutcome, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { AUTO, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -30,8 +30,6 @@ const MODE_HISTORY = 500;
 const AUTO_MERGE_BATCH = 20;
 /** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
-/** Base pushes one outbox step tries at most: each fetches the remote base, so a few at a time. */
-const BASE_PUSH_BATCH = 5;
 
 /** Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. */
 function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[]): string {
@@ -55,7 +53,7 @@ export class LocalMergeUnit {
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge, and at once for a branch that conflicts with the local base. Otherwise the change enters the merge
    * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
-   * lands (`land`); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
+   * lands (`requestMerge`, an outbound delivery); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
    * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
    * `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no person to authorize, actor
    * `system:auto`, and the state change names the mode change it ran under. Safe to run twice: the same `key` is
@@ -98,37 +96,57 @@ export class LocalMergeUnit {
   }
 
   /**
-   * The merge itself (RFC 0015 M8): the merge queue calls it for an entry whose merge-check run passed on `base_sha`
-   * with the branch at `head_sha`. The sandbox merges the item's local branch into the local base only while the
-   * base is still at `base_sha` and the branch at `head_sha`, so the tree that lands is the tree that was checked (no
-   * check runs again); a base or branch that moved returns `moved`, and the queue checks the entry again. A merge
-   * closes the item (completed, its merge sha) with the approver, or `system:auto`, as its actor and releases the
-   * items waiting on it; with a forge that can push a base, the same transition queues one base push. Safe to run
-   * again after a crash: an item already closed by this merge is `landed`, and a branch already in the base closes
-   * the item on the base it is in. A close that did not apply throws, so the queue lands it again.
+   * The merge itself (RFC 0015 M8), requested of outbound: the merge queue calls it for an entry whose merge-check
+   * run passed on `base_sha` with the branch at `head_sha`. It stores one `merge` action keyed `action_key` (one per
+   * check: recording it again stores nothing) to this host's base (`git:<host>:<base>`); outbound's `local` target
+   * merges the item's local branch into the local base only while the base is still at `base_sha` and the branch
+   * at `head_sha`, so the tree that lands is the tree that was checked, and its DeliveryCompleted comes back to the
+   * merge queue (`merged` here). `entry` (the entry id and its check) goes on the action, so only that landing
+   * applies it. Returns `requested`, `landed` for an item already closed by its merge, or the refusal.
    */
-  async land(id: WorkItemId, by: string, key: string, base_sha: string | null, head_sha: string | null, detail: Record<string, unknown>): Promise<"landed" | "moved" | string> {
+  async requestMerge(
+    id: WorkItemId, by: string, action_key: string, entry: { entry_id: string; run_key: string | null }, base_sha: string | null, head_sha: string | null,
+  ): Promise<"requested" | "landed" | string> {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
     if (item.stage === "CLOSED" && item.close_reason === "completed" && item.merge_sha !== null) return "landed";
     if (!awaitingMerge(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
     if (!canMergeLocal(this.c.k.d.sandbox)) return "this controller has no sandbox that can merge locally";
-    const { repo, branch_prefix } = this.c.k.cfg;
-    const branch = branchFor(item, branch_prefix);
+    const { repo } = this.c.k.cfg;
+    const branch = this.branchOf(item);
+    await this.c.k.commit({ writes: [{ kind: "intent", action: {
+      action: "merge", target: this.gitDestination(), work_item_id: item.id, key: action_key,
+      args: {
+        ...entry, base_ref: repo.base_branch, branch,
+        // No base known (an entry ahead landed without telling it): any base is moved, and it is checked again.
+        expected_base: base_sha ?? "", expected_head: head_sha,
+        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${by === AUTO_ACTOR ? "in auto mode" : "with `factory merge`"}.`,
+      },
+    } }] });
+    return "requested";
+  }
+
+  /**
+   * A delivered merge (RFC 0015 M8): the base holds the branch at `r.sha`. The item closes (completed, its merge
+   * sha) with the approver, or `system:auto`, as its actor and releases the items waiting on it; with a remote to
+   * push to, one `push_base` action (keyed by the item and the merge) is stored first, to the same destination, so
+   * a crash between the two pushes it once. Safe to run again: the close is conditional, the post and the push
+   * keyed. A close that did not apply throws, so the delivery result is applied again.
+   */
+  async merged(id: WorkItemId, by: string, key: string, r: { sha: string; already: boolean; not_updated: readonly string[] }, detail: Record<string, unknown>): Promise<"landed" | string> {
+    const item = await this.c.k.reader.getWorkItem(id);
+    if (!item) return "the work item was not found";
+    const { repo } = this.c.k.cfg;
+    const branch = this.branchOf(item);
     const auto = by === AUTO_ACTOR;
-    const r = await this.c.k.d.sandbox.mergeLocal({
-      repo: repo.path, base_ref: repo.base_branch, branch, identity: this.c.k.cfg.agent_git_identity,
-      checks: [], timeout_ms: this.c.k.cfg.run_timeout_ms,
-      // No base known (an entry ahead landed without telling it): any base is moved, and it is checked again.
-      expected_base: base_sha ?? "", ...(head_sha !== null ? { expected_head: head_sha } : {}),
-      message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${by} ${auto ? "in auto mode" : "with `factory merge`"}.`,
-    });
-    if (!r.merged) {
-      if ("base_moved" in r || "head_moved" in r) return "moved";
-      return "conflicts" in r ? conflictRefusal(item.id, branch, repo.base_branch, r.conflicts) : r.refused;
+    const push = this.pushesBase();
+    if (push) {
+      await this.c.k.commit({ writes: [{ kind: "intent", action: {
+        action: "push_base", target: this.gitDestination(), work_item_id: id, key: `push_base:${id}:${r.sha}`,
+        args: { base_ref: repo.base_branch, merge_sha: r.sha, message: `Merge origin/${repo.base_branch} into ${repo.base_branch}\n\nBefore the base push of work item ${id}.` },
+      } }] });
     }
     const actor: Actor = auto ? AUTO : { kind: "user", id: by as UserId };
-    const push = this.basePusher() !== null;
     const stale = r.not_updated.join(", ");
     await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
       ? {
@@ -138,15 +156,14 @@ export class LocalMergeUnit {
           detail: {
             ...detail, branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}), ...(stale ? { checkout_not_updated: stale } : {}),
           },
-          ...(push ? { base_push: { base_ref: repo.base_branch, merge_sha: r.sha } } : {}),
         }
       : null));
     // decide returns null whether or not the close applied: only the item says. The base holds the change either
-    // way, so a close that did not apply (version conflicts, a store error) is retried by landing again.
+    // way, so a close that did not apply (version conflicts, a store error) is retried by applying the merge again.
     const closed = await this.c.k.reader.getWorkItem(item.id);
     if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) {
       if (closed && (!awaitingMerge(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
-      throw new Error(`the close of ${item.id} after its local merge did not apply; landed again`);
+      throw new Error(`the close of ${item.id} after its local merge did not apply; applied again`);
     }
     this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: by, base_push: push });
     const how = auto ? " in auto mode" : "";
@@ -157,6 +174,15 @@ export class LocalMergeUnit {
     await this.c.unit("outbox").post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
     return "landed";
+  }
+
+  /**
+   * Where this controller's factory repo writes go (RFC 0015 M8): its host's base branch, `git:<host>:<base>`, so
+   * the merge and its base push wait in one destination order and only this host's outbound makes them. With no
+   * replica id (solo, one process) the host is `local`, and that process flushes every `git` destination.
+   */
+  private gitDestination(): SourceRef {
+    return gitTarget(this.c.k.d.replica_id?.split(":")[0] ?? "local", this.c.k.cfg.repo.base_branch);
   }
 
   /**
@@ -190,64 +216,32 @@ export class LocalMergeUnit {
     await this.c.unit("outbox").post(item, item.source, `${what} was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
   }
 
-  /** The forge's base push and the sandbox that syncs the base before it, or null when either cannot (no push is queued). */
-  basePusher(): { push: NonNullable<Forge["pushBase"]>; sandbox: BaseSyncSandbox } | null {
-    const forge = this.c.k.forge;
-    const sandbox = this.c.k.d.sandbox;
-    if (!forge?.pushBase || !canSyncBase(sandbox)) return null;
-    return { push: (input) => forge.pushBase!(input), sandbox };
+  /** Whether a merge's base is pushed to a remote: a forge that pushes a base and a sandbox that syncs it first. */
+  pushesBase(): boolean {
+    return this.c.k.forge?.pushBase !== undefined && canSyncBase(this.c.k.d.sandbox);
   }
 
   /**
-   * The base push step (design 05-sources, Local items): each pending base push is claimed by a conditional update,
-   * so one replica makes it. The sandbox fetches the remote base and merges it into the local base when it moved;
-   * the forge then pushes, conditionally on the remote base the sandbox read. A failure (an outage, a rate limit, a
-   * base that moved again) counts an attempt and is retried with backoff (retry_base_ms doubling up to
-   * retry_max_ms). A remote base that does not merge cleanly finishes the row as `conflict` and posts one message
-   * on the item, which stays closed: the merge happened, only its push waits for a person. Never changes an item.
+   * A delivered base push (design 05-sources, Local items; RFC 0015 M8): outbound's `local` target fetched the
+   * remote base, merged it into the local base when it moved, and pushed, conditionally on the remote base it read.
+   * A failure (an outage, a rate limit, a base that moved again) is a delivery failure outbound retries with its
+   * batch's backoff. A remote base that does not merge cleanly posts one message on the item, which stays closed:
+   * the merge happened, only its push waits for a person. Never changes an item.
    */
-  async basePushStep(): Promise<void> {
-    const pusher = this.basePusher();
-    if (!pusher) return;
-    for (const row of await this.c.k.reader.listPendingBasePushes(BASE_PUSH_BATCH)) {
-      await this.c.k.guard("base push", () => this.pushBase(row, pusher));
+  async basePushDelivered(row: ActionRow): Promise<void> {
+    const r = basePushOutcome(row);
+    if (r === null || !row.work_item_id) return;
+    const base = String(row.args.base_ref);
+    if ("pushed" in r) {
+      this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: base, sha: r.pushed });
+      return;
     }
-  }
-
-  async pushBase(row: BasePush, pusher: NonNullable<ReturnType<LocalMergeUnit["basePusher"]>>): Promise<void> {
-    const token = await this.c.k.d.store.claimBasePush(row.seq, this.c.k.cfg.lease_ms);
-    if (token === null) return;
-    const { path } = this.c.k.cfg.repo;
-    try {
-      const s = await pusher.sandbox.syncBase({
-        repo: path, base_ref: row.base_ref, merge_sha: row.merge_sha, identity: this.c.k.cfg.agent_git_identity,
-        message: `Merge origin/${row.base_ref} into ${row.base_ref}\n\nBefore the base push of work item ${row.work_item_id}.`,
-      });
-      if (!s.synced) {
-        await this.c.k.d.store.finishBasePush(row.seq, token, { outcome: "conflict", pushed_sha: null, error: `conflicts: ${s.conflicts.join(", ")}` });
-        await this.basePushConflict(row, s.conflicts);
-        return;
-      }
-      if (!s.contains) await pusher.push({ repo: path, base_ref: row.base_ref, sha: s.local, expected_sha: s.remote });
-      await this.c.k.d.store.finishBasePush(row.seq, token, { outcome: "pushed", pushed_sha: s.contains ? s.remote : s.local });
-      this.c.k.d.log.info("base pushed", { work_item_id: row.work_item_id, base_ref: row.base_ref, sha: s.contains ? s.remote : s.local });
-    } catch (err) {
-      const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
-      const delay = retryDelayMs(row.attempts + 1, this.c.k.cfg.retry_base_ms, this.c.k.cfg.retry_max_ms);
-      this.c.k.d.log.warn("base push failed; retried later", { work_item_id: row.work_item_id, attempts: row.attempts + 1, retry_in_ms: delay, error });
-      await this.c.k.d.store.failBasePush(row.seq, token, error, delay);
-    }
-  }
-
-  /** One message on the closed item: its merge stays local until a person merges the remote base by hand and pushes. */
-  async basePushConflict(row: BasePush, conflicts: readonly string[]): Promise<void> {
-    const item = await this.c.k.reader.getWorkItem(row.work_item_id);
+    const item = await this.c.k.reader.getWorkItem(row.work_item_id as WorkItemId);
     if (!item) return;
-    const base = row.base_ref;
     const body = [
-      `The local \`${base}\` (with this item's merge \`${row.merge_sha.slice(0, 12)}\`) was not pushed: \`origin/${base}\` moved and does not merge cleanly into it. Conflicting files:`,
+      `The local \`${base}\` (with this item's merge \`${String(row.args.merge_sha).slice(0, 12)}\`) was not pushed: \`origin/${base}\` moved and does not merge cleanly into it. Conflicting files:`,
       "",
-      ...conflicts.map((f) => `- \`${f}\``),
+      ...r.conflicts.map((f) => `- \`${f}\``),
       "",
       `The item stays closed. In the factory repo, merge \`origin/${base}\` into \`${base}\`, commit the resolution and push \`${base}\` by hand.`,
     ].join("\n");

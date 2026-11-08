@@ -133,18 +133,17 @@ export class OutboxUnit {
   /**
    * The outbox step (issue #282, RFC 0015 M7): every intent not announced yet becomes a DeliveryRequested, one per
    * destination, in one transaction with marking it requested. Outbound delivers it: claimed so one replica writes
-   * it, retried with backoff, never touching the item's state. Then the base pushes (until outbound's `local`
-   * handler takes them, M7's second half).
+   * it, retried with backoff, never touching the item's state.
    */
   async outboxStep(): Promise<void> {
     await this.c.k.guard("sync", () => this.c.unit("sync").syncStep());
     await this.c.k.announce();
-    await this.c.k.guard("base pushes", () => this.c.unit("local-merge").basePushStep());
   }
 
   /**
    * DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field); a closed PR
-   * clears its item's pending mark; a delivered PR goes on its item, which goes to review.
+   * clears its item's pending mark; a delivered PR goes on its item, which goes to review; a delivered merge goes to
+   * the merge queue (RFC 0015 M8), a delivered base push to the local merge.
    */
   async delivered(intent_ids: readonly string[]): Promise<void> {
     const writes: ControllerWrite[] = intent_ids.filter((id) => id.startsWith(THREAD_INTENT)).map((id) => ({ kind: "link_delivery", seq: Number(id.slice(THREAD_INTENT.length)) }));
@@ -154,6 +153,8 @@ export class OutboxUnit {
       if (a.action === "pr" && a.work_item_id && a.delivered_ref) {
         await this.c.unit("run-results").prDelivered(a.work_item_id as WorkItemId, a.delivered_ref, a.delivered_url);
       }
+      if (a.action === "merge") await this.c.unit("merge-queue").mergeDelivered(a);
+      if (a.action === "push_base") await this.c.unit("local-merge").basePushDelivered(a);
     }
   }
 
@@ -164,7 +165,7 @@ export class OutboxUnit {
   /** Stores one action intent; the outbox step announces it. A local item's surface is the store: nothing to write. */
   private async request(a: NewAction): Promise<void> {
     if (a.target.type === LOCAL_SOURCE) return;
-    await this.c.k.recordAction(a);
+    await this.c.k.commit({ writes: [{ kind: "intent", action: a }] });
   }
 }
 

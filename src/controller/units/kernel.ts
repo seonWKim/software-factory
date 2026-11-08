@@ -35,7 +35,7 @@ type LogFields = NonNullable<Parameters<ControllerDeps["log"]["warn"]>[1]>;
 const READS = [
   "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
-  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listPendingBasePushes", "listSettingChanges", "getWorkItemByMergeSha",
+  "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules",
 ] as const;
 
@@ -86,7 +86,9 @@ export type ControllerWrite =
    */
   | { kind: "expire_leases"; max_attempts: number; backoff_ms: (attempt: number) => number; then: (r: ExpiredLeases) => readonly ControllerWrite[] }
   /** A message on the controller's bus (controller.events), delayed until `draft.not_before` when it is set. */
-  | { kind: "emit"; draft: Draft };
+  | { kind: "emit"; draft: Draft }
+  /** An intent for outbound (RFC 0015 M7): an action the outbox step announces; a keyed one is stored once. */
+  | { kind: "intent"; action: NewAction };
 
 /** What one lease expiry did: each attempt it cut off, and the runs it requeued or failed. */
 export interface ExpiredLeases {
@@ -198,6 +200,7 @@ export class Kernel {
       else if (w.kind === "standing_rule") await store.putStandingRule(w.rule);
       else if (w.kind === "standing_proposal") await store.recordStandingProposal(w.proposal);
       else if (w.kind === "emit") await this.deliveries.emit(w.draft, this.d.clock.now().toISOString());
+      else if (w.kind === "intent") await this.deliveries.record(w.action, this.d.clock.now().toISOString());
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
   }
@@ -246,11 +249,6 @@ export class Kernel {
     await this.d.store.setSettingOverride({ key: "mode", project: w.level, value: JSON.stringify("manual"), actor: w.actor });
     await this.live.refresh();
     this.d.log.warn("auto mode stopped; the mode is manual again", { cause: w.alert.error_code, alert_id: r.created ? r.alert.id : null, mode_change: w.mode_change });
-  }
-
-  /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
-  async recordAction(a: NewAction): Promise<void> {
-    await this.deliveries.record(a, this.d.clock.now().toISOString());
   }
 
   /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */

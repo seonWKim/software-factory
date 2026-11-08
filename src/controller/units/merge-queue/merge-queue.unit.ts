@@ -7,13 +7,16 @@
 // not come back in time is ended by the delayed MergeCheckTimedOut message the unit emits when it starts it.
 //
 // Crash safety: every write is keyed or conditional, so each step may run again. A checking entry whose run is
-// missing (the process died before it was queued) gets it again; a landing whose process died is taken over after
-// a lease; a landing that threw leaves its entry `merging`, and the next step lands it again (`land` finds its own
-// merge). A result or timer of a check that was replaced moves nothing: every such move names the run.
+// missing (the process died before it was queued) gets it again. The landing is an outbound delivery keyed by the
+// entry's check (RFC 0015 M8): the queue stays `merging` until its DeliveryCompleted, a landing whose process died
+// is taken over after a lease and finds its keyed request (applied once delivered, never requested twice), and a
+// landing that threw leaves its entry `merging` for the next step. A result or timer of a check that was replaced
+// moves nothing: every such move names the run.
 
 import { createHash } from "node:crypto";
 import type { EntryFields, MergeQueue, MergeQueueEntry } from "../../actors/merge-queue/merge-queue.store.js";
 import { MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
+import { mergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { MERGE_CHECK_TIMED_OUT } from "../../topics/controller-events.topic.js";
 import { AUTO, SYSTEM, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -189,68 +192,114 @@ export class MergeQueueUnit {
 
   /**
    * Lands the head entry, whose check passed (or which was left landing): the queue is taken (conditional on the
-   * version read, so a stale `merging` is taken over once), and given back in any case, to its version only.
+   * version read, so a stale `merging` is taken over once). It stays `merging` while the merge delivery is out
+   * (RFC 0015 M8: outbound makes the merge, `mergeDelivered` applies it and gives the queue back); a landing that
+   * requested nothing gives it back here, to its version only.
    */
   private async land(q: MergeQueue, head: MergeQueueEntry | undefined): Promise<void> {
     const s = this.store();
     if (!(await s.setQueue(q.queue_id, q.state, "merging", q.version))) return;
-    let auto: WorkItemId | null = null;
+    let out = false;
     try {
       if (head && (head.state === "merging" || (head.state === "passed" && (await s.move(head.entry_id, "passed", "merging"))))) {
-        auto = await this.landHead({ ...head, state: "merging" });
+        out = await this.landHead({ ...head, state: "merging" });
       }
     } finally {
-      await s.setQueue(q.queue_id, "merging", "idle", q.version + 1);
+      if (!out) await s.setQueue(q.queue_id, "merging", "idle", q.version + 1);
     }
-    // Red main (design 03-risk), after the queue is given back: the checks run again on the new base tip, and a
-    // failure stops auto mode before the next automatic landing.
-    if (auto !== null) {
-      const item = await this.c.unit("local-merge").item(auto);
-      if (item) await this.c.k.guard("red main", () => this.c.unit("local-merge").redMainCheck(item));
-    }
-    await this.advance();
+    if (!out) await this.advance();
+  }
+
+  /** The key of an entry's merge delivery: one per check, so an entry checked again after `moved` lands anew. */
+  private mergeKey(e: MergeQueueEntry): string {
+    return `merge:${e.entry_id}:${e.run_key ?? "unchecked"}`;
   }
 
   /**
    * The landing: an automatic entry only while auto mode still may merge it, then the `before_merge` hooks (a veto
-   * removes it), then `LocalMergeUnit.land`, which moves the base only while it is at the checked commit (`base_sha`)
-   * and the branch at the head that was checked. Each entry behind it that was checked with it ahead learns the commit
-   * it landed as; a moved base or branch sends it and them back. Returns the item when auto mode landed it.
+   * removes it), then the merge as an outbound delivery (`LocalMergeUnit.requestMerge`, keyed by the entry's check),
+   * which moves the base only while it is at the checked commit (`base_sha`) and the branch at the head that was
+   * checked. A landing taken over or repeated while its merge is out decides nothing again: the keyed request is
+   * found, and applied once delivered. Returns whether the landing holds the queue (a merge out, or settled here).
    */
-  private async landHead(e: MergeQueueEntry): Promise<WorkItemId | null> {
-    const s = this.store();
+  private async landHead(e: MergeQueueEntry): Promise<boolean> {
     const lm = this.c.unit("local-merge");
+    const key = this.mergeKey(e);
+    const sent = await this.c.k.actionByKey(key);
+    if (sent !== null) {
+      if (sent.delivered_at !== null) await this.mergeDelivered(sent);
+      return true;
+    }
     const id = e.work_item_id as WorkItemId;
     const base = this.c.k.cfg.repo.base_branch;
-    const auto = e.entered_by === AUTO.id;
-    const off = auto ? await lm.autoRefusal(id) : null;
+    const off = e.entered_by === AUTO.id ? await lm.autoRefusal(id) : null;
     if (off !== null) {
       await this.leave(e, `${off}, so \`${base}\` did not move and the change left the merge queue`, true);
-      return null;
+      return false;
     }
     const hooks = await this.c.k.hooks.beforeMerge(e.work_item_id, null, new Date(this.c.k.nowMs()).toISOString());
     if (!hooks.allowed) {
       await this.leave(e, `${hooks.reason}, so \`${base}\` did not move and the change left the merge queue`, true);
-      return null;
+      return false;
     }
     const item = await lm.item(id);
     const head = item ? (e.heads[lm.branchOf(item)] ?? null) : null;
-    const landed = await lm.land(id, e.entered_by, e.merge_key, e.base_sha, head, e.detail);
-    if (landed === "landed") {
-      await s.move(e.entry_id, "merging", "merged");
-      const merge_sha = (await lm.item(id))?.merge_sha ?? null;
-      // Checking or passed: a result that comes back meanwhile keeps this base (it writes none of its own).
-      for (const behind of await this.behind(e)) await s.move(behind.entry_id, ["checking", "passed"], behind.state, { base_sha: merge_sha });
-      return auto ? id : null;
+    const r = await lm.requestMerge(id, e.entered_by, key, { entry_id: e.entry_id, run_key: e.run_key }, e.base_sha, head);
+    if (r === "requested") return true;
+    if (r === "landed") return this.landed(e, (await lm.item(id))?.merge_sha ?? null);
+    await this.leave(e, r, true);
+    return false;
+  }
+
+  /**
+   * DeliveryCompleted of a merge (from the outbox unit), or a landing that found its merge delivered: a merge closes
+   * the item (`LocalMergeUnit.merged`) and the entry is merged; a moved base or branch sends it and every entry
+   * checked with it ahead back to be checked; a refusal removes it. Then the queue is given back and moves on. Only
+   * the entry still landing under that check changes, so a redelivered or late result changes nothing. A close that
+   * did not apply throws: the delivery result is handled again, or the landing's takeover applies it.
+   */
+  async mergeDelivered(row: ActionRow): Promise<void> {
+    const e = await this.store().entry(String(row.args.entry_id));
+    const r = mergeOutcome(row);
+    if (!e || e.state !== "merging" || e.run_key !== (row.args.run_key ?? null) || r === null) return;
+    if (r.merged) {
+      const landed = await this.c.unit("local-merge").merged(e.work_item_id as WorkItemId, e.entered_by, e.merge_key, r, e.detail);
+      if (landed === "landed") await this.landed(e, r.sha);
+      else if (await this.leave(e, landed, true)) await this.release(e, false);
+      return;
     }
     // The base or the branch moved between the check and the landing (a merge outside the queue, a commit on the
     // branch): checked again on the new base, and so is every entry checked with it ahead.
-    if (landed === "moved") {
-      if (await s.move(e.entry_id, "merging", "queued", { run_key: null, base_sha: null })) await this.rebuild(e);
-      return null;
+    if ("moved" in r) {
+      if (!(await this.store().move(e.entry_id, "merging", "queued", { run_key: null, base_sha: null }))) return;
+      await this.rebuild(e);
+      return this.release(e, false);
     }
-    await this.leave(e, landed, true);
-    return null;
+    if (await this.leave(e, r.refused, true)) await this.release(e, false);
+  }
+
+  /** The entry landed as `merge_sha`: each entry behind it checked with it ahead learns that base. */
+  private async landed(e: MergeQueueEntry, merge_sha: string | null): Promise<boolean> {
+    const s = this.store();
+    if (!(await s.move(e.entry_id, "merging", "merged"))) return true;
+    // Checking or passed: a result that comes back meanwhile keeps this base (it writes none of its own).
+    for (const behind of await this.behind(e)) await s.move(behind.entry_id, ["checking", "passed"], behind.state, { base_sha: merge_sha });
+    await this.release(e, e.entered_by === AUTO.id);
+    return true;
+  }
+
+  /**
+   * The landing is over: the queue is given back and moves on. Red main (design 03-risk) after an automatic merge,
+   * once the queue is given back: the checks run again on the new base tip, and a failure stops auto mode before
+   * the next automatic landing.
+   */
+  private async release(e: MergeQueueEntry, auto: boolean): Promise<void> {
+    await this.store().setQueue(e.queue_id, "merging", "idle");
+    if (auto) {
+      const item = await this.c.unit("local-merge").item(e.work_item_id as WorkItemId);
+      if (item) await this.c.k.guard("red main", () => this.c.unit("local-merge").redMainCheck(item));
+    }
+    await this.advance();
   }
 
   /** The entries behind `e` whose check ran with `e` ahead: checking, or passed and waiting for it to land. */

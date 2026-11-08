@@ -334,14 +334,6 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.run("UPDATE worker_runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
     const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
-    if (input.base_push) {
-      await this.insertOnce(
-        tx,
-        `INSERT INTO outbound_base_pushes (work_item_id, base_ref, merge_sha, attempts, next_attempt_at, claim_token, created_at)
-         VALUES (?, ?, ?, 0, ?, 0, ?)`,
-        [input.id, input.base_push.base_ref, input.base_push.merge_sha, now, now],
-      );
-    }
     const cancelled = [
       ...(input.cancel_queued_runs ? await this.cancelRuns(tx, input.id, "queued", now) : []),
       ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
@@ -2234,38 +2226,23 @@ export class SqlFactoryStore implements FactoryStore {
     return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
   }
 
-  // The base push (design 05-sources, Local items): the outbox's claim rules on its own table.
-
-  async listPendingBasePushes(limit: number): Promise<BasePush[]> {
-    const now = this.now();
-    const rows = await this.db.all(
-      `SELECT * FROM outbound_base_pushes WHERE finished_at IS NULL AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until <= ?)
-       ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-      [now, now],
-    );
-    return rows.map(rowToBasePush);
-  }
+  // The base push (design 05-sources, Local items; RFC 0015 M8): outbound's `push_base` action, its tries its batch's.
 
   async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
-    const [row] = await this.db.all("SELECT * FROM outbound_base_pushes WHERE work_item_id = ?", [work_item_id]);
-    return row ? rowToBasePush(row) : null;
-  }
-
-  async claimBasePush(seq: number, lease_ms: number): Promise<number | null> {
-    return this.claimQueued(QUEUES.base_push, seq, lease_ms);
-  }
-
-  async finishBasePush(seq: number, token: number, result: { outcome: BasePushOutcome; pushed_sha: string | null; error?: string }): Promise<boolean> {
-    const n = await this.db.run(
-      `UPDATE outbound_base_pushes SET finished_at = ?, outcome = ?, pushed_sha = ?, last_error = ?, claimed_until = NULL
-       WHERE seq = ? AND claim_token = ? AND finished_at IS NULL AND claimed_until IS NOT NULL`,
-      [this.now(), result.outcome, result.pushed_sha, result.error?.slice(0, 1000) ?? null, seq, token],
+    const [row] = await this.db.all(
+      "SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1", [work_item_id],
     );
-    return n > 0;
-  }
-
-  async failBasePush(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
-    return this.failQueued(QUEUES.base_push, seq, token, error, retry_in_ms);
+    if (!row) return null;
+    const [batch] = await this.db.all(
+      "SELECT b.attempts, b.last_error FROM outbound_batch_intents i JOIN outbound_batches b ON b.id = i.batch_id WHERE i.intent_id = ?", [`act_${Number(row.seq)}`],
+    );
+    const args = JSON.parse(String(row.args)) as { base_ref: string; merge_sha: string };
+    const done = row.delivered_ref === null ? null : (JSON.parse(String(row.delivered_ref)) as { pushed?: string; conflicts?: string[] });
+    return {
+      base_ref: args.base_ref, merge_sha: args.merge_sha,
+      attempts: Number(batch?.attempts ?? 0), last_error: (batch?.last_error as string | null | undefined) ?? null,
+      outcome: done === null ? null : done.pushed !== undefined ? "pushed" : "conflict", pushed_sha: done?.pushed ?? null,
+    };
   }
 
   /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
@@ -2757,24 +2734,7 @@ const DELIVERY_SELECT =
 type Queue = { table: string; done: string };
 const QUEUES = {
   outbox: { table: "outbound_intents", done: "delivered_at" },
-  base_push: { table: "outbound_base_pushes", done: "finished_at" },
 } as const satisfies Record<string, Queue>;
-
-function rowToBasePush(row: Row): BasePush {
-  return {
-    seq: Number(row.seq),
-    work_item_id: row.work_item_id as WorkItemId,
-    base_ref: row.base_ref as string,
-    merge_sha: row.merge_sha as string,
-    attempts: Number(row.attempts),
-    next_attempt_at: row.next_attempt_at as Timestamp,
-    finished_at: (row.finished_at as Timestamp | null) ?? null,
-    outcome: (row.outcome as BasePushOutcome | null) ?? null,
-    pushed_sha: (row.pushed_sha as string | null) ?? null,
-    last_error: (row.last_error as string | null) ?? null,
-    created_at: row.created_at as Timestamp,
-  };
-}
 
 function rowToDelivery(row: Row): ThreadDelivery {
   return {

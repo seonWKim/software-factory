@@ -108,7 +108,7 @@ export class ClosesUnit {
     if (!it || !prClosePending(it) || pr === null) return;
     const forge = this.c.k.forge;
     if (!forge) return;
-    await this.c.k.recordAction({
+    await this.c.k.commit({ writes: [{ kind: "intent", action: {
       action: "close_pr",
       target: forge.prRef(pr),
       work_item_id: it.id,
@@ -120,7 +120,7 @@ export class ClosesUnit {
         body: "Closed because the issue was closed.",
         body_by: "Closed because the issue was closed by {closer}.",
       },
-    });
+    } }] });
   }
 
   /** Outbound closed the item's PR: the pending mark is cleared. */

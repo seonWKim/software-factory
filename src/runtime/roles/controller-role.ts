@@ -23,7 +23,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  GIT_TARGET, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, policyFor, recordAction,
+  GIT_TARGET, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -438,13 +438,18 @@ export class ControllerRole implements Decisions {
     const canSend = (type: string) => type !== SYNCED || !sync.syncedElsewhere();
     // A run's push leaves from the factory repo of the host whose worker wrote it (RFC 0015 M7): this process flushes
     // its own host's pushes. With no replica id (one process, tests) it flushes every host's: solo is one machine.
+    // A merge queue landing and its base push (M8) leave from the factory repo of the replica that landed it.
     const host = d.replica_id?.split(":")[0];
-    const pushes = this.kernel.forge?.pushBranch ? [host ? `${GIT_TARGET}:${host}` : GIT_TARGET] : [];
+    const git = localGit(this.kernel.d.sandbox, this.kernel.forge, () => {
+      const c = this.kernel.cfg;
+      return { repo: c.repo.path, identity: c.agent_git_identity, timeout_ms: c.run_timeout_ms };
+    });
+    const pushes = this.kernel.forge?.pushBranch || git ? [host ? `${GIT_TARGET}:${host}` : GIT_TARGET] : [];
     const outbound = new Outbound({
       db,
       bus: outboundBus,
       store: d.store,
-      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path }),
+      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path, git }),
       scanner: d.scanner,
       log: d.log,
       config: () => {

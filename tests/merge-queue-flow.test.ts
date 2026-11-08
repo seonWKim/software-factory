@@ -139,6 +139,12 @@ async function queueRow(f: Factory) {
   return (await db.all("SELECT * FROM controller_merge_queues"))[0]!;
 }
 
+/** The landing's merge actions (RFC 0015 M8), in order: whether outbound delivered each. */
+async function mergeActions(f: Factory) {
+  const db = (f.store as unknown as { db: SqlDriver }).db;
+  return (await db.all("SELECT delivered_at FROM outbound_actions WHERE action = 'merge' ORDER BY seq")).map((r) => ({ delivered: r.delivered_at !== null }));
+}
+
 /** The merge-check runs of the items, in order, with what each merged and how it came back. */
 async function checks(f: Awaited<ReturnType<typeof factory>>, ...ids: WorkItemId[]) {
   const runs = (await Promise.all(ids.map((id) => f.store.listRuns(id)))).flat().filter((r) => r.kind === "merge-check");
@@ -259,7 +265,7 @@ for (const backend of BACKENDS) {
       expect(refused[0]).toContain("hook freeze: the base is frozen");
     });
 
-    it("a close that fails after the base moved is landed again: the item closes on that merge, nothing merges twice", async () => {
+    it("a close that fails after the merge was delivered is applied again: the item closes on that merge, nothing merges twice", async () => {
       const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
       const a = await f.toMergePending("Add a");
       const mainBefore = git(f.repo, "rev-parse", "main");
@@ -267,12 +273,14 @@ for (const backend of BACKENDS) {
       await f.cli({ action: "command", command: "merge", id: a, text: "" });
       await f.step();
       expect(failed()).toBe(true);
-      // The base holds the change, the item is not closed yet, and the queue is not stuck landing.
+      // The base holds the change, the item is not closed yet, and the queue still holds the landing.
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
       expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
-      expect((await queueRow(f)).state).toBe("idle");
+      expect((await queueRow(f)).state).toBe("merging");
 
+      // Past the lease the landing is taken over: it finds its merge delivered and applies it, with no second merge.
+      f.clock.advance(f.cfg.lease_ms);
       await tickQueue(f);
       const main = git(f.repo, "rev-parse", "main");
       expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ")[1]).toBe(mainBefore);
@@ -374,6 +382,104 @@ for (const backend of BACKENDS) {
       expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }, { branches: 1, result: "green" }]);
       expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n")).toContain("c.yml");
       expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    });
+
+    // The landing as an outbound delivery (RFC 0015 M8): the merge is a keyed `merge` action that outbound's `local`
+    // target makes in the factory repo; DeliveryCompleted closes the item.
+    it("the item closes only after the merge happened, in outbound's delivery", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      const seen: unknown[] = [];
+      const mergeLocal = f.sandbox.mergeLocal.bind(f.sandbox);
+      f.sandbox.mergeLocal = async (spec) => {
+        const it = await f.store.getWorkItem(a);
+        seen.push({ stage: it?.stage, merge_sha: it?.merge_sha, base: git(f.repo, "rev-parse", "main") });
+        return mergeLocal(spec);
+      };
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.step();
+      expect(seen).toEqual([{ stage: "REVIEW", merge_sha: null, base: mainBefore }]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", merge_sha: git(f.repo, "rev-parse", "main") });
+      expect(await mergeActions(f)).toEqual([{ delivered: true }]);
+    });
+
+    it("a crash between the merge request and DeliveryCompleted lands exactly once", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      // The merge is written, then the process dies before outbound records it delivered.
+      const mergeLocal = f.sandbox.mergeLocal.bind(f.sandbox);
+      let crashed = false;
+      f.sandbox.mergeLocal = async (spec) => {
+        const r = await mergeLocal(spec);
+        if (!crashed) {
+          crashed = true;
+          throw new Error("process died after the merge");
+        }
+        return r;
+      };
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.step();
+      const merged = git(f.repo, "rev-parse", "main");
+      expect(git(f.repo, "rev-list", "--parents", "-n", "1", merged).split(" ")[1]).toBe(mainBefore);
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+
+      // The landing is taken over past its lease: it finds its keyed request and requests nothing again.
+      f.clock.advance(f.cfg.lease_ms);
+      await tickQueue(f);
+      expect(await mergeActions(f)).toEqual([{ delivered: false }]);
+      expect((await queueRow(f)).state).toBe("merging");
+
+      // Outbound retries the delivery after its backoff: the branch is in the base already, so nothing merges again.
+      f.clock.advance(f.cfg.retry_max_ms);
+      await f.controller.tickOutbox();
+      expect(git(f.repo, "rev-parse", "main")).toBe(merged);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: merged });
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merged"]);
+      expect((await queueRow(f)).state).toBe("idle");
+      expect(await mergeActions(f)).toEqual([{ delivered: true }]);
+      expect((await f.store.listItemMessages(a)).filter((m) => m.marker.startsWith("<!-- factory:local-merged:"))).toHaveLength(1);
+    });
+
+    it("a failed merge delivery is retried, and a refused one removes the entry: neither leaves it stuck merging", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      const mergeLocal = f.sandbox.mergeLocal.bind(f.sandbox);
+      const outcomes: ("throw" | "refuse" | "real")[] = ["throw", "real"];
+      f.sandbox.mergeLocal = async (spec) => {
+        const next = outcomes.shift() ?? "real";
+        if (next === "throw") throw new Error("index.lock exists");
+        if (next === "refuse") return { merged: false, refused: "the factory repo has no branch to merge" };
+        return mergeLocal(spec);
+      };
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.step();
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+      // Before the backoff nothing is tried again; after it the retry lands it.
+      await f.controller.tickOutbox();
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+      f.clock.advance(f.cfg.retry_max_ms);
+      await f.controller.tickOutbox();
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", merge_sha: git(f.repo, "rev-parse", "main") });
+      expect((await queueRow(f)).state).toBe("idle");
+
+      const b = await f.toMergePending("Add b");
+      const mainA = git(f.repo, "rev-parse", "main");
+      outcomes.push("refuse");
+      await f.cli({ action: "command", command: "merge", id: b, text: "" });
+      await f.step();
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainA);
+      expect((await queue.entries(b)).map((e) => [e.state, e.reason])).toEqual([["removed", "the factory repo has no branch to merge"]]);
+      expect((await queueRow(f)).state).toBe("idle");
+      expect(await f.store.getWorkItem(b)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+      const refused = (await f.store.listItemMessages(b)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+      expect(refused).toEqual([expect.stringContaining("the factory repo has no branch to merge")]);
     });
 
     it("an automatic entry does not land once auto mode is off", async () => {
