@@ -59,8 +59,9 @@ export function unescapeSlack(s: string): string {
 
 /**
  * GitHub Markdown to Slack mrkdwn: HTML comments (markers) dropped, headings and `**bold**` to `*bold*`, `[t](u)`
- * links to `<u|t>`, list dashes to bullets, `PR #N` to a link to the pull request. Code spans and fenced blocks
- * are kept as they are (escaped only).
+ * links to `<u|t>`, list dashes to bullets, `PR #N` to a link to the pull request. A folded block's
+ * `<details><summary>T</summary>` line is the bold heading `T` and its `</details>` line is dropped: Slack has no
+ * folding, and the tags would show as text. Code spans and fenced blocks are kept as they are (escaped only).
  */
 export function toMrkdwn(markdown: string, repo: RepoRef): string {
   const noMarkers = markdown.replace(/<!--[\s\S]*?-->/g, "");
@@ -80,6 +81,12 @@ export function toMrkdwn(markdown: string, repo: RepoRef): string {
       out.push("```");
       continue;
     }
+    const fold = /^\s*<details>\s*(?:<summary>(.*?)<\/summary>)?\s*$/.exec(raw);
+    if (fold) {
+      if (fold[1]) out.push(`*${inline(fold[1], repo)}*`);
+      continue;
+    }
+    if (/^\s*<\/details>\s*$/.test(raw)) continue;
     out.push(inline(raw, repo));
   }
   return out.join("\n").replace(/\n{3,}/g, "\n\n").trim();

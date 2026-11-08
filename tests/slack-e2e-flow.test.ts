@@ -156,6 +156,9 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     expect(thread).toHaveLength(4);
     expect(thread[0]).toBe("Status: *ready to merge* · <https://github.com/o/r/pull/42|PR #42>");
     expect(thread[1]).toMatch(/^\*Factory spec\*/);
+    // The spec's folded "What the PR contains" block reads as a heading, not as escaped HTML tags.
+    expect(thread[1]).toContain("*What the PR contains*\n\nworkflow + test");
+    expect(thread[1]).not.toContain("&lt;details");
     expect(thread[2]).toBe("*Factory review: pass*\n\nthe gate is right\n\nTier recheck: 2");
     expect(thread[3]).toMatch(/^<https:\/\/github\.com\/o\/r\/pull\/42\|PR #42> passed review \(tier 2\) and its checks passed\. A human merge is required\./);
     // The item's own conversation in the store holds the same factory messages, once each.
