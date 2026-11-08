@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type UiDeps, renderItem } from "../src/ui/pages.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import { FakeGitHubClient, FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
@@ -157,6 +159,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(f.owner()).toEqual(ownerBefore);
     expect(f.github.calls).toEqual([]);
     expect(f.forgeCalls).toEqual([]);
+    expect(await f.store.getBasePush(id)).toBeNull();
   });
 
   it("factory merge is refused for an item not waiting for a merge, and for a requester (naming factory users add)", async () => {
@@ -182,7 +185,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(f.github.calls).toEqual([]);
   });
 
-  it("a conflict leaves the item in merge_pending and the reply names the conflicting files; a checked-out base is refused", async () => {
+  it("a conflict leaves the item in merge_pending and the reply names the conflicting files", async () => {
     const f = await localFactory();
     const id = await f.toMergePending();
     // The owner changed the same file on main meanwhile, from a worktree of their own.
@@ -191,12 +194,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     commitIn(side, { [WORKFLOW]: "name: other\n" }, "another workflow");
     const mainBefore = git(f.repo, "rev-parse", "main");
 
-    // While main is checked out there, moving it would change that checkout: refused, nothing moved.
-    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
-    await f.step();
-    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("is checked out in");
-    git(f.repo, "worktree", "remove", side);
-
     await f.cli(ME, { action: "command", command: "merge", id, text: "" });
     await f.step();
     const reply = (await f.messages(id, "<!-- factory:refused:")).at(-1)!;
@@ -204,6 +201,48 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(reply).toContain(`- \`${WORKFLOW}\``);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+  });
+
+  it("the base checked out with uncommitted changes: the merge applies, that checkout's HEAD, index and status stay, and the page says so", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const side = join(f.repo, "..", "side");
+    git(f.repo, "worktree", "add", "--quiet", side, "main");
+    writeFileSync(join(side, "README.md"), "hi, staged\n");
+    git(side, "add", "README.md");
+    writeFileSync(join(side, "README.md"), "hi, staged, then edited\n");
+    const look = () => ({ head: git(side, "rev-parse", "HEAD"), index: git(side, "ls-files", "-s"), status: git(side, "status", "--porcelain") });
+    const before = look();
+
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const done = (await f.store.getWorkItem(id))!;
+    expect(done).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
+    expect(look()).toEqual(before);
+    const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
+    expect(merged.detail).toMatchObject({ checkout_not_updated: realpathSync(side) });
+    expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain("that checkout was not updated");
+    const page = (await renderItem(uiDeps(f.store), id))!;
+    expect(page).toContain("not updated");
+    expect(page).toContain(esc(realpathSync(side)));
+  });
+
+  it("the base checked out clean: that checkout is fast-forwarded to the merge (HEAD, index and files), status still clean", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const side = join(f.repo, "..", "side");
+    git(f.repo, "worktree", "add", "--quiet", side, "main");
+
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    const main = git(f.repo, "rev-parse", "main");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", merge_sha: main });
+    expect(git(side, "symbolic-ref", "HEAD")).toBe("refs/heads/main");
+    expect(git(side, "rev-parse", "HEAD")).toBe(main);
+    expect(git(side, "status", "--porcelain")).toBe("");
+    expect(readFileSync(join(side, WORKFLOW), "utf8")).toBe("name: scope\non: push\n");
+    const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
+    expect(merged.detail).not.toHaveProperty("checkout_not_updated");
   });
 
   it("a merge from the status page goes through the same local merge: a conflict is refused on the request, then a clean merge closes the item", async () => {
@@ -251,3 +290,12 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(f.forgeCalls).toEqual([]);
   });
 });
+
+/** The status page's dependencies, enough for the item page. */
+function uiDeps(store: UiDeps["store"]): UiDeps {
+  return {
+    store, scanner: cleanScanner, clock: new FakeClock(), lease_ms: 60_000,
+    health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], new FakeClock()),
+  };
+}
+const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
