@@ -10,6 +10,7 @@
 import { ANONYMOUS, type CliAction, type CliIdentity, parseLocalCliArgs, runLocalCli } from "../core/local-cli.js";
 import type { Logger } from "../core/log.js";
 import type { UserId } from "../core/types.js";
+import { staticGrantConfig } from "../impl/grant/static.js";
 import type { Role } from "../interfaces/auth-provider.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
@@ -29,8 +30,8 @@ export interface StaticUser {
 export interface UiUsers {
   /** The identity the UI process starts with (cliIdentity): the viewer, and who every users write acts as. */
   identity: CliIdentity;
-  /** The `static` grant's users when that grant is selected (`permissions.grants`); else none. */
-  staticUsers: readonly StaticUser[];
+  /** The selected grants (`permissions.grants`) and `permissions.static`: its users are listed when `static` is selected. */
+  permissions: { grants: readonly string[]; static: unknown };
   /** The per-process token every write route shares; POST must send it in x-csrf-token. */
   csrfToken: string;
   log: Logger;
@@ -39,9 +40,10 @@ export interface UiUsers {
 /** The UI's dependencies with the users routes. Absent `users`: GET is a 404 and POST a 405. */
 export type UsersDeps = UiDeps & { users?: UiUsers };
 
-/** `permissions.static.roles` (checked by staticGrantConfig) as the page's rows, in config order. */
-export function staticUsers(roles: Readonly<Record<string, Readonly<Record<string, readonly Role[]>>>>): StaticUser[] {
-  return Object.entries(roles).map(([user_id, byProject]) => ({
+/** `permissions.static.roles` (checked by staticGrantConfig) as the page's rows, in config order; none unless `static` is selected. */
+function staticUsers(p: UiUsers["permissions"]): StaticUser[] {
+  if (!p.grants.includes("static")) return [];
+  return Object.entries(staticGrantConfig(p.static).roles).map(([user_id, byProject]) => ({
     user_id: user_id as UserId,
     projects: Object.entries(byProject).map(([project, list]) => ({ project, roles: [...list] })),
   }));
@@ -64,7 +66,8 @@ export async function readUsers(d: UsersDeps, u: UiUsers) {
       projects: [], links: await links(l.user_id),
     });
   }
-  for (const s of u.staticUsers) {
+  const statics = staticUsers(u.permissions);
+  for (const s of statics) {
     const roles = s.projects.flatMap((p) => p.roles);
     users.push({
       user_id: await text(s.user_id), role: roles.includes("approver") ? "approver" : "requester", source: "static" as const,
@@ -75,7 +78,7 @@ export async function readUsers(d: UsersDeps, u: UiUsers) {
   const owner = locals.find((l) => l.role === "owner")?.user_id ?? null;
   // As runLocalCli decides: the owner may write; with no owner yet, the first named identity to write becomes it.
   const canChange = owner === me || (owner === null && me !== ANONYMOUS_USER);
-  const staticRoles = u.staticUsers.find((s) => s.user_id === me)?.projects.flatMap((p) => p.roles) ?? [];
+  const staticRoles = statics.find((s) => s.user_id === me)?.projects.flatMap((p) => p.roles) ?? [];
   const role = locals.find((l) => l.user_id === me)?.role ?? (staticRoles.length ? (staticRoles.includes("approver") ? "approver" : "requester") : null);
   return {
     as_of: d.clock.now().toISOString(),

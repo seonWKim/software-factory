@@ -15,7 +15,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { type UiUsers, type UsersDeps, USERS_PATH, staticUsers } from "../src/ui/users-api.js";
+import { type UiUsers, type UsersDeps, USERS_PATH } from "../src/ui/users-api.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -54,7 +54,7 @@ async function setup(opts: { me?: CliIdentity; owner?: UserId | null; wired?: bo
   const log = new MemLog();
   const users: UiUsers = {
     identity: opts.me ?? { user: OWNER, from: "git user.email" },
-    staticUsers: staticUsers({ [STATIC]: { "*": ["approver"], [PROJECT_KEY]: ["requester"] } }),
+    permissions: { grants: ["static"], static: { roles: { [STATIC]: { "*": ["approver"], [PROJECT_KEY]: ["requester"] } } } },
     csrfToken: newCsrfToken(),
     log,
   };

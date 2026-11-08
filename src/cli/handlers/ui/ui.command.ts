@@ -22,7 +22,10 @@ export default defineCommand({
     const loaded = await ctx.load();
     // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
     // sees one user for the UI and the terminal.
-    const parts = await buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) });
+    const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
+    const parts = await buildUiParts(loaded, { identity });
+    // The Users page acts as the same identity, with its source shown as the viewer's, and shares the write routes' token.
+    const users = { identity, permissions: { grants: loaded.grants, static: loaded.file.permissions?.static }, csrfToken: parts.settings.csrfToken, log: parts.pauses.log };
     // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
     const lastChecks = new LastChecks();
     const revision = await serverRevision(loaded.codeRoot);
@@ -72,12 +75,14 @@ export default defineCommand({
         displayNames: parts.displayNames,
         // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
         pauses: parts.pauses,
+        // The Users page (GET and POST /api/v1/users): local roles through the CLI's `users` actions, as this machine's CLI identity.
+        users,
       },
       uiPort(loaded.file.ui),
     );
     const { actor, source } = parts.commands;
     const actsAs = actor === null ? "nobody: set ui.user_id" : `${actor} from ${source}`;
-    console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands as ${actsAs}; Ctrl-C to stop)`);
+    console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, Users as ${identity.user}, and item commands as ${actsAs}; Ctrl-C to stop)`);
     // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
     const orphan = new AbortController();
     if (supervised) process.once("disconnect", () => orphan.abort());
