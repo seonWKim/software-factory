@@ -49,6 +49,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 02:05–02:14 | Review of outbound, the controller's delivery side, and the migrations since 00:00 (read-only agent): 8 findings (3 high: batch joined mid-flush loses a delivery, carried base pushes go to a host no controller flushes, a failing base push blocks all merges) | agent | fixes running from 02:15 (outbound-fixes) |
 | 02:15–02:18 | Docs naming the deleted broker tools fixed (585cf33); contract migration dropping `outbound_base_pushes` (a56afe0); owner items: sub-issue filing through outbound, contract drops | main | SQLite green (3753), contract tests green on MySQL |
 | 02:18– | ARCHITECTURE.md brought in line with the components, bus topics and outbound (docs agent) | agent | running |
+| 02:19– | Review of runtime (settings, hooks, roles), compose, plugin discovery, CLI migrate and supervisor wiring (read-only agent): the areas no earlier review covered | agent | running |
 | next | Merge outbound-fixes and the ARCHITECTURE.md rewrite; M11 cleanup: file budget back to 600, ratchets; full SQLite + MySQL + rehearsal | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
