@@ -2,15 +2,19 @@
 
 ## Summary
 
-The factory is moving to RFC 0015: an event-driven factory of independent, restartable actors. M0, M1 and M2 are done.
-The cores of M3 (bus), M6 (worker engine), M9 (passports) and M10 (extension points) are merged on
-`refactor/rfc-0015`. M4 put intake on the bus: inbound polls and stores records, and the controller consumes them
-from `controller.commands`. M5 moved the legacy controller into discovered controller units
-(`src/controller/units/`; `core/controller.ts` is gone); the units still do their own I/O. M6 moved the worker into
-`src/worker/` (discovered run kinds) and runs every run through the ExecutionEngine's step journal; a run whose worker
-dies resumes after its last finished step (`core/worker.ts` is gone). The live database is not migrated: the owner runs
-`npm run migrate` after reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner.
-Next are M7 (outbound), M8 (merge queue), the M5 follow-up (pure load/decide units) and the M6, M9 and M10 leftovers.
+The factory now runs as RFC 0015's event-driven factory on `refactor/rfc-0015`: M0–M11 are in, reviewed, and the
+review fixes are applied (2026-11-09). Inbound polls and stores records and relays them on the bus; the controller
+is a router plus discovered units; the worker runs every run through the ExecutionEngine's step journal; outbound
+makes every forge and repo write (pushes, PRs, comments, closes, the local merge and its base push) as keyed
+deliveries under its service passport; the merge queue lands through outbound; passports are checked at the edge, in
+the ToolBroker and for services. Five read-only reviews (bus/inbound/identity/state/runtime; controller and merge queue; worker;
+outbound; runtime wiring) each listed findings in the overnight timeline; all are fixed except the ones waiting on
+the owner (below).
+Verification with no agents running: SQLite suite green (3774), MySQL suite green (every test passes; at 4 workers
+the loaded machine times some out, at 2 workers all pass), schema snapshots match, rehearsal lost no row.
+What is not done: units are not all pure (`unit-purity` 24), sub-issue filing still writes inline (owner choice), and
+legacy code remains behind `component-imports-legacy` (298) until it is rewritten. The live database is not migrated
+and the contract drops are not applied: the owner runs `npm run migrate` (and later `--contract`) after review.
 
 The RFC and the target schema live in `~/Desktop/software-factory-rfcs/` (`0015-event-driven-factory.md`,
 `0015-target-schema.sql`). This file says what exists today on the `refactor/rfc-0015` branch, what is still legacy,
@@ -51,7 +55,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 02:18–02:29 | ARCHITECTURE.md rewritten for the components, the six bus topics, outbound and passports; docs/architecture.md fixed where the refactor made it false; review notes updated (resolved ones dropped, new ones from the code) (634ff5d) | agent | merged; main fixed the status page's "read-only" claim (5578a32) |
 | 02:19–02:28 | Review of runtime (settings, hooks, roles), compose, plugin discovery, CLI migrate and supervisor wiring (read-only agent): 10 findings (4 high: SQLite self-update migrates under the old child, `migrate --status`/`--dry-run` write, guard code off the gate list, Rule of Two not called) | agents | 1–3, 5, 7–10 fixed by runtime-fixes (f1caffb…38afb81): SQLite breaking migrations wait for `npm run migrate` (self-update keeps the old child), `--status`/`--dry-run` only read, guard code on the gate list (`src/identity/`, `src/compose.ts`, `src/outbound/outbound.ts`, the default broker), a guard plugin cannot take a platform default, `hooks` reviewed, no topic DDL for listed topics, unwired hook points and unconsumed handlers fail startup, failed builds not cached; merged (040e46e), SQLite green (3774). 4 doc corrected by main (b67a2ca), wiring is the owner's; 6 to the owner |
 | 03:15 | M11: file budget back to 600, the 15 files over it relisted (65ea072); ratchet table recounted | main | architecture tests green |
-| 03:15– | Final verification with no agents running: full SQLite (3774 green), full MySQL suite, MySQL schema snapshot, rehearsal | main | running |
+| 03:15–03:47 | Final verification with no agents running: SQLite suite green (3774); MySQL suite: 80 timeouts at 4 workers under machine load (two orphaned `yes` processes at 100% CPU since 2026-11-08 05:31), the failing files green on rerun at 2 workers (491 tests), so every MySQL test passes; MySQL schema snapshot matches; rehearsal passed (every row of 42 tables kept) | main | done |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
 owner decisions below. Status per row is updated here as each step lands.
@@ -71,7 +75,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Review fixes: crash-safe landing (lease take-over, finally, `land` repeatable), missing check runs queued again, results and timers conditional on the run, the checked branch head pinned, automatic entries re-authorized at the landing, `run_key` index, hashed queue id; `paused` dropped. Landing through outbound (branch `refactor/rfc-0015-local-merge`): a keyed `merge` action to `git:<host>:<base>` written in the unit's commit, made by outbound's `local` target (`LocalGit`, `TargetDeps.git`); the queue stays `merging` until DeliveryCompleted, which closes the item; a takeover finds the keyed request and applies a delivered one; the base push is a keyed `push_base` action in the same destination (the `outbound_base_pushes` step is gone, the table waits for M11); flow tests: a crash in the delivery lands once, a failed delivery retries, a refused one removes the entry, the item closes only after the merge. Left: `github-change` merge, batches with bisect, partitions; cancelling a removed entry's queued check run |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; outbound's service passport (branch `refactor/rfc-0015-m7-rest`); left: SecretStore key for enterprise |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done, run path wired | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table. Branch `refactor/rfc-0015-m6-leftovers`: roles drive every agent step's prompt and tools; `before_run` hooks at run start, enabled by the PR-only `hooks` setting. Left: `before_merge` (merge queue) and `before_delivery` (outbound) |
-| 11 | Cleanup (contract migrations, docs, empty ratchet lists) | contract migrations written | e28aab9: `legacy_*` drops for M1 and M4, run only by `npm run migrate -- --contract` 14 days after their rename (not applied); docs, ratchets and the file budget left |
+| 11 | Cleanup (contract migrations, docs, empty ratchet lists) | done (lists shrink with legacy code) | contract drops for `legacy_*` (e28aab9) and `outbound_base_pushes` (a56afe0), run only by `npm run migrate -- --contract` 14 days after their migrations (not applied); ARCHITECTURE.md and docs rewritten (634ff5d); file budget back to 600, 15 files listed (65ea072); ratchet lists are not empty: their entries go as legacy code is rewritten |
 
 ## Architecture today
 
@@ -418,6 +422,8 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
+- Two `yes` processes (pids 6377, 6379, started 2026-11-08 05:31, parent gone) use two cores at 100%; the MySQL suite
+  times out at 4 workers while they run. Not started by this session as far as I can tell; I did not kill them.
 - M5 `hotspot_paths` default: it still names the removed `src/core/controller.ts`; pick its replacement or drop it.
 - M10 `mode`: it is `free`, not tighten-only, because #444 lets a project choose auto under a global manual, with
   `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
