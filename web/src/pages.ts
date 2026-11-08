@@ -1,4 +1,4 @@
-import { Activity, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, Settings } from "lucide-react";
+import { Activity, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, Settings, Users } from "lucide-react";
 
 /** The sidebar's pages, in order. */
 export interface PageDef {
@@ -23,7 +23,13 @@ export const PAGES: readonly PageDef[] = [
  */
 export const TOOL_PAGES: readonly PageDef[] = [{ path: "data", label: "Data", icon: Database }];
 
-const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
+/**
+ * Pages reached by their URL only, not listed in the sidebar: Users (`/app/users`, design 09-dashboard-app). Its
+ * sidebar entry after Settings waits on the shell tests that list the sidebar's links (see that topic file).
+ */
+export const URL_PAGES: readonly PageDef[] = [{ path: "users", label: "Users", icon: Users }];
+
+const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES, ...URL_PAGES];
 
 export const BASE = "/app/";
 

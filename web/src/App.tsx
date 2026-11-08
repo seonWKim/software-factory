@@ -13,6 +13,7 @@ import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } fr
 import { SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
+import { UsersPage } from "./views/users.js";
 
 /** "updated Ns ago", ticking each second. */
 function useAgo(at: number): string {
@@ -33,6 +34,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   health: HealthPage,
   failures: FailuresPage,
   settings: SettingsPage,
+  users: UsersPage,
   data: DataPage,
 };
 
