@@ -469,7 +469,7 @@ describe("plugin registry: guards can be switched", () => {
       expect(made.brokerCtx?.secrets).toBe(made.secrets);
       expect(made.brokerCtx?.scanner).toBe(made.scanner);
       expect(made.brokerCtx?.store).toBe(built.store);
-      expect((built.controller as unknown as { d: { store: unknown } }).d.store).toBe(built.store);
+      expect(built.controller.kernel.d.store).toBe(built.store);
     } finally {
       await built.close();
     }
@@ -519,7 +519,7 @@ describe("plugin registry: existing config keys keep working", () => {
     const authOf = async (auth: unknown) => {
       const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
       try {
-        const d = (built.controller as unknown as { d: { auth: unknown; local_auth: unknown } }).d;
+        const d = built.controller.kernel.d;
         return [d.auth, d.local_auth];
       } finally {
         await built.close();
@@ -540,7 +540,7 @@ describe("plugin registry: existing config keys keep working", () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
     const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      expect((built.controller as unknown as { d: { auth: unknown } }).d.auth).toBeInstanceOf(NoAuthProvider);
+      expect(built.controller.kernel.d.auth).toBeInstanceOf(NoAuthProvider);
     } finally {
       await built.close();
     }
@@ -638,7 +638,7 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
     });
     const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      const sources = (built.controller as unknown as { sources: readonly unknown[] }).sources;
+      const sources = built.controller.kernel.sources;
       expect(sources).toHaveLength(2);
       expect(sources[0]).toBeInstanceOf(GitHubIssueSource);
       expect(made).toHaveLength(1);

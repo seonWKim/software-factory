@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMMAND_RECEIVED, SOURCE_EVENT_RECEIVED, type LegacyDecisions } from "../../../../src/controller/index.js";
+import { COMMAND_RECEIVED, SOURCE_EVENT_RECEIVED, type Decisions } from "../../../../src/controller/index.js";
 import legacy from "../../../../src/controller/handlers/legacy-controller/legacy-controller.handler.js";
 import { storeRecord } from "../../../../src/inbound/records.js";
 import { envelope } from "../../../../src/shared/envelope.js";
@@ -18,11 +18,11 @@ function message(type: string, payload: Record<string, string>) {
 async function harness() {
   const { store } = await newStore();
   const calls: unknown[] = [];
-  const decisions: LegacyDecisions = {
+  const decisions: Decisions = {
     consumeEvent: async (e) => void calls.push(["event", e]),
     consumeCommand: async (c) => void calls.push(["command", c.key]),
   };
-  const run = (m: ReturnType<typeof message>) => legacy.handle(m, { db: store.db, legacy: decisions, emit: () => {} });
+  const run = (m: ReturnType<typeof message>) => legacy.handle(m, { db: store.db, decisions: decisions, emit: () => {} });
   return { store, calls, run };
 }
 

@@ -226,7 +226,7 @@ describe("one shared authorize check", () => {
   });
 
   it("the controller decides permission only through its one authorize helper", () => {
-    const text = readFileSync(join(import.meta.dirname, "..", "src", "core", "controller.ts"), "utf8");
+    const text = readFileSync(join(import.meta.dirname, "..", "src", "controller", "units", "auth", "auth.unit.ts"), "utf8");
     // One call, on the auth plugin for the command's origin (issue #318: local commands use `local_auth`).
     expect(text.match(/\.authorize\(principal, action/g)).toHaveLength(1);
   });

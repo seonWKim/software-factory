@@ -180,7 +180,7 @@ describe("local source plugin", () => {
   async function builtSources(source: unknown) {
     const built = await build(await loadConfig(root(source)), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      return (built.controller as unknown as { sources: readonly unknown[] }).sources;
+      return built.controller.kernel.sources;
     } finally {
       await built.close();
     }

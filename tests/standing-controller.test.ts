@@ -91,7 +91,7 @@ describe("standing approvals: the proposal", () => {
     const later = await f.approvals(2);
     expect(later.flatMap((it) => f.posts("standing-proposal", it))).toEqual([]);
     // The check run again for the tenth item (another replica, a repeat) finds the same proposal and posts nothing.
-    await (f.controller as unknown as { proposeStanding(it: WorkItem): Promise<void> }).proposeStanding(await f.get(tenth));
+    await (await f.controller.unit("standing")).proposeStanding(await f.get(tenth));
     await f.controller.tickOutbox();
     expect(f.posts("standing-proposal")).toHaveLength(1);
   });

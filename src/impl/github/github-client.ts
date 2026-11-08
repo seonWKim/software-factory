@@ -1,4 +1,4 @@
-import type { GitHubBudgetStatus } from "../../core/controller.js";
+import type { GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { Timestamp } from "../../core/types.js";
 import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
