@@ -508,11 +508,6 @@ export interface FactoryStore {
    */
   claimProbe(name: "model_stall" | "network", due: Timestamp, next: Timestamp): Promise<boolean>;
   /**
-   * @deprecated claimProbe("model_stall", due, next) replaces it; no source file calls it. Removal plan in design
-   * §5 Restarts (docs/design/05-restarts.md): move the store contract tests to claimProbe, then delete it.
-   */
-  takeStallProbe(due: Timestamp, next: Timestamp): Promise<{ taken: boolean }>;
-  /**
    * Extends the lease while the run is `running` with this `token`, whatever the clock says: a lease that
    * expired but was not reaped or reclaimed (host sleep) is renewed. lease_lost means stop work immediately.
    */
