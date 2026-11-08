@@ -206,17 +206,21 @@ function runStart(events: readonly GateEvent[], gate: StandingGate, tier: Tier):
 export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
   gates: [
     "src/core/controller.ts", "src/core/policy.ts", "src/core/diff-gate.ts", "src/core/pre-push.ts", "src/core/checks.ts",
-    "src/core/merge-check.ts", "src/core/standing.ts",
+    "src/core/merge-check.ts", "src/core/standing.ts", "src/runtime/hooks/",
   ],
-  prompts: ["prompts/"],
+  prompts: ["prompts/", "golden/"],
   permissions: [
     "src/core/authorize.ts", "src/impl/auth/", "src/impl/grant/", ".claude/",
     "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
+    "src/worker/roles/",
   ],
   tools: ["src/core/tools/", "src/impl/broker/"],
   guard_settings: [
     "factory.config.json", "src/core/config.ts", "src/core/settings.ts", "src/config-keys.ts", "src/plugins.ts",
     "src/impl/egress/", "src/impl/secrets/",
+    // Setting descriptors (RFC 0015 M10): tests/architecture/settings-monotonic.test.ts fails on one outside these.
+    "src/controller/settings/", "src/guards/settings/", "src/identity/settings/", "src/inbound/settings/",
+    "src/runtime/settings/", "src/state/settings/", "src/worker/settings/",
   ],
 };
 

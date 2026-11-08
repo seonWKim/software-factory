@@ -302,81 +302,8 @@ export const PR_ONLY_KEYS = [
 ] as const;
 export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
-/**
- * What each settable key controls, one plain sentence (at most 100 characters) with its unit when the name
- * does not say it. GET /api/v1/settings returns it; the Settings page shows it under the key name.
- */
-export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
-  max_attempts: "Task failures of one step before the work item blocks on a human.",
-  max_loops: "Review feedback loops on one change before the work item blocks on a human.",
-  max_restart: "Infra failures of one step (lease loss, timeout, crash) before it blocks on a human.",
-  retry_base_ms: "Wait before the first automatic retry; each next retry waits twice as long.",
-  retry_max_ms: "Longest wait between retries, and the pause after a rate limit with no reset time.",
-  max_diff_lines: "Most added plus deleted lines a branch diff may have before push.",
-  max_diff_files: "Most changed files a branch diff may have before push.",
-  run_timeout_ms: "Longest an agent run may take before it is stopped.",
-  first_output_ms: "Longest an agent run may go from its start with no model output before it counts as stalled.",
-  models: "The model name used for each model class: cheap, standard and strong.",
-  model_by: "Which model class each run kind uses per tier, and whether a retry goes one class up.",
-  poll_interval_ms: "How often the factory polls the forge for new work items and comments.",
-  tick_ms: "How often the controller and the worker pool run their loop.",
-  heartbeat_ms: "How often a worker renews the lease on the step it runs.",
-  lease_ms: "How long a claimed step stays held by a worker without a lease renewal.",
-  workers: "Worker loops in each process that claim and run steps.",
-  phases_auto_approve: "Whether a phase spec of an approved split needs no approval of its own.",
-  hold_policy: "What a run held by coordination cost does: wait for /approve, start after some minutes, or start.",
-  alarm_repeat_count: "Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert.",
-  alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
-  alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
-  "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
-  mode: "Manual waits for a person at every spec and merge; auto approves and merges what it may itself.",
-  auto_merge_max_tier: "In auto mode, the highest tier (0 to 3) a reviewed local change merges at by itself; 0 is none.",
-};
-
-/** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
-export const PR_ONLY_DESCRIPTIONS: Readonly<Record<PrOnlyKey, string>> = {
-  plugins: "Which named implementation the factory uses for each interface.",
-  repo: "The repository the factory works on, its base branch and its install and test commands.",
-  store: "Where the factory keeps its state: the store's driver and location.",
-  floors: "Paths that raise a work item's tier to at least a given tier when a change touches them.",
-  dials: "The lowest tier that needs a spec approval; its auto_merge_max_tier stays 0 (the setting decides).",
-  auth: "Which auth plugin checks who a request comes from.",
-  permissions: "Which grant sources decide who may act on the factory, and their settings.",
-  secrets: "Which secret store tools read credentials from; agents never see them.",
-  egress: "Which scanner checks outgoing text and withholds what looks like a secret.",
-  broker: "Which tool broker runs the forge actions agents ask for, such as a push.",
-  deny_paths: "Absolute paths that agent runs may never read.",
-  env: "Whether the factory runs locally or in the cloud.",
-  toolchain: "Cache folders agents may read but not write, their extra env, and the command that warms them.",
-};
-
-/** When a set takes effect, per key. What `settings set` prints and docs/design.md lists. */
-export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
-  max_attempts: "the controller's next decision",
-  max_loops: "the controller's next decision",
-  max_restart: "the controller's next decision",
-  retry_base_ms: "the controller's next decision",
-  retry_max_ms: "the controller's next decision",
-  max_diff_lines: "the next run that starts",
-  max_diff_files: "the next run that starts",
-  run_timeout_ms: "the next run that starts",
-  first_output_ms: "the next run that starts",
-  models: "the next run that starts",
-  model_by: "the next run that starts",
-  poll_interval_ms: "the next tick",
-  tick_ms: "the next tick",
-  heartbeat_ms: "the next lease renewal",
-  lease_ms: "the next claim or lease renewal",
-  workers: "the worker pool's next tick",
-  phases_auto_approve: "the next phase spec triage writes",
-  hold_policy: "the next claim",
-  alarm_repeat_count: "the next alarm step (each poll)",
-  alarm_window_minutes: "the next alarm step (each poll)",
-  alarm_restart_count: "the next alarm step (each poll)",
-  "standing_approvals.threshold": "the controller's next spec approval",
-  mode: "the controller's next spec approval or merge",
-  auto_merge_max_tier: "the controller's next merge",
-};
+// What each key controls and when a change applies live in its `*.setting.ts` file (RFC 0015 M10), read through
+// the settings catalog (src/runtime); tests/settings-catalog.test.ts holds the key lists here and the catalog equal.
 
 export interface SettableValues {
   max_attempts: number;

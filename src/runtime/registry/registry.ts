@@ -1,5 +1,6 @@
 // Discovery (RFC 0015 §6.1): the registry finds every `*.handler.ts` and `*.topic.ts` under src/ (`.js` once
-// built) and indexes them. Nothing registers itself in a central list, and nothing here names a feature.
+// built) and indexes them; settings, roles and hooks are found the same way (`loadDescriptors`). Nothing
+// registers itself in a central list, and nothing here names a feature.
 
 import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -13,6 +14,9 @@ export { findDescriptorFiles };
 export const DESCRIPTOR_PATTERNS = {
   handler: /\.handler\.(?:ts|js)$/,
   topic: /\.topic\.(?:ts|js)$/,
+  setting: /\.setting\.(?:ts|js)$/,
+  role: /\.role\.(?:ts|js)$/,
+  hook: /\.hook\.(?:ts|js)$/,
 } as const;
 
 export type DescriptorKind = keyof typeof DESCRIPTOR_PATTERNS;
@@ -87,12 +91,13 @@ export class Registry {
 
 /** Imports every handler and topic descriptor under `root` and builds the registry. */
 export async function loadRegistry(root: string): Promise<Registry> {
-  const handlers = await load<HandlerDescriptor>(root, "handler");
-  const topics = await load<TopicDescriptor>(root, "topic");
+  const handlers = await loadDescriptors<HandlerDescriptor>(root, "handler");
+  const topics = await loadDescriptors<TopicDescriptor>(root, "topic");
   return new Registry(handlers, topics);
 }
 
-async function load<D extends { kind: string }>(root: string, kind: DescriptorKind): Promise<Located<D>[]> {
+/** Imports every descriptor of `kind` under `root`; a file whose default export is not its `define*` fails. */
+export async function loadDescriptors<D extends { kind: string }>(root: string, kind: DescriptorKind): Promise<Located<D>[]> {
   const out: Located<D>[] = [];
   for (const file of findDescriptorFiles(root, DESCRIPTOR_PATTERNS[kind])) {
     const mod = (await import(pathToFileURL(file).href)) as { default?: { kind?: unknown } };

@@ -8,7 +8,13 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettingsBase } from "../src/core/settings.js";
+import { PR_ONLY_KEYS, SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
+import { loadSettingCatalog } from "../src/runtime/index.js";
+
+const catalog = await loadSettingCatalog();
+const SETTING_DESCRIPTIONS = Object.fromEntries(catalog.all().map((s) => [s.key, s.description])) as Record<string, string>;
+const PR_ONLY_DESCRIPTIONS = SETTING_DESCRIPTIONS;
+const SETTING_APPLIES = Object.fromEntries(catalog.all().map((s) => [s.key, s.applies])) as Record<string, string>;
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -164,7 +170,7 @@ describe("GET /api/v1/settings", () => {
 
   it("passes descriptions through the Withholder", async () => {
     const { d } = await setup();
-    const scanned: UiDeps = { ...d, scanner: new PatternEgressScanner(async () => [SETTING_DESCRIPTIONS.tick_ms, PR_ONLY_DESCRIPTIONS.secrets]) };
+    const scanned: UiDeps = { ...d, scanner: new PatternEgressScanner(async () => [SETTING_DESCRIPTIONS.tick_ms!, PR_ONLY_DESCRIPTIONS.secrets!]) };
     const v = await view(scanned);
     const tick = v.keys.find((k: { key: string }) => k.key === "tick_ms");
     expect(tick.description).not.toBe(SETTING_DESCRIPTIONS.tick_ms);
