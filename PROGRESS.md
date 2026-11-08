@@ -39,7 +39,9 @@ minutes; past that the main session takes over from their WIP commit.
 | 00:09–00:16 | M6 leftovers + M10 roles/hooks (645c82a); M7 worker half (5d7e597); bus review fixes: seq-ordered inserts, lease renew, explicit start, insert-or-skip (cfcbd20, 8435fb5) | agents + main | SQLite green |
 | 00:25 | Controller review fixes (adec77b): auto stop after a failed settings write, comment command passports, streamed event retried on a store error, merge-check invariant | main | SQLite green (3730); each new test fails without its fix |
 | 00:27 | One `addMs` in `shared/time.ts` (a2edc15) | main | SQLite green |
-| 00:12– | Merge queue review findings + local merge delivery (mq-fixes); M7 pushes + PR open/update via outbound (m7-push) | 2 agents | running, time box 90 min |
+| 00:12–00:47 | Merge queue review findings (b2464a7, 99f4c4b): crash-safe landing with a lease, only the checked head lands, stale results and timers ignored, auto entries re-checked against auto mode | agent | merged 00:48 (fast-forward), SQLite green (3738); MySQL merge-queue tests green |
+| 00:12– | M7 pushes + PR open/update via outbound (m7-push) | agent | running, time box 90 min |
+| after m7-push | Outbound `local` merge delivery (landing finishes on DeliveryCompleted); left by the mq-fixes agent, it touches outbound | main or agent | |
 | next | Merge both agents; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
