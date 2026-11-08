@@ -597,3 +597,56 @@ describe("GitHubForge: PR comments and PR status (issue #273)", () => {
     await expect(forge.poll(null)).rejects.toThrow(/PollContext/);
   });
 });
+
+describe("GitHubForge: mergePr (design §9, the Merge button)", () => {
+  /** PUT /pulls/N/merge answers `put` (an error to throw, or the body); GET /pulls/N answers `pull`. Records every call. */
+  class MergeClient extends FakeClient {
+    put: unknown = { sha: "m1", merged: true };
+    pull: unknown = { number: 42, state: "open", merged: false, merge_commit_sha: null };
+    override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+      this.calls.push({ method, path, body });
+      if (method === "PUT") {
+        if (this.put instanceof Error) throw this.put;
+        return this.put as T;
+      }
+      return this.pull as T;
+    }
+  }
+  const make = () => {
+    const client = new MergeClient();
+    return { client, forge: forgeOf(client) };
+  };
+
+  it("makes one PUT to the merge endpoint with the reviewed head as sha and a merge commit, and answers GitHub's merge sha", async () => {
+    const { client, forge } = make();
+    expect(await forge.mergePr(42, "h1", "merge")).toEqual({ merged: true, sha: "m1", already: false });
+    expect(client.calls).toEqual([{ method: "PUT", path: "/repos/o/r/pulls/42/merge", body: { sha: "h1", merge_method: "merge" } }]);
+  });
+
+  it("a moved head (409), an unmergeable PR (405) or an invalid request (422) is a refusal in plain words, after one PR read", async () => {
+    for (const [status, words] of [[409, "head moved"], [405, "not mergeable"], [422, "invalid"]] as const) {
+      const { client, forge } = make();
+      client.put = new GitHubError(status, `GitHub PUT → ${status} secret-ish forge text`);
+      const r = await forge.mergePr(42, "h1", "merge");
+      expect(r.merged).toBe(false);
+      expect(!r.merged && r.refused).toContain(words);
+      expect(!r.merged && r.refused).not.toContain("forge text");
+      expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["PUT /repos/o/r/pulls/42/merge", "GET /repos/o/r/pulls/42"]);
+    }
+  });
+
+  it("a PR GitHub already merged answers its merge commit as already merged: no second merge", async () => {
+    const { client, forge } = make();
+    client.put = new GitHubError(405, "Pull Request is not mergeable");
+    client.pull = { number: 42, state: "closed", merged: true, merge_commit_sha: "m0" };
+    expect(await forge.mergePr(42, "h1", "merge")).toEqual({ merged: true, sha: "m0", already: true });
+    expect(client.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+  });
+
+  it("any other failure throws, with no PR read", async () => {
+    const { client, forge } = make();
+    client.put = new GitHubError(500, "boom");
+    await expect(forge.mergePr(42, "h1", "merge")).rejects.toThrow("boom");
+    expect(client.calls.map((c) => c.method)).toEqual(["PUT"]);
+  });
+});
