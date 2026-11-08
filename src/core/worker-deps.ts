@@ -174,8 +174,9 @@ export interface WorkerDeps {
   /** Whether this loop may claim now. The pool's slot check: false once `workers` drops below this slot. */
   active?: () => boolean;
   /**
-   * The host this worker runs on, recorded on a paused run so only a worker on the same host reattaches its
-   * folder and session (design §5 Pause). Absent: the part of `id` before its first `:` (`<host>:<pid>:<n>`).
+   * The host this worker runs on (compose: the state dir's stable host id), recorded on a paused run so only a
+   * worker on the same host reattaches its folder and session (design §5 Pause), and naming its runs' git
+   * destination (`git:<host>:<branch>`). Absent: the part of `id` before its first `:` (`<host>:<pid>:<n>`).
    */
   host?: string;
   /**

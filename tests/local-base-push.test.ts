@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
+import { gitHost } from "../src/runtime/host-id.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import { runLocalCli } from "../src/core/local-cli.js";
@@ -88,11 +89,11 @@ async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeCl
   return { store, clock, sandbox, controller, id };
 }
 
-function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge) {
+function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge, host?: { replica_id: string; git_host: { id: string; flush_all: boolean } }) {
   const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
   return new ControllerRole({
     store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
-    sandbox: sandbox as unknown as Sandbox, repeated_failure_rule: false, ...(forge ? { forge } : {}),
+    sandbox: sandbox as unknown as Sandbox, repeated_failure_rule: false, ...(forge ? { forge } : {}), ...host,
   });
 }
 
@@ -149,7 +150,7 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(f.sandbox.syncs).toEqual([]);
     expect(g.pushes).toEqual([]);
     expect(await basePush(f)).toMatchObject([
-      { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
+      { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main:push" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
     ]);
 
     await f.controller.tickOutbox();
@@ -159,7 +160,7 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(await f.store.getWorkItem(f.id)).toEqual(closed);
   });
 
-  it("a base push pending in the old table at upgrade becomes one keyed push_base action, and outbound pushes it once", async () => {
+  it("a base push pending in the old table at upgrade becomes one keyed push_base action, and a solo controller built as compose builds it pushes it once", async () => {
     const g = fakeForge();
     const f = await setup({ forge: g.forge });
     const db = (f.store as unknown as { db: SqlDriver }).db;
@@ -169,11 +170,39 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     await carry.up(mdb);
     await carry.up(mdb);
     expect(await basePush(f)).toMatchObject([
-      { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
+      { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main:push" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
     ]);
-    await f.controller.tickOutbox();
+    // As `factory controller` runs solo: a replica id and the state dir's host id, on the SQLite store.
+    const stateDir = mkdtempSync(join(tmpdir(), "sf-state-"));
+    const solo = replica(f.store, f.clock, f.sandbox, g.forge, { replica_id: `${hostname()}:4242`, git_host: gitHost(stateDir, "sqlite") });
+    await solo.tickOutbox();
     expect(g.pushes).toHaveLength(1);
     expect(await basePush(f)).toMatchObject([{ delivered: true }]);
+  });
+
+  it("a replica on a shared store flushes the carried base pushes too (the `local` host's), beside its own host's", async () => {
+    const g = fakeForge();
+    const f = await setup({ forge: g.forge });
+    const db = (f.store as unknown as { db: SqlDriver }).db;
+    await db.run("INSERT INTO outbound_base_pushes (work_item_id, base_ref, merge_sha, next_attempt_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?)", [f.id, "main", SHA("a"), T0, null, T0]);
+    await carry.up({ dialect: db.dialect.name, all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
+    const shared = replica(f.store, f.clock, f.sandbox, g.forge, { replica_id: "h1:1", git_host: { id: "h1", flush_all: false } });
+    await shared.tickOutbox();
+    expect(g.pushes).toHaveLength(1);
+  });
+
+  it("a failing base push holds no later merge on that base: the next item lands while the push retries", async () => {
+    const g = fakeForge();
+    g.state.fail = "git push failed: protected branch";
+    const f = await setup({ forge: g.forge });
+    await merge(f);
+    await f.controller.tickOutbox();
+    expect(g.pushes).toHaveLength(1);
+    expect(await basePush(f)).toMatchObject([{ delivered: false }]);
+
+    const next = await setup({ forge: g.forge, store: f.store, clock: f.clock });
+    await merge(next);
+    expect(await f.store.getWorkItem(next.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
   });
 
   it("a rate limit or outage keeps the push pending and retries it with backoff", async () => {

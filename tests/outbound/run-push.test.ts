@@ -77,11 +77,73 @@ describe("an implement run's push and PR leave through outbound", () => {
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
   });
 
-  it("a host's push waits for that host's outbound: another host's replica leaves it", async () => {
+  it("a PR the forge refuses for good is given up after 3 attempts: the item waits for a person, a dead-letter alarm is raised, the destination moves on", async () => {
+    const f = await pipeline();
+    const refused = () => Object.assign(new Error("Validation Failed: No commits between main and factory/x"), { status: 422 });
+    f.forge.prErrors = [refused(), refused(), refused(), refused()];
+    const it0 = await f.submit();
+    await f.step();
+    expect(f.forge.prOpens).toHaveLength(1);
+    for (let i = 0; i < 3; i++) {
+      f.clock.advance(f.config.retry_max_ms);
+      await f.controller.tickOutbox();
+    }
+    expect(f.forge.prOpens).toHaveLength(3);
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "delivery_failed" });
+    expect(await f.store.listAlerts({ limit: 10 })).toEqual([
+      expect.objectContaining({ pattern: "dead_letter", error_code: "non_retryable", detail: expect.stringContaining("No commits between") }),
+    ]);
+    const [batch] = await f.store.db.all("SELECT state FROM outbound_batches WHERE destination LIKE 'git:%' ORDER BY seq DESC LIMIT 1");
+    expect(batch).toMatchObject({ state: "sent" });
+  });
+
+  it("a PR that fails with no status (an outage) is never given up", async () => {
+    const f = await pipeline();
+    f.forge.prErrors = Array.from({ length: 5 }, () => new Error("network_unavailable: could not reach github.com"));
+    const it0 = await f.submit();
+    await f.step();
+    for (let i = 0; i < 5; i++) {
+      f.clock.advance(f.config.retry_max_ms);
+      await f.controller.tickOutbox();
+    }
+    expect(f.forge.prOpens).toHaveLength(6);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+    expect(await f.store.listAlerts({ limit: 10 })).toEqual([]);
+  });
+
+  it("a PR delivered while the run's result is decided (its handler found the item not waiting yet) still goes on the item", async () => {
+    const f = await pipeline();
+    const it0 = await f.submit();
+    await f.w1.tick(); // triage
+    await f.controller.tickRuns();
+    await f.w1.tick(); // implement: its intents are stored, its result not applied yet
+    const results = await f.controller.unit("run-results");
+    const k = (results as unknown as { c: { k: { actionByKey(key: string): Promise<{ delivered_ref: string | null } | null> } } }).c.k;
+    const read = k.actionByKey.bind(k);
+    let raced = false;
+    k.actionByKey = async (key) => {
+      const seen = await read(key);
+      if (!raced && key.startsWith("pr:")) {
+        raced = true;
+        // Outbound delivers the PR now, and its DeliveryCompleted handler runs before the result commits the wait.
+        await f.store.db.run("UPDATE outbound_actions SET delivered_at = ?, outcome = 'sent', delivered_ref = CASE WHEN action = 'pr' THEN '42' ELSE NULL END WHERE action IN ('push', 'pr')", [
+          f.clock.now().toISOString(),
+        ]);
+        await results.prDelivered(it0.id, "42", null);
+        expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+      }
+      return seen;
+    };
+    await f.controller.tickRuns();
+    expect(raced).toBe(true);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
+  });
+
+  it("a host's push waits for that host's outbound: another host's replica on a shared store leaves it", async () => {
     const f = await pipeline();
     const other = new ControllerRole({
       store: f.store, source: f.source, forge: f.forge, auth: new FakeAuth(), clock: f.clock, config: f.config, log: silent,
-      scanner: cleanScanner, replica_id: "otherhost:1",
+      scanner: cleanScanner, replica_id: "otherhost:1", git_host: { id: "otherhost", flush_all: false },
     });
     const it0 = await f.submit();
     await f.w1.tick();
@@ -90,7 +152,7 @@ describe("an implement run's push and PR leave through outbound", () => {
     await other.tickRuns();
     expect(await f.item(it0)).toMatchObject({ blocked_on: "outbound", blocked_reason: "pr_pending" });
     expect(f.forge.pushes).toEqual([]);
-    // The worker's host (w1) flushes it; with no replica id this process stands for every host (solo).
+    // A controller that flushes every host's (solo; here one with no git host) sends it.
     await f.controller.tickOutbox();
     expect(f.forge.pushes).toHaveLength(1);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });

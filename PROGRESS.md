@@ -387,6 +387,21 @@ Worker review fixes (2026-11-09, findings 3–7):
 - A resume on other code is blocked only by a succeeded step row; ending a run passport needs the claim's lease
   token; a journal write failing in a step's error path is logged and the step's error stays the failure.
 
+Outbound review fixes (2026-11-09, findings 1–8; design 10-event-driven "Git destinations", "Deliveries refused for
+good"):
+
+- Git destinations name the state dir's `host-id` (one file, created once), not `os.hostname()`; compose passes it to
+  the controller (`git_host`), the worker pool (`host`) and `factory session`. A SQLite store's controller flushes
+  every host's git destinations (solo: one machine); replicas on a shared store flush their own and the `local`
+  host's. Decided by the store plugin in compose, no new setting.
+- A base push has its own destination (`git:<host id>:<base>:push`); the carry migration writes there under `local`.
+- Given up after 3 attempts: only an error with an HTTP 4xx status that is no rate limit, 408 or 401. Errors with no
+  status (outages, git pushes, local merges) still retry forever. The alarm reuses the bus's `DeadLettered` notice
+  (group `outbound`); its Needs you hint still names the bus's dead-letter table, which has no row for it.
+- Not done: re-recording a taken-over landing on the new host (the item's branch is in the first host's repo).
+- Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md now says to stop a hand-started `factory
+  controller` or `factory worker` first. No code.
+
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
@@ -440,6 +455,9 @@ Worker review fixes (2026-11-09, findings 3–7):
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
 7. M8 leftovers (the outbound `local` merge delivery and the base push are done): the `github-change` merge
    delivery, batches with bisect and partitions; a `paused` state with the command that needs it; cancelling a removed entry's queued check run.
+8. Outbound review follow-ups: an `alarmCommand` hint for outbound's given-up deliveries (group `outbound`), which
+   now points at the bus's dead-letter table; a batch whose intents no process can ever send (a `push_base` after
+   the forge was switched off) still waits at its destination's head.
 
 ## After the refactor: acceptance runs (owner request, 2026-11-08)
 

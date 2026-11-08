@@ -23,7 +23,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  GIT_TARGET, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
+  GIT_TARGET, LOCAL_GIT_HOST, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -436,15 +436,16 @@ export class ControllerRole implements Decisions {
     const sync = (await this.router()).unit("sync");
     // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
     const canSend = (type: string) => type !== SYNCED || !sync.syncedElsewhere();
-    // A run's push leaves from the factory repo of the host whose worker wrote it (RFC 0015 M7): this process flushes
-    // its own host's pushes. With no replica id (one process, tests) it flushes every host's: solo is one machine.
-    // A merge queue landing and its base push (M8) leave from the factory repo of the replica that landed it.
-    const host = d.replica_id?.split(":")[0];
+    // A run's push, a merge queue landing and its base push leave from the factory repo of the host that recorded
+    // them (RFC 0015 M7, M8; design 10-event-driven, Git destinations). Solo (one machine) flushes every host's, so
+    // an older host id orphans nothing; a replica on a shared store flushes its own host id's, and the `local` host's
+    // (rows recorded with no host id: the base pushes carried at upgrade), which any replica pushed before.
     const git = localGit(this.kernel.d.sandbox, this.kernel.forge, () => {
       const c = this.kernel.cfg;
       return { repo: c.repo.path, identity: c.agent_git_identity, timeout_ms: c.run_timeout_ms };
     });
-    const pushes = this.kernel.forge?.pushBranch || git ? [host ? `${GIT_TARGET}:${host}` : GIT_TARGET] : [];
+    const own = d.git_host && !d.git_host.flush_all ? [`${GIT_TARGET}:${d.git_host.id}`, `${GIT_TARGET}:${LOCAL_GIT_HOST}`] : [GIT_TARGET];
+    const pushes = this.kernel.forge?.pushBranch || git ? own : [];
     const outbound = new Outbound({
       db,
       bus: outboundBus,

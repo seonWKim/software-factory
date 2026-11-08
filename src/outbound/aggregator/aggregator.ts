@@ -24,14 +24,18 @@ export async function aggregate(tx: SqlExecutor, r: Requested, policy: BatchingP
     [r.destination],
   );
   const reply = r.reply;
-  let batch: string;
+  let batch: string | null = null;
   if (open && joins(policy, { opened_at: String(open.opened_at), flush_at: String(open.flush_at), intent_count: Number(open.intent_count), reply: Number(open.reply) === 1 }, now)) {
-    batch = String(open.id);
     const view = { opened_at: String(open.opened_at), intent_count: Number(open.intent_count) + r.intent_ids.length, reply: reply || Number(open.reply) === 1 };
-    await tx.run("UPDATE outbound_batches SET intent_count = ?, reply = ?, flush_at = ? WHERE id = ?", [
-      view.intent_count, view.reply ? 1 : 0, flushAt(policy, stats, budget, view, now), batch,
-    ]);
-  } else {
+    // Joined only while still open, and the claim token moves: a flush that read the batch's intents before this
+    // join fails its claim and reads them again, so no joined intent ends in a sent batch unsent.
+    const joined = await tx.run(
+      "UPDATE outbound_batches SET intent_count = ?, reply = ?, flush_at = ?, claim_token = claim_token + 1 WHERE id = ? AND state = 'open'",
+      [view.intent_count, view.reply ? 1 : 0, flushAt(policy, stats, budget, view, now), String(open.id)],
+    );
+    if (joined > 0) batch = String(open.id);
+  }
+  if (batch === null) {
     batch = `bat_${randomUUID()}`;
     const view = { opened_at: now, intent_count: r.intent_ids.length, reply };
     await tx.run(

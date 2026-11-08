@@ -11,7 +11,7 @@ import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CommandPassport, ExternalIdentity } from "../../../interfaces/auth-provider.js";
-import { basePushOutcome, gitTarget, type ActionRow } from "../../../outbound/index.js";
+import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { AUTO, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -129,8 +129,8 @@ export class LocalMergeUnit {
   /**
    * A delivered merge (RFC 0015 M8): the base holds the branch at `r.sha`. The item closes (completed, its merge
    * sha) with the approver, or `system:auto`, as its actor and releases the items waiting on it; with a remote to
-   * push to, one `push_base` action (keyed by the item and the merge) is stored first, to the same destination, so
-   * a crash between the two pushes it once. Safe to run again: the close is conditional, the post and the push
+   * push to, one `push_base` action (keyed by the item and the merge) is stored first, to the base push's own
+   * destination (a failing push holds no later merge), so a crash between the two pushes it once. Safe to run again: the close is conditional, the post and the push
    * keyed. A close that did not apply throws, so the delivery result is applied again.
    */
   async merged(id: WorkItemId, by: string, key: string, r: { sha: string; already: boolean; not_updated: readonly string[] }, detail: Record<string, unknown>): Promise<"landed" | string> {
@@ -142,7 +142,7 @@ export class LocalMergeUnit {
     const push = this.pushesBase();
     if (push) {
       await this.c.k.commit({ writes: [{ kind: "intent", action: {
-        action: "push_base", target: this.gitDestination(), work_item_id: id, key: `push_base:${id}:${r.sha}`,
+        action: "push_base", target: basePushTarget(this.gitHost(), repo.base_branch), work_item_id: id, key: `push_base:${id}:${r.sha}`,
         args: { base_ref: repo.base_branch, merge_sha: r.sha, message: `Merge origin/${repo.base_branch} into ${repo.base_branch}\n\nBefore the base push of work item ${id}.` },
       } }] });
     }
@@ -177,12 +177,17 @@ export class LocalMergeUnit {
   }
 
   /**
-   * Where this controller's factory repo writes go (RFC 0015 M8): its host's base branch, `git:<host>:<base>`, so
-   * the merge and its base push wait in one destination order and only this host's outbound makes them. With no
-   * replica id (solo, one process) the host is `local`, and that process flushes every `git` destination.
+   * Where this controller's merges go (RFC 0015 M8): its host's base branch, `git:<host id>:<base>`, so merges on
+   * one base land in order and only an outbound that flushes this host makes them (design 10-event-driven, Git
+   * destinations). Its base pushes have their own destination (`basePushTarget`).
    */
   private gitDestination(): SourceRef {
-    return gitTarget(this.c.k.d.replica_id?.split(":")[0] ?? "local", this.c.k.cfg.repo.base_branch);
+    return gitTarget(this.gitHost(), this.c.k.cfg.repo.base_branch);
+  }
+
+  /** This machine's host id; `local` with none (tests, one process). */
+  private gitHost(): string {
+    return this.c.k.d.git_host?.id ?? LOCAL_GIT_HOST;
   }
 
   /**

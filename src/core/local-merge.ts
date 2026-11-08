@@ -59,7 +59,8 @@ export interface LocalMergeSpec {
 /**
  * `merged`: the base branch now contains the branch, at `sha` (`already`: it did before this call, so a repeat
  * changes nothing). `conflicts`: the conflicting file paths, sorted; nothing moved. `refused`: why nothing moved
- * (no such branch, a failing check, the base moved during the merge).
+ * (no such branch, a failing check). `base_moved`: the base is not where it was checked, or it moved during the
+ * merge; nothing moved and the merge is checked again.
  */
 export type LocalMergeResult =
   /**

@@ -261,12 +261,28 @@ force.
   text is egress-scanned (G5) first: a flagged text is delivered once, under its marker, as a notice naming the
   rules only, never retried in any form, so the destination's later batches go on. A failed comment, close or post
   retries its whole batch with backoff (intents already delivered are skipped); a status label or 👀 failure is
-  logged and not retried (best effort, as before). `DeliveryCompleted` on `deliveries.results` records delivered
+  logged and not retried (best effort, as before). A join (a commit added to the destination's open batch inside
+  its debounce) updates the batch only while it is still `open` and moves its claim token, so a flush that read
+  the batch's intents before the join fails its claim and reads them again; a joined intent never ends in a sent
+  batch unsent (decision changed 2026-11-09, outbound review finding 1; see History). A delivery the target
+  refuses for good is given up (below). `DeliveryCompleted` on `deliveries.results` records delivered
   URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
   ratchets the writes still outside outbound (the resolve, update and wip pushes, the PR body refresh, the session's
   push and PR, sub-issue filing).
+  - Deliveries refused for good are given up (decision changed 2026-11-09, outbound review finding 6; see History).
+    A target error with an HTTP 4xx status that is no rate limit (429, or a 403 with a wait), no timeout (408) and
+    no credential refusal (401, which a new token fixes) is refused for good (`refusedForGood`): a deleted, moved or
+    locked issue, an archived repo, a PR the forge rejects. On the batch's third attempt (`REFUSED_ATTEMPTS`) such
+    an intent is given up: an action is delivered with outcome `failed` and its error, a thread entry is delivered
+    with no link, the batch is sent, and the destination's next batch goes on. Each given-up intent publishes a
+    `DeadLettered` notice on `system.alerts` with the batch's `DeliveryCompleted` (group `outbound`, the intent id
+    as its seq, code `non_retryable`), so the controller's dead-letter alarm stores a `dead_letter` alert and Needs
+    you shows it. A given-up `pr` or `push` turns its item's wait (`pr_pending`, `push_pending`) into
+    `blocked_on: human`, `blocked_reason: delivery_failed`, with the action and the error in the transition's
+    detail. An error with no status (an outage, a git push) is never given up: it retries until it goes through.
+    Solo and enterprise: the same.
   - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
     unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
     source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
@@ -307,7 +323,9 @@ force.
     `run-results.prDelivered`, which, at the item's version and only while it waits, sets `REVIEW`, `change_ref`,
     `change_url` and queues the review as an implement result did (state change `pr_delivered`). A PR delivered
     before the run's result is applied (outbound ran first) is read by its key and applied with the result
-    (`implemented`). Restart safety: the steps are journaled, the intents keyed, the targets reconcile, and a worker
+    (`implemented`). One delivered while the result is decided (its `DeliveryCompleted` handler found the item not
+    waiting yet and changed nothing) is read once more after the wait is written (`deliveredMeanwhile`), so the wait
+    never misses it (decision changed 2026-11-09, outbound review finding 4; see History). Restart safety: the steps are journaled, the intents keyed, the targets reconcile, and a worker
     that lost its lease records nothing (`recordPushedHead` refuses it first). Failures: `network_unavailable`,
     `forge_auth`, `github_rate_limited` and `push_failed` from the push or the PR are delivery failures, the message
     starting with the class; outbound retries the batch with its backoff, and the failed batch holds its destination
@@ -316,10 +334,8 @@ force.
     network, before any agent runs); a forge outage delays the PR instead of spending a run attempt. A failure of
     the store step itself still keeps the commits on the run's wip branch: `git.store_branch` of the wip branch,
     then a keyed `push` intent when the broker says `forge: true` (the run passport names that branch,
-    `wip_branch`); a failed wip store is logged, as a failed wip push was. Solo default: one machine; a process
-    with no replica id flushes every host's pushes (`git`), one with a replica id only its own host's
-    (`git:<host>`). Enterprise setting: a factory repo per host, so a push's destination names the host that holds
-    the ref, and only that host's outbound flushes it (the flush's "kinds this process can write now"). Not built
+    `wip_branch`); a failed wip store is logged, as a failed wip push was. Which process flushes a push: see "Git
+    destinations" below. Not built
     yet: sub-issue filing (a keyed `file_sub_issue` action whose delivered ref the phases unit records; the phases
     unit still calls `fileSubIssue` inline). The base push is the `local` target's (the merge queue, M8).
   - Update and resolve pushes, the PR body refresh, and the session's push and PR (decision changed 2026-11-09, M7
@@ -403,12 +419,12 @@ force.
   - The landing as an outbound delivery (decision changed 2026-11-09, RFC 0015 M7/M8). `LocalMergeUnit.requestMerge`
     writes one `merge` action in the unit's commit (the kernel's `intent` write), keyed `merge:<entry>:<check run
     key>` (one per check, so an entry checked again after a moved base lands anew), to the destination
-    `git:<host>:<base>`, with the branch, the expected base and head, the commit message, the entry id and its check.
+    `git:<host id>:<base>`, with the branch, the expected base and head, the commit message, the entry id and its check.
     Outbound's `local` target makes it through `LocalGit` (`src/outbound/targets/local-git.ts`, the target's
     dependency in `TargetDeps.git`, built from the sandbox the role holds; the sandbox's `mergeLocal` is the only git
     write) and records the outcome as the action's `delivered_ref`: merged (sha, already, checkouts not updated),
-    moved (the base or the branch moved, or they conflict now: the entry is checked again and the check names the
-    conflicts) or refused. The queue stays `merging` until `DeliveryCompleted`: the outbox unit hands the delivered
+    moved (the base or the branch moved, also a base that moves while the merge runs, or they conflict now: the
+    entry is checked again and the check names the conflicts) or refused. The queue stays `merging` until `DeliveryCompleted`: the outbox unit hands the delivered
     `merge` to `merge-queue.mergeDelivered`, which closes the item (`LocalMergeUnit.merged`; the close moved here
     from the landing), marks the entry merged and tells the entries behind it the commit it landed as, or sends it
     back, or removes it with the refusal; then gives the queue back and moves on. Only an entry still `merging` under
@@ -420,7 +436,11 @@ force.
     reconcile step: it finds the keyed action, requests nothing again, re-runs neither the auto-mode check nor the
     hooks, and applies the result itself when the action is delivered (a lost or failed DeliveryCompleted). A close
     that did not apply throws, so the delivery result is retried (the bus's nack) or the takeover applies it.
-  - The base push (the same destination, after the merge; 05-sources.md "Base push"). With a remote to push to (a
+  - The base push (its own destination `git:<host id>:<base>:push`, after the merge; 05-sources.md "Base push";
+    decision changed 2026-11-09, outbound review finding 3, see History). Not in one order with the merges: a
+    remote that is down, a token that expired or a protected branch that refuses the push holds no later local
+    landing; the key keeps the push at most once and each push syncs the remote base first, so pushes need no order
+    with the merges. With a remote to push to (a
     forge with `pushBase` and a sandbox with `syncBase`), the delivered merge stores one `push_base` action keyed
     `push_base:<item>:<merge sha>` before the item's close, so a crash between them pushes once. The `local` target
     fetches the remote base, merges it into the local base when it moved, and has the forge push conditionally on
@@ -429,14 +449,24 @@ force.
     `push_base` action, its batch's failed tries). The `outbound_base_pushes` table and the outbox step's base push
     step are gone from the code; the table stays until the contract migration `20261109T1215-outbound-drop-base-pushes` drops it (`migrate --contract`). A row still pending
     there at the upgrade becomes the `push_base` action the merge would have stored, under its key, to the `local`
-    host's destination (`20261109T1200-outbound-carry-base-pushes`); the old step ran in a solo factory.
-  - Solo default: no replica id; the destination's host is `local` and the one process flushes every `git`
-    destination, so the merge and the push run where the factory repo is, with no setup; with no forge there is no
-    push. Enterprise setting: each replica flushes only `git:<host>` of its own host, so a landing is made in the
-    factory repo of the replica that took the queue, and its push follows from there; the merge queue's row
-    serializes landings across replicas, the keyed actions and outbound's batch claim make each merge and push once.
-    The branches of local items must be in that replica's factory repo (a shared factory repo, or one controller
-    host), as before. Red, a failed check run, or a
+    host's base push destination (`git:local:<base>:push`, `20261109T1200-outbound-carry-base-pushes`; a migration
+    knows no host id), which every controller flushes (below).
+  - Git destinations (decision changed 2026-11-09, outbound review findings 2 and 5; see History). A git write
+    (a run's push and PR, a landing, a base push) names the machine whose factory repo holds it by a stable host
+    id, not `os.hostname()`: the state dir's `host-id` file (`src/runtime/host-id.ts`), written once (the short
+    hostname then plus a random suffix, linked in place so two processes starting at once keep one) and read by the
+    controller, the worker pool and `factory session` on that machine. A renamed laptop or a new network name
+    orphans nothing. Tests and a process built without one use the host `local`. Solo default (one controller, the
+    SQLite store, `gitHost(stateDir, "sqlite")`): the controller flushes every `git` destination whatever its host,
+    so the merge and the push run where the factory repo is, with no setup, and a destination recorded under an
+    older id is still sent; with no forge there is no push. Enterprise setting (several replicas on a shared store):
+    each replica flushes its own host id's destinations (`git:<host id>`) and the `local` host's (the carried base
+    pushes, which any replica pushed before), so a landing is made in the factory repo of the replica that took the
+    queue, and its push follows from there; the merge queue's row serializes landings across replicas, the keyed
+    actions and outbound's batch claim make each merge and push once. The branches of local items must be in that
+    replica's factory repo (a shared factory repo, or one controller host), as before. A landing taken over by
+    another replica whose merge targets the first replica's host waits for that host: it is not re-recorded for the
+    new one, since the item's branch is in the first host's factory repo. Red, a failed check run, or a
   check that did not come back in time: the entry leaves with the reason posted on the item (which stays in
   merge_pending), every entry checked with it ahead is rebuilt (queued again), and the queue moves on. A result or
   timer moves an entry only while it is still on that run (`run_key` in the conditional update), so the result of
@@ -462,6 +492,15 @@ force.
 
 ## History
 
+- **Outbound review fixes** (decisions changed 2026-11-09). Before: a join updated the open batch with no state
+  check and no claim-token move, so an intent joined between a flush's read and its claim ended in a sent batch
+  unsent (finding 1); git destinations named `os.hostname()` (from the replica id, `local` with none), and a
+  controller with a replica id, which compose always set, flushed only its own hostname's, so the carried base
+  pushes on `git:local:` were never sent and a changed hostname orphaned pending git writes (findings 2, 5); a base
+  push shared `git:<host>:<base>` with the merges, so a failing push held every later landing (finding 3); a PR or
+  push delivered while the run's result was decided was missed and the item stayed `pr_pending` (finding 4); a
+  retried delivery retried forever, holding its destination with only a warning (finding 6); a base that moved
+  during a local merge came back `refused` and removed the entry (finding 7).
 - **Pure units: load, decide, the router commits** (decision changed 2026-11-09, M5 follow-up). Before: the outbox
   unit's `post` built and wrote thread entries itself beside `threadEntry`, only `reaper`, `mirror` and
   `transitions` were off the ratchet, the reader held store reads and the scan only, and `tick_ms` was read once when

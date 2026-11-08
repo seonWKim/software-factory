@@ -30,6 +30,18 @@ export function gitTarget(host: string, branch: string): SourceRef {
   return { type: GIT_TARGET, id: `${host}:${branch}`, link: "" };
 }
 
+/** The host of git writes recorded with no host id (tests, one process, the base pushes carried at upgrade). */
+export const LOCAL_GIT_HOST = "local";
+
+/**
+ * A base push's own destination (`git:<host>:<base>:push`, no branch name has a `:`): never in one order with the
+ * merges on that base, so a remote that is down or refuses the push holds no local landing. Its key keeps it at
+ * most once, and each push syncs the remote base first, so base pushes need no order with the merges.
+ */
+export function basePushTarget(host: string, base: string): SourceRef {
+  return gitTarget(host, `${base}:push`);
+}
+
 export interface NewAction {
   readonly action: ActionKind;
   /** Where the write lands: an issue, a thread, or the forge's PR ref. */
@@ -48,6 +60,9 @@ export interface ActionRow extends NewAction {
   /** What the delivery made, when it names one (a PR's number), and its link. */
   readonly delivered_ref: string | null;
   readonly delivered_url: string | null;
+  /** `sent`, or `failed`: a best-effort action that failed, or a retried one given up (refused for good). */
+  readonly outcome: string | null;
+  readonly last_error: string | null;
 }
 
 /** Thread entries' intents are `int_<seq>`, actions `act_<seq>` (RFC 0015 §12 backfill rule). */
@@ -99,6 +114,8 @@ export function actionOf(row: Record<string, unknown>): ActionRow {
     delivered_at: (row.delivered_at as string | null) ?? null,
     delivered_ref: (row.delivered_ref as string | null) ?? null,
     delivered_url: (row.delivered_url as string | null) ?? null,
+    outcome: (row.outcome as string | null) ?? null,
+    last_error: (row.last_error as string | null) ?? null,
   };
 }
 

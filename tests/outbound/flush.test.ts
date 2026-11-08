@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SourceRef } from "../../src/core/types.js";
-import { Outbound, recordAction } from "../../src/outbound/index.js";
+import { DEFAULT_BATCHING, Outbound, recordAction } from "../../src/outbound/index.js";
+import { aggregate } from "../../src/outbound/aggregator/aggregator.js";
 import type { Delivery, DeliveryTarget } from "../../src/outbound/targets/target.js";
 import { tickAt } from "../../src/shared/ticks/tick-generator.js";
 import { cleanScanner, silent } from "../helpers/fakes.js";
-import { newStore } from "../helpers/store.js";
+import { BACKENDS, newStore } from "../helpers/store.js";
 
 // A flush sends at most 50 batches. Batches for a destination kind this process cannot write (no adapter here, or
 // the sync lease is another replica's) stay due; they must not fill those 50 and starve the kinds it can write.
@@ -26,11 +27,16 @@ async function batch(db: Db, n: number, target: SourceRef, a: { action: "status"
   await db.run("INSERT INTO outbound_batch_intents (intent_id, batch_id, commit_id, commit_count) VALUES (?, ?, ?, 1)", [`act_${seq}`, id, `c${n}`]);
 }
 
-function outboundOver(db: Db, store: ConstructorParameters<typeof Outbound>[0]["store"], sent: Delivery[]): Outbound {
+function outboundOver(db: Db, store: ConstructorParameters<typeof Outbound>[0]["store"], sent: Delivery[], fail?: (d: Delivery) => Error | null): Outbound {
   const local: DeliveryTarget = {
     name: "local",
     accepts: (d) => d.kind === "action" && d.row.target.type === "local",
-    deliver: async (d) => (sent.push(d), { url: null }),
+    deliver: async (d) => {
+      const err = fail?.(d);
+      if (err) throw err;
+      sent.push(d);
+      return { url: null };
+    },
   };
   return new Outbound({
     db: db as ConstructorParameters<typeof Outbound>[0]["db"], store, targets: [local], scanner: cleanScanner, log: silent,
@@ -72,5 +78,50 @@ describe("outbound flush", () => {
     const bodies = sent.map((d) => (d.kind === "action" ? String(d.row.args.body) : ""));
     expect(bodies).toEqual([expect.stringMatching(/^A factory message was withheld by the leak scanner \(.+\)\./), "all clear"]);
     expect(JSON.stringify(sent)).not.toContain("ghp_");
+  });
+
+  it("a post the target refuses for good (404) is given up on the third attempt, and the destination's next batch goes out", async () => {
+    const { store } = await newStore();
+    const target: SourceRef = { type: "local", id: "local-1", link: "l" };
+    await batch(store.db, 0, target, { action: "post", args: { body: "to a deleted issue", marker: "m0" } });
+    await batch(store.db, 1, target, { action: "post", args: { body: "next", marker: "m1" } });
+    const sent: Delivery[] = [];
+    const outbound = outboundOver(store.db, store, sent, (d) =>
+      d.kind === "action" && d.row.args.marker === "m0" ? Object.assign(new Error("Not Found"), { status: 404 }) : null);
+
+    for (let i = 0; i < 4; i++) await outbound.flush(tickAt("outbound-flush", 250, NOW + i * 3_600_000));
+
+    expect(sent.map((d) => (d.kind === "action" ? String(d.row.args.body) : ""))).toEqual(["next"]);
+    const rows = await store.db.all("SELECT outcome, last_error FROM outbound_actions ORDER BY seq");
+    expect(rows[0]).toMatchObject({ outcome: "failed", last_error: "Not Found" });
+  });
+
+  it.each(BACKENDS)("$name: an intent that joins the batch between the flush's read and its claim is still delivered", async (backend) => {
+    const { store } = (await backend.make()) as unknown as Awaited<ReturnType<typeof newStore>>;
+    const target: SourceRef = { type: "local", id: "local-1", link: "l" };
+    await batch(store.db, 0, target, { action: "post", args: { body: "first", marker: "m0" } });
+    await recordAction(store.db, { action: "post", args: { body: "joined", marker: "m1" }, target }, at);
+    const { seq } = ((await store.db.all("SELECT MAX(seq) AS seq FROM outbound_actions")) as { seq: number }[])[0]!;
+    // The joining request was made before the batch's flush time and consumed after it (relay or consume lag).
+    const madeAt = new Date(NOW - 2000).toISOString();
+    let joined = false;
+    const racing = { ...store.db, all: store.db.all.bind(store.db), transaction: store.db.transaction.bind(store.db) } as Db;
+    racing.run = async (sql, params) => {
+      if (!joined && sql.includes("SET state = 'sending'")) {
+        joined = true;
+        await store.db.transaction((tx) => aggregate(tx, {
+          commit_id: "c-join", commit_count: 1, destination: "local:local-1", intent_ids: [`act_${seq}`], reply: false,
+        }, DEFAULT_BATCHING, null, madeAt));
+      }
+      return store.db.run(sql, params);
+    };
+    const sent: Delivery[] = [];
+    const outbound = outboundOver(racing, store, sent);
+
+    await outbound.flush(tickAt("outbound-flush", 250, NOW));
+    await outbound.flush(tickAt("outbound-flush", 250, NOW + 1));
+
+    expect(joined).toBe(true);
+    expect(sent.map((d) => (d.kind === "action" ? String(d.row.args.body) : ""))).toEqual(["first", "joined"]);
   });
 });

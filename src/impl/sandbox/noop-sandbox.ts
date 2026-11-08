@@ -219,7 +219,8 @@ export class NoOpSandbox implements Sandbox {
     const failed = await this.checkMerge(spec, sha);
     if (failed) return { merged: false, refused: failed };
     const moved = await this.moveBase(spec.repo, spec.base_ref, base, sha, spec.message);
-    if (!moved) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
+    // The base moved during the merge (a commit on it, another merge): nothing moved, and the caller checks again.
+    if (!moved) return { merged: false, base_moved: (await this.localCommit(spec.repo, spec.base_ref)) ?? base };
     return { merged: true, sha, already: false, not_updated: moved.not_updated };
   }
 

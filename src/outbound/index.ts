@@ -4,7 +4,7 @@
 // DeliveryCompleted on deliveries.results. Other components import only this file.
 
 export {
-  ACTION_INTENT, GIT_TARGET, THREAD_INTENT, actionByKey, actionsOf, gitTarget, announce, destinationOf, recordAction, type ActionKind, type ActionRow, type NewAction,
+  ACTION_INTENT, GIT_TARGET, LOCAL_GIT_HOST, THREAD_INTENT, actionByKey, actionsOf, basePushTarget, gitTarget, announce, destinationOf, recordAction, type ActionKind, type ActionRow, type NewAction,
 } from "./intents.js";
 export { Outbound, type OutboundDeps } from "./outbound.js";
 export { buildTargets } from "./targets/targets.js";

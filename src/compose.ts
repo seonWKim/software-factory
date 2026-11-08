@@ -19,6 +19,7 @@ import type { CliIdentity } from "./core/local-cli.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
+import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
 import { loadHooks } from "./runtime/index.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
@@ -875,6 +876,8 @@ export async function build(
     ticks,
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
+    // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
+    git_host: gitHost(stateDir, sel.store),
     settings,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
@@ -890,6 +893,8 @@ export async function build(
 
   const worker = new WorkerPool({
     id_prefix: `${hostname()}:${process.pid}`,
+    // A run's push and PR go to this machine's git destination (`git:<host id>:<branch>`), which its controller flushes.
+    host: hostId(stateDir),
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
     // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
