@@ -23,15 +23,15 @@ Goal: the refactor complete, reviewed, and the review's fixes applied. Each step
 MySQL suite alone, rehearsal) and is committed on `refactor/rfc-0015`. Agents run in worktrees, time-boxed at 90
 minutes; past that the main session takes over from their WIP commit.
 
-| Time | Step | Who |
-|---|---|---|
-| 22:30 | M4 merged | main |
-| 22:30–23:15 | M5 router + unit contract (`src/controller/router/`, `defineUnit`, `unit-purity` test) | main |
-| 22:45–01:30 | M6 port `worker.ts` onto the engine; M9 wiring (ToolBroker passport check, service passports, UI names) | agents |
-| 23:15–02:30 | M5 units in three clusters: commands/verdicts/standing; run results/checks/review gates; timed units (alarms, improve, reaper, probe, coordination, phases) | agents + main merges |
-| 02:30–05:00 | M7 outbound (deliveries leave the controller and worker); M8 merge queue; M10 call sites (hooks, roles) | agents + main |
-| 05:00–06:30 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main |
-| 06:30–08:00 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main |
+| Time | Step | Who | Status |
+|---|---|---|---|
+| 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
+| 22:40–00:40 | M5 router, unit contract and units (`controller.ts` gone, `unit-purity` ratchet) | agent | running |
+| 22:40–00:40 | M6 port `worker.ts` onto the engine; M9 wiring (ToolBroker passport check, service passports, UI names); M3 leftovers (bus plugin, `requires`, dead-letter alerts) | agents | running |
+| 00:40–02:30 | Merge wave 1; finish what an agent left (main takes over past its time box) | main | |
+| 02:30–05:00 | M7 outbound (deliveries leave the controller and worker); M8 merge queue; M10 call sites (hooks, roles) | agents + main | |
+| 05:00–06:30 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
+| 06:30–08:00 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
 owner decisions below. Status per row is updated here as each step lands.
