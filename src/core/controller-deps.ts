@@ -68,6 +68,11 @@ export interface ControllerDeps {
    * (RFC 0015 §8, `service:controller`), audited there. Absent (no Identity: tests, a startup check): allowed.
    */
   service_auth?: (action: AuthAction, resource: { project: string; item: string }) => Promise<AuthDecision>;
+  /**
+   * Outbound's deliveries authorized under its service passport (RFC 0015 §8, `service:outbound`): `use_tool` on
+   * each target, audited there. Absent (no Identity: tests, a startup check): allowed, under no passport.
+   */
+  outbound_auth?: (project: string, target: string) => Promise<{ passport_id: string; decision: AuthDecision }>;
   clock: Clock;
   config: FactoryConfig;
   log: Logger;

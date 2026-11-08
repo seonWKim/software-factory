@@ -38,6 +38,11 @@ export interface OutboundDeps {
   fenceFor(source_type: string): SyncFence | null;
   /** A fenced claim was refused: the lease may have moved on. */
   fenceRefused(fence: SyncFence): Promise<void>;
+  /**
+   * Outbound's service passport (RFC 0015 §8, M9): every write is `use_tool` on its target, decided and audited
+   * under `service:outbound`. A denied write is not sent and retries with its batch. Absent: allowed, no passport.
+   */
+  authorize?(project: string, target: string): Promise<{ passport_id: string; decision: { allow: true } | { allow: false; reason: string } }>;
 }
 
 /** Batches one flush sends at most. */
@@ -104,8 +109,10 @@ export class Outbound {
     );
     if (claimed === 0) return false;
     const token = Number(b.claim_token) + 1;
+    // The passport the batch was sent under, which DeliveryCompleted names (null with no Identity).
+    let passport_id: string | null = null;
     try {
-      for (const i of intents) if (!i.done) await this.deliver(i, now);
+      for (const i of intents) if (!i.done) passport_id = (await this.deliver(i, now)) ?? passport_id;
     } catch (err) {
       if (!(err instanceof Stop)) throw err;
       const state = err.retry_in_ms === null ? "open" : "failed";
@@ -127,7 +134,7 @@ export class Outbound {
       if (n === 0) return;
       await this.d.bus.publish(tx, [envelope(
         { type: DELIVERY_COMPLETED, subject: destination, idempotency_key: id, idempotency_key_ttl_ms: 7 * 86_400_000, payload: { batch_id: id, destination, intent_ids } },
-        { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id: null, occurred_at: now },
+        { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id, occurred_at: now },
         "outbound",
       )]);
     });
@@ -170,8 +177,24 @@ export class Outbound {
     return `A factory message was withheld by the leak scanner (${rules}). It is not posted in any form.`;
   }
 
-  private async deliver(i: Loaded, now: string): Promise<void> {
+  /** Delivers one intent under outbound's service passport; returns that passport's id (null with no Identity). */
+  private async deliver(i: Loaded, now: string): Promise<string | null> {
     const target = this.target(i.delivery)!;
+    const cfg = this.d.config();
+    if (!this.d.authorize) {
+      await this.write(i, now, target);
+      return null;
+    }
+    const { passport_id, decision } = await this.d.authorize(cfg.project_key, target.name);
+    if (!decision.allow) {
+      this.d.log.warn("outbound's passport refused a delivery; retried later", { target: target.name, reason: decision.reason });
+      throw new Stop(cfg.retry_base_ms, `passport_denied: ${decision.reason}`);
+    }
+    await this.write(i, now, target);
+    return passport_id;
+  }
+
+  private async write(i: Loaded, now: string, target: DeliveryTarget): Promise<void> {
     const cfg = this.d.config();
     const d = i.delivery;
     if (d.kind === "comment") {
