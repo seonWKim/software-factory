@@ -2411,7 +2411,7 @@ describe("migration 19 on an existing SQLite database", () => {
     raw.close();
 
     const clock = new FakeClock();
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), clock);
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
@@ -2527,7 +2527,7 @@ describe("migration 28 on an existing SQLite database", () => {
     raw.close();
 
     const clock = new FakeClock();
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), clock);
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
@@ -2595,7 +2595,7 @@ describe("migration 32 on an existing SQLite database", () => {
     raw.prepare("INSERT INTO cursors (name, value) VALUES (?, ?)").run("poll", "c1");
     raw.close();
 
-    const store = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), new FakeClock());
     try {
       await store.migrate();
       expect(await store.schemaVersion()).toMatchObject({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });

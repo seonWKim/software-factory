@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MIGRATION_PENDING } from "../src/interfaces/updater.js";
-import { migrateSqlite, sqlitePendingSteps } from "../src/impl/store/sqlite/migrate-sqlite.js";
+import { migrateSqlite, sqlitePendingSteps } from "../src/impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { discoverMigrations, MIGRATIONS_TABLE } from "../src/state/index.js";
 

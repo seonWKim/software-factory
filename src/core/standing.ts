@@ -216,7 +216,6 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
     "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
     "src/worker/roles/", "src/identity/",
   ],
-  // The default ToolBroker is GitHub's.
   tools: ["src/core/tools/", "src/impl/broker/", "src/impl/github/github-tool-broker.ts", "src/impl/github/broker.plugin.ts"],
   guard_settings: [
     "factory.config.json", "src/core/config.ts", "src/core/settings.ts", "src/config-keys.ts", "src/plugins.ts",
