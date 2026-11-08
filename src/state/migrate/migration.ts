@@ -11,12 +11,21 @@ export interface MigrationDb extends SqlExecutor {
 }
 
 export interface MigrationSpec {
-  /** additive: safe while old code runs. breaking: needs drained writers and a backup first (§12 D1, D3). */
-  readonly change: "additive" | "breaking";
-  /** Tables backed up before a breaking migration runs (§12 D1). */
+  /**
+   * additive: safe while old code runs. breaking: needs drained writers and a backup first, and keeps the old
+   * data until a contract migration (§12 D1, D3). contract: drops what a breaking migration left behind, only
+   * after its tables were archived (D4).
+   */
+  readonly change: "additive" | "breaking" | "contract";
+  /** Tables a breaking or contract migration changes; backed up (archived) before it runs (§12 D1, D4). */
   readonly tables: readonly string[];
   /** Applies the change. On MySQL it must be resumable: DDL is not transactional (§12 D3). */
   up(db: MigrationDb): Promise<void>;
+  /**
+   * Required for breaking: runs right after `up` and returns every problem (a row count or checksum that
+   * differs). Any problem fails the migration, so it is never recorded as applied (§12 D2).
+   */
+  verify?(db: MigrationDb): Promise<string[]>;
 }
 
 export interface MigrationDescriptor extends MigrationSpec {
@@ -31,6 +40,16 @@ export interface Migration extends MigrationDescriptor {
 
 export const MIGRATION_FILE = /^(\d{8}T\d{4})-([a-z]+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.migration\.(?:ts|js)$/;
 
+/** Problems with a spec that the type alone cannot catch; empty when it is safe to run (migration-safety). */
+export function migrationSpecProblems(spec: MigrationSpec): string[] {
+  const out: string[] = [];
+  if (spec.change !== "additive" && spec.tables.length === 0) out.push(`a ${spec.change} migration must name the tables it changes`);
+  if (spec.change === "breaking" && spec.verify === undefined) out.push("a breaking migration needs verify");
+  return out;
+}
+
 export function defineMigration(spec: MigrationSpec): MigrationDescriptor {
+  const problems = migrationSpecProblems(spec);
+  if (problems.length > 0) throw new Error(problems.join("; "));
   return { kind: "migration", ...spec };
 }

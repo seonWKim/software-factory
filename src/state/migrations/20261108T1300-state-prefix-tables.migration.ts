@@ -6,7 +6,7 @@
 // inbound_commands. Here each keeps its own table. cli_commands and item_messages have no code left: they
 // only go to legacy.
 
-import { renameTablesByCopy, type Rename } from "../migrate/copy-tables.js";
+import { renameTablesByCopy, verifyRenamedTables, type Rename } from "../migrate/copy-tables.js";
 import { defineMigration } from "../migrate/migration.js";
 
 export const RENAMES: readonly Rename[] = [
@@ -59,4 +59,5 @@ export default defineMigration({
   async up(db) {
     await renameTablesByCopy(db, RENAMES, ARCHIVE_ONLY);
   },
+  verify: (db) => verifyRenamedTables(db, RENAMES, ARCHIVE_ONLY),
 });

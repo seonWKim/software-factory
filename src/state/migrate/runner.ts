@@ -1,6 +1,6 @@
 // Applies timestamped migrations after the frozen baseline (RFC 0015 §6.3, §12). Each applied migration is a
-// row in runtime_schema_migrations (D10). A breaking migration first backs up the tables it names (D1) when
-// the caller gives a backup folder.
+// row in runtime_schema_migrations (D10). A breaking or contract migration first backs up the tables it names
+// (D1, D4) when the caller gives a backup folder, and a breaking one is verified right after it runs (D2).
 
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -89,9 +89,12 @@ export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Prom
   for (const m of pending) {
     const started_at = opts.now();
     let backup: string | null = null;
-    if (m.change === "breaking" && opts.backupDir !== null && m.tables.length > 0) {
+    if (m.change !== "additive" && m.tables.length > 0) {
       const present = await existingTables(db, m.tables);
-      if (await anyRows(db, present)) {
+      const rows = await anyRows(db, present);
+      // D4: a contract never drops a row that was not archived first.
+      if (rows && opts.backupDir === null && m.change === "contract") throw new Error(`${m.id} drops tables with rows but has no backup folder to archive them to`);
+      if (rows && opts.backupDir !== null) {
         backup = join(opts.backupDir, `${started_at.replace(/[:.]/g, "")}-${m.id}`);
         const manifest = await backupTables(db, present, backup, { id: m.id, reason: `before migration ${m.id}`, created_at: started_at });
         const rows = Object.values(manifest.tables).reduce((n, t) => n + t.rows, 0);
@@ -100,6 +103,8 @@ export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Prom
     }
     opts.print?.(`applying ${m.id}`);
     await m.up(db);
+    const problems = m.verify ? await m.verify(db) : [];
+    if (problems.length > 0) throw new Error(`${m.id} failed verification, not recorded as applied: ${problems.join("; ")}`);
     await db.run(
       `INSERT INTO ${MIGRATIONS_TABLE} (id, component, change_kind, checksum, backup_dir, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [m.id, m.component, m.change, createHash("sha256").update(String(m.up)).digest("hex"), backup, started_at, opts.now()],

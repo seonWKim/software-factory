@@ -147,3 +147,21 @@ export async function renameTablesByCopy(db: MigrationDb, renames: readonly Rena
   }
   return report;
 }
+
+/**
+ * Verifies a finished rename: every new table holds exactly its legacy table's rows over the legacy columns,
+ * and every archive-only table sits as legacy_<name>. Returns the problems.
+ */
+export async function verifyRenamedTables(db: MigrationDb, renames: readonly Rename[], archiveOnly: readonly string[] = []): Promise<string[]> {
+  const out: string[] = [];
+  for (const r of renames) {
+    const legacy = LEGACY_PREFIX + r.from;
+    if (!(await tableExists(db, legacy)) || !(await tableExists(db, r.to))) {
+      out.push(`${r.from}: expected ${legacy} and ${r.to}`);
+      continue;
+    }
+    out.push(...(await verifyCopy(db, legacy, r.to, await tableColumns(db, legacy))));
+  }
+  for (const t of archiveOnly) if ((await tableExists(db, t)) && !(await tableExists(db, LEGACY_PREFIX + t))) out.push(`${t}: not archived as ${LEGACY_PREFIX}${t}`);
+  return out;
+}

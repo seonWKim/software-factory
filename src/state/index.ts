@@ -5,7 +5,7 @@ export type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "./sql-dr
 export { backupTables, restoreBackup, tableChecksum, verifyCopy, type BackupManifest, type TableSummary } from "./migrate/backup.js";
 export { mysqlSnapshot, sqliteSnapshot } from "./snapshot.js";
 export { findDescriptorFiles } from "./discovery.js";
-export { defineMigration, type Dialect, type Migration, type MigrationDb, type MigrationDescriptor } from "./migrate/migration.js";
+export { defineMigration, migrationSpecProblems, type Dialect, type Migration, type MigrationDb, type MigrationDescriptor } from "./migrate/migration.js";
 export { applyMigrations, discoverMigrations, MIGRATIONS_TABLE, pendingMigrations } from "./migrate/runner.js";
-export { LEGACY_PREFIX, renameTablesByCopy, tableExists, type Rename } from "./migrate/copy-tables.js";
+export { LEGACY_PREFIX, renameTablesByCopy, tableExists, verifyRenamedTables, type Rename } from "./migrate/copy-tables.js";
 export { fingerprintTables, lostRows, type Fingerprint } from "./migrate/rehearse.js";
