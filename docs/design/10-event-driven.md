@@ -141,15 +141,32 @@ force.
   transition, a check another decision needs now). What all units share is the `Kernel` (`units/kernel.ts`: the
   deps, the configured sources and forge, the live settings, the step guard); declarations two or more units use
   are in `units/support.ts`. Every decided stage change is checked against the WorkItem state table
-  (`transitions.inTable`); a move not in the table is refused with a warning. The controller role runs `tick`
-  steps each `tick_ms` and `poll` steps once per `poll_interval_ms`, in the old loop's order; that loop still
-  sleeps on the injected `Clock` (FakeClock-driven tests), and units still read `clock.now()` through the kernel
-  (follow-up: a TickGenerator plugin over `Clock`, and decisions that take the tick's time). Follow-up (the RFC's
-  pure units): each unit gets a `load` the router runs and a `decide` that returns a decision the router commits
-  with the inbox and outbox in one transaction; `tests/architecture/unit-purity.test.ts` lists today's units, which
-  still read and write the store, the forge and the sources inline, in its ratchet, and the list shrinks as each
-  unit is split. Solo and enterprise: unchanged; each replica runs every unit, and every write is still a
-  conditional update.
+  (`transitions.inTable`); a move not in the table is refused with a warning. Solo and enterprise: unchanged; each
+  replica runs every unit, and every write is still a conditional update.
+- **Pure units: load, decide, the router commits** (decision changed 2026-11-08, M5 follow-up; see History). A
+  step or event may be split in two (`PureStep`, `PureEvent` in `src/controller/router/unit.ts`): `load(…, reader,
+  tick)` reads what the decision needs through the kernel's read-only accessors (`Kernel.reader`: named store reads
+  and the egress scan, nothing that writes), and `decide(…, loaded, tick)` returns a `UnitDecision`, the writes to
+  commit, with no I/O and no clock. The router runs both and hands the decision to `Kernel.commit`, which applies
+  the writes in order (`ControllerWrite`: a thread entry, a CLI mirror mark, the lease expiry, a log line). Each
+  write is one keyed or conditional store write, so committing a decision twice changes nothing the first commit
+  did; the writes of one decision are not one transaction yet. An item decision ends in `Kernel.commitItem`: its
+  keyed writes first (the budget checkpoint comment), then the conditional transition or budget checkpoint at the
+  version it was decided on, and a version conflict is decided again. `threadEntry` (`units/kernel.ts`) is where a
+  pure unit's factory message gets its delivery (the outbox unit's `post` decides the same way until M7 moves it).
+  The units' steps run on one `decide` schedule each `tick_ms` of a TickGenerator over the injected `Clock`
+  (`TickSource.create(onError, time)`; the time-based plugin reads and sleeps on `time` when given), so FakeClock
+  tests move them by hand as before; `poll` steps run with the `tick` steps once `poll_interval_ms` passed by the
+  tick's time. `tick_ms` is read when the loop starts (before: each pass). Pure today: `reaper` (its time is the
+  tick's), `mirror`, and `transitions` (its re-read and budget reads go through the reader, its budget hold is a
+  pure function of them, its writes through `commitItem`; its follow-ups, the status labels and the auto stop, are
+  still other units' operations). `tests/architecture/unit-purity.test.ts` lists the rest, and the list only
+  shrinks. Order for the rest: leaves before their callers. `run-results`, `commands`, `app-requests`, `verdicts`,
+  `standing` and `intake` post through `outbox.comment`/`post` and ask `auth`, `checks-gate`, `standing` and
+  `local-merge` inline, so they become pure only once those operations are writes and reads (`outbox` after M7,
+  `checks-gate`/`local-merge` after M8). The `legacy-controller` bridge keeps "inbox row after the effect" for
+  every message: no message it carries is exactly-once yet, since `commands` and the event units are not pure.
+  Solo and enterprise: the same; each replica runs every unit.
 - **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
@@ -199,6 +216,8 @@ force.
   ran its steps in one hand-ordered loop; the controller role extended it.
 - **Passports on commands and runs** (decision changed 2026-11-08, RFC 0015 M9 wiring). Before: every message
   had `passport_id` null, and no run held a passport.
+- **Pure units** (decision changed 2026-11-08, M5 follow-up). Before: every unit read and wrote the store inline;
+  the units' loop slept on the injected `Clock` in a `while` loop, and the reaper read `clock.now()` itself.
 - **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
   forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
   tick.

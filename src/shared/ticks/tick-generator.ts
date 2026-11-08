@@ -18,12 +18,20 @@ export interface TickGenerator {
   run(signal: AbortSignal): Promise<void>;
 }
 
+/** A time a generator can tick on in place of the system's: the process's injected clock, which tests move by hand. */
+export interface TimeSource {
+  now(): Date;
+  /** Resolves after `ms` of this time, or rejects once the signal aborts. */
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+}
+
 /**
  * A TickGenerator plugin (`plugins.ticks`, docs/plugins/tick-generator.md): makes one generator per component a
- * process runs. `onError` hears a schedule's failed tick; the schedule goes on.
+ * process runs. `onError` hears a schedule's failed tick; the schedule goes on. `time`, when given, is the time a
+ * time-based generator reads and waits on (a plugin that does not read time ignores it).
  */
 export interface TickSource {
-  create(onError: (schedule: string, err: unknown) => void): TickGenerator;
+  create(onError: (schedule: string, err: unknown) => void, time?: TimeSource): TickGenerator;
 }
 
 export function tickAt(schedule: string, periodMs: number, ms: number): Tick {

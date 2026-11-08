@@ -136,14 +136,16 @@ describe("dev child: two children through a swap", () => {
   };
   /** Counts each controller step a pass runs, so a test sees whether a pass started. */
   async function countSteps(c: ControllerRole) {
-    const units = {
-      afterPoll: await c.unit("closes"), reaperStep: await c.unit("reaper"), checksStep: await c.unit("checks-gate"),
-      coordinationStep: await c.unit("coordination"), mirrorStep: await c.unit("mirror"), runsStep: await c.unit("run-results"),
-      probeStep: await c.unit("model-probe"), outboxStep: await c.unit("outbox"),
+    // Each step's method the pass calls: a legacy step's own, a pure step's load or decide.
+    const units: Record<string, [object, string]> = {
+      afterPoll: [await c.unit("closes"), "afterPoll"], reaper: [await c.unit("reaper"), "decide"],
+      checksStep: [await c.unit("checks-gate"), "checksStep"], coordinationStep: [await c.unit("coordination"), "coordinationStep"],
+      mirror: [await c.unit("mirror"), "load"], runsStep: [await c.unit("run-results"), "runsStep"],
+      probeStep: [await c.unit("model-probe"), "probeStep"], outboxStep: [await c.unit("outbox"), "outboxStep"],
     };
-    const steps = Object.keys(units) as (keyof typeof units)[];
-    const spies = steps.map((s) => vi.spyOn(units[s] as unknown as Record<string, () => Promise<void>>, s));
-    return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<(typeof steps)[number], number>;
+    const steps = Object.keys(units);
+    const spies = steps.map((s) => vi.spyOn(units[s]![0] as Record<string, () => Promise<void>>, units[s]![1]!));
+    return () => Object.fromEntries(steps.map((s, i) => [s, spies[i]!.mock.calls.length])) as Record<"probeStep" | "runsStep", number>;
   }
 
   it("the old controller makes no pass after the drain; its run completes; the new controller applies the outcome", async () => {

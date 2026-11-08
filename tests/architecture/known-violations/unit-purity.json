@@ -22,7 +22,6 @@
   "reaches-io|controller/units/local-merge/local-merge.unit.ts|sandbox",
   "reaches-io|controller/units/local-merge/local-merge.unit.ts|store",
   "reaches-io|controller/units/merge-check/merge-check.unit.ts|store",
-  "reaches-io|controller/units/mirror/mirror.unit.ts|store",
   "reaches-io|controller/units/model-probe/model-probe.unit.ts|llm",
   "reaches-io|controller/units/model-probe/model-probe.unit.ts|network",
   "reaches-io|controller/units/model-probe/model-probe.unit.ts|store",
@@ -34,11 +33,9 @@
   "reaches-io|controller/units/pr-events/pr-events.unit.ts|auth",
   "reaches-io|controller/units/pr-events/pr-events.unit.ts|forge",
   "reaches-io|controller/units/pr-events/pr-events.unit.ts|store",
-  "reaches-io|controller/units/reaper/reaper.unit.ts|store",
   "reaches-io|controller/units/run-results/run-results.unit.ts|store",
   "reaches-io|controller/units/standing/standing.unit.ts|store",
   "reaches-io|controller/units/sync/sync.unit.ts|sources",
   "reaches-io|controller/units/sync/sync.unit.ts|store",
-  "reaches-io|controller/units/transitions/transitions.unit.ts|store",
   "reaches-io|controller/units/verdicts/verdicts.unit.ts|store"
 ]

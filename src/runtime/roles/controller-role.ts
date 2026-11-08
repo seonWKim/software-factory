@@ -12,7 +12,7 @@ import {
   BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
 import {
-  CONTROLLER, type ControllerContext, type ControllerEvent, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
+  CONTROLLER, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
 } from "../../controller/index.js";
 import type { ControllerDeps, GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { FactoryConfig } from "../../core/config.js";
@@ -24,7 +24,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
-import { tickAt, type Tick, type TickSource } from "../../shared/ticks/tick-generator.js";
+import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
 import { loadDescriptors, loadRegistry, type Registry } from "../registry/registry.js";
@@ -108,12 +108,14 @@ interface Wiring {
 /** The local merge's `who`: the CLI's local identity or the app request's factory user ID. */
 type MergeBy = Parameters<UnitOperations["local-merge"]["mergeLocal"]>[1];
 
+type ControllerRouter = Router<Kernel, ControllerEvent, ControllerReader, ControllerWrite>;
+
 export class ControllerRole implements Decisions {
   private readonly role: Prepared;
   /** What every unit shares: the deps, the configured sources, the live settings. */
   readonly kernel: Kernel;
   private wiring?: Promise<Wiring>;
-  private routed?: Promise<Router<Kernel, ControllerEvent>>;
+  private routed?: Promise<ControllerRouter>;
 
   constructor(deps: ControllerRoleDeps) {
     this.role = prepare(deps);
@@ -140,25 +142,30 @@ export class ControllerRole implements Decisions {
     scheduleComponent(controller, w.controllerBus);
     const bus = ticks.create(onError);
     scheduleBus(bus, w.scheduler);
-    await Promise.all([this.decide(r, signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
+    // The units' steps tick on the injected clock, so tests move them by hand.
+    const units = ticks.create(onError, this.role.clock);
+    this.decide(units, r);
+    // The label, never the key: log lines and comments name a project by its readable path.
+    this.role.log.info("controller started", { project: this.kernel.cfg.project.label });
+    await Promise.all([units.run(signal), w.inbound.run(signal), inbound.run(signal), controller.run(signal), bus.run(signal)]);
     // Shutting down: hand the sync lease over now instead of after lease_ms.
     await this.role.sync?.release();
   }
 
-  /** The units' steps on the controller's tick (the injected clock's, so tests move it by hand). */
-  private async decide(r: Router<Kernel, ControllerEvent>, signal: AbortSignal): Promise<void> {
+  /**
+   * The units' steps on one `decide` schedule each tick_ms: the `tick` steps, and the `poll` steps too once a poll
+   * interval passed since the last, by the tick's time. One schedule, so a tick's steps run in their order.
+   */
+  private decide(g: TickGenerator, r: ControllerRouter): void {
     const k = this.kernel;
-    // The label, never the key: log lines and comments name a project by its readable path.
-    k.d.log.info("controller started", { project: k.cfg.project.label });
     let lastPoll = -Infinity;
-    while (!signal.aborted) {
+    g.schedule("decide", k.cfg.tick_ms, async (t) => {
       await k.live.refresh();
-      const now = k.nowMs();
+      const now = Date.parse(t.now);
       const due = now - lastPoll >= k.cfg.poll_interval_ms;
       if (due) lastPoll = now;
-      await r.tick(due ? ["tick", "poll"] : ["tick"]);
-      await k.d.clock.sleep(k.cfg.tick_ms, signal).catch(() => undefined);
-    }
+      await r.tick(due ? ["tick", "poll"] : ["tick"], t);
+    });
   }
 
   /** One intake step: every source and the forge polled now, then their records through the bus to the units. */
@@ -182,7 +189,7 @@ export class ControllerRole implements Decisions {
     await w.inbound.relayCommands(t);
     await this.drain(t);
     const r = await this.router();
-    await r.unit("mirror").mirrorStep();
+    await r.step("cli mirror", t);
     await r.unit("outbox").outboxStep();
   }
 
@@ -208,7 +215,7 @@ export class ControllerRole implements Decisions {
   }
 
   async tickReaper(): Promise<void> {
-    await this.step((r) => r.unit("reaper").reaperStep());
+    await this.step((r) => r.step("reaper", this.tick("reaper")));
   }
 
   async tickMergeCheck(): Promise<void> {
@@ -295,7 +302,7 @@ export class ControllerRole implements Decisions {
   }
 
   /** Settings refreshed, one unit step, then the outbox: the shape of every manual tick. */
-  private async step(fn: (r: Router<Kernel, ControllerEvent>) => Promise<unknown>): Promise<void> {
+  private async step(fn: (r: ControllerRouter) => Promise<unknown>): Promise<void> {
     await this.kernel.live.refresh();
     const r = await this.router();
     await fn(r);
@@ -306,9 +313,14 @@ export class ControllerRole implements Decisions {
     return tickAt(schedule, 1, this.kernel.nowMs());
   }
 
-  private router(): Promise<Router<Kernel, ControllerEvent>> {
+  private router(): Promise<ControllerRouter> {
     return (this.routed ??= units().then((list) => {
-      const r = new Router<Kernel, ControllerEvent>(list, this.kernel, { guard: (what, fn) => this.kernel.guard(what, fn) });
+      const r: ControllerRouter = new Router(list, this.kernel, {
+        guard: (what, fn) => this.kernel.guard(what, fn),
+        reader: this.kernel.reader,
+        commit: (d) => this.kernel.commit(d),
+        now: () => this.tick("event"),
+      });
       const problems = r.problems();
       if (problems.length > 0) throw new Error(`controller units are broken: ${problems.join("; ")}`);
       return r;

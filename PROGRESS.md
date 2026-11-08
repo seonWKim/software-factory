@@ -173,7 +173,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| unit-purity | 42 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); each goes as its unit gets a pure load/decide split |
+| unit-purity | 39 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); each goes as its unit gets a pure load/decide split (reaper, mirror, transitions are off it) |
 | dependency-direction | 295 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
@@ -315,8 +315,23 @@ M5 (controller units):
   removed `src/core/controller.ts`: the same protection, now for the units, the router and the state tables.
 - The coordination default `hotspot_paths` still names `src/core/controller.ts` (now matches nothing). Choosing its
   replacement (a unit file, the units folder, or none) changes how items are held, so it waits on the owner.
-- Not yet: pure `load`/`decide` units (the unit-purity ratchet lists all of today's I/O); the controller loop still
-  sleeps on the injected `Clock`, and units read `clock.now()` through the kernel (no-clock's regex does not see it).
+M5 follow-up (pure units, partial):
+
+- The contract: `PureStep`/`PureEvent` (`load(…, reader, tick)`, `decide(…, loaded, tick)` → `{ writes }`); the
+  router commits through `Kernel.commit`. The writes of one decision are applied in order, each keyed or
+  conditional, not yet in one transaction: the store has no way to run several of its writes in a caller's
+  transaction (only `applyTransition` internally).
+- The units' loop is one `decide` schedule on a TickGenerator over the injected `Clock` (`TickSource.create` takes an
+  optional time source). `tick_ms` is read at start, not each pass.
+- Pure: `reaper`, `mirror`, `transitions`. `transitions`' follow-ups (`outbox.showStatus`, `local-merge.stopAuto`)
+  are still other units' operations, which the unit-purity regex does not see.
+- Not converted: `run-results` and `commands`. Their decisions post through `outbox.comment` (whose returned URL
+  goes into the patch) and call `checks-gate`, `standing`, `local-merge`, `auth` inline, so they become pure only
+  after those operations are reads and writes; converting them first would only hide the I/O behind other units.
+- The `legacy-controller` bridge keeps "inbox row after the effect" for every message; nothing it carries is
+  exactly-once yet.
+- Still reading `clock.now()` in units: `run-results` (2), `coordination` (5), `model-probe` (2), `commands` (1),
+  `improve` (2, one is its `fileReport` deps).
 
 ## Waiting on the owner
 
@@ -334,10 +349,11 @@ M5 (controller units):
 0. M6 leftovers: the runner's waits (idle loop, heartbeat interval, pause and diff watches, host-sleep check) onto a
    TickGenerator; the engine's reaper tick once the controller's reaper unit stops requeueing; steps for update and
    resolve; compose passes the deployed revision as `code_version`; roles drive prompts and tools.
-1. M5 follow-up: pure units. Per unit, most-touched first (run-results, commands, transitions): a `load` the
-   router runs, a `decide` that returns a decision, the router committing state + inbox + outbox in one transaction;
-   then the `legacy-controller` bridge goes, the loop moves onto a TickGenerator over `Clock`, and decisions take the
-   tick's time.
+1. M5 follow-up: pure units, leaves first. The contract, the TickGenerator loop and `reaper`, `mirror`,
+   `transitions` are done. Next: the shared reply path (`outbox.comment`/`post` as `threadEntry` writes, with the
+   existing delivery's URL read in `load`) once M7 lands, `checks-gate`/`local-merge` once M8 lands, `auth` as a read;
+   then `run-results` and `commands`; then a store call that runs a decision's writes and the inbox row in one
+   transaction, and the `legacy-controller` bridge's "inbox row after the effect" goes.
 2. M3 leftovers (the bus plugin, `requires` and dead-letter alarms are done):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);

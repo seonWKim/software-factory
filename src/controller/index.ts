@@ -6,18 +6,16 @@ import type { CliCommand, NewAlert } from "../interfaces/factory-store.js";
 import type { InboundEvent } from "../inbound/index.js";
 import type { HandlerContext } from "../shared/handler.js";
 import type { SqlExecutor } from "../state/index.js";
-import type { UnitDescriptor } from "./router/unit.js";
-import type { ControllerEvent } from "./units/context.js";
-import type { Kernel } from "./units/kernel.js";
+import type { ControllerUnit } from "./units/context.js";
 
 export { COMMAND_RECEIVED, SOURCE_EVENT_RECEIVED } from "./topics/controller-commands.topic.js";
 export { Router } from "./router/router.js";
 export type { UnitName, UnitOperations } from "./router/unit.js";
 export type { ControllerEvent } from "./units/context.js";
-export { Kernel } from "./units/kernel.js";
+export { Kernel, type ControllerReader, type ControllerWrite } from "./units/kernel.js";
 
 /** The discovered units, as the router takes them. */
-export type ControllerUnits = readonly UnitDescriptor<Kernel, ControllerEvent, unknown>[];
+export type ControllerUnits = readonly ControllerUnit<unknown>[];
 
 /** The component name: its tables' prefix, its outbox and inbox. */
 export const CONTROLLER = "controller";
