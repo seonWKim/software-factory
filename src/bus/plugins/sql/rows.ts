@@ -16,10 +16,6 @@ export async function readHorizon(db: SqlExecutor): Promise<string> {
   return String(row.released_until);
 }
 
-export function addMs(iso: string, ms: number): string {
-  return new Date(Date.parse(iso) + ms).toISOString();
-}
-
 /**
  * Exponential backoff after failed attempt `attempt` (1-based), with up to 20% jitter taken off, never added,
  * so the topic's maximum redelivery (the floor of a producer's TTL) still holds. The jitter is a hash of
