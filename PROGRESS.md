@@ -54,7 +54,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (update steps left, with M7) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash tests resume mid-implement and mid-resolve on SQLite and MySQL. Leftovers (branch `refactor/rfc-0015-m6-leftovers`): the runner's waits on a TickGenerator, one takeover path (the controller's reaper; the engine's `reap` deleted), the resolve step with a bundle, `SF_CODE_VERSION` as `code_version`. Left: update steps (its effects are the forge writes M7 moves) |
-| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
+| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half and worker comments done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone; keyed actions (`intent_key`) and the PR close through `github-change`. Left: pushes and PR open/update (design decided in 10-event-driven.md), session push, base push, sub-issue filing |
 | 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; left: SecretStore key for enterprise, outbound's service passport |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done, run path wired | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table. Branch `refactor/rfc-0015-m6-leftovers`: roles drive every agent step's prompt and tools; `before_run` hooks at run start, enabled by the PR-only `hooks` setting. Left: `before_merge` (merge queue) and `before_delivery` (outbound) |
@@ -157,7 +157,8 @@ Data flow: inbound polls the sources and the forge, stores each record with an `
 `normalize-source` handler publishes `CommandReceived` / `SourceEventReceived` on `controller.commands`. The
 controller's `legacy-controller` handler hands each to the controller role's router, whose unit decides and still
 writes the store and the thread outbox itself. Workers still claim runs from the store, then run them as journaled
-steps; pushes, PR writes and review comments are worker steps until outbound takes them (M7).
+steps; a run's comments are thread entries outbound delivers, while pushes and PR writes are worker steps until
+outbound takes them (M7).
 
 ## Data and migrations
 
@@ -383,7 +384,11 @@ M5 follow-up (pure units, partial):
    - `factory dead-letters replay` (the scheduler's `replay` exists) and `blocked_on: dead_letter` in the router (M5).
 3. M10 wiring follows its call sites: hooks at delivery (`before_delivery`, M7); the run start (`before_run`),
    the merge queue's landing (`before_merge`), the `hooks` setting and roles driving prompts and tools are done.
-4. M9 follow-up:
+4. M7 worker half, rest (design in 10-event-driven.md, "Pushes and PR open/update"): the run's last step writes its
+   HEAD to a factory-repo ref and records keyed `push` and `pr` intents; `github-push` and the PR open/update in
+   `github-change`; the controller applies the PR number on `DeliveryCompleted` (`blocked_reason: pr_pending`); then
+   the session push, base push (`local` target) and sub-issue filing. The `forge-writes` ratchet lists what is left.
+5. M9 follow-up:
    - M7: outbound uses its service passport;
    - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;
    - sessions (`factory session`) push through an unguarded broker: give them a passport;
@@ -391,9 +396,9 @@ M5 follow-up (pure units, partial):
    - the web app shows `actor.name` and `merged_by_name` (the server pages already do);
    - an OIDC or GitHub provider implementing `AuthProvider.displayName`;
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
-5. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
+6. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
-6. M8 leftovers: the outbound `local` merge delivery (the merge queue emits `DeliveryRequested{kind: merge}` and
+7. M8 leftovers: the outbound `local` merge delivery (the merge queue emits `DeliveryRequested{kind: merge}` and
    outbound's delivery handler runs `LocalMergeUnit.land`), the `github-change` merge delivery, batches with bisect
    and partitions; a command for the queue's `paused` state once the design names one.
 

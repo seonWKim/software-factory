@@ -17,7 +17,7 @@ import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
+  alice, cleanScanner, config, gates, issueRef, mallory, prompts, recordingLog, runComments, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
 async function factory(
@@ -398,7 +398,8 @@ describe("one issue to one merged PR", () => {
     expect(implementSpecs[1]!.prompt).toContain("off-by-one in gate");
     // No path outside the run folder: never the factory repo's .git or the owner's checkout (architecture §5).
     expect(implementSpecs[0]!.writable_paths).toEqual([]);
-    expect(f.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(2);
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.comment");
+    expect((await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:review:"))).toHaveLength(2);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
 
     f.forge.queue.push({ kind: "change_merged", change_ref: "42", head_branch: `factory/${item.id}`, merge_sha: "m1", merger: alice });
@@ -667,10 +668,12 @@ describe("one issue to one merged PR", () => {
     expect(names).not.toContain("github.open_pr");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
-    const comments = f.broker.calls.filter((c) => c.name === "github.comment");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:scope:"));
     expect(comments).toHaveLength(1);
-    const args = comments[0]!.args as { number: number; body: string; marker: string };
+    const args = comments[0]!;
     expect(args.number).toBe(11);
+    // Outbound delivered it to the issue, once.
+    expect(f.source.comments.filter((c) => c.body.includes("Factory scope check"))).toHaveLength(1);
     expect(args.body).toContain("- `src/core/worker.ts`");
     expect(args.body).toContain("- `package.json`");
     expect(args.marker).toBe(`<!-- factory:scope:${run.id} -->`);
@@ -727,31 +730,6 @@ describe("one issue to one merged PR", () => {
     expect(runner.specs.filter((s) => s.role === "implement")).toHaveLength(2); // a clean merge needs no agent step
   });
 
-  it("a scope violation whose issue comment fails still fails the run with scope_violation", async () => {
-    const runner = new FakeRunner({
-      triage: () => ({ output: triageSpec }),
-      implement: () => ({ output: { summary: "s", next_steps: "n" } }),
-    });
-    const f = await factory(runner);
-    const call = f.broker.call.bind(f.broker);
-    f.broker.call = async (ctx, name, args) => {
-      if (name === "github.comment") {
-        f.broker.calls.push({ ctx, name, args });
-        return { ok: false, error_code: "egress_blocked", message: "blocked" };
-      }
-      return call(ctx, name, args);
-    };
-    f.sandbox.changedFiles = ["src/core/worker.ts"];
-    f.source.queue.push({ kind: "item_requested", source: issueRef(12), requester: alice, title: "t", body: "b" });
-    await f.step();
-    f.source.queue.push({ kind: "spec_approved", source: issueRef(12), comment_id: "112", approver: alice });
-    await f.step();
-    const item = (await f.store.getWorkItemBySource("github_issue", "o/r#12"))!;
-    expect((await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!.outcome).toMatchObject({ error_code: "scope_violation" });
-    expect(f.broker.calls.some((c) => c.name === "github.comment")).toBe(true);
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
-  });
-
   it("a scope violation detail is truncated to the 500-char outcome limit", async () => {
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
@@ -768,7 +746,7 @@ describe("one issue to one merged PR", () => {
     if (run.outcome?.status !== "failed") throw new Error("expected failure");
     expect(run.outcome.error_code).toBe("scope_violation");
     expect(run.outcome.detail.length).toBeLessThanOrEqual(500);
-    const body = (f.broker.calls.find((c) => c.name === "github.comment")!.args as { body: string }).body;
+    const body = (await runComments(f.store, item.id)).find((c) => c.marker.includes("factory:scope:"))!.body;
     expect(body).toContain("outside/file-99.ts");
   });
 
@@ -810,7 +788,7 @@ describe("one issue to one merged PR", () => {
     expect(runs.map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect(runs.every((r) => r.attempt === 1 && r.status === "succeeded")).toBe(true);
     expect(JSON.stringify(runs)).not.toContain("lease_expired");
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
   });
 
   it("spec rejection closes the item", async () => {
@@ -1309,7 +1287,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     await f.step();
     const item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, pr_number: 42 });
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
 
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -1651,7 +1629,7 @@ describe("/resolve on a merge conflict", () => {
     // Gates ran before the push, in order: install, then test (then the resolve step bundles its merge commit).
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"))).toEqual(["npm ci", "npm test"]);
     // Push, the same PR's body rebuilt for the branch as it is now (issue #229), then the review comment.
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
     expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}`, base_ref: "main" });
     const refreshed = f.broker.calls[1]!.args as { branch: string; body: string };
     expect(refreshed.branch).toBe(`factory/${f.item.id}`);
@@ -2544,8 +2522,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
   it("a file refused as scope_violation is pushed after /retry +paths <that file>; the prompt and the gate use the widened paths", async () => {
     const f = await scopeViolation(90, ["src/x.ts"]);
     // The scope comment gives the exact reply.
-    const scope = f.broker.calls.filter((c) => c.name === "github.comment").map((c) => (c.args as { body: string }).body)
-      .find((b) => b.includes("Factory scope check"))!;
+    const scope = (await runComments(f.store, (await current(f)).id)).map((c) => c.body).find((b) => b.includes("Factory scope check"))!;
     expect(scope).toContain("```\n/retry +paths src/x.ts\n```");
     expect(names(f)).not.toContain("github.push_branch");
 
@@ -2770,13 +2747,13 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
   }
 
   /** An item approved and implemented once, with the sandbox and broker set up by `prime` first. */
-  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, b: FakeBroker) => void } = {}) {
+  async function setup(o: { max_attempts?: number; prime?: (s: CheckSandbox, source: FakeSource) => void } = {}) {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const sandbox = new CheckSandbox();
     const broker = new FakeBroker();
-    o.prime?.(sandbox, broker);
+    o.prime?.(sandbox, source);
     const log = recordingLog();
     const cfg: FactoryConfig = { ...config, settings: settingsWith({ max_attempts: o.max_attempts ?? 3 }) };
     const runner = new FakeRunner({
@@ -2805,9 +2782,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
       clock.advance(cfg.retry_max_ms);
       await step();
     };
-    const checkComments = () =>
-      broker.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { body: string; marker: string })
-        .filter((c) => c.marker.startsWith("<!-- factory:checks:"));
+    const checkComments = async () => (await runComments(store, item.id)).filter((c) => c.marker.startsWith("<!-- factory:checks:"));
     return { store, source, sandbox, log, item, implementRuns, codes, again, checkComments };
   }
 
@@ -2836,7 +2811,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     const f = await setup();
     await f.again();
     const runs = await f.implementRuns();
-    const comments = f.checkComments();
+    const comments = (await f.checkComments());
     expect(comments.map((c) => c.marker)).toEqual(runs.slice(0, 2).map((r) => `<!-- factory:checks:${r.id} -->`));
     for (const c of comments) {
       expect(c.body).toContain("failing on the base branch too");
@@ -2844,14 +2819,14 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     }
   });
 
-  it("a failed owner comment is logged and does not hold up the requeue", async () => {
-    const f = await setup({
-      prime: (_s, b) => void (b.responses["github.comment"] = [{ ok: false, error_code: "forge_down", message: "503" }]),
-    });
+  it("a failed delivery of the owner comment does not hold up the requeue: outbound keeps it and retries", async () => {
+    const f = await setup({ prime: (_s, source) => void (source.commentError = new Error("503")) });
     const runs = await f.implementRuns();
     expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "checks_env" });
     expect(runs[1]).toMatchObject({ status: "queued" });
-    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "checks env comment failed" && l.fields?.run_id === runs[0]!.id)).toBe(true);
+    const [comment] = await f.checkComments();
+    expect(comment!.marker).toBe(`<!-- factory:checks:${runs[0]!.id} -->`);
+    expect((await f.store.listDeliveries(f.item.id)).find((d) => d.marker === comment!.marker)).toMatchObject({ delivered_at: null });
   });
 
   it("the third checks_env on an item blocks it for a human and queues nothing", async () => {
@@ -2875,7 +2850,7 @@ describe("pre-push checks that also fail on the base branch: checks_env", () => 
     const [run] = await f.implementRuns();
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "checks_failed", infra: false });
     expect(f.sandbox.baseRuns).toEqual(["npm test -- tests/flaky.test.ts"]);
-    expect(f.checkComments().map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
+    expect((await f.checkComments()).map((c) => c.body.split("\n")[0])).toEqual(["## Factory pre-push checks: push blocked"]);
     const scheduled = (await f.store.listStateChanges(f.item.id)).find((c) => c.reason === "run_retry_scheduled");
     expect(scheduled?.detail).toMatchObject({ error_code: "checks_failed", failure: "task", task_failures: 1 });
   });

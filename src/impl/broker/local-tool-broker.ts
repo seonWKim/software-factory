@@ -5,8 +5,8 @@ import { branchAllowed, factoryCommit, holdsLease, scanBranch, trustedRunFolder 
 
 /**
  * The local broker's only tool. Named like the GitHub broker's push so the worker calls one name (a neutral
- * rename is its own work item); it pushes to no remote. No `github.open_pr`, `github.preflight` or
- * `github.comment`: a local item has no PR, and its messages are its thread.
+ * rename is its own work item); it pushes to no remote. No `github.open_pr` or `github.preflight`: a local item
+ * has no PR.
  */
 const TOOLS: readonly ToolDescriptor[] = [
   {

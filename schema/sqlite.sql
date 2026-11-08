@@ -1172,7 +1172,7 @@ CREATE TABLE outbound_actions (
   delivered_at  TEXT,
   outcome       TEXT,
   last_error    TEXT
-);
+, intent_key TEXT);
 
 CREATE TABLE outbound_base_pushes (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1555,6 +1555,8 @@ CREATE INDEX inbound_outbox_pending ON inbound_outbox (published_at, seq);
 CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 
 CREATE INDEX link_codes_live ON "legacy_link_codes" (used_at, expires_at);
+
+CREATE UNIQUE INDEX outbound_actions_key ON outbound_actions (intent_key);
 
 CREATE INDEX outbound_actions_pending ON outbound_actions (delivered_at, seq);
 

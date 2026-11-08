@@ -1,6 +1,6 @@
-// The delivery targets outbound runs (RFC 0015 §7): github-comment, github-labels, slack-thread, local, and source
-// for any other configured adapter. A process delivers only what one of its targets accepts; the rest waits for a
-// process that has the adapter.
+// The delivery targets outbound runs (RFC 0015 §7): github-change, github-comment, github-labels, slack-thread, local,
+// and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
+// waits for a process that has the adapter.
 
 import type { SourceRef } from "../../core/types.js";
 import { act, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
@@ -24,6 +24,22 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
   const adapter = (type: string) => t.byType.get(type) ?? null;
   const prOf = (target: SourceRef) => forge?.prNumberOf(target) ?? null;
   return [
+    {
+      // A PR closed with one comment naming who closed its issue (`{closer}` in `body_by`), through the forge.
+      name: "github-change",
+      accepts: (d) => d.kind === "action" && d.row.action === "close_pr" && forge !== null,
+      async deliver(d) {
+        if (d.kind !== "action" || !forge) throw new Error("github-change delivers PR actions only");
+        const a = d.row.args;
+        await forge.closePr({
+          pr: Number(a.pr),
+          closed: JSON.parse(String(a.closed)) as SourceRef,
+          marker: String(a.marker),
+          body: (closer) => (closer?.login ? String(a.body_by).replace("{closer}", `@${closer.login}`) : String(a.body)),
+        });
+        return { url: null };
+      },
+    },
     {
       name: "github-comment",
       accepts: (d) =>

@@ -50,8 +50,8 @@ describe("ToolBroker run passports", () => {
     const issued = await t.begin();
     expect(issued.passport).toMatchObject({ principal: "service:worker", provider: "service", kind: "run", origin: "run" });
     expect(await t.broker.call(t.ctx(), "github.push_branch", { branch: "factory/wi_1" })).toEqual({ ok: true, content: "github.push_branch" });
-    expect(await t.broker.call(t.ctx(), "github.comment", { number: 1, body: "x" })).toMatchObject({ ok: true });
-    expect(t.calls).toEqual(["github.push_branch", "github.comment"]);
+    expect(await t.broker.call(t.ctx(), "github.open_pr", { number: 1, body: "x" })).toMatchObject({ ok: true });
+    expect(t.calls).toEqual(["github.push_branch", "github.open_pr"]);
     expect(await t.audit()).toEqual([
       { principal: "service:worker", action: "use_tool", decision: "allow", reason: "allowed" },
       { principal: "service:worker", action: "use_tool", decision: "allow", reason: "allowed" },
@@ -67,25 +67,25 @@ describe("ToolBroker run passports", () => {
     expect(await t.broker.call(t.ctx("run_2"), "github.push_branch", { branch: "main" })).toMatchObject({ ok: false, message: "github.push_branch: outside_branches" });
     // run_1's token presented for run_2 (a widened passport): the runs caveat refuses it.
     t.setHeld(() => t.runs.passportOf("run_1"));
-    expect(await t.broker.call(t.ctx("run_2"), "github.comment", {})).toMatchObject({ ok: false, message: "github.comment: outside_runs" });
+    expect(await t.broker.call(t.ctx("run_2"), "github.open_pr", {})).toMatchObject({ ok: false, message: "github.open_pr: outside_runs" });
     expect(t.calls).toEqual([]);
   });
 
   it("refuses from the next check once the run passport or its worker passport is revoked", async () => {
     const t = await setup();
     const run = await t.begin();
-    expect(await t.broker.call(t.ctx(), "github.comment", {})).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: true });
     await t.identity.revoke(run.passport.id, "local:owner", "test");
-    expect(await t.broker.call(t.ctx(), "github.comment", {})).toMatchObject({ ok: false, message: "github.comment: revoked" });
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: false, message: "github.open_pr: revoked" });
 
     await t.begin("run_2");
     await t.identity.revoke(run.passport.parent_id!, "local:owner", "worker passport leaked");
-    expect(await t.broker.call(t.ctx("run_2"), "github.comment", {})).toMatchObject({ ok: false, message: "github.comment: revoked" });
+    expect(await t.broker.call(t.ctx("run_2"), "github.open_pr", {})).toMatchObject({ ok: false, message: "github.open_pr: revoked" });
     // The next run gets a fresh worker passport.
     const next = await t.begin("run_3");
     expect(next.passport.parent_id).not.toBe(run.passport.parent_id);
-    expect(await t.broker.call(t.ctx("run_3"), "github.comment", {})).toMatchObject({ ok: true });
-    expect(t.calls).toEqual(["github.comment", "github.comment"]);
+    expect(await t.broker.call(t.ctx("run_3"), "github.open_pr", {})).toMatchObject({ ok: true });
+    expect(t.calls).toEqual(["github.open_pr", "github.open_pr"]);
   });
 
   it("reaches another replica's broker on its next revocations tick", async () => {
@@ -95,16 +95,16 @@ describe("ToolBroker run passports", () => {
     await otherTicks.tick(REVOCATIONS_TICK, T0);
     const run = await t.begin();
     await replica.revoke(run.passport.id, "local:owner", "from another replica");
-    expect(await t.broker.call(t.ctx(), "github.comment", {})).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: true });
     await t.ticks.tick(REVOCATIONS_TICK, T0 + 10_000);
-    expect(await t.broker.call(t.ctx(), "github.comment", {})).toMatchObject({ ok: false, message: "github.comment: revoked" });
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: false, message: "github.open_pr: revoked" });
   });
 
   it("forgets a run's token when the run ends", async () => {
     const t = await setup();
     await t.begin();
     t.runs.end("run_1");
-    expect(await t.broker.call(t.ctx(), "github.comment", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
   });
 });
 

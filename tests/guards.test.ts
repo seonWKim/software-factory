@@ -331,11 +331,11 @@ describe("Tool broker", () => {
     const { store } = await newStore(clock);
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
     const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const posted: string[] = [];
+    const requests: string[] = [];
     const client = {
-      commentOnce: async (_r: unknown, _n: number, body: string) => {
-        posted.push(body);
-        return { created: true };
+      request: async (method: string, path: string) => {
+        requests.push(`${method} ${path}`);
+        return path.includes("/pulls") ? [] : { permissions: { push: true } };
       },
     } as unknown as GitHubClient;
     const broker = new GitHubToolBroker({
@@ -344,33 +344,33 @@ describe("Tool broker", () => {
       scanner: new PatternEgressScanner(async () => ["leaky-secret-value"]),
     });
     const ctx = { run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token };
-    return { clock, store, broker, ctx, posted };
+    return { clock, store, broker, ctx, requests };
   }
-  const comment = { number: 1, body: "x", marker: "m" };
+  const preflight = { branch: "factory/x", base_ref: "main" };
 
   it("rejects calls from a run that lost its lease (fencing)", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.comment", comment);
+    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.preflight", preflight);
     expect(r).toMatchObject({ ok: false, error_code: "lease_lost" });
   });
 
   it("host sleep: accepts the current token after lease expiry while the run is still running", async () => {
-    const { broker, ctx, clock, posted } = await setup();
+    const { broker, ctx, clock, requests } = await setup();
     clock.advance(60_001 * 5);
-    expect(await broker.call(ctx, "github.comment", comment)).toEqual({ ok: true, content: { created: true } });
-    expect(posted).toEqual(["x"]);
+    expect(await broker.call(ctx, "github.preflight", preflight)).toEqual({ ok: true, content: { push: true, open_prs: 0 } });
+    expect(requests).toHaveLength(2);
   });
 
   it("rejects the old token after the reaper requeued the run, and after a reclaim", async () => {
     const { broker, ctx, clock, store } = await setup();
     clock.advance(60_001);
     expect(await store.expireLeases(3)).toEqual([ctx.run_id]);
-    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
 
     const again = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
     expect(again.lease!.token).toBe(ctx.lease_token + 1);
-    expect(await broker.call(ctx, "github.comment", comment)).toMatchObject({ ok: false, error_code: "lease_lost" });
-    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.comment", comment)).toMatchObject({ ok: true });
+    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.preflight", preflight)).toMatchObject({ ok: true });
   });
 
   it("pushes only factory branches", async () => {
@@ -379,11 +379,11 @@ describe("Tool broker", () => {
     expect(r).toMatchObject({ ok: false, error_code: "branch_not_allowed" });
   });
 
-  it("egress-scans comments before posting", async () => {
-    const { broker, ctx, posted } = await setup();
-    const r = await broker.call(ctx, "github.comment", { number: 1, body: "leaky-secret-value", marker: "m" });
+  it("egress-scans a PR's text before any request", async () => {
+    const { broker, ctx, requests } = await setup();
+    const r = await broker.call(ctx, "github.open_pr", { branch: "factory/x", base_ref: "main", title: "t", body: "leaky-secret-value" });
     expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
-    expect(posted).toHaveLength(0);
+    expect(requests).toHaveLength(0);
   });
 });
 

@@ -21,14 +21,7 @@ async function update(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext,
   const handle = await w.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
-  const comment = async (body: string) => {
-    const r = await w.forgeComment(item, ctx, {
-      number: prNumber(item),
-      body,
-      marker: `<!-- factory:update:${run.id} -->`,
-    });
-    if (!r.ok) throw new RunFailure(r.error_code, r.message);
-  };
+  const comment = (body: string) => w.comment(item, { pr: prNumber(item), body, marker: `<!-- factory:update:${run.id} -->` });
   try {
     // The sandbox starts a missing branch from base; an update must only ever touch the PR's own branch.
     await w.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);

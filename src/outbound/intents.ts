@@ -10,8 +10,11 @@ import { envelope, newMessageId, type Envelope } from "../shared/envelope.js";
 import type { SqlDriver, SqlExecutor } from "../state/index.js";
 import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
 
-/** A write that is no thread entry. `status`, `seen` are best effort; `close` and `post` retry until delivered. */
-export type ActionKind = "status" | "seen" | "close" | "post";
+/**
+ * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post` and `close_pr` (a PR closed with
+ * a comment, through the forge) retry until delivered.
+ */
+export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr";
 
 export interface NewAction {
   readonly action: ActionKind;
@@ -20,6 +23,8 @@ export interface NewAction {
   readonly work_item_id?: string | null;
   /** The action's arguments (status and change_ref, the reacted comment id, a close reason, a post's body and marker). */
   readonly args: Readonly<Record<string, string | number | null>>;
+  /** Set: the action is stored at most once under this key, so recording it again stores nothing (RFC 0015 §5.2). */
+  readonly key?: string;
 }
 
 export interface ActionRow extends NewAction {
@@ -42,12 +47,20 @@ const REQUEST_TTL_MS = 7 * 86_400_000;
 /** Intents one announce publishes at most; the next announce takes the rest. */
 const ANNOUNCE_BATCH = 200;
 
-/** Stores an action intent; the producer's next `announce` requests it. */
-export async function recordAction(db: SqlExecutor, a: NewAction, now: string): Promise<void> {
+/** Stores an action intent; the producer's next `announce` requests it. A keyed action already stored: nothing. */
+export async function recordAction(db: SqlDriver, a: NewAction, now: string): Promise<void> {
   await db.run(
-    "INSERT INTO outbound_actions (work_item_id, source_type, target, action, args, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [a.work_item_id ?? null, a.target.type, JSON.stringify(a.target), a.action, JSON.stringify(a.args), now],
+    insertOrSkip(db.dialect.name, "outbound_actions (work_item_id, source_type, target, action, args, intent_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"),
+    [a.work_item_id ?? null, a.target.type, JSON.stringify(a.target), a.action, JSON.stringify(a.args), a.key ?? null, now],
   );
+}
+
+/** The action rows among `intent_ids` (thread entries are left out), in intent order. */
+export async function actionsOf(db: SqlExecutor, intent_ids: readonly string[]): Promise<ActionRow[]> {
+  const seqs = intent_ids.filter((id) => id.startsWith(ACTION_INTENT)).map((id) => Number(id.slice(ACTION_INTENT.length)));
+  if (seqs.length === 0) return [];
+  const rows = await db.all(`SELECT * FROM outbound_actions WHERE seq IN (${seqs.map(() => "?").join(", ")}) ORDER BY seq`, seqs);
+  return rows.map(actionOf);
 }
 
 export function actionOf(row: Record<string, unknown>): ActionRow {

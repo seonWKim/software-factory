@@ -47,16 +47,6 @@ const TOOLS: readonly ToolDescriptor[] = [
       properties: { branch: { type: "string" }, base_ref: { type: "string" } },
     },
   },
-  {
-    name: "github.comment",
-    read_only: false,
-    description: "Comment on an issue or PR at most once per marker.",
-    input_schema: {
-      type: "object",
-      required: ["number", "body", "marker"],
-      properties: { number: { type: "integer" }, body: { type: "string" }, marker: { type: "string" } },
-    },
-  },
 ];
 
 interface PushArgs {
@@ -75,11 +65,6 @@ interface PrArgs {
 interface PreflightArgs {
   branch: string;
   base_ref: string;
-}
-interface CommentArgs {
-  number: number;
-  body: string;
-  marker: string;
 }
 
 /**
@@ -105,7 +90,7 @@ export class GitHubToolBroker implements ToolBroker {
     return TOOLS.filter((t) => grants.includes(t.name));
   }
 
-  /** Push, PR and comment change the forge; only the preflight, which reads, is read-only. */
+  /** Push and PR change the forge; only the preflight, which reads, is read-only. */
   allTools(): readonly ToolDescriptor[] {
     return TOOLS;
   }
@@ -119,8 +104,6 @@ export class GitHubToolBroker implements ToolBroker {
         return this.openPr(args as PrArgs);
       case "github.preflight":
         return this.preflight(args as PreflightArgs);
-      case "github.comment":
-        return this.comment(args as CommentArgs);
       default:
         return { ok: false, error_code: "unknown_tool", message: name };
     }
@@ -258,22 +241,6 @@ export class GitHubToolBroker implements ToolBroker {
     );
     if (!("value" in prs)) return prs;
     return { ok: true, content: { push: push ?? null, open_prs: Array.isArray(prs.value) ? prs.value.length : 0 } };
-  }
-
-  private async comment(a: CommentArgs): Promise<ToolResult> {
-    // The boundary check: agent-supplied args reach this tool, and a non-number would become `issues/NaN/comments`.
-    if (!Number.isSafeInteger(a.number) || a.number <= 0) {
-      return { ok: false, error_code: "invalid_args", message: `comment: number must be a positive integer, got ${String(a.number).slice(0, 40)}` };
-    }
-    const scan = await this.deps.scanner.scan("comment", a.body);
-    if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
-    try {
-      return { ok: true, content: await this.deps.client.commentOnce(this.deps.repo, a.number, a.body, a.marker) };
-    } catch (err) {
-      const limited = rateLimited("comment", err);
-      if (limited) return limited;
-      throw err;
-    }
   }
 }
 

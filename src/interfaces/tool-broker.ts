@@ -4,7 +4,7 @@ import type { RunId, WorkItemId } from "../core/types.js";
 // The agent sends a tool name + args and gets a result back, never the credential.
 
 export interface ToolDescriptor {
-  name: string; // e.g. "github.push", "github.open_pr", "github.comment"
+  name: string; // e.g. "github.push_branch", "github.open_pr"
   description: string;
   input_schema: Record<string, unknown>; // JSON Schema
   /**

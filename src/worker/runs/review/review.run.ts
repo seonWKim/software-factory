@@ -71,14 +71,9 @@ async function review(
   // only the rule names, and the controller blocks the item on a human.
   const scan = await w.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
   if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
-  // The comment write stays in the worker until outbound takes it (RFC 0015 M7).
+  // A thread entry once per marker; outbound posts it on the PR (RFC 0015 M7).
   await step("post-review", async () => {
-    const posted = await w.forgeComment(item, ctx, {
-      number: prNumber(item),
-      body: reviewComment(v),
-      marker: `<!-- factory:review:${run.id} -->`,
-    });
-    if (!posted.ok) throw new RunFailure(posted.error_code, posted.message);
+    await w.comment(item, { pr: prNumber(item), body: reviewComment(v), marker: `<!-- factory:review:${run.id} -->` });
     return true;
   });
   return { review: v, head_sha };

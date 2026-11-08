@@ -3,7 +3,8 @@
 // so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which the
 // controller's base push step brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
-import type { SourceType } from "./types.js";
+import type { SourceRef, SourceType, WorkItem } from "./types.js";
+import type { NewThreadDelivery, ThreadLinkField } from "../interfaces/factory-store.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 
 /**
@@ -11,6 +12,15 @@ import type { Sandbox } from "../interfaces/sandbox.js";
  * adapter (issue #282), and they take the local broker and the local merge, never the forge (design 05-sources).
  */
 export const LOCAL_SOURCE: SourceType = "local";
+
+/**
+ * Where a factory message on `it`'s thread is delivered (issue #282): nowhere for a local item, whose thread is its
+ * surface; else the item's own source, on `target` (e.g. the item's PR) when it is of that source's type.
+ */
+export function threadDelivery(it: Pick<WorkItem, "source">, target: SourceRef, link: ThreadLinkField | null = null): NewThreadDelivery | null {
+  const type = it.source.type;
+  return type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+}
 
 /** The command inbox name `factory merge <id>` stores; the controller applies it as the local merge. */
 export const MERGE_COMMAND = "merge";

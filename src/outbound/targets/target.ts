@@ -13,7 +13,7 @@ export type Delivery =
   | { readonly kind: "action"; readonly row: ActionRow };
 
 export interface DeliveryTarget {
-  /** The RFC's handler name: `github-comment`, `github-labels`, `slack-thread`, `local`, `source`. */
+  /** The RFC's handler name: `github-change`, `github-comment`, `github-labels`, `slack-thread`, `local`, `source`. */
   readonly name: string;
   accepts(d: Delivery): boolean;
   /** Writes it; throws on a failure. A comment returns its URL. */
@@ -41,5 +41,7 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
       return { url: null };
     case "post":
       return adapter.postComment(row.target, String(a.body), String(a.marker));
+    case "close_pr":
+      throw new Error("a PR close goes through the forge (github-change)");
   }
 }

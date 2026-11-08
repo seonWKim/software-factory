@@ -23,7 +23,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, policyFor, recordAction,
+  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionsOf, announce, buildTargets, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -136,6 +136,7 @@ export class ControllerRole implements Decisions {
       record: (a, now) => recordAction(db(), a, now),
       // The intents go out on the controller's bus; wired before its transaction opens.
       announce: async (now) => announce(db(), (await this.wire()).controllerBus, this.role.settings.config().project.key, now, CONTROLLER),
+      actions: (ids) => actionsOf(db(), ids),
       emit: async (draft, now) => {
         const bus = (await this.wire()).controllerBus;
         const cause = { id: null, correlation_id: newMessageId(), project_id: this.role.settings.config().project.key, passport_id: null, occurred_at: now };

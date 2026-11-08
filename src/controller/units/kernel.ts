@@ -1,12 +1,12 @@
 // The controller units' shared kernel (RFC 0015 M5).
 
 import { LiveSettings, type ProjectSettings, settingValues } from "../../core/settings.js";
-import { LOCAL_SOURCE } from "../../core/local-merge.js";
+import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
-import type { NewAction } from "../../outbound/index.js";
+import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
 import type { SqlDriver } from "../../state/index.js";
 
@@ -103,9 +103,7 @@ export type ThreadEntry = Extract<ControllerWrite, { kind: "thread_entry" }>["en
 export function threadEntry(
   it: WorkItem, target: SourceRef, body: string, marker: string, link: NonNullable<ThreadEntry["delivery"]>["link_field"] = null,
 ): ThreadEntry {
-  const type = it.source.type;
-  const delivery = type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
-  return { work_item_id: it.id, marker, body, delivery };
+  return { work_item_id: it.id, marker, body, delivery: threadDelivery(it, target, link) };
 }
 
 /**
@@ -140,6 +138,8 @@ export interface Deliveries {
   announce(now: string): Promise<number>;
   /** Publishes one message on the controller's bus, caused by the decision at `now`. */
   emit(d: Draft, now: string): Promise<void>;
+  /** The action rows among delivered intent ids (DeliveryCompleted). */
+  actions(intent_ids: readonly string[]): Promise<ActionRow[]>;
 }
 
 /** The hooks at the controller's points (RFC 0015 §8, M10): the role binds them to runHooks and the enabled names. */
@@ -253,6 +253,11 @@ export class Kernel {
   /** PR `pr` as a comment or label target on the forge (a pure mapping, no call); null when config selects no forge. */
   prRef(pr: number): SourceRef | null {
     return this.forge?.prRef(pr) ?? null;
+  }
+
+  /** The action rows among `intent_ids`, which outbound reported delivered. */
+  deliveredActions(intent_ids: readonly string[]): Promise<ActionRow[]> {
+    return this.deliveries.actions(intent_ids);
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */

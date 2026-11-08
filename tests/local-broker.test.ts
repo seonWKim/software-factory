@@ -63,7 +63,7 @@ describe("local broker", { timeout: 30_000 }, () => {
   it("serves the push only: no PR, preflight or comment tool, so nothing can reach a forge", async () => {
     const f = await setup();
     expect(f.broker.allTools().map((t) => t.name)).toEqual(["github.push_branch"]);
-    for (const name of ["github.open_pr", "github.preflight", "github.comment"]) {
+    for (const name of ["github.open_pr", "github.preflight"]) {
       expect(await f.broker.call(f.ctx, name, {})).toMatchObject({ ok: false, error_code: "unknown_tool" });
     }
   });

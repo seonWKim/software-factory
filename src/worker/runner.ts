@@ -21,7 +21,7 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
 import type { ToolCallContext, ToolResult } from "../interfaces/tool-broker.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, hasTool, prTitle, routeFor, tail, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, hasTool, prTitle, routeFor, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /**
  * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a
@@ -1021,15 +1021,14 @@ export class Worker {
   }
 
   /**
-   * A comment on the item's issue or PR through the broker. It posts nothing and succeeds with a broker with no
-   * comment tool (the local one, whose items' messages are their thread) or with no number: an item that is not
-   * a forge issue (a local item, also with a forge broker selected; design 05-sources), or a review or update
-   * without a change.
+   * A run's comment (RFC 0015 M7): a thread entry on the item, stored once per marker, which the controller's
+   * outbox step announces and outbound delivers. `pr`: on that PR, through the forge where PRs live; null, or no
+   * forge: on the item's own source. A local item's thread is its surface: nothing leaves.
    */
-  async forgeComment(item: WorkItem, ctx: ToolCallContext, args: { number: number | null; body: string; marker: string }): Promise<ToolResult> {
-    const { broker } = this.route(item);
-    if (!hasTool(broker, "github.comment") || args.number === null) return { ok: true, content: null };
-    return broker.call(ctx, "github.comment", args);
+  async comment(item: WorkItem, c: { pr: number | null; body: string; marker: string }): Promise<void> {
+    const pr = c.pr !== null && this.d.prRef ? this.d.prRef(c.pr) : null;
+    const delivery = pr ? { source_type: pr.type, target: pr, link_field: null } : threadDelivery(item, item.source);
+    await this.d.store.recordItemMessage({ work_item_id: item.id, marker: c.marker, body: c.body, delivery });
   }
 
   /**
