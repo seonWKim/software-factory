@@ -63,23 +63,33 @@ force.
     restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`, SQLite and MySQL);
     with no bundle (the commits did not scan clean) it fails `resume_lost` (infra) and is retried afresh. The local
     phases between steps (folder, preflight, sync, gates, checks) run again on a resume; they are safe to repeat.
-    Update, resolve and improve runs have no journaled step yet and run again from the start.
+    Resolve: one `resolve` step (merge, agent, scope and marker gates, the merge commit, install and checks; three
+    hours) whose result carries a G5-scanned bundle of the merge commit (`src/worker/bundle.ts`, shared with
+    implement): a run taken over before its push restores that exact commit and pushes it, with no agent and no
+    gate again; with no bundle it fails `resume_lost`. Update and improve runs have no journaled step yet and run
+    again from the start: update's only effects are its push and PR comments, whose steps come with the worker half
+    of M7 (outbound).
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
     journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new run. Each process
-    stamps `dev` until compose passes its revision (`WorkerDeps.code_version`).
+    stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
     own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
     `start_to_close` (infra); a run past its deadline fails `schedule_to_close`.
-  - Takeover is still the controller's reaper: it requeues a run whose lease expired, and the next claim resumes it
-    from the journal. The engine's own `reaper` tick (takeover in place, deadline failing) is not attached in the
-    worker until the controller's reaper unit (M5) stops requeueing expired runs; two takeover paths would race.
-  - Time: the engine moves only on ticks the runner gives it (the claim and each heartbeat). The runner's waits
-    (idle claim loop, heartbeat interval, pause watch, the implement diff watch, the host-sleep check) still sleep
-    on the injected Clock, which reaches the worker through the legacy `WorkerDeps` (`src/core/worker-deps.ts`, so
-    `src/worker/` imports no clock); they move onto a TickGenerator in a later step.
+  - **One takeover path: the controller's reaper** (decision changed 2026-11-08, M6 leftovers; see History). The
+    `reaper` unit requeues a run whose lease expired (with the retry backoff, `max_attempts`, a closed item's run
+    cancelled, an interactive session failed `session_lost`, the attempt record closed), and the next claim resumes
+    it from the journal. The engine has no reaper and no takeover of its own (`reap`, `attach` and `onTakeover` are
+    gone): an engine taking runs over in place would race the reaper for the same run and skip every one of those
+    rules. A run past its `schedule_to_close` deadline is aborted by its worker's heartbeat, or refused at its next
+    step after a claim, and the worker fails it `schedule_to_close`.
+  - Time: the engine moves only on ticks the runner gives it (the claim and each heartbeat). Every wait of the
+    runner is a schedule on its TickGenerator (`plugins.ticks`, over the injected Clock, so FakeClock tests move
+    them): `claim` (the idle loop, live `tick_ms`), and per run `heartbeat` (live `heartbeat_ms`), `pause-watch` and
+    the implement agent step's `diff-watch`. A schedule's first tick is its start (the watches skip it); a later
+    tick's `due` against its `now` is the host-sleep check (05-coordination, Host sleep).
   - Pushes, PR writes and review comments stay in the worker as journaled steps until outbound takes them (M7).
 - **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
   and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
@@ -213,7 +223,8 @@ force.
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
   ratchets the writes still outside outbound (the worker's, base push, PR close, sub-issue filing).
-- **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
+- **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
+  in the M6 leftovers: roles now drive prompts and tools, see History). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
   `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
@@ -222,18 +233,23 @@ force.
   principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
   means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
-  ratchet). Not wired into the run path yet: the worker still picks prompts and tools itself (M6), and auto mode does
-  not call `ruleOfTwoRefusal` (owner decision pending).
-- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10). A hook is
+  ratchet). Every agent step takes its system prompt (the role's file under `prompts/`) and its tools from its role
+  (`Worker.roleSpec`; the run kind's role, or `resolve` for implement's conflict retry); a run kind names neither. A
+  role whose prompt file is missing fails the run `prompt_missing` before the agent starts. Auto mode does not call
+  `ruleOfTwoRefusal` yet (owner decision pending).
+- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10; decision changed in the M6 leftovers:
+  `before_run` is called and the `hooks` setting enables them, see History). A hook is
   `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
   `before_run`, `before_delivery`) with a budget of at most 10 s. `runHooks` (`src/runtime/hooks/`, on the gate list)
   runs only after the guards allowed the action: a guard's refusal stands and no hook runs. Each enabled hook of the
   point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
-  until the owner enables it; the caller passes the enabled names. Wired at the merge queue's landing
-  (`before_merge`, subject the work item; the controller role's `hooks.enabled`, none unless given). Not wired yet:
-  run start (M6), outbound (M7), and the stored enable setting; no hook ships.
+  until the owner lists it in `hooks` (factory.config.json, a PR-only key, so enabling one is a reviewed and
+  audited change; startup fails on a name no discovered hook has). `before_run` is called at run start, after the
+  guards (the claim and the run passport) allowed the run: a refusal fails the run `hook_refused` before its folder
+  or agent; a note is logged. `before_merge` is called at the merge queue's landing (subject the work item): a veto
+  removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound). No hook ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
   "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
   a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
@@ -313,6 +329,12 @@ force.
 - **Runs and the worker** (decision changed 2026-11-08, RFC 0015 M6). Before: the engine existed only in its
   contract test; runs went through `src/core/worker.ts` (one class, every kind a method, a dispatch by kind), which
   renewed its lease through the store's heartbeat and kept no journal, so a run whose worker died started over.
+- **Roles and hooks in the run path** (decision changed 2026-11-08, M6 leftovers). Before: each run kind passed its
+  own system prompt and tool list, the role files only declared them; no hook point was called and nothing enabled
+  a hook.
+- **Takeover and the worker's waits** (decision changed 2026-11-08, M6 leftovers). Before: the engine had its own
+  `reaper` tick (take a run over in place, fail runs past their deadline), not attached in the worker, beside the
+  controller's reaper that requeued; and the runner's waits slept on the injected Clock in `while` loops.
 - **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
   transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
   inline), outside any batch, and outbox delivery never waited on the forge budget.

@@ -20,6 +20,7 @@ import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
+import { loadHooks } from "./runtime/index.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
@@ -40,7 +41,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth } from "./impl/auth/audited-auth.js";
@@ -145,6 +146,8 @@ export interface FileConfig {
   outbound?: { batching?: unknown };
   /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
   merge_queue?: { depth?: unknown };
+  /** Hook names the owner enabled (RFC 0015 §15.2). Absent: none. Checked against the discovered hooks at startup. */
+  hooks?: unknown;
   /** Worker loops per `dev` / `worker` process (architecture §4). Absent: 1. */
   workers?: unknown;
   /** Worker slots per process, the most the live `workers` setting can reach. Absent: `workers`. */
@@ -445,6 +448,7 @@ export async function loadConfig(
     inbox_retention_days: retention,
     outbound_batching: batchingPolicies(file.outbound?.batching),
     merge_queue_depth: mergeQueueDepth(file),
+    ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
     workers,
     max_workers,
     deny_paths: [
@@ -836,6 +840,7 @@ export async function build(
     store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
+  await checkEnabledHooks(config.hooks ?? []);
   shareGitHubBudget(loaded, github, store, config);
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
@@ -883,6 +888,8 @@ export async function build(
     id_prefix: `${hostname()}:${process.pid}`,
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
+    // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
+    ...codeVersion(process.env[CODE_VERSION_ENV]),
     store,
     sandbox,
     runner,
@@ -905,6 +912,7 @@ export async function build(
     testDatabase,
     settings,
     engines,
+    ticks,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
@@ -946,6 +954,26 @@ export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsB
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
   return Number.parseInt(value.trim(), 10);
+}
+
+/** `hooks` from factory.config.json: a list of hook names, or startup fails. */
+export function hookNames(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new Error("hooks must be a list of hook names");
+  return value as string[];
+}
+
+/** Every enabled hook name must be a discovered `*.hook.ts`: a typo would otherwise leave the owner's check off. */
+export async function checkEnabledHooks(enabled: readonly string[]): Promise<void> {
+  if (enabled.length === 0) return;
+  const known = new Set((await loadHooks()).map((h) => h.descriptor.name));
+  const missing = enabled.filter((n) => !known.has(n));
+  if (missing.length > 0) throw new Error(`hooks: no discovered hook named ${missing.join(", ")}`);
+}
+
+/** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */
+export function codeVersion(value: string | undefined): { code_version?: string } {
+  const rev = value?.trim();
+  return rev ? { code_version: rev } : {};
 }
 
 export const DEFAULT_UI_PORT = 4310;

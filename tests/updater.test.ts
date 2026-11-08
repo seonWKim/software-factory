@@ -12,7 +12,7 @@ import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, isCodePath, remo
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import { autoMigrate } from "../src/impl/updater/auto-migrate.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
-import { CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
+import { CODE_VERSION_ENV, CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
 import { SUPERVISED_ENV, createUpdater, supervise } from "../src/supervisor.js";
 import { recordingLog, waitFor } from "./helpers/fakes.js";
@@ -627,6 +627,8 @@ describe("updater: git-worktree with an external config (--config / FACTORY_CONF
     world.push("c2", ["src/core/worker.ts"]);
     await updater.poll();
     expect(launcher.children.map((c) => c.spec.env[WORKER_INDEX_BASE_ENV])).toEqual(["0", "3"]);
+    // Each child stamps its own revision on the runs it executes, so the new one never claims the old code's journal.
+    expect(launcher.children.map((c) => c.spec.env[CODE_VERSION_ENV])).toEqual(["c1", "c2"]);
   });
 });
 

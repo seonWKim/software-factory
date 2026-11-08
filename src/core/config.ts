@@ -178,6 +178,11 @@ export interface LoadedConfig {
    * base plus the entries ahead of it. 1 to 10; solo default 1, enterprise typically 2.
    */
   merge_queue_depth: number;
+  /**
+   * `hooks` (RFC 0015 §15.2, design 10-event-driven): the hook names the owner enabled, each a discovered
+   * `*.hook.ts`. A PR-only key, checked at startup. Absent or empty: no hook runs, solo or enterprise.
+   */
+  hooks?: readonly string[];
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /**

@@ -5,7 +5,7 @@ import { branchFor } from "../../../core/policy.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { type ResumePlan, RunFailure, WRITE_TOOLS, ciResults, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
+import { type ResumePlan, RunFailure, ciResults, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
@@ -49,14 +49,12 @@ async function review(
   // The agent step's parsed verdict is journaled, so a takeover posts it without reviewing again.
   const review = await step("run-agent", async (s) => {
     const result = await w.agent(run, item, handle, signal, {
-      system_prompt: w.d.prompts.review,
       prompt: plan?.session
         ? renderSessionResume(null)
         : await w.withIndex(
           [subject, notes, ciResults(run), `## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``].filter(Boolean).join("\n\n"),
           specQuery(item),
         ),
-      tools: WRITE_TOOLS,
       model_class: model,
       output_schema: REVIEW_SCHEMA,
       env_allowlist: gitIdentity(w.cfg.agent_git_identity),

@@ -48,8 +48,8 @@ export interface ControllerRoleDeps extends ControllerDeps {
   /** Identity (M9): inbound gives a command row without a passport its actor's edge passport. Absent: none. */
   identity?: Pick<IdentityRuntime, "commandPassport">;
   /**
-   * Hooks (RFC 0015 §8, M10): the names the owner enabled, and the hooks to choose from (absent: the discovered
-   * ones). Absent: none enabled, solo and enterprise alike, until the stored enable setting lands.
+   * Hooks (RFC 0015 §8, M10): the names enabled, and the hooks to choose from (absent: the discovered ones), for
+   * tests. Absent: the config's `hooks` (none unless the owner lists some), as the worker's `before_run`.
    */
   hooks?: { readonly enabled: readonly string[]; readonly list?: readonly HookDescriptor[] };
 }
@@ -149,7 +149,7 @@ export class ControllerRole implements Decisions {
    * action at every call site, so the hooks may only refuse it.
    */
   private async runHooks(point: HookPoint, subject: string, passport_id: string | null, at: string): Promise<{ allowed: true } | { allowed: false; reason: string }> {
-    const enabled = new Set(this.role.hooks?.enabled ?? []);
+    const enabled = new Set(this.role.hooks?.enabled ?? this.role.settings.config().hooks ?? []);
     if (enabled.size === 0) return { allowed: true };
     const list = this.role.hooks?.list ?? (await loadHooks()).map((h) => h.descriptor);
     const r = await runHooks({

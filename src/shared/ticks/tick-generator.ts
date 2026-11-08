@@ -7,20 +7,25 @@ export interface Tick {
   readonly now: string;
   /** floor(now / period): part of the idempotency key of what a tick decides, so a repeated slot is a no-op. */
   readonly slot: number;
+  /**
+   * ISO-8601 UTC: when this tick was due, one period after the previous tick ended. Absent on a schedule's first
+   * tick, which fires at once. `now` later than `due` by far means the host slept (design §5 Host sleep).
+   */
+  readonly due?: string;
 }
 
-export type TickHandler = (tick: Tick) => Promise<void>;
-
-/** A schedule's period in ms: fixed, or read again before each tick (a live setting), so a change applies from the next. */
+/** A fixed period, or one read before each wait (a live setting: a change applies from the next wait on). */
 export type Period = number | (() => number);
 
 export function periodOf(p: Period): number {
   return typeof p === "number" ? p : p();
 }
 
+export type TickHandler = (tick: Tick) => Promise<void>;
+
 export interface TickGenerator {
   /** Registers a schedule. Each schedule runs one tick at a time; a slow tick delays the next, never overlaps it. */
-  schedule(name: string, period: Period, onTick: TickHandler): void;
+  schedule(name: string, periodMs: Period, onTick: TickHandler): void;
   /** Starts ticking until `signal` aborts. Resolves once every schedule has stopped. */
   run(signal: AbortSignal): Promise<void>;
 }
@@ -41,6 +46,7 @@ export interface TickSource {
   create(onError: (schedule: string, err: unknown) => void, time?: TimeSource): TickGenerator;
 }
 
-export function tickAt(schedule: string, periodMs: number, ms: number): Tick {
-  return { schedule, now: new Date(ms).toISOString(), slot: Math.floor(ms / periodMs) };
+export function tickAt(schedule: string, periodMs: number, ms: number, dueMs?: number): Tick {
+  const tick = { schedule, now: new Date(ms).toISOString(), slot: Math.floor(ms / periodMs) };
+  return dueMs === undefined ? tick : { ...tick, due: new Date(dueMs).toISOString() };
 }

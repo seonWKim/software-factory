@@ -1,6 +1,6 @@
 // The worker's dependencies, run routing and the trusted git env, shared by the worker (src/worker/) and legacy
-// code (core/session.ts, compose). Legacy on purpose: WorkerDeps still hands the worker an injected Clock (idle
-// wait, pause and diff watches, host-sleep check), which src/worker/ may not import (no-clock). They move into the
+// code (core/session.ts, compose). Legacy on purpose: WorkerDeps still hands the worker an injected Clock (the time
+// its tick generators wait on, run timestamps), which src/worker/ may not import (no-clock). They move into the
 // worker as those waits move onto its ticks and the session's pushes and PR writes go to outbound (RFC 0015 M6/M7).
 
 import { LOCAL_SOURCE } from "./local-merge.js";

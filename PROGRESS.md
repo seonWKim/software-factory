@@ -53,11 +53,11 @@ owner decisions below. Status per row is updated here as each step lands.
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
-| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
+| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (update steps left, with M7) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash tests resume mid-implement and mid-resolve on SQLite and MySQL. Leftovers (branch `refactor/rfc-0015-m6-leftovers`): the runner's waits on a TickGenerator, one takeover path (the controller's reaper; the engine's `reap` deleted), the resolve step with a bundle, `SF_CODE_VERSION` as `code_version`. Left: update steps (its effects are the forge writes M7 moves) |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
 | 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; left: SecretStore key for enterprise, outbound's service passport |
-| 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
+| 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done, run path wired | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table. Branch `refactor/rfc-0015-m6-leftovers`: roles drive every agent step's prompt and tools; `before_run` hooks at run start, enabled by the PR-only `hooks` setting. Left: `before_merge` (merge queue) and `before_delivery` (outbound) |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | contract migrations written | e28aab9: `legacy_*` drops for M1 and M4, run only by `npm run migrate -- --contract` 14 days after their rename (not applied); docs, ratchets and the file budget left |
 
 ## Architecture today
@@ -93,15 +93,18 @@ src/
   worker/roles/         NEW     one <kind>.role.ts per agent run kind (defineRole): prompt, tools, Rule of Two facts,
                                 golden
   worker/               NEW     M6: index.ts (public API), pool.ts (worker loops), runner.ts (claims a run through the
-                                store, adopts it into the engine, drives its kind), support.ts (shared helpers),
+                                store, adopts it into the engine, drives its kind; its waits are schedules on its
+                                TickGenerator; prompts and tools from the run's role; `before_run` hooks),
+                                support.ts (shared helpers), bundle.ts (git bundles of a step's commits),
                                 run-kind.ts (defineRunKind, loadRunKinds)
                                 - runs/<kind>/<kind>.run.ts: triage, implement, review, update, resolve, improve;
                                   each kind's body, its own helpers and its named timeouts
   worker/engine/        NEW     ExecutionEngine (index.ts) and the journal engine (plugins/journal/, a `plugins.engine`
                                 plugin, default)
                                 - named steps journaled in worker_run_steps (a stored result wins)
-                                - lease fencing by token, adopt (a run the store's claim leased), heartbeat and
-                                  reaper ticks, named timeouts, code_version pinning
+                                - lease fencing by token, adopt (a run the store's claim leased), heartbeat ticks,
+                                  named timeouts, code_version pinning (the supervisor's SF_CODE_VERSION); no
+                                  takeover of its own (the controller's reaper requeues)
   worker/migrations/    NEW     20261108T1730-worker-run-journal: worker_run_steps, worker_runs.code_version/deadline_at
   cli/                  NEW     command.ts (defineCommand), index.ts (loadCommands), support.ts
                                 - handlers/: one folder per command: dev, loops, status, stats, workers, resume,
@@ -250,8 +253,19 @@ M6 (worker port):
 - Claims stay in the store's `claimRun` (its coordination, claim pauses and branch-writer lock); the engine grew
   `adopt` (hold a run another claim path leased under its token) and `release`. The journal engine also takes
   `leaseMs` (the live `lease_ms` at each renewal) and `onLost`.
-- The engine's reaper tick is not attached in the worker: the controller's reaper requeues expired runs, and the
-  next claim resumes them from the journal. Attaching both would race two takeover paths.
+- One takeover path, the controller's reaper (M6 leftovers): it requeues expired runs (backoff, `max_attempts`,
+  closed items, interactive sessions, attempt records) and the next claim resumes them from the journal. The
+  engine's own `reap`/`attach`/`onTakeover` are deleted; a run past its deadline is aborted by its worker's
+  heartbeat or refused at its next step, and the worker fails it `schedule_to_close`.
+- The runner's waits are schedules on its TickGenerator over the injected clock (`claim`, `heartbeat`,
+  `pause-watch`, `diff-watch`). `Tick.due` (one period after the previous tick ended) carries the host-sleep check;
+  a schedule's period may be a function read before each wait, so live `tick_ms`/`heartbeat_ms` still apply.
+- Resolve is one `resolve` step (merge through gates; 3 h step timeout) carrying a bundle of its merge commit, so a
+  takeover before the push pushes that exact commit. Update gets no step here: its boundaries are its push and PR
+  comments, which the parallel M7 worker-half change rewrites (kept clear of those call sites to avoid conflicts).
+- Roles drive prompts and tools through `Worker.roleSpec` (role file -> `prompts/<file>`, tools by name). Hooks:
+  `before_run` after `passports.begin`, failure code `hook_refused` (task, not infra); `hooks` is a PR-only list
+  checked against the discovered hooks at startup (a typo would silently leave the owner's check off).
 - Implement's `run-agent` result carries a G5-scanned git bundle of its commits (the pause's bundle code), so a
   takeover on another host restores them. The bundle is written with `base64 -i`, not `sh -c`, so no shell runs
   outside the checks.
@@ -355,9 +369,7 @@ M5 follow-up (pure units, partial):
 
 ## Next
 
-0. M6 leftovers: the runner's waits (idle loop, heartbeat interval, pause and diff watches, host-sleep check) onto a
-   TickGenerator; the engine's reaper tick once the controller's reaper unit stops requeueing; steps for update and
-   resolve; compose passes the deployed revision as `code_version`; roles drive prompts and tools.
+0. M6 leftovers: steps for update, with the worker half of M7 (its push and PR comments are its only effects).
 1. M5 follow-up: pure units, leaves first. Done: the contract, the TickGenerator loop (`tick_ms` live), `reaper`,
    `mirror`, `transitions` split; the one reply path; `outbox`, `auth`, `checks-gate`, `run-results`, `commands`,
    `app-requests`, `standing`, `verdicts`, `merge-check` read through the reader and write through the kernel. Next:
@@ -369,10 +381,8 @@ M5 follow-up (pure units, partial):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);
    - `factory dead-letters replay` (the scheduler's `replay` exists) and `blocked_on: dead_letter` in the router (M5).
-3. M10 wiring follows its call sites:
-   - hooks at run start (M6) and delivery (M7) (the merge queue's landing runs `before_merge` since the M8 leftovers);
-   - roles drive the worker's prompts and tools (M6);
-   - a stored setting to enable hooks.
+3. M10 wiring follows its call sites: hooks at delivery (`before_delivery`, M7); the run start (`before_run`),
+   the merge queue's landing (`before_merge`), the `hooks` setting and roles driving prompts and tools are done.
 4. M9 follow-up:
    - M7: outbound uses its service passport;
    - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;

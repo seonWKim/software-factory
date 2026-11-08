@@ -7,17 +7,16 @@
 //   was taken over loses its writes (LeaseLostError) and never overwrites the new owner's journal. As in the
 //   legacy store, the token fences, not lease_expires_at: a worker past its expiry that nobody took over yet
 //   may still renew and finish.
-// - Time is the latest tick's: `heartbeat` renews this worker's leases and times out steps; `reaper` fails runs
-//   past deadline_at and takes over runs whose lease expired (only runs an engine claimed: code_version set).
+// - Time is the latest tick's: `heartbeat` renews this worker's leases, times out steps and aborts a run past
+//   deadline_at. No takeover here: the controller's reaper requeues a run whose lease expired, and the next claim
+//   resumes it from the journal (one takeover path).
 // - code_version: a run journaled by other code is resumed only if `resumes(version)` says so; otherwise it is
-//   left for a worker on that revision (RFC 0015 §8 version pinning), and the reaper fails it at its deadline.
+//   left for a worker on that revision (RFC 0015 §8 version pinning).
 
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../../state/index.js";
-import type { Tick, TickGenerator } from "../../../../shared/ticks/tick-generator.js";
+import type { Tick } from "../../../../shared/ticks/tick-generator.js";
 import {
-  DEFAULT_TICK_PERIODS,
   LeaseLostError,
-  RUN_DEADLINE,
   RunDeadlineError,
   StepTimeoutError,
   type EngineOptions,
@@ -28,17 +27,14 @@ import {
   type RunTimeouts,
   type StepContext,
   type StepId,
-  type TickPeriods,
 } from "../../index.js";
 
 export interface JournalEngineOptions extends EngineOptions {
   readonly db: SqlDriver;
   /** Whether this code may resume a run journaled by `version`. Default: only its own version. */
   readonly resumes?: (version: string) => boolean;
-  /** Most runs held at once; claims and takeovers beyond it are refused. Default: no limit. */
+  /** Most runs held at once; claims beyond it are refused. Default: no limit. */
   readonly slots?: number;
-  /** Called with each run the reaper took over; the worker resumes it from the journal. */
-  readonly onTakeover?: (run: RunRef) => void;
 }
 
 /** The `journal` plugin's product: a JournalEngine per worker loop, all over one database. */
@@ -75,14 +71,6 @@ export class JournalEngine implements ExecutionEngine {
 
   constructor(private readonly opts: JournalEngineOptions) {}
 
-  attach(ticks: TickGenerator, periods: Partial<TickPeriods> = {}): void {
-    const p = { ...DEFAULT_TICK_PERIODS, ...periods };
-    ticks.schedule("heartbeat", p.heartbeat, (t) => this.heartbeat(t));
-    ticks.schedule("reaper", p.reaper, async (t) => {
-      for (const run of await this.reap(t)) this.opts.onTakeover?.(run);
-    });
-  }
-
   async claim(runId: string): Promise<RunRef | null> {
     const now = this.now();
     if (this.full()) return null;
@@ -98,7 +86,6 @@ export class JournalEngine implements ExecutionEngine {
       if (row.not_before !== null && Date.parse(String(row.not_before)) > now) return null;
       if (!(await this.mayResume(tx, runId, row.code_version))) return null;
       const deadline = row.deadline_at === null ? iso(Date.parse(String(row.created_at)) + timeouts.schedule_to_close_ms) : String(row.deadline_at);
-      if (Date.parse(deadline) <= now) return null; // the reaper fails it
       const claimed = await tx.run(
         `UPDATE worker_runs SET status = 'running', attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1,
            lease_expires_at = ?, started_at = COALESCE(started_at, ?), updated_at = ?, code_version = ?, deadline_at = ?
@@ -206,55 +193,6 @@ export class JournalEngine implements ExecutionEngine {
     }
   }
 
-  async reap(tick: Tick): Promise<RunRef[]> {
-    const now = this.observe(tick);
-    await this.failLate(iso(now));
-    const kinds = Object.keys(this.opts.kinds);
-    if (kinds.length === 0 || this.full()) return [];
-    const expired = await this.opts.db.all(
-      `SELECT id, kind, attempt, lease_token, code_version, deadline_at FROM worker_runs
-       WHERE status = 'running' AND lease_expires_at <= ? AND code_version IS NOT NULL AND kind IN (${kinds.map(() => "?").join(", ")})
-       ORDER BY lease_expires_at`,
-      [iso(now), ...kinds],
-    );
-    const out: RunRef[] = [];
-    for (const row of expired) {
-      const id = String(row.id);
-      if (this.full()) break;
-      if (this.held.get(id)?.ref.lease_token === Number(row.lease_token)) continue; // ours: the heartbeat renews it
-      const timeouts = this.opts.kinds[String(row.kind)]!;
-      const taken = await this.opts.db.transaction(async (tx) => {
-        if (!(await this.mayResume(tx, id, row.code_version))) return false;
-        const n = await tx.run(
-          `UPDATE worker_runs SET attempt = attempt + 1, lease_owner = ?, lease_token = lease_token + 1, lease_expires_at = ?,
-             updated_at = ?, code_version = ?
-           WHERE id = ? AND status = 'running' AND lease_token = ? AND lease_expires_at <= ?`,
-          [this.opts.workerId, iso(now + timeouts.heartbeat_ms), iso(now), this.opts.codeVersion, id, Number(row.lease_token), iso(now)],
-        );
-        return n === 1;
-      });
-      if (taken) out.push(this.hold(nextRef(id, row), String(row.deadline_at)));
-    }
-    return out;
-  }
-
-  /** Fails every queued or running run past its deadline, wherever it runs. */
-  private async failLate(now: string): Promise<void> {
-    const late = await this.opts.db.all(
-      "SELECT id, lease_token, deadline_at FROM worker_runs WHERE status IN ('queued', 'running') AND deadline_at IS NOT NULL AND deadline_at <= ?",
-      [now],
-    );
-    for (const row of late) {
-      const outcome: RunResult = { status: "failed", error_code: RUN_DEADLINE, detail: `deadline ${String(row.deadline_at)} passed` };
-      const failed = await this.opts.db.run(
-        `UPDATE worker_runs SET status = 'failed', outcome = ?, lease_owner = NULL, lease_expires_at = NULL, finished_at = ?, updated_at = ?
-         WHERE id = ? AND status IN ('queued', 'running') AND lease_token = ?`,
-        [JSON.stringify(outcome), now, now, String(row.id), Number(row.lease_token)],
-      );
-      if (failed === 1 && this.held.has(String(row.id))) this.lose(String(row.id), new RunDeadlineError(String(row.id), String(row.deadline_at)));
-    }
-  }
-
   /** Marks the step running for this attempt, keeping a partial result; or reports its stored result. */
   private begin(run: RunRef, stepId: StepId, now: number): Promise<Begun> {
     const { forUpdate } = this.opts.db.dialect;
@@ -347,7 +285,7 @@ export class JournalEngine implements ExecutionEngine {
   }
 
   private now(): number {
-    if (this.nowMs === null) throw new Error("the engine has had no tick yet: attach it to the worker's TickGenerator");
+    if (this.nowMs === null) throw new Error("the engine has had no tick yet: hand it the claim's or a heartbeat tick first");
     return this.nowMs;
   }
 }
