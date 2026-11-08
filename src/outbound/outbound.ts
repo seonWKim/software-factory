@@ -210,8 +210,8 @@ export class Outbound {
       await target.deliver(body === null ? d : { ...d, row: { ...row, args: { ...row.args, body } } });
     } catch (err) {
       error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
-      // A close or a post retries with its batch; a status label or a 👀 is best effort: a warning, never a hold.
-      if (row.action === "close" || row.action === "post") {
+      // A close, a post or a PR close retries with its batch; a status label or a 👀 is best effort: a warning, never a hold.
+      if (row.action === "close" || row.action === "post" || row.action === "close_pr") {
         const [b] = await this.d.db.all(
           "SELECT b.attempts FROM outbound_batches b JOIN outbound_batch_intents i ON i.batch_id = b.id WHERE i.intent_id = ?",
           [i.id],

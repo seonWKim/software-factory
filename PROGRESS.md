@@ -51,7 +51,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
-| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half and worker comments done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone. Left: pushes and PR open/update (design decided in 10-event-driven.md), session push, base push, PR close, sub-issue filing |
+| 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half and worker comments done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone; keyed actions (`intent_key`) and the PR close through `github-change`. Left: pushes and PR open/update (design decided in 10-event-driven.md), session push, base push, sub-issue filing |
 | 8 | Merge queue | depth 1 merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands. Left: `MergeCheckTimedOut` (units cannot emit yet), the depth setting and speculative depth, the outbound merge deliveries (M7 takes over `LocalMergeUnit.land`), `github-change` merge |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
@@ -363,11 +363,10 @@ M5 follow-up (pure units, partial):
    - hooks at the merge queue (M8), run start (M6) and delivery (M7);
    - roles drive the worker's prompts and tools (M6);
    - a stored setting to enable hooks.
-4. M7 worker half, rest (design in 10-event-driven.md, "Pushes and PR open/update"): a unique `intent_key` on
-   `outbound_actions`; the run's last step writes its HEAD to a factory-repo ref and records `push` and `pr`
-   intents; `github-push` and `github-change` targets; the controller applies the PR number on `DeliveryCompleted`
-   (`blocked_reason: pr_pending`); then the session push, base push (`local` target), PR close and sub-issue filing.
-   The `forge-writes` ratchet lists what is left.
+4. M7 worker half, rest (design in 10-event-driven.md, "Pushes and PR open/update"): the run's last step writes its
+   HEAD to a factory-repo ref and records keyed `push` and `pr` intents; `github-push` and the PR open/update in
+   `github-change`; the controller applies the PR number on `DeliveryCompleted` (`blocked_reason: pr_pending`); then
+   the session push, base push (`local` target) and sub-issue filing. The `forge-writes` ratchet lists what is left.
 5. M9 follow-up:
    - M5: command units decide through `authorize(passport_id, ...)` and audit with the command's passport (today the
      auth plugins decide and the audit row says `none`); the controller's automatic steps use its service passport;

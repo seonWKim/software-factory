@@ -7,7 +7,7 @@ import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../../core/local-merge.js";
 import { isCliCommandKey } from "../../../core/local-cli.js";
 import { type WorkStatus, statusOf } from "../../../core/status-label.js";
-import { type SourceRef, type WorkItem } from "../../../core/types.js";
+import { type SourceRef, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ThreadLinkField } from "../../../interfaces/factory-store.js";
 import { labelTarget } from "../../../interfaces/factory-store.js";
 import { THREAD_INTENT, type NewAction } from "../../../outbound/index.js";
@@ -143,10 +143,16 @@ export class OutboxUnit {
     await this.c.k.guard("base pushes", () => this.c.unit("local-merge").basePushStep());
   }
 
-  /** DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field). */
+  /**
+   * DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field); a closed PR
+   * clears its item's pending mark.
+   */
   async delivered(intent_ids: readonly string[]): Promise<void> {
     for (const id of intent_ids) {
       if (id.startsWith(THREAD_INTENT)) await this.c.k.d.store.linkDelivery(Number(id.slice(THREAD_INTENT.length)));
+    }
+    for (const a of await this.c.k.deliveredActions(intent_ids)) {
+      if (a.action === "close_pr" && a.work_item_id) await this.c.unit("closes").prClosed(a.work_item_id as WorkItemId);
     }
   }
 

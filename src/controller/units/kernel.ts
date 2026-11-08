@@ -6,7 +6,7 @@ import { type SourceRef, type SourceType, type WorkItem } from "../../core/types
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
-import type { NewAction } from "../../outbound/index.js";
+import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { SqlDriver } from "../../state/index.js";
 
 /**
@@ -77,6 +77,8 @@ export type ItemCommitted = Awaited<ReturnType<Store["openBudgetCheckpoint"]>> |
 export interface Deliveries {
   record(a: NewAction, now: string): Promise<void>;
   announce(now: string): Promise<number>;
+  /** The action rows among delivered intent ids (DeliveryCompleted). */
+  actions(intent_ids: readonly string[]): Promise<ActionRow[]>;
 }
 
 /**
@@ -158,6 +160,11 @@ export class Kernel {
   /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */
   announce(): Promise<number> {
     return this.deliveries.announce(this.d.clock.now().toISOString());
+  }
+
+  /** The action rows among `intent_ids`, which outbound reported delivered. */
+  deliveredActions(intent_ids: readonly string[]): Promise<ActionRow[]> {
+    return this.deliveries.actions(intent_ids);
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */

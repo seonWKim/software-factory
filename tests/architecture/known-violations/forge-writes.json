@@ -6,7 +6,6 @@
   "broker-write|worker/runs/implement/implement.run.ts|github.push_branch",
   "broker-write|worker/runs/resolve/resolve.run.ts|github.push_branch",
   "broker-write|worker/runs/update/update.run.ts|github.push_branch",
-  "write|controller/units/closes/closes.unit.ts|closePr",
   "write|controller/units/local-merge/local-merge.unit.ts|push",
   "write|controller/units/phases/phases.unit.ts|fileSubIssue"
 ]

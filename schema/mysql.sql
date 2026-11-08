@@ -1439,7 +1439,9 @@ CREATE TABLE `outbound_actions` (
   `delivered_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
   `outcome` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
   `last_error` mediumtext COLLATE utf8mb4_bin,
+  `intent_key` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`seq`),
+  UNIQUE KEY `outbound_actions_key` (`intent_key`),
   KEY `outbound_actions_pending` (`delivered_at`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 

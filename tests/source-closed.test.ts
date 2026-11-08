@@ -390,26 +390,30 @@ describe("closing the source issue: close reason and the open PR", () => {
     }
   });
 
-  it("a failed PR close or comment leaves the item CLOSED, is logged, and a later tick retries it", async () => {
+  it("a failed PR close or comment leaves the item CLOSED and pending; outbound retries it after its backoff, once", async () => {
     for (const fail of ["close", "comment"] as const) {
       const f = await factory();
       await withPr(f);
       if (fail === "close") f.forge.prCloseError = new Error("boom");
       else f.forge.prCommentError = new Error("boom");
       await intake(f, closed(bob, "completed"));
-      expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+      expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", blocked_reason: "pr_close_pending" });
       expect(f.forge.prStates.get(42) ?? "open").toBe("open");
-      expect(f.log.lines.filter((l) => l.level === "warn").map((l) => l.msg))
-        .toContain("closing the PR after the source closed failed; retried on a later tick");
+      expect(f.log.lines.filter((l) => l.level === "warn").map((l) => l.msg)).toContain("close_pr failed; retried later");
 
       f.forge.prCloseError = null;
       f.forge.prCommentError = null;
+      // A source-close tick before the backoff records the same keyed intent again: nothing new is sent.
       await f.controller.tickSourceCloses();
+      expect(f.forge.prStates.get(42) ?? "open").toBe("open");
+      f.clock.advance(config.retry_max_ms);
+      await f.controller.tickOutbox();
       expect(f.forge.prStates.get(42)).toBe("closed");
       expect(f.forge.prComments.map((c) => c.body)).toEqual(["Closed because the issue was closed by @bob."]);
       expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null });
       const calls = f.forge.prCloseCalls.length;
       await f.controller.tickSourceCloses();
+      await f.controller.tickOutbox();
       expect(f.forge.prCloseCalls).toHaveLength(calls);
     }
   });

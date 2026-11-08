@@ -1,10 +1,10 @@
 // Outbound component (RFC 0015 §7): every write to the outside world. Producers store intents and announce them as
 // DeliveryRequested on deliveries.requests; the aggregator batches them per destination (§15.1); the flush sends
-// each batch through its target (github-comment, github-labels, slack-thread, local, source) and announces
+// each batch through its target (github-change, github-comment, github-labels, slack-thread, local, source) and announces
 // DeliveryCompleted on deliveries.results. Other components import only this file.
 
 export {
-  ACTION_INTENT, THREAD_INTENT, announce, destinationOf, recordAction, type ActionKind, type NewAction,
+  ACTION_INTENT, THREAD_INTENT, actionsOf, announce, destinationOf, recordAction, type ActionKind, type ActionRow, type NewAction,
 } from "./intents.js";
 export { Outbound, type OutboundDeps } from "./outbound.js";
 export { buildTargets } from "./targets/targets.js";

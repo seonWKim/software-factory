@@ -24,7 +24,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, policyFor, recordAction,
+  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionsOf, announce, buildTargets, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
@@ -130,6 +130,7 @@ export class ControllerRole implements Decisions {
       record: (a, now) => recordAction(db(), a, now),
       // The intents go out on the controller's bus; wired before its transaction opens.
       announce: async (now) => announce(db(), (await this.wire()).controllerBus, this.role.settings.config().project.key, now, CONTROLLER),
+      actions: (ids) => actionsOf(db(), ids),
     });
   }
 

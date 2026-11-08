@@ -97,33 +97,34 @@ export class ClosesUnit {
   }
 
   /**
-   * The rest of a source close for an item with a PR: one comment on the PR naming who closed the issue,
-   * then the PR closed without a merge, then the pending mark cleared. A PR already merged or closed is left
-   * alone. A failure is logged and the item stays pending, so tickSourceCloses tries again.
+   * The rest of a source close for an item with a PR (RFC 0015 M7): one `close_pr` intent, keyed on the item, which
+   * outbound delivers as one comment on the PR naming who closed the issue, then the PR closed without a merge (a
+   * PR already merged or closed is left alone). The pending mark is cleared when outbound reports it delivered
+   * (`prClosed`); until then each tick records it again, which stores nothing.
    */
   async finishPrClose(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
-    const pr_number = it ? prNumber(it) : null;
-    if (!it || !prClosePending(it) || pr_number === null) return;
+    const pr = it ? prNumber(it) : null;
+    if (!it || !prClosePending(it) || pr === null) return;
     const forge = this.c.k.forge;
     if (!forge) return;
-    try {
-      const r = await forge.closePr({
-        pr: pr_number,
-        closed: it.source,
+    await this.c.k.recordAction({
+      action: "close_pr",
+      target: forge.prRef(pr),
+      work_item_id: it.id,
+      key: `close_pr:${it.id}`,
+      args: {
+        pr,
+        closed: JSON.stringify(it.source),
         marker: `<!-- factory:pr-closed:${it.id} -->`,
-        body: (closer) =>
-          closer?.login ? `Closed because the issue was closed by @${closer.login}.` : "Closed because the issue was closed.",
-      });
-      this.c.k.d.log.info("pr closed after source close", { work_item_id: it.id, pr_number, result: r });
-    } catch (err) {
-      this.c.k.d.log.warn("closing the PR after the source closed failed; retried on a later tick", {
-        work_item_id: it.id,
-        pr_number,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-      });
-      return;
-    }
+        body: "Closed because the issue was closed.",
+        body_by: "Closed because the issue was closed by {closer}.",
+      },
+    });
+  }
+
+  /** Outbound closed the item's PR: the pending mark is cleared. */
+  async prClosed(id: WorkItemId): Promise<void> {
     await this.c.unit("transitions").decide(id, (cur) =>
       prClosePending(cur) ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "pr_closed_for_source" } : null,
     );

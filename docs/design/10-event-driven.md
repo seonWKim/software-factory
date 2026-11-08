@@ -191,8 +191,16 @@ force.
   URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
-  ratchets the writes still outside outbound (the worker's pushes and PR writes, the session's, base push, PR close,
-  sub-issue filing).
+  ratchets the writes still outside outbound (the worker's pushes and PR writes, the session's, base push, sub-issue
+  filing).
+  - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
+    unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
+    source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
+    texts, `{closer}` filled from the forge, and the marker); outbound's `github-change` target calls
+    `Forge.closePr` and retries a failure with its batch's backoff, and on `DeliveryCompleted` the outbox unit
+    clears the item's `pr_close_pending` (`closes.prClosed`). Before, the closes unit called `closePr` inline and
+    retried on each source-close tick. Solo and enterprise: the same; the key keeps a replica's repeat from
+    storing a second close.
   - A run's comments (decision changed 2026-11-09, M7 worker half; 05-sources.md "A run's comments are thread
     entries"): the gate, review and update comments are thread entries on the item, stored once per marker, which
     the outbox step announces like the controller's. The worker imports nothing of outbound: it writes the thread
@@ -211,13 +219,12 @@ force.
     stage), then queues the review as today. Not a run step that waits for the delivery: that would hold a worker
     slot for up to `max_wait` under a low forge budget, tie run capacity to outbound's liveness, and put an item
     decision in the worker. Restart safety: the steps are journaled, intents are keyed (a unique key on
-    `outbound_actions`, so a re-run step stores nothing new), and the targets reconcile before they send (§5.2). The
+    `outbound_actions.intent_key`, built), and the targets reconcile before they send (§5.2). The
     push failure classes the run reports today (`network_unavailable`, `forge_auth`, `github_rate_limited`,
     `push_failed`) become delivery failures: retried by outbound with backoff, with the claim pauses moving to a
     hold of the destination. The wip push of a failed run becomes the local ref only. The session's push
-    (`factory session finish`), the base push (the `local` target over `base_pushes`), the PR close (a `close_pr`
-    action whose delivery clears `pr_close_pending`) and sub-issue filing (a keyed `file_sub_issue` action whose
-    delivered ref the phases unit records) take the same path. Solo default: the factory repo is on the one
+    (`factory session finish`), the base push (the `local` target over `base_pushes`) and sub-issue filing (a keyed
+    `file_sub_issue` action whose delivered ref the phases unit records) take the same path, as the PR close does. Solo default: the factory repo is on the one
     machine, and every process's outbound can push from it. Enterprise setting: a factory repo per host, so a
     push's destination names the host that holds the ref (`git:<host>:<branch>`) and only that host's outbound
     flushes it (the flush's "kinds this process can write now"); the PR intent waits behind the push in the same
