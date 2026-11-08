@@ -1050,20 +1050,24 @@ describe("spec gate: /revise and /reject", () => {
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
     expect(f.source.closed).toEqual([]);
 
+    // Outbound retries the close after its backoff (RFC 0015 M7).
     f.source.closeError = null;
+    f.clock.advance(config.retry_max_ms);
     await f.step();
     await f.step();
     expect(f.source.closed).toEqual([f.src]);
     expect(f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
 
-    // The comment's delivery failed (issue #282): it is in the thread, so the close goes ahead; the outbox posts the
-    // comment once after its backoff.
+    // The comment's delivery failed: the item is closed in the store at once (issue #282), and on the issue the
+    // comment and the close are one batch that retries whole (RFC 0015 §7), so the close follows the comment once it
+    // posts after its backoff.
     const g = await atSpecGate(39);
     g.source.commentError = new Error("GitHub POST comment → 502");
     g.source.queue.push({ kind: "spec_rejected", source: g.src, comment_id: g.next(), approver: alice, reason: "no" });
     await g.step();
-    expect(g.source.closed).toEqual([g.src]);
+    expect(await g.store.getWorkItem(g.item.id)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+    expect(g.source.closed).toEqual([]);
     expect(g.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(0);
     g.source.commentError = null;
     g.clock.advance(config.retry_max_ms);

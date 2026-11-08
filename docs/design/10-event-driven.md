@@ -150,6 +150,29 @@ force.
   still read and write the store, the forge and the sources inline, in its ratchet, and the list shrinks as each
   unit is split. Solo and enterprise: unchanged; each replica runs every unit, and every write is still a
   conditional update.
+- **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half; the
+  worker's pushes, PR writes and review comments are still worker steps). Controller units store intents (thread
+  entries in `outbound_intents`; status labels, 👀, issue closes and posts with no thread entry in
+  `outbound_actions`) instead of calling a source or the forge. The outbox step announces them as
+  `DeliveryRequested{commit_id, commit_count, destination, intent_ids, reply}` on `deliveries.requests`
+  (partitioned by destination, `<kind>:<ref>`); `commit_id` is the announcing transaction, so every intent is
+  announced once, also one written straight through the store. The `aggregate` handler batches per destination
+  under the §15.1 rules (pure functions in `src/outbound/aggregator/batching.ts`): `auto` sends a commit at once,
+  adds a 2 s debounce for a destination with 3+ deliveries in 60 s, widens the window up to `max_wait` (30 s) as the
+  forge budget falls under 20%, and never delays a reply to a person; `max_messages` (10) caps a batch.
+  `outbound.batching` in factory.config.json sets `mode` (`auto`, `commit`, `fixed`), `debounce_ms`, `max_wait_ms`
+  and `max_messages` per destination kind or `*` (review-only; tests not about batching use `commit`). The flush
+  (`outbound-flush` tick) sends each destination's oldest due batch, in order, and only for the destination kinds
+  this process can write now (its adapters and the forge, the synced type only on the sync lease's holder), so
+  batches no process here can send never crowd out the rest; they wait for a process that has the adapter. Every
+  text is egress-scanned (G5) first: a flagged text is delivered once, under its marker, as a notice naming the
+  rules only, never retried in any form, so the destination's later batches go on. A failed comment, close or post
+  retries its whole batch with backoff (intents already delivered are skipped); a status label or 👀 failure is
+  logged and not retried (best effort, as before). `DeliveryCompleted` on `deliveries.results` records delivered
+  URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
+  first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
+  delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
+  ratchets the writes still outside outbound (the worker's, base push, PR close, sub-issue filing).
 - **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
@@ -205,3 +228,6 @@ force.
 - **Runs and the worker** (decision changed 2026-11-08, RFC 0015 M6). Before: the engine existed only in its
   contract test; runs went through `src/core/worker.ts` (one class, every kind a method, a dispatch by kind), which
   renewed its lease through the store's heartbeat and kept no journal, so a run whose worker died started over.
+- **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
+  transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
+  inline), outside any batch, and outbox delivery never waited on the forge budget.

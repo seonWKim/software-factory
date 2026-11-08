@@ -88,3 +88,34 @@ export function joins(policy: BatchingPolicy, batch: BatchView & { readonly flus
   if (policy.mode === "commit" || capped(batch, policy)) return false;
   return Date.parse(batch.flush_at) > Date.parse(now);
 }
+
+const MODES: readonly BatchingMode[] = ["auto", "commit", "fixed"];
+const POLICY_KEYS = ["mode", "debounce_ms", "max_wait_ms", "max_messages"] as const;
+
+/**
+ * `outbound.batching` in factory.config.json: for each destination kind (`github_issue`, `slack_thread`, ...), or
+ * `*` for every kind not named, the fields that differ from DEFAULT_BATCHING. Absent: the default everywhere. A
+ * wrong key or value fails startup, naming it.
+ */
+export function batchingPolicies(raw: unknown): Readonly<Record<string, BatchingPolicy>> {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("outbound.batching must be an object of destination kinds");
+  const out: Record<string, BatchingPolicy> = {};
+  for (const [kind, v] of Object.entries(raw)) {
+    const at = `outbound.batching.${kind}`;
+    if (typeof v !== "object" || v === null || Array.isArray(v)) throw new Error(`${at} must be an object`);
+    for (const k of Object.keys(v)) if (!(POLICY_KEYS as readonly string[]).includes(k)) throw new Error(`${at}.${k} is not a batching field (${POLICY_KEYS.join(", ")})`);
+    const p = { ...DEFAULT_BATCHING, ...(v as Partial<BatchingPolicy>) };
+    if (!MODES.includes(p.mode)) throw new Error(`${at}.mode must be one of ${MODES.join(", ")}`);
+    for (const k of ["debounce_ms", "max_wait_ms", "max_messages"] as const) {
+      if (!Number.isInteger(p[k]) || p[k] < (k === "max_messages" ? 1 : 0)) throw new Error(`${at}.${k} must be a non-negative integer${k === "max_messages" ? " of at least 1" : ""}`);
+    }
+    out[kind] = p;
+  }
+  return out;
+}
+
+/** The policy of a destination (`<kind>:<ref>`): its kind's, else `*`'s, else the default. */
+export function policyFor(policies: Readonly<Record<string, BatchingPolicy>>, destination: string): BatchingPolicy {
+  return policies[destination.split(":")[0]!] ?? policies["*"] ?? DEFAULT_BATCHING;
+}

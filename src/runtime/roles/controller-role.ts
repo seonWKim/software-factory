@@ -24,7 +24,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  DEFAULT_BATCHING, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, recordAction,
+  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickSource } from "../../shared/ticks/tick-generator.js";
@@ -382,6 +382,8 @@ export class ControllerRole implements Decisions {
     const controllerBus = bus.component({ db, component: CONTROLLER, topics, consumerId });
     const outboundBus = bus.component({ db, component: OUTBOUND, topics, consumerId });
     const sync = (await this.router()).unit("sync");
+    // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
+    const canSend = (type: string) => type !== SYNCED || !sync.syncedElsewhere();
     const outbound = new Outbound({
       db,
       bus: outboundBus,
@@ -393,8 +395,8 @@ export class ControllerRole implements Decisions {
         const c = d.settings.config();
         return { lease_ms: c.lease_ms, retry_base_ms: c.retry_base_ms, retry_max_ms: c.retry_max_ms, project_key: c.project.key };
       },
-      // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
-      canSend: (type) => type !== SYNCED || !sync.syncedElsewhere(),
+      canSend,
+      kinds: () => [...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend),
       fenceFor: (type) => sync.fenceFor(type),
       fenceRefused: (fence) => sync.fenceRefused(fence),
     });
@@ -445,7 +447,7 @@ export class ControllerRole implements Decisions {
         db, bus: outboundBus, registry: r, component: OUTBOUND, transactional: true,
         context: (tx, emit) => ({
           tx: tx!, emit,
-          policy: () => DEFAULT_BATCHING,
+          policy: (destination) => policyFor(d.settings.config().outbound_batching, destination),
           budget: (destination) => {
             const b = destination.startsWith(`${SYNCED}:`) ? d.github_budget?.() : null;
             return b ? { remaining: b.remaining, limit: b.limit } : null;

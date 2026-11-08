@@ -28,6 +28,11 @@ export interface OutboundDeps {
   config(): { lease_ms: number; retry_base_ms: number; retry_max_ms: number; project_key: string };
   /** Whether this process writes to `source_type` now (the sync lease: only its holder writes the synced type). */
   canSend(source_type: string): boolean;
+  /**
+   * The destination kinds (`<kind>:<ref>`) this process may write now: its adapters' types and the forge's, those
+   * `canSend` allows. A flush selects only these, so batches no process here can send never crowd out the rest.
+   */
+  kinds(): readonly string[];
   /** The fence of a write to `source_type`: the held sync lease for the synced type, else none. */
   fenceFor(source_type: string): SyncFence | null;
   /** A fenced claim was refused: the lease may have moved on. */
@@ -52,11 +57,14 @@ export class Outbound {
   /** Sends every due batch this process can; returns how many it sent. */
   async flush(t: Tick): Promise<number> {
     const now = t.now;
+    const kinds = this.d.kinds();
+    if (kinds.length === 0) return 0;
     const rows = await this.d.db.all(
       `SELECT b.* FROM outbound_batches b WHERE b.state <> 'sent' AND b.flush_at <= ?
+         AND (${kinds.map(() => "SUBSTR(b.destination, 1, ?) = ?").join(" OR ")})
          AND NOT EXISTS (SELECT 1 FROM outbound_batches o WHERE o.destination = b.destination AND o.state <> 'sent' AND o.seq < b.seq)
        ORDER BY b.seq LIMIT ${FLUSH_BATCH}`,
-      [now],
+      [now, ...kinds.flatMap((k) => [k.length + 1, `${k}:`])],
     );
     let sent = 0;
     for (const b of rows) {
@@ -149,10 +157,16 @@ export class Outbound {
     return null;
   }
 
-  /** G5 on every text that leaves: a flagged text is never written. */
-  private async scanned(text: string): Promise<void> {
+  /**
+   * G5 on every text that leaves. A flagged text is never written in any form: the intent is delivered once, under
+   * its marker, as a notice naming the rules only, so it is not retried and the destination's later batches go on.
+   */
+  private async scanned(text: string, source_id: string): Promise<string> {
     const r = await this.d.scanner.scan("comment", text);
-    if (!r.clean) throw new Error(`egress scan flagged the text (${r.findings.map((f) => f.rule).join(", ")}); not written`);
+    if (r.clean) return text;
+    const rules = [...new Set(r.findings.map((f) => f.rule))].join(", ");
+    this.d.log.warn("message blocked by the egress scan; withheld", { source_id, rules });
+    return `A factory message was withheld by the leak scanner (${rules}). It is not posted in any form.`;
   }
 
   private async deliver(i: Loaded, now: string): Promise<void> {
@@ -177,8 +191,7 @@ export class Outbound {
       }
       let url: string | null;
       try {
-        await this.scanned(d.body);
-        url = (await target.deliver(d)).url;
+        url = (await target.deliver({ ...d, body: await this.scanned(d.body, d.target.id) })).url;
       } catch (err) {
         const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
         const delay = retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
@@ -193,8 +206,8 @@ export class Outbound {
     let outcome = "sent";
     let error: string | null = null;
     try {
-      if (row.action === "post") await this.scanned(String(row.args.body));
-      await target.deliver(d);
+      const body = row.action === "post" ? await this.scanned(String(row.args.body), row.target.id) : null;
+      await target.deliver(body === null ? d : { ...d, row: { ...row, args: { ...row.args, body } } });
     } catch (err) {
       error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
       // A close or a post retries with its batch; a status label or a 👀 is best effort: a warning, never a hold.

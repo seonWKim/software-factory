@@ -1619,6 +1619,13 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "controller_outbox",
       "inbound_inbox",
       "inbound_outbox",
+      // Outbound's delivery tables (RFC 0015 M7).
+      "outbound_actions",
+      "outbound_batch_intents",
+      "outbound_batches",
+      "outbound_inbox",
+      "outbound_outbox",
+      "outbound_requests",
       "runtime_hook_decisions",
     ];
 

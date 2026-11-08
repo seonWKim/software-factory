@@ -9,7 +9,7 @@ export {
 export { Outbound, type OutboundDeps } from "./outbound.js";
 export { buildTargets } from "./targets/targets.js";
 export type { Delivery, DeliveryTarget, TargetDeps } from "./targets/target.js";
-export { DEFAULT_BATCHING, type BatchingPolicy, type Budget } from "./aggregator/batching.js";
+export { DEFAULT_BATCHING, batchingPolicies, policyFor, type BatchingPolicy, type Budget } from "./aggregator/batching.js";
 export type { OutboundContext } from "./context.js";
 export { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
 export { DELIVERY_COMPLETED } from "./topics/deliveries-results.topic.js";

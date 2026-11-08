@@ -220,7 +220,7 @@ export const PROTECTED_PATHS: Readonly<Record<string, readonly string[]>> = {
     "src/impl/egress/", "src/impl/secrets/",
     // Setting descriptors (RFC 0015 M10): tests/architecture/settings-monotonic.test.ts fails on one outside these.
     "src/controller/settings/", "src/guards/settings/", "src/identity/settings/", "src/inbound/settings/",
-    "src/runtime/settings/", "src/state/settings/", "src/worker/settings/",
+    "src/outbound/settings/", "src/runtime/settings/", "src/state/settings/", "src/worker/settings/",
   ],
 };
 

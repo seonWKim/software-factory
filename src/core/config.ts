@@ -168,6 +168,11 @@ export interface LoadedConfig {
    * are deleted by the controller's cleanup. Default 14.
    */
   inbox_retention_days: number;
+  /**
+   * `outbound.batching` (RFC 0015 §15.1): each destination kind's batching policy (outbound's BatchingPolicy), `*`
+   * for the rest. Empty: `auto`. Parsed by outbound's `batchingPolicies`; core imports no component.
+   */
+  outbound_batching: Readonly<Record<string, { readonly mode: "auto" | "commit" | "fixed"; readonly debounce_ms: number; readonly max_wait_ms: number; readonly max_messages: number }>>;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /**

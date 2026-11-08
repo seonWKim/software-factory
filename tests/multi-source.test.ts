@@ -154,7 +154,7 @@ describe("multi-source controller: per-item routing", () => {
     expect(only.statusCalls.map((x) => x.change_ref)).toEqual([null, "9"]);
   });
 
-  it("an item whose source type has no adapter keeps its state; its calls are skipped with a warning", async () => {
+  it("an item whose source type has no adapter keeps its state; its writes wait unsent for a process that has one", async () => {
     const f = await setup();
     const { slItem } = await intakeBoth(f);
     const log = recordingLog();
@@ -167,8 +167,9 @@ describe("multi-source controller: per-item routing", () => {
     expect(gh.comments).toEqual([]);
     expect(gh.reactions).toEqual([]);
     expect(gh.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([]);
-    expect(log.lines.filter((l) => l.level === "warn" && l.msg === "no source adapter for the item's source type; skipped").length)
-      .toBeGreaterThan(0);
+    // Outbound keeps them (RFC 0015 M7): a process with the Slack adapter sends them later.
+    const pending = await f.store.db.all("SELECT destination FROM outbound_batches WHERE state <> 'sent'");
+    expect(pending.map((r) => String(r.destination))).toContain(`slack_thread:${slackRef(1).id}`);
     const after = (await f.store.getWorkItem(slItem.id))!;
     expect(after.version).toBe(slItem.version);
     expect(after.stage).toBe(slItem.stage);
