@@ -99,9 +99,10 @@ export async function effectiveGlobal<K extends GlobalSettableKey>(d: UiDeps, ke
   return { value: e.value, source: e.source };
 }
 
-type Kind = "number" | "boolean" | "models" | "model_by" | "mode";
+/** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). */
+type Kind = "number" | "boolean" | "models" | "json" | "mode";
 const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" ? "model_by" : k === "mode" ? "mode" : "number";
+  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" ? "json" : k === "mode" ? "mode" : "number";
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {

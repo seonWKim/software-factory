@@ -129,7 +129,9 @@ describe("GET /api/v1/settings", () => {
     expect(row("max_diff_files")).toMatchObject({ projects: [{ project: "github.com/o/r", value: "10", source: "file" }] });
     expect(row("phases_auto_approve")).toMatchObject({ kind: "boolean", value: "false" });
     expect(row("models")).toMatchObject({ kind: "models" });
-    expect(row("model_by")).toMatchObject({ kind: "model_by" });
+    expect(row("model_by")).toMatchObject({ kind: "json" });
+    // An object setting is edited as JSON text, never in a number input.
+    expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "hold" }) });
     expect(v.repo).toBe("o/r");
     expect(v.project).toBe("github.com/o/r");
     // The project key is never shown.

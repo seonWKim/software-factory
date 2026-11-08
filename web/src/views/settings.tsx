@@ -109,7 +109,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
         </Button>
       </form>
     );
-  } else if (row.kind === "model_by") {
+  } else if (row.kind === "json") {
     const shown = draft ?? value;
     control = (
       <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
