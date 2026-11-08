@@ -144,7 +144,7 @@ import type {
 import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX } from "../../../interfaces/factory-store.js";
 import { type ChildRestart, migrationPendingError } from "../../../interfaces/updater.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
-import type { Row, SqlDriver, SqlExecutor, SqlValue } from "./driver.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {

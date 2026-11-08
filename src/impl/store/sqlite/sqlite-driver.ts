@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../sql/driver.js";
+import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { MIGRATIONS } from "./schema.js";
 
 const SQLITE_CONSTRAINT_UNIQUE = 2067;

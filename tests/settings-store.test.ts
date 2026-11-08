@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
-import type { SqlDriver, SqlExecutor } from "../src/impl/store/sql/driver.js";
+import type { SqlDriver, SqlExecutor } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, newMysqlDatabase } from "./helpers/store.js";

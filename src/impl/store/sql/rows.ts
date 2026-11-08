@@ -33,7 +33,7 @@ import type {
 } from "../../../core/types.js";
 import type { NewWorkItem } from "../../../interfaces/factory-store.js";
 import type { ChangeFields } from "./change-fields.js";
-import type { Row, SqlValue } from "./driver.js";
+import type { Row, SqlValue } from "../../../state/index.js";
 
 const JSON_COLUMNS = new Set(["resources", "done_criteria", "allowed_paths", "files_to_change", "pr_files"]);
 const PATCHABLE: readonly (keyof WorkItemPatch)[] = [

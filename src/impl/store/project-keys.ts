@@ -8,7 +8,7 @@
 // `owner/name` never contains ':', so a second run finds nothing to change.
 
 import { type ProjectRef, isLegacyProject, projectLabelCursor } from "../../core/project.js";
-import type { Row, SqlExecutor } from "./sql/driver.js";
+import type { Row, SqlExecutor } from "../../state/index.js";
 
 /** Every table with a project column. A new one must be added here (tests/project-migration.test.ts checks). */
 export const PROJECT_TABLES = ["work_items", "unreviewed_merges"] as const;

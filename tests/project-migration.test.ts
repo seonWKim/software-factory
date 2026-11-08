@@ -7,7 +7,7 @@ import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import {
   PROJECT_TABLES, type ProjectKeyDb, type ResolveRepo, applyProjectKeys, countLegacyProjectRows, planProjectKeys, runProjectKeyStep,
 } from "../src/impl/store/project-keys.js";
-import type { SqlDriver } from "../src/impl/store/sql/driver.js";
+import type { SqlDriver } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";

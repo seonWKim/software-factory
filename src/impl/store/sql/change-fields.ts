@@ -5,7 +5,7 @@
 
 import { prNumber } from "../../../core/change-ref.js";
 import { projectLabelCursor } from "../../../core/project.js";
-import type { SqlExecutor } from "./driver.js";
+import type { SqlExecutor } from "../../../state/index.js";
 
 export interface ChangeFields {
   pr_number: number | null;

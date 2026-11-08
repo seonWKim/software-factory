@@ -1,5 +1,5 @@
 import mysql, { type Pool, type PoolConnection, type ResultSetHeader, type RowDataPacket } from "mysql2/promise";
-import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../sql/driver.js";
+import type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import { migrationPendingError } from "../../../interfaces/updater.js";
 import { MysqlMigrations, pendingMessage } from "./migrations.js";
 

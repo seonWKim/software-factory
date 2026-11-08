@@ -39,7 +39,7 @@ import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "./impl/store/project-keys.js";
-import type { SqlExecutor } from "./impl/store/sql/driver.js";
+import type { SqlExecutor } from "./state/index.js";
 import { DRAIN_MARGIN_MS } from "./impl/updater/git-worktree.js";
 import { withDrain } from "./migrate-drain.js";
 import { SqliteDriver } from "./impl/store/sqlite/sqlite-driver.js";
