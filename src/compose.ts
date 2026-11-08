@@ -901,6 +901,7 @@ export async function build(
     testDatabase,
     settings,
     engines,
+    ticks,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };

@@ -1,7 +1,8 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
 import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
-import { tickAt } from "../shared/ticks/tick-generator.js";
+import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
+import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type FactoryConfig, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
@@ -53,14 +54,17 @@ export class Worker {
   /** The lease signal of each run the engine holds: aborted when the engine loses the run. */
   readonly leases = new Map<string, AbortController>();
 
+  private readonly engines: ExecutionEngines;
+  private readonly ticks: TickSource;
+
   /**
-   * `engines`: the selected `engine` plugin. Absent (a Worker a test builds): the journal over the store's
-   * database, the plugin's default.
+   * `plugins.engines`: the selected `engine` plugin; absent (a Worker a test builds): the journal over the store's
+   * database, the plugin's default. `plugins.ticks`: the selected `ticks` plugin; absent: `time-based`. Every wait
+   * of the worker is a schedule on it over the injected clock, so tests move them with a FakeClock.
    */
-  constructor(
-    readonly d: WorkerDeps,
-    private readonly engines: ExecutionEngines = new JournalEngines(storeSql(d.store)),
-  ) {
+  constructor(readonly d: WorkerDeps, plugins: WorkerPlugins = {}) {
+    this.engines = plugins.engines ?? new JournalEngines(storeSql(d.store));
+    this.ticks = plugins.ticks ?? new TimeBasedTicks();
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     this.cfg = this.live.config();
     this.runModels = d.settings ? this.live.models() : d.models;
@@ -74,19 +78,32 @@ export class Worker {
     return this.d.host ?? this.d.id.split(":")[0]!;
   }
 
+  /**
+   * The claim loop: each tick claims and executes runs until none is left, then waits the live tick_ms. A tick
+   * after a wait checks for a host sleep first.
+   */
   async run(signal: AbortSignal): Promise<void> {
-    while (!signal.aborted) {
-      const worked = await this.tick().catch((err: unknown) => {
-        this.d.log.error("worker tick failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
-        return false;
-      });
-      if (!worked) {
-        const tick_ms = this.live.config().tick_ms;
-        const started = this.d.clock.now().getTime();
-        const waited = await this.d.clock.sleep(tick_ms, signal).then(() => true, () => false);
-        if (waited) await this.checkWake(started + tick_ms, this.d.clock.now().getTime(), null);
+    await this.every("claim", () => this.live.config().tick_ms, signal, async (t) => {
+      if (t.due) await this.checkWake(Date.parse(t.due), Date.parse(t.now), null);
+      while (!signal.aborted) {
+        const worked = await this.tick().catch((err: unknown) => {
+          this.d.log.error("worker tick failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+          return false;
+        });
+        if (!worked) return;
       }
-    }
+    });
+  }
+
+  /**
+   * One wait loop of this worker on its TickGenerator over the injected clock, until `stop` aborts: `onTick` at
+   * once, then each period after the previous tick ended. A failed tick is logged; the loop goes on.
+   */
+  every(name: string, period: Period, stop: AbortSignal, onTick: TickHandler): Promise<void> {
+    const g = this.ticks.create((schedule, err) =>
+      this.d.log.error("worker tick failed", { schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }), this.d.clock);
+    g.schedule(name, period, onTick);
+    return g.run(stop);
   }
 
   /**
@@ -338,22 +355,18 @@ export class Worker {
    * retried on the next tick.
    */
   async watchPause(run: Run, s: RunScratch, stop: AbortSignal): Promise<void> {
-    while (!stop.aborted) {
-      const { tick_ms } = this.cfg;
-      const started = this.d.clock.now().getTime();
-      try {
-        await this.d.clock.sleep(tick_ms, stop);
-      } catch {
-        return;
-      }
-      await this.checkWake(started + tick_ms, this.d.clock.now().getTime(), run);
+    const done = new AbortController();
+    await this.every("pause-watch", this.cfg.tick_ms, AbortSignal.any([stop, done.signal]), async (t) => {
+      // The first tick is the run's start: the first look comes one tick_ms later.
+      if (!t.due) return;
+      await this.checkWake(Date.parse(t.due), Date.parse(t.now), run);
       const p = await this.d.store.workerPause(this.d.id).catch(() => null);
       if (p) {
         s.paused_by = p.paused_by;
         s.pause.abort(new Error("paused"));
-        return;
+        done.abort();
       }
-    }
+    });
   }
 
   /**
@@ -394,29 +407,28 @@ export class Worker {
    * Timers always fire a little late, so only a gap over 2 * heartbeat_ms is logged as late; renewal is unconditional.
    */
   async heartbeat(run: Run, engine: ExecutionEngine, stop: AbortSignal): Promise<void> {
-    while (!stop.aborted) {
-      // Read each round: a heartbeat_ms or lease_ms change applies at the next renewal (design 2026-11-03).
-      const { heartbeat_ms } = this.live.values();
-      const slept = this.d.clock.now().getTime();
-      try {
-        await this.d.clock.sleep(heartbeat_ms, stop);
-      } catch {
-        return;
-      }
-      const woke = this.d.clock.now().getTime();
-      const gap = woke - slept;
+    const done = new AbortController();
+    // Read before each wait: a heartbeat_ms or lease_ms change applies at the next renewal (design 2026-11-03).
+    let heartbeat_ms = this.live.values().heartbeat_ms;
+    const period = () => (heartbeat_ms = this.live.values().heartbeat_ms);
+    await this.every("heartbeat", period, AbortSignal.any([stop, done.signal]), async (t) => {
+      // The first tick is the run's start: the first renewal comes one heartbeat_ms later.
+      if (!t.due) return;
+      const due = Date.parse(t.due);
+      const woke = Date.parse(t.now);
+      const gap = woke - due + heartbeat_ms;
       await this.live.refresh();
       const { lease_ms } = this.live.values();
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
       // The engine renews the lease (the live lease_ms) and times out steps; a lost lease aborts the run (onLost).
-      await engine.heartbeat(tickAt("heartbeat", heartbeat_ms, woke));
+      await engine.heartbeat(t);
       // Recorded after the renewal, so a late wake renews first (design §5 Host sleep).
-      await this.checkWake(slept + heartbeat_ms, woke, run);
+      await this.checkWake(due, woke, run);
       if (this.leases.get(run.id)?.signal.aborted) {
         this.d.log.warn("lease lost; aborting run", { run_id: run.id });
-        return;
+        done.abort();
       }
-    }
+    });
   }
 
   /**
@@ -1004,6 +1016,12 @@ export class Worker {
     const left = untrustedGitConfig(await list());
     if (left.length > 0) throw new RunFailure("untrusted_git_config", `git config keys left: ${left.join(", ")}`.slice(0, 500));
   }
+}
+
+/** The plugins a Worker runs on; absent ones are their defaults. */
+export interface WorkerPlugins {
+  engines?: ExecutionEngines;
+  ticks?: TickSource;
 }
 
 /** WorkerDeps.code_version when the process names none. */

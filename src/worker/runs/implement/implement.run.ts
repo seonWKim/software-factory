@@ -272,31 +272,27 @@ async function implement(
 }
 
 /**
- * The mid-run diff check (design §4, issue #217): every DIFF_CHECK_MS on the injected clock while the implement
+ * The mid-run diff check (design §4, issue #217): every DIFF_CHECK_MS on the worker's ticks while the implement
  * agent step runs, the committed branch diff against the base resolved before the run (three-dot, as the size
  * gate). Over max_diff_lines or max_diff_files: `over` is set and the agent step is aborted. Exactly at a limit
  * passes. A failed read is logged and tried again next interval; the post-sync size gate still runs.
  */
 async function watchDiff(w: Worker, run: Run, handle: SandboxHandle, baseSha: string, dirs: string, b: DiffBudget, stop: AbortSignal): Promise<void> {
-  while (!stop.aborted) {
-    try {
-      await w.d.clock.sleep(DIFF_CHECK_MS, stop);
-    } catch {
-      return;
-    }
-    if (stop.aborted) return;
+  const ended = AbortSignal.any([stop, b.stop.signal]);
+  await w.every("diff-watch", DIFF_CHECK_MS, ended, async (t) => {
+    // The first tick is the agent step's start: the first check comes one DIFF_CHECK_MS later.
+    if (!t.due) return;
     const stat = await branchDiff(w, handle, baseSha, dirs).catch((err: unknown) => {
       w.d.log.warn("mid-run diff check failed; trying again", { run_id: run.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
       return null;
     });
-    if (stop.aborted) return;
+    if (ended.aborted) return;
     if (stat && overSizeLimit(stat, b.limits)) {
       b.over = stat;
       w.d.log.warn("diff over budget; stopping the agent", { run_id: run.id, lines: stat.lines, files: stat.files });
       b.stop.abort(new Error("diff_too_large"));
-      return;
     }
-  }
+  });
 }
 
 /**

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defineHandler } from "../src/shared/handler.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import { TimeBasedTickGenerator } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { defineTopic, maxRedeliveryMs, partitionOf, topicTable } from "../src/shared/topic.js";
 import { Registry } from "../src/runtime/registry/registry.js";
 import type { Tick } from "../src/shared/ticks/tick-generator.js";
@@ -62,5 +63,33 @@ describe("tick generators", () => {
     await g.run(stop.signal);
     expect(n).toBe(3);
     expect(errors).toEqual(["fast"]);
+  });
+
+  it("time-based on an injected time: `due` is one period after the previous tick ended; a live period applies at the next wait", async () => {
+    const start = Date.parse("2026-11-08T00:00:00.000Z");
+    const clock = new FakeClock(new Date(start));
+    const g = new TimeBasedTickGenerator(() => {}, clock);
+    let period = 1_000;
+    const seen: Tick[] = [];
+    const stop = new AbortController();
+    g.schedule("watch", () => period, async (t) => {
+      seen.push(t);
+      if (seen.length === 1) {
+        // A slow first tick, and a new period read before the wait that follows it.
+        clock.advance(500);
+        period = 2_000;
+      } else stop.abort();
+    });
+    const loop = g.run(stop.signal);
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    await settle();
+    clock.advance(1_999);
+    await settle();
+    expect(seen).toHaveLength(1);
+    clock.advance(1);
+    await loop;
+    expect(seen[0]!.due).toBeUndefined();
+    // Due at the end of the slow tick plus the new period, so the slow tick never reads as a late wake.
+    expect(seen[1]).toMatchObject({ now: new Date(start + 2_500).toISOString(), due: new Date(start + 2_500).toISOString() });
   });
 });
